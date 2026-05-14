@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/elgar-core",
+    "crates/elgar-cli",
+    "crates/elgar-tui",
+]
+resolver = "2"
