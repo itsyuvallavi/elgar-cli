@@ -27,10 +27,8 @@ impl Controller {
     }
 
     pub fn turn(&self, session: &mut Session, input: &str) -> TurnResult {
-        let start_index = session.events.len();
-        session
-            .events
-            .push(Event::UserMessage(UserMessage::new(input)));
+        let start_index = session.events().len();
+        session.push_event(Event::UserMessage(UserMessage::new(input)));
 
         let route = route_input(input);
         match route {
@@ -44,7 +42,7 @@ impl Controller {
 
         TurnResult {
             route,
-            events: session.events[start_index..].to_vec(),
+            events: session.events()[start_index..].to_vec(),
         }
     }
 
@@ -54,27 +52,21 @@ impl Controller {
         let mut metadata = ProviderMetadata::new(response.provider.clone());
         metadata.model = response.model.clone();
         metadata.request_id = Some(response.request_id.clone());
-        session.provider_metadata = Some(metadata);
+        session.set_provider_metadata(metadata);
 
-        session
-            .events
-            .push(Event::ProviderStarted(ProviderStarted::new(
-                response.provider.clone(),
-                response.request_id.clone(),
-            )));
-        session
-            .events
-            .push(Event::ProviderFinished(ProviderFinished::new(
-                response.provider,
-                response.request_id,
-                response.output.clone(),
-            )));
-        session
-            .events
-            .push(Event::AssistantMessage(AssistantMessage::new(
-                response.output.text,
-                AssistantMessageSource::Provider,
-            )));
+        session.push_event(Event::ProviderStarted(ProviderStarted::new(
+            response.provider.clone(),
+            response.request_id.clone(),
+        )));
+        session.push_event(Event::ProviderFinished(ProviderFinished::new(
+            response.provider,
+            response.request_id,
+            response.output.clone(),
+        )));
+        session.push_event(Event::AssistantMessage(AssistantMessage::new(
+            response.output.text,
+            AssistantMessageSource::Provider,
+        )));
     }
 
     fn handle_propose_write_file(&self, session: &mut Session, input: &str) {
@@ -92,11 +84,11 @@ impl Controller {
             "",
             format!("write {}", target_path.display()),
         );
-        session.events.push(Event::ActionProposed(
+        session.push_event(Event::ActionProposed(
             ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
                 .with_target(target_path.display().to_string()),
         ));
-        session.actions.push(ActionRecord::new(action));
+        session.push_action(ActionRecord::new(action));
         push_controller_message(
             session,
             "Proposed WriteFile action. Approve or reject before any file is written.",
@@ -109,9 +101,12 @@ impl Controller {
             return;
         };
 
-        let rejected = session.actions[index].action.reject();
-        session.actions[index].action = rejected.clone();
-        session.events.push(Event::ActionRejected(
+        let rejected = session.actions()[index].action.reject();
+        let record = session
+            .action_mut(index)
+            .expect("latest proposed action index must reference an action record");
+        record.action = rejected.clone();
+        session.push_event(Event::ActionRejected(
             ActionEvent::new(
                 rejected.id.clone(),
                 rejected.kind(),
@@ -128,9 +123,12 @@ impl Controller {
             return;
         };
 
-        let approved = session.actions[index].action.approve();
-        session.actions[index].action = approved.clone();
-        session.events.push(Event::ActionApproved(
+        let approved = session.actions()[index].action.approve();
+        let record = session
+            .action_mut(index)
+            .expect("latest proposed action index must reference an action record");
+        record.action = approved.clone();
+        session.push_event(Event::ActionApproved(
             ActionEvent::new(
                 approved.id.clone(),
                 approved.kind(),
@@ -141,10 +139,13 @@ impl Controller {
 
         match Filesystem::apply_write_file(&approved, &session.project_root) {
             Ok(result) => {
-                session.actions[index].verified_result = Some(result.clone());
-                session.actions[index].failure_reason = None;
-                session.actions[index].action = approved.mark_applied();
-                session.events.push(Event::ActionApplied(ActionApplied::new(
+                let record = session
+                    .action_mut(index)
+                    .expect("approved action index must reference an action record");
+                record.verified_result = Some(result.clone());
+                record.failure_reason = None;
+                record.action = approved.mark_applied();
+                session.push_event(Event::ActionApplied(ActionApplied::new(
                     approved.id.clone(),
                     approved.kind(),
                     result,
@@ -156,10 +157,13 @@ impl Controller {
             }
             Err(error) => {
                 let reason = error.to_string();
-                session.actions[index].verified_result = None;
-                session.actions[index].failure_reason = Some(reason.clone());
-                session.actions[index].action = approved.mark_failed();
-                session.events.push(Event::ActionFailed(ActionFailed::new(
+                let record = session
+                    .action_mut(index)
+                    .expect("approved action index must reference an action record");
+                record.verified_result = None;
+                record.failure_reason = Some(reason.clone());
+                record.action = approved.mark_failed();
+                session.push_event(Event::ActionFailed(ActionFailed::new(
                     approved.id.clone(),
                     approved.kind(),
                     reason,
@@ -188,21 +192,19 @@ const UNKNOWN_MESSAGE: &str =
     "Input was not recognized. No provider, file, action, or shell operation was run.";
 
 fn push_controller_message(session: &mut Session, message: &'static str) {
-    session
-        .events
-        .push(Event::AssistantMessage(AssistantMessage::new(
-            message,
-            AssistantMessageSource::Controller,
-        )));
+    session.push_event(Event::AssistantMessage(AssistantMessage::new(
+        message,
+        AssistantMessageSource::Controller,
+    )));
 }
 
 fn next_action_id(session: &Session) -> String {
-    format!("action-{}", session.actions.len() + 1)
+    format!("action-{}", session.actions().len() + 1)
 }
 
 fn latest_proposed_action_index(session: &Session) -> Option<usize> {
     session
-        .actions
+        .actions()
         .iter()
         .rposition(|record| record.action.state == crate::action::ActionLifecycleState::Proposed)
 }
@@ -281,11 +283,11 @@ mod tests {
         let result = controller.turn(&mut session, "   ");
 
         assert_eq!(result.route, Route::Unknown);
-        assert_eq!(session.events.len(), 2);
-        assert!(matches!(session.events[0], Event::UserMessage(_)));
-        assert!(matches!(session.events[1], Event::AssistantMessage(_)));
-        assert!(session.actions.is_empty());
-        assert_eq!(session.provider_metadata, None);
+        assert_eq!(session.events().len(), 2);
+        assert!(matches!(session.events()[0], Event::UserMessage(_)));
+        assert!(matches!(session.events()[1], Event::AssistantMessage(_)));
+        assert!(session.actions().is_empty());
+        assert_eq!(session.provider_metadata(), None);
     }
 
     #[test]
@@ -304,12 +306,12 @@ mod tests {
         assert!(matches!(result.events[3], Event::AssistantMessage(_)));
         assert_eq!(
             session
-                .provider_metadata
+                .provider_metadata()
                 .as_ref()
                 .map(|metadata| metadata.provider.as_str()),
             Some("test-provider")
         );
-        assert!(session.actions.is_empty());
+        assert!(session.actions().is_empty());
     }
 
     #[test]
@@ -320,7 +322,7 @@ mod tests {
         controller.turn(&mut session, "explain how to create hello.py");
 
         let provider_texts: Vec<&str> = session
-            .events
+            .events()
             .iter()
             .filter_map(|event| match event {
                 Event::ProviderFinished(finished) => Some(finished.output.text.as_str()),
@@ -330,8 +332,8 @@ mod tests {
 
         assert_eq!(provider_texts.len(), 1);
         assert!(provider_texts[0].contains("stub provider response"));
-        assert!(session.actions.is_empty());
-        assert!(session.actions.iter().all(|action| {
+        assert!(session.actions().is_empty());
+        assert!(session.actions().iter().all(|action| {
             !matches!(
                 action.verified_result,
                 Some(VerifiedActionResult::FileWritten { .. })
@@ -346,7 +348,7 @@ mod tests {
 
         controller.turn(&mut session, "what is rust?");
 
-        let provider_message = session.events.iter().find_map(|event| match event {
+        let provider_message = session.events().iter().find_map(|event| match event {
             Event::AssistantMessage(message)
                 if message.source == AssistantMessageSource::Provider =>
             {
@@ -368,11 +370,11 @@ mod tests {
             assert_ne!(result.route, Route::AskModel);
         }
 
-        assert!(session.events.iter().all(|event| !matches!(
+        assert!(session.events().iter().all(|event| !matches!(
             event,
             Event::ProviderStarted(_) | Event::ProviderFinished(_)
         )));
-        assert_eq!(session.provider_metadata, None);
+        assert_eq!(session.provider_metadata(), None);
     }
 
     #[test]
@@ -389,7 +391,7 @@ mod tests {
         controller.turn(&mut session, "explain how to write hello.py");
 
         assert!(!path.exists());
-        assert!(session.actions.is_empty());
+        assert!(session.actions().is_empty());
     }
 
     #[test]
@@ -403,12 +405,12 @@ mod tests {
 
         assert_eq!(result.route, Route::ProposeWriteFile);
         assert!(!path.exists());
-        assert_eq!(session.actions.len(), 1);
+        assert_eq!(session.actions().len(), 1);
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Proposed
         );
-        assert_eq!(session.actions[0].verified_result, None);
+        assert_eq!(session.actions()[0].verified_result, None);
         assert!(result
             .events
             .iter()
@@ -427,18 +429,18 @@ mod tests {
         controller.turn(&mut session, "approve");
 
         assert!(!path.exists());
-        assert_eq!(session.actions.len(), 1);
+        assert_eq!(session.actions().len(), 1);
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Rejected
         );
-        assert_eq!(session.actions[0].verified_result, None);
+        assert_eq!(session.actions()[0].verified_result, None);
         assert!(session
-            .events
+            .events()
             .iter()
             .any(|event| matches!(event, Event::ActionRejected(_))));
         assert!(session
-            .events
+            .events()
             .iter()
             .all(|event| !matches!(event, Event::ActionApplied(_))));
     }
@@ -456,21 +458,21 @@ mod tests {
         assert!(path.exists());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Applied
         );
         assert_eq!(
-            session.actions[0].verified_result,
+            session.actions()[0].verified_result,
             Some(VerifiedActionResult::FileWritten {
                 path: path.display().to_string()
             })
         );
         assert!(session
-            .events
+            .events()
             .iter()
             .any(|event| matches!(event, Event::ActionApproved(_))));
         assert!(session
-            .events
+            .events()
             .iter()
             .any(|event| matches!(event, Event::ActionApplied(_))));
 
@@ -492,16 +494,16 @@ mod tests {
 
         assert!(!path.exists());
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Failed
         );
-        assert_eq!(session.actions[0].verified_result, None);
-        assert!(session.actions[0]
+        assert_eq!(session.actions()[0].verified_result, None);
+        assert!(session.actions()[0]
             .failure_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("absolute paths are not allowed")));
         assert!(session
-            .events
+            .events()
             .iter()
             .any(|event| matches!(event, Event::ActionFailed(_))));
 
@@ -529,16 +531,16 @@ mod tests {
 
         assert!(!outside.exists());
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Failed
         );
-        assert_eq!(session.actions[0].verified_result, None);
-        assert!(session.actions[0]
+        assert_eq!(session.actions()[0].verified_result, None);
+        assert!(session.actions()[0]
             .failure_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("parent directory traversal is not allowed")));
         assert!(session
-            .events
+            .events()
             .iter()
             .any(|event| matches!(event, Event::ActionFailed(_))));
 
@@ -556,13 +558,13 @@ mod tests {
 
         assert!(!path.exists());
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Failed
         );
-        assert_eq!(session.actions[0].verified_result, None);
-        assert!(session.actions[0].failure_reason.is_some());
+        assert_eq!(session.actions()[0].verified_result, None);
+        assert!(session.actions()[0].failure_reason.is_some());
         assert!(session
-            .events
+            .events()
             .iter()
             .any(|event| matches!(event, Event::ActionFailed(_))));
     }
@@ -579,9 +581,9 @@ mod tests {
 
         assert!(!path.exists());
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Proposed
         );
-        assert_eq!(session.actions[0].verified_result, None);
+        assert_eq!(session.actions()[0].verified_result, None);
     }
 }

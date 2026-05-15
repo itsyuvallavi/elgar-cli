@@ -17,9 +17,9 @@ pub struct Session {
     pub id: String,
     pub project_root: PathBuf,
     pub cwd: PathBuf,
-    pub events: Vec<Event>,
-    pub actions: Vec<ActionRecord>,
-    pub provider_metadata: Option<ProviderMetadata>,
+    events: Vec<Event>,
+    actions: Vec<ActionRecord>,
+    provider_metadata: Option<ProviderMetadata>,
 }
 
 impl Session {
@@ -36,6 +36,37 @@ impl Session {
             actions: Vec::new(),
             provider_metadata: None,
         }
+    }
+
+    /// Controller-recorded event facts for read-only UI and renderer consumers.
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+
+    /// Controller-owned action records for read-only UI and renderer consumers.
+    pub fn actions(&self) -> &[ActionRecord] {
+        &self.actions
+    }
+
+    /// Provider request metadata recorded by the controller for inspection only.
+    pub fn provider_metadata(&self) -> Option<&ProviderMetadata> {
+        self.provider_metadata.as_ref()
+    }
+
+    pub(crate) fn push_event(&mut self, event: Event) {
+        self.events.push(event);
+    }
+
+    pub(crate) fn push_action(&mut self, action: ActionRecord) {
+        self.actions.push(action);
+    }
+
+    pub(crate) fn action_mut(&mut self, index: usize) -> Option<&mut ActionRecord> {
+        self.actions.get_mut(index)
+    }
+
+    pub(crate) fn set_provider_metadata(&mut self, metadata: ProviderMetadata) {
+        self.provider_metadata = Some(metadata);
     }
 }
 

@@ -49,7 +49,7 @@ impl TuiShell {
     }
 
     pub fn consume_session(&mut self, session: &Session) {
-        self.consume_events(&session.events);
+        self.consume_events(session.events());
     }
 
     pub fn consume_events<'a>(&mut self, events: impl IntoIterator<Item = &'a Event>) {
@@ -443,7 +443,7 @@ mod tests {
         assert!(rendered.contains("provider started: stub-provider request stub-request-1"));
         assert!(rendered.contains("provider finished: stub-provider request stub-request-1"));
         assert!(rendered.contains("assistant Provider: stub provider response"));
-        assert!(session.actions.is_empty());
+        assert!(session.actions().is_empty());
     }
 
     #[test]
@@ -587,12 +587,12 @@ mod tests {
 
         assert_eq!(session, before);
         assert!(!target.exists());
-        assert_eq!(session.actions.len(), 1);
+        assert_eq!(session.actions().len(), 1);
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Proposed
         );
-        assert_eq!(session.actions[0].verified_result, None);
+        assert_eq!(session.actions()[0].verified_result, None);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -615,11 +615,11 @@ mod tests {
         assert_eq!(approved.route, elgar_core::router::Route::ApproveAction);
         assert!(target.exists());
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Applied
         );
         assert!(matches!(
-            session.actions[0].verified_result,
+            session.actions()[0].verified_result,
             Some(VerifiedActionResult::FileWritten { .. })
         ));
 
@@ -649,10 +649,10 @@ mod tests {
         assert_eq!(rejected.route, elgar_core::router::Route::RejectAction);
         assert!(!target.exists());
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Rejected
         );
-        assert_eq!(session.actions[0].verified_result, None);
+        assert_eq!(session.actions()[0].verified_result, None);
 
         let rendered = shell.render();
         assert!(rendered.contains("state: rejected"));
@@ -679,7 +679,7 @@ mod tests {
 
         assert!(!absolute_target.exists());
         assert_eq!(
-            session.actions[0].action.state,
+            session.actions()[0].action.state,
             ActionLifecycleState::Failed
         );
 

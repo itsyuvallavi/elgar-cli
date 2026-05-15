@@ -73,12 +73,52 @@ fn resolve_allowed_target(
         }
     }
 
-    Ok(allowed_root.join(target_path))
+    let canonical_root =
+        allowed_root
+            .canonicalize()
+            .map_err(|source| FilesystemError::UnsafeRoot {
+                path: allowed_root.to_path_buf(),
+                reason: source.to_string(),
+            })?;
+    let resolved_target = allowed_root.join(target_path);
+    let parent = resolved_target
+        .parent()
+        .ok_or_else(|| FilesystemError::UnsafeTarget {
+            path: target_path.to_path_buf(),
+            reason: "target parent could not be determined".to_string(),
+        })?;
+    let canonical_parent =
+        parent
+            .canonicalize()
+            .map_err(|source| FilesystemError::WriteFailed {
+                path: resolved_target.clone(),
+                reason: source.to_string(),
+            })?;
+
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(FilesystemError::UnsafeTarget {
+            path: target_path.to_path_buf(),
+            reason: "target parent resolves outside the allowed root".to_string(),
+        });
+    }
+
+    if resolved_target
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(FilesystemError::UnsafeTarget {
+            path: target_path.to_path_buf(),
+            reason: "target file symlinks are not allowed".to_string(),
+        });
+    }
+
+    Ok(resolved_target)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilesystemError {
     ActionNotApproved { state: ActionLifecycleState },
+    UnsafeRoot { path: PathBuf, reason: String },
     UnsafeTarget { path: PathBuf, reason: String },
     WriteFailed { path: PathBuf, reason: String },
     VerificationFailed { path: PathBuf },
@@ -89,6 +129,9 @@ impl fmt::Display for FilesystemError {
         match self {
             FilesystemError::ActionNotApproved { state } => {
                 write!(formatter, "action is not approved: {state:?}")
+            }
+            FilesystemError::UnsafeRoot { path, reason } => {
+                write!(formatter, "unsafe write root {}: {reason}", path.display())
             }
             FilesystemError::UnsafeTarget { path, reason } => {
                 write!(
@@ -241,5 +284,71 @@ mod tests {
         assert!(!outside.exists());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approved_write_file_rejects_symlinked_parent_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = root("symlink-parent-root");
+        let outside = root
+            .parent()
+            .unwrap()
+            .join(format!("elgar-fs-{}-symlink-outside", std::process::id()));
+        let outside_target = outside.join("escaped.txt");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+
+        let action =
+            Action::proposed_write_file("action-1", "link/escaped.txt", "contents", "write file")
+                .approve();
+
+        let result = Filesystem::apply_write_file(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::UnsafeTarget {
+                path: PathBuf::from("link/escaped.txt"),
+                reason: "target parent resolves outside the allowed root".to_string()
+            })
+        );
+        assert!(!outside_target.exists());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approved_write_file_rejects_existing_symlink_target_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = root("symlink-target-root");
+        let outside = root.parent().unwrap().join(format!(
+            "elgar-fs-{}-symlink-target.txt",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&outside);
+        fs::write(&outside, "original").unwrap();
+        symlink(&outside, root.join("linked.txt")).unwrap();
+        let action =
+            Action::proposed_write_file("action-1", "linked.txt", "contents", "write file")
+                .approve();
+
+        let result = Filesystem::apply_write_file(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::UnsafeTarget {
+                path: PathBuf::from("linked.txt"),
+                reason: "target file symlinks are not allowed".to_string()
+            })
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "original");
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(&outside);
     }
 }

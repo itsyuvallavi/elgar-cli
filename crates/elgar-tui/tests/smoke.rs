@@ -67,20 +67,20 @@ fn submits_user_input_through_shared_controller() {
     assert_eq!(result.route, Route::AskModel);
     assert_eq!(
         session
-            .provider_metadata
+            .provider_metadata()
             .as_ref()
             .map(|metadata| metadata.provider.as_str()),
         Some("smoke-provider")
     );
     assert_eq!(
         session
-            .provider_metadata
+            .provider_metadata()
             .as_ref()
             .and_then(|metadata| metadata.model.as_deref()),
         Some("smoke-model")
     );
     assert!(session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ProviderStarted(_))));
     assert!(shell.render().contains("user: what does this do?"));
@@ -101,7 +101,7 @@ fn displays_proposed_write_file_action_without_writing() {
     assert_eq!(result.route, Route::ProposeWriteFile);
     assert!(!target.exists());
     assert_eq!(
-        session.actions[0].action.state,
+        session.actions()[0].action.state,
         ActionLifecycleState::Proposed
     );
 
@@ -130,11 +130,11 @@ fn approves_write_file_through_controller_and_renders_verified_result() {
     assert_eq!(result.route, Route::ApproveAction);
     assert!(target.exists());
     assert_eq!(
-        session.actions[0].action.state,
+        session.actions()[0].action.state,
         ActionLifecycleState::Applied
     );
     assert_eq!(
-        session.actions[0].verified_result,
+        session.actions()[0].verified_result,
         Some(VerifiedActionResult::FileWritten {
             path: target.display().to_string()
         })
@@ -161,10 +161,10 @@ fn rejects_write_file_through_controller_without_writing() {
     assert_eq!(result.route, Route::RejectAction);
     assert!(!target.exists());
     assert_eq!(
-        session.actions[0].action.state,
+        session.actions()[0].action.state,
         ActionLifecycleState::Rejected
     );
-    assert_eq!(session.actions[0].verified_result, None);
+    assert_eq!(session.actions()[0].verified_result, None);
 
     let rendered = shell.render();
     assert!(rendered.contains("state: rejected"));
@@ -191,8 +191,8 @@ fn rendering_and_rejection_do_not_call_provider_or_mutate_files_directly() {
     assert!(rendered.contains("state: pending approval"));
     assert_eq!(session, before_render);
     assert!(!target.exists());
-    assert_eq!(session.provider_metadata, None);
-    assert!(session.events.iter().all(|event| !matches!(
+    assert_eq!(session.provider_metadata(), None);
+    assert!(session.events().iter().all(|event| !matches!(
         event,
         Event::ProviderStarted(_) | Event::ProviderFinished(_)
     )));
@@ -201,8 +201,8 @@ fn rendering_and_rejection_do_not_call_provider_or_mutate_files_directly() {
 
     assert_eq!(rejected.route, Route::RejectAction);
     assert!(!target.exists());
-    assert_eq!(session.provider_metadata, None);
-    assert!(session.events.iter().all(|event| !matches!(
+    assert_eq!(session.provider_metadata(), None);
+    assert!(session.events().iter().all(|event| !matches!(
         event,
         Event::ProviderStarted(_) | Event::ProviderFinished(_)
     )));

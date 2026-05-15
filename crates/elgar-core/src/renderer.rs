@@ -9,7 +9,7 @@ pub fn placeholder_message() -> &'static str {
 
 pub fn render_session(session: &Session) -> String {
     session
-        .events
+        .events()
         .iter()
         .map(render_event)
         .collect::<Vec<_>>()
@@ -90,18 +90,18 @@ mod tests {
     fn reports_action_lifecycle_states() {
         let mut session = Session::new("session-1", ".", ".");
         let action = Action::proposed_write_file("action-1", "hello.py", "", "write hello.py");
-        session.actions.push(ActionRecord::new(action.clone()));
-        session.events.push(Event::ActionProposed(ActionEvent::new(
+        session.push_action(ActionRecord::new(action.clone()));
+        session.push_event(Event::ActionProposed(ActionEvent::new(
             action.id.clone(),
             action.kind(),
             action.summary.clone(),
         )));
-        session.events.push(Event::ActionRejected(ActionEvent::new(
+        session.push_event(Event::ActionRejected(ActionEvent::new(
             action.id.clone(),
             action.kind(),
             action.summary.clone(),
         )));
-        session.events.push(Event::ActionApplied(ActionApplied::new(
+        session.push_event(Event::ActionApplied(ActionApplied::new(
             action.id.clone(),
             action.kind(),
             VerifiedActionResult::FileWritten {

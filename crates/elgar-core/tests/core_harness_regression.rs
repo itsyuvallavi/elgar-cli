@@ -27,7 +27,11 @@ fn session_at(root: &Path) -> Session {
 }
 
 fn event_count(session: &Session, matches: impl Fn(&Event) -> bool) -> usize {
-    session.events.iter().filter(|event| matches(event)).count()
+    session
+        .events()
+        .iter()
+        .filter(|event| matches(event))
+        .count()
 }
 
 #[test]
@@ -40,9 +44,9 @@ fn provider_response_is_suggestion_only_and_cannot_mutate_controller_truth() {
     controller.turn(&mut session, "what if you approve and write hello.py?");
 
     assert!(!target.exists());
-    assert!(session.actions.is_empty());
+    assert!(session.actions().is_empty());
     assert!(session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ProviderFinished(_))));
     assert_eq!(
@@ -61,12 +65,12 @@ fn provider_response_is_suggestion_only_and_cannot_mutate_controller_truth() {
     controller.turn(&mut session, "what if you approve and write hello.py?");
 
     assert!(!target.exists());
-    assert_eq!(session.actions.len(), 1);
+    assert_eq!(session.actions().len(), 1);
     assert_eq!(
-        session.actions[0].action.state,
+        session.actions()[0].action.state,
         ActionLifecycleState::Proposed
     );
-    assert_eq!(session.actions[0].verified_result, None);
+    assert_eq!(session.actions()[0].verified_result, None);
     assert_eq!(
         event_count(&session, |event| matches!(event, Event::ActionApproved(_))),
         0
@@ -94,8 +98,8 @@ fn router_classifies_create_file_and_unknown_input_is_safe() {
     );
 
     assert!(!target.exists());
-    assert!(session.actions.is_empty());
-    assert_eq!(session.provider_metadata, None);
+    assert!(session.actions().is_empty());
+    assert_eq!(session.provider_metadata(), None);
     assert_eq!(
         event_count(&session, |event| matches!(event, Event::ProviderStarted(_))),
         0
@@ -123,7 +127,7 @@ fn write_file_lifecycle_requires_user_approval_and_records_terminal_states() {
     assert_eq!(proposed.route, Route::ProposeWriteFile);
     assert!(!rejected_target.exists());
     assert_eq!(
-        rejected_session.actions[0].action.state,
+        rejected_session.actions()[0].action.state,
         ActionLifecycleState::Proposed
     );
     assert!(proposed
@@ -136,16 +140,16 @@ fn write_file_lifecycle_requires_user_approval_and_records_terminal_states() {
 
     assert!(!rejected_target.exists());
     assert_eq!(
-        rejected_session.actions[0].action.state,
+        rejected_session.actions()[0].action.state,
         ActionLifecycleState::Rejected
     );
-    assert_eq!(rejected_session.actions[0].verified_result, None);
+    assert_eq!(rejected_session.actions()[0].verified_result, None);
     assert!(rejected_session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ActionRejected(_))));
     assert!(rejected_session
-        .events
+        .events()
         .iter()
         .all(|event| !matches!(event, Event::ActionApplied(_))));
 
@@ -160,21 +164,21 @@ fn write_file_lifecycle_requires_user_approval_and_records_terminal_states() {
     assert_eq!(fs::read_to_string(&approved_target).unwrap(), "");
     assert!(!other_target.exists());
     assert_eq!(
-        approved_session.actions[0].action.state,
+        approved_session.actions()[0].action.state,
         ActionLifecycleState::Applied
     );
     assert_eq!(
-        approved_session.actions[0].verified_result,
+        approved_session.actions()[0].verified_result,
         Some(VerifiedActionResult::FileWritten {
             path: approved_target.display().to_string()
         })
     );
     assert!(approved_session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ActionApproved(_))));
     assert!(approved_session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ActionApplied(_))));
 
@@ -186,17 +190,60 @@ fn write_file_lifecycle_requires_user_approval_and_records_terminal_states() {
 
     assert!(!failed_target.exists());
     assert_eq!(
-        failed_session.actions[0].action.state,
+        failed_session.actions()[0].action.state,
         ActionLifecycleState::Failed
     );
-    assert_eq!(failed_session.actions[0].verified_result, None);
-    assert!(failed_session.actions[0].failure_reason.is_some());
+    assert_eq!(failed_session.actions()[0].verified_result, None);
+    assert!(failed_session.actions()[0].failure_reason.is_some());
     assert!(failed_session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ActionFailed(_))));
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn approved_write_file_symlink_escape_fails_without_verified_result() {
+    use std::os::unix::fs::symlink;
+
+    let controller = Controller::default();
+    let root = regression_root("symlink-escape");
+    let outside = root.parent().unwrap().join(format!(
+        "elgar-core-regression-{}-symlink-outside",
+        std::process::id()
+    ));
+    let outside_target = outside.join("escaped.py");
+    let _ = fs::remove_dir_all(&outside);
+    fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, root.join("link")).unwrap();
+    let mut session = session_at(&root);
+
+    controller.turn(&mut session, "create file link/escaped.py");
+    controller.turn(&mut session, "approve");
+
+    assert!(!outside_target.exists());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Failed
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert!(session.actions()[0]
+        .failure_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("target parent resolves outside the allowed root")));
+    assert!(session
+        .events()
+        .iter()
+        .any(|event| matches!(event, Event::ActionFailed(_))));
+    assert!(session
+        .events()
+        .iter()
+        .all(|event| !matches!(event, Event::ActionApplied(_))));
+
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(outside);
 }
 
 #[test]
@@ -209,11 +256,11 @@ fn controller_events_and_renderer_report_inspectable_action_states() {
     controller.turn(&mut rejected_session, "reject");
 
     assert!(rejected_session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ActionProposed(_))));
     assert!(rejected_session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ActionRejected(_))));
 
@@ -228,11 +275,11 @@ fn controller_events_and_renderer_report_inspectable_action_states() {
     controller.turn(&mut applied_session, "approve");
 
     assert!(applied_session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ActionApproved(_))));
     assert!(applied_session
-        .events
+        .events()
         .iter()
         .any(|event| matches!(event, Event::ActionApplied(_))));
 
