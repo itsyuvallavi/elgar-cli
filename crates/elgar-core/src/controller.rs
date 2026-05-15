@@ -3,29 +3,42 @@ use serde::{Deserialize, Serialize};
 use crate::{
     action::Action,
     event::{
-        ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource, Event,
-        ProviderFinished, ProviderStarted, UserMessage,
+        ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
+        ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage,
     },
     fs::Filesystem,
-    provider::ProviderStub,
+    provider::{ControllerProvider, LmStudioProvider, ProviderConfig, ProviderStub},
     router::{route_input, Route},
     session::{ActionRecord, ProviderMetadata, Session},
 };
 
-/// First controller turn flow over a deterministic provider stub.
+/// Controller turn flow over an explicit provider backend.
 ///
 /// The controller records facts into session state. It does not execute actions,
-/// mutate files, call a network provider, or treat provider text as truth.
+/// mutate files, or treat provider text as truth. The default provider backend
+/// is deterministic and no-network; live provider backends require explicit
+/// construction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Controller {
-    pub provider: ProviderStub,
+pub struct Controller<P = ProviderStub> {
+    pub provider: P,
 }
 
-impl Controller {
-    pub fn new(provider: ProviderStub) -> Self {
+impl<P> Controller<P> {
+    pub fn new(provider: P) -> Self {
         Self { provider }
     }
+}
 
+impl Controller<LmStudioProvider> {
+    pub fn with_lm_studio_provider(config: ProviderConfig) -> Self {
+        Self::new(LmStudioProvider::new(config))
+    }
+}
+
+impl<P> Controller<P>
+where
+    P: ControllerProvider,
+{
     pub fn turn(&self, session: &mut Session, input: &str) -> TurnResult {
         let start_index = session.events().len();
         session.push_event(Event::UserMessage(UserMessage::new(input)));
@@ -47,26 +60,37 @@ impl Controller {
     }
 
     fn handle_ask_model(&self, session: &mut Session, input: &str) {
-        let response = self.provider.ask(input);
+        let request = self.provider.request_metadata();
 
-        let mut metadata = ProviderMetadata::new(response.provider.clone());
-        metadata.model = response.model.clone();
-        metadata.request_id = Some(response.request_id.clone());
+        let mut metadata = ProviderMetadata::new(request.provider.clone());
+        metadata.model = request.model.clone();
+        metadata.request_id = Some(request.request_id.clone());
         session.set_provider_metadata(metadata);
 
         session.push_event(Event::ProviderStarted(ProviderStarted::new(
-            response.provider.clone(),
-            response.request_id.clone(),
+            request.provider.clone(),
+            request.request_id.clone(),
         )));
-        session.push_event(Event::ProviderFinished(ProviderFinished::new(
-            response.provider,
-            response.request_id,
-            response.output.clone(),
-        )));
-        session.push_event(Event::AssistantMessage(AssistantMessage::new(
-            response.output.text,
-            AssistantMessageSource::Provider,
-        )));
+
+        match self.provider.chat(input) {
+            Ok(output) => {
+                session.push_event(Event::ProviderFinished(ProviderFinished::new(
+                    request.provider,
+                    request.request_id,
+                    output.clone(),
+                )));
+                session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                    output.text,
+                    AssistantMessageSource::Provider,
+                )));
+            }
+            Err(error) => {
+                session.push_event(Event::Error(ErrorEvent::new(format!(
+                    "{} provider request {} failed: {error}",
+                    request.provider, request.request_id
+                ))));
+            }
+        }
     }
 
     fn handle_propose_write_file(&self, session: &mut Session, input: &str) {
@@ -174,7 +198,7 @@ impl Controller {
     }
 }
 
-impl Default for Controller {
+impl Default for Controller<ProviderStub> {
     fn default() -> Self {
         Self::new(ProviderStub::default())
     }
@@ -254,8 +278,8 @@ mod tests {
 
     use crate::{
         action::ActionLifecycleState,
-        event::{AssistantMessageSource, Event, VerifiedActionResult},
-        provider::ProviderStub,
+        event::{AssistantMessageSource, Event, ProviderOutput, VerifiedActionResult},
+        provider::{ControllerProvider, ProviderConfig, ProviderError, ProviderStub},
         router::Route,
         session::Session,
     };
@@ -585,5 +609,128 @@ mod tests {
             ActionLifecycleState::Proposed
         );
         assert_eq!(session.actions()[0].verified_result, None);
+    }
+
+    #[derive(Debug, Clone)]
+    struct FakeProvider {
+        output: Result<ProviderOutput, ProviderError>,
+    }
+
+    impl FakeProvider {
+        fn success(text: impl Into<String>) -> Self {
+            Self {
+                output: Ok(ProviderOutput::new(text)),
+            }
+        }
+
+        fn failure(message: impl Into<String>) -> Self {
+            Self {
+                output: Err(ProviderError::provider(message, Some(404), None)),
+            }
+        }
+    }
+
+    impl ControllerProvider for FakeProvider {
+        fn request_metadata(&self) -> crate::provider::ProviderRequestMetadata {
+            crate::provider::ProviderRequestMetadata::new(
+                "fake-provider",
+                Some("fake-model".to_string()),
+                "fake-request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            self.output.clone()
+        }
+    }
+
+    #[test]
+    fn explicit_provider_controller_records_provider_output_without_mutating_truth() {
+        let controller = Controller::new(FakeProvider::success(
+            "I approved and wrote hello.py successfully.",
+        ));
+        let (mut session, _root) = rooted_session("fake-provider-output");
+        let path = session.project_root.join("hello.py");
+        let _ = std::fs::remove_file(&path);
+
+        controller.turn(&mut session, "create hello.py");
+        controller.turn(&mut session, "what if you approve and write hello.py?");
+
+        assert!(!path.exists());
+        assert_eq!(session.actions().len(), 1);
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Proposed
+        );
+        assert_eq!(session.actions()[0].verified_result, None);
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ProviderStarted(_))));
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ProviderFinished(_))));
+        assert!(session
+            .events()
+            .iter()
+            .all(|event| !matches!(event, Event::ActionApproved(_) | Event::ActionApplied(_))));
+    }
+
+    #[test]
+    fn explicit_provider_controller_records_errors_without_mutating_truth() {
+        let controller = Controller::new(FakeProvider::failure("model missing"));
+        let (mut session, _root) = rooted_session("fake-provider-error");
+
+        controller.turn(&mut session, "what does this code do?");
+
+        assert!(session.actions().is_empty());
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ProviderStarted(_))));
+        assert!(session.events().iter().any(|event| match event {
+            Event::Error(error) => {
+                error.message.contains("fake-provider")
+                    && error.message.contains("fake-request-1")
+                    && error.message.contains("model missing")
+            }
+            _ => false,
+        }));
+        assert!(session
+            .events()
+            .iter()
+            .all(|event| !matches!(event, Event::ProviderFinished(_))));
+    }
+
+    #[test]
+    fn explicit_lm_studio_controller_mode_records_configuration_errors_without_network() {
+        let controller = Controller::with_lm_studio_provider(ProviderConfig {
+            base_url: "https://127.0.0.1:1234/v1".to_string(),
+            ..ProviderConfig::lm_studio("local-model")
+        });
+        let mut session = session();
+
+        let result = controller.turn(&mut session, "what does this code do?");
+
+        assert_eq!(result.route, Route::AskModel);
+        assert!(session.actions().is_empty());
+        assert_eq!(
+            session
+                .provider_metadata()
+                .as_ref()
+                .map(|metadata| metadata.provider.as_str()),
+            Some("lm-studio")
+        );
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ProviderStarted(started) if started.provider == "lm-studio")));
+        assert!(session.events().iter().any(|event| match event {
+            Event::Error(error) => error
+                .message
+                .contains("only http:// provider URLs are supported"),
+            _ => false,
+        }));
     }
 }

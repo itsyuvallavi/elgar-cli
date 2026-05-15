@@ -29,7 +29,36 @@ Extensions wait.
 7. Keep files small and responsibilities clear.
 8. Add tests before expanding behavior.
 9. Prefer explicit types over prompt-only behavior.
-10. Report what was changed, what was tested, and what was intentionally deferred.
+10. Keep user-facing messages short and to the point while preserving all important details.
+11. After each implementation step, include a brief plain-English explanation of what changed and why.
+12. Report what was changed, what was tested, and what was intentionally deferred.
+
+## Communication Style
+
+Be concise. Do not omit important facts, but avoid long narration.
+
+For implementation reports, prefer this shape:
+
+- issue
+- files changed
+- what changed and why
+- tests/commands
+- known limitations
+- next recommended step
+
+If a change is risky, call out the risk directly and briefly.
+
+## File Size And Simplicity
+
+Keep files small enough to audit quickly.
+
+Guidelines:
+
+- Keep CLI files thin: parse command, call core, print result.
+- Keep controller files focused on turn flow and truth recording.
+- Keep provider HTTP/client details out of controller code.
+- Split a module when it starts mixing unrelated responsibilities.
+- Prefer a small follow-up issue for module splitting over broad refactors inside feature work.
 
 ## Agent Roster
 

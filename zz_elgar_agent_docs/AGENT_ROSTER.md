@@ -102,7 +102,10 @@ Use for:
 3. Use Code Review Agent as a risk gate, not as a blocker for every small change.
 4. Every implementation agent must update Linear or provide exact Linear update text.
 5. Every agent report must include files changed, commands run, test results, known limitations, and the next recommended issue.
-6. The orchestrator reviews each result before creating the next handoff.
+6. Every agent report must include a short plain-English explanation of what changed and why.
+7. Keep reports short and direct without dropping important details.
+8. Keep files small and responsibilities narrow; recommend a follow-up split when a file starts mixing concerns.
+9. The orchestrator reviews each result before creating the next handoff.
 
 ## Current Recommended Flow
 

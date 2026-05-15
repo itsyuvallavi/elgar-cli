@@ -71,6 +71,7 @@ fn is_model_question(input: &str) -> bool {
         || input.starts_with("who ")
         || input.starts_with("can you ")
         || input.starts_with("tell me ")
+        || input.starts_with("say ")
 }
 
 #[cfg(test)]
@@ -105,6 +106,7 @@ mod tests {
     fn classifies_model_questions() {
         assert_eq!(route_input("explain this function"), Route::AskModel);
         assert_eq!(route_input("what does this code do?"), Route::AskModel);
+        assert_eq!(route_input("Say hello in one sentence."), Route::AskModel);
     }
 
     #[test]

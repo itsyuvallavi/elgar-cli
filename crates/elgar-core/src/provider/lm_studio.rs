@@ -1,0 +1,257 @@
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    event::ProviderOutput,
+    provider::{
+        config::ProviderConfig,
+        http::{post_json, HttpEndpoint},
+        types::{
+            ChatMessage, ChatRequest, ChatResponse, ControllerProvider, ProviderError,
+            ProviderErrorResponse, ProviderRequestMetadata,
+        },
+    },
+};
+
+pub fn format_chat_request(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+) -> Result<ChatRequest, ProviderError> {
+    let model = config
+        .model
+        .as_ref()
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| ProviderError::configuration("provider model is required"))?;
+
+    if messages.is_empty() {
+        return Err(ProviderError::configuration(
+            "at least one chat message is required",
+        ));
+    }
+
+    Ok(ChatRequest {
+        model: model.clone(),
+        messages,
+        stream: false,
+        temperature: None,
+    })
+}
+
+pub fn parse_chat_response_json(payload: &str) -> Result<ProviderOutput, ProviderError> {
+    let response: ChatResponse = serde_json::from_str(payload)
+        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+
+    let text = response
+        .choices
+        .iter()
+        .filter_map(|choice| choice.message.as_ref())
+        .find_map(|message| {
+            let content = message.content.trim();
+            (!content.is_empty()).then(|| content.to_string())
+        })
+        .ok_or_else(|| ProviderError::empty_response("provider response contained no text"))?;
+
+    Ok(ProviderOutput::new(text))
+}
+
+pub fn parse_provider_error_json(status_code: Option<u16>, payload: &str) -> ProviderError {
+    match serde_json::from_str::<ProviderErrorResponse>(payload) {
+        Ok(response) => {
+            ProviderError::provider(response.error.message, status_code, response.error.code)
+        }
+        Err(error) => ProviderError::response_parse(error.to_string()).with_status(status_code),
+    }
+}
+
+/// Explicit, opt-in live call for LM Studio/OpenAI-compatible local servers.
+///
+/// This is only used by explicit smoke/live-provider paths. Normal controller
+/// behavior and tests remain no-network by default.
+pub fn chat_lm_studio(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+) -> Result<ProviderOutput, ProviderError> {
+    let request = format_chat_request(config, messages)?;
+    let body = serde_json::to_string(&request)
+        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+    let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
+    let timeout = Duration::from_millis(config.timeout_millis);
+    let response = post_json(&endpoint, &body, timeout)?;
+
+    if response.status_code.is_success() {
+        parse_chat_response_json(&response.body)
+    } else {
+        Err(parse_provider_error_json(
+            Some(response.status_code.as_u16()),
+            &response.body,
+        ))
+    }
+}
+
+/// Explicit opt-in LM Studio provider backend for controller live mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LmStudioProvider {
+    pub config: ProviderConfig,
+}
+
+impl LmStudioProvider {
+    pub fn new(config: ProviderConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl ControllerProvider for LmStudioProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            self.config.provider.clone(),
+            self.config.model.clone(),
+            "lm-studio-request-1",
+        )
+    }
+
+    fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        chat_lm_studio(&self.config, vec![ChatMessage::user(prompt)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        format_chat_request, parse_chat_response_json, parse_provider_error_json, ChatMessage,
+        ProviderConfig,
+    };
+    use crate::provider::{http::parse_http_response, ProviderErrorKind};
+
+    #[test]
+    fn formats_non_streaming_openai_compatible_chat_request() {
+        let config = ProviderConfig::lm_studio("loaded-model");
+
+        let request = format_chat_request(
+            &config,
+            vec![
+                ChatMessage::system("You suggest only."),
+                ChatMessage::user("Summarize this file."),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(request.model, "loaded-model");
+        assert!(!request.stream);
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            json!({
+                "model": "loaded-model",
+                "messages": [
+                    { "role": "system", "content": "You suggest only." },
+                    { "role": "user", "content": "Summarize this file." }
+                ],
+                "stream": false
+            })
+        );
+    }
+
+    #[test]
+    fn request_formatting_requires_model_and_message() {
+        let missing_model =
+            format_chat_request(&ProviderConfig::default(), vec![ChatMessage::user("hello")])
+                .unwrap_err();
+        assert_eq!(missing_model.kind, ProviderErrorKind::Configuration);
+        assert!(missing_model.message.contains("model"));
+
+        let missing_message =
+            format_chat_request(&ProviderConfig::lm_studio("loaded-model"), Vec::new())
+                .unwrap_err();
+        assert_eq!(missing_message.kind, ProviderErrorKind::Configuration);
+        assert!(missing_message.message.contains("message"));
+    }
+
+    #[test]
+    fn parses_first_non_empty_assistant_response_as_provider_output() {
+        let output = parse_chat_response_json(
+            r#"{
+                "id": "chatcmpl-local",
+                "model": "loaded-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": { "role": "assistant", "content": "  Suggested next step.  " },
+                        "finish_reason": "stop"
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 4,
+                    "total_tokens": 14
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(output.text, "Suggested next step.");
+    }
+
+    #[test]
+    fn response_parse_reports_malformed_or_empty_payloads() {
+        let malformed = parse_chat_response_json("{not json").unwrap_err();
+        assert_eq!(malformed.kind, ProviderErrorKind::ResponseParse);
+
+        let empty = parse_chat_response_json(
+            r#"{
+                "choices": [
+                    { "message": { "role": "assistant", "content": "   " } }
+                ]
+            }"#,
+        )
+        .unwrap_err();
+        assert_eq!(empty.kind, ProviderErrorKind::EmptyResponse);
+    }
+
+    #[test]
+    fn maps_openai_compatible_error_payload() {
+        let error = parse_provider_error_json(
+            Some(400),
+            r#"{
+                "error": {
+                    "message": "model is not loaded",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found"
+                }
+            }"#,
+        );
+
+        assert_eq!(error.kind, ProviderErrorKind::Provider);
+        assert_eq!(error.status_code, Some(400));
+        assert_eq!(error.code.as_deref(), Some("model_not_found"));
+        assert_eq!(error.message, "model is not loaded");
+    }
+
+    #[test]
+    fn malformed_provider_error_payload_maps_to_parse_error_with_status() {
+        let error = parse_provider_error_json(Some(500), "not json");
+
+        assert_eq!(error.kind, ProviderErrorKind::ResponseParse);
+        assert_eq!(error.status_code, Some(500));
+        assert!(error.message.contains("expected"));
+    }
+
+    #[test]
+    fn http_provider_error_response_maps_status_and_payload() {
+        let response = parse_http_response(
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n\
+            {\"error\":{\"message\":\"model missing\",\"code\":\"model_not_found\"}}",
+        )
+        .unwrap();
+
+        assert!(!response.status_code.is_success());
+        let error = parse_provider_error_json(Some(response.status_code.as_u16()), &response.body);
+
+        assert_eq!(error.kind, ProviderErrorKind::Provider);
+        assert_eq!(error.status_code, Some(404));
+        assert_eq!(error.code.as_deref(), Some("model_not_found"));
+        assert_eq!(error.message, "model missing");
+    }
+}

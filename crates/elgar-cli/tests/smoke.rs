@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use elgar_cli::render_cli_turn;
@@ -45,4 +46,32 @@ fn cli_reports_controller_proposal_without_mutating_files() {
     assert!(!target.exists());
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_smoke_command_requires_model_env_without_network() {
+    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .arg("provider-smoke")
+        .arg("Say hello.")
+        .env_remove("ELGAR_LM_STUDIO_MODEL")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ELGAR_LM_STUDIO_MODEL"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn controller_smoke_command_requires_model_env_without_network() {
+    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .arg("controller-smoke")
+        .arg("Say hello.")
+        .env_remove("ELGAR_LM_STUDIO_MODEL")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ELGAR_LM_STUDIO_MODEL"));
+    assert!(output.stdout.is_empty());
 }
