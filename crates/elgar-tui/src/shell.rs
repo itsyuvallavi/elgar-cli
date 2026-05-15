@@ -139,10 +139,10 @@ mod tests {
     fn renders_empty_default_state() {
         let rendered = TuiShell::default().render();
 
-        assert!(rendered.contains("[Conversation]\n(empty conversation)"));
-        assert!(rendered.contains("[Input]\n> "));
-        assert!(rendered.contains("[Status]\nready"));
-        assert!(rendered.contains("[Pending Action]\nnone"));
+        assert!(rendered.contains("Conversation\n(empty conversation)"));
+        assert!(rendered.contains("Input\n> "));
+        assert!(rendered.contains("Status\nready"));
+        assert!(rendered.contains("Pending Action\nnone"));
     }
 
     #[test]

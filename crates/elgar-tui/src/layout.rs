@@ -18,7 +18,7 @@ impl LayoutRegion {
 }
 
 pub(crate) fn render_section(title: &str, body: &str) -> String {
-    format!("[{title}]\n{body}\n")
+    format!("{title}\n{body}\n")
 }
 
 #[cfg(test)]
@@ -35,6 +35,6 @@ mod tests {
 
     #[test]
     fn section_rendering_keeps_existing_shape() {
-        assert_eq!(render_section("Status", "ready"), "[Status]\nready\n");
+        assert_eq!(render_section("Status", "ready"), "Status\nready\n");
     }
 }

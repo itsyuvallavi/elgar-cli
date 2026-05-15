@@ -93,10 +93,10 @@ fn renders_initial_state() {
     let shell = TuiShell::new();
     let rendered = shell.render();
 
-    assert!(rendered.contains("[Conversation]\n(empty conversation)"));
-    assert!(rendered.contains("[Pending Action]\nnone"));
-    assert!(rendered.contains("[Status]\nready"));
-    assert!(rendered.contains("[Input]\n> "));
+    assert!(rendered.contains("Conversation\n(empty conversation)"));
+    assert!(rendered.contains("Pending Action\nnone"));
+    assert!(rendered.contains("Status\nready"));
+    assert!(rendered.contains("Input\n> "));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn renders_core_events_from_controller_turns() {
         "Provider progress: response ready from stub-provider (request stub-request-1). Provider text is suggestion only."
     ));
     assert!(rendered.contains("Assistant suggestion: stub provider response"));
-    assert!(rendered.contains("[Status]\nreply ready"));
+    assert!(rendered.contains("Status\nreply ready"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -223,7 +223,7 @@ fn explicit_lm_studio_tui_smoke_renders_through_tui_shell_without_network() {
     assert!(smoke.rendered.contains(
         "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
     ));
-    assert!(smoke.rendered.contains("[Status]\nprovider error"));
+    assert!(smoke.rendered.contains("Status\nprovider error"));
     assert!(!smoke.rendered.contains("stub-provider"));
 
     let _ = fs::remove_dir_all(root);
@@ -286,7 +286,7 @@ fn renders_provider_error_events_without_network() {
     assert!(rendered.contains(
         "Provider error from fake-provider: Provider provider error (404): model missing"
     ));
-    assert!(rendered.contains("[Status]\nprovider error"));
+    assert!(rendered.contains("Status\nprovider error"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -344,7 +344,7 @@ fn displays_proposed_write_file_action_without_writing() {
     );
 
     let rendered = shell.render();
-    assert!(rendered.contains("[Pending Action]\nAction: action-1 WriteFile"));
+    assert!(rendered.contains("Pending Action\nAction: action-1 WriteFile"));
     assert!(rendered.contains("Target: hello.py"));
     assert!(rendered.contains("Summary: write hello.py"));
     assert!(rendered.contains("State: waiting for approval"));

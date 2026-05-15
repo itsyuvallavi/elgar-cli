@@ -105,7 +105,7 @@ fn tui_controller_smoke_command_renders_tui_provider_error_without_network() {
     assert!(output.stderr.is_empty());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("[Conversation]"));
+    assert!(stdout.contains("Conversation\n"));
     assert!(stdout.contains("You: Say hello."));
     assert!(
         stdout.contains("Provider progress: working with lm-studio (request lm-studio-request-1).")
@@ -113,7 +113,7 @@ fn tui_controller_smoke_command_renders_tui_provider_error_without_network() {
     assert!(stdout.contains(
         "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
     ));
-    assert!(stdout.contains("[Status]\nprovider error"));
+    assert!(stdout.contains("Status\nprovider error"));
     assert!(!stdout.contains("stub-provider"));
 }
 

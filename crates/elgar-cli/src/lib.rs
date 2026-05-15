@@ -397,7 +397,7 @@ mod tests {
         assert!(rendered.contains(
             "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
         ));
-        assert!(rendered.contains("[Status]\nprovider error"));
+        assert!(rendered.contains("Status\nprovider error"));
         assert!(!rendered.contains("stub-provider"));
     }
 

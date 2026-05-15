@@ -63,8 +63,8 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
             .constraints([
                 Constraint::Min(3),
                 Constraint::Length(7),
-                Constraint::Length(3),
-                Constraint::Length(3),
+                Constraint::Length(2),
+                Constraint::Length(1),
             ])
             .split(area)
     } else {
@@ -72,38 +72,42 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(3),
-                Constraint::Length(3),
-                Constraint::Length(3),
+                Constraint::Length(2),
+                Constraint::Length(1),
             ])
             .split(area)
     };
 
-    let conversation_view_height = chunks[0].height.saturating_sub(2);
+    let conversation_view_height = chunks[0].height;
     let conversation = Paragraph::new(shell.conversation.render_body())
+        .style(Style::default().fg(Color::Gray))
         .wrap(Wrap { trim: false })
         .scroll((
             shell.conversation.scroll_offset(conversation_view_height),
             0,
-        ))
-        .block(region_block("Conversation"));
+        ));
     frame.render_widget(conversation, chunks[0]);
 
     let (input_index, status_index) = if shell.pending_action.panel.is_some() {
         let pending = Paragraph::new(shell.pending_action.render_body())
+            .style(Style::default().fg(Color::Gray))
             .wrap(Wrap { trim: false })
-            .block(region_block("Pending Action"));
+            .block(divider_block("review action"));
         frame.render_widget(pending, chunks[1]);
         (2, 3)
     } else {
         (1, 2)
     };
 
-    let input = Paragraph::new(shell.input.render_body()).block(region_block("Input"));
+    let input = Paragraph::new(shell.input.render_body())
+        .style(Style::default().fg(Color::Cyan))
+        .block(divider_block(""));
     frame.render_widget(input, chunks[input_index]);
 
     let status = Paragraph::new(context.footer_body(&shell.status.render_body()))
+        .style(Style::default().fg(Color::DarkGray))
         .wrap(Wrap { trim: false })
-        .block(region_block("Status"));
+        .block(Block::default());
     frame.render_widget(status, chunks[status_index]);
 }
 
@@ -148,13 +152,13 @@ impl TerminalShellContext {
 
     fn footer_body(&self, status: &str) -> String {
         format!(
-            "{} | project: {} | cwd: {} | provider: {} | model: {} | {}",
+            "{} | proj:{} | cwd:{} | prov:{} | model:{} | {}",
             status,
-            self.project_root.display(),
-            self.cwd.display(),
-            self.provider.as_deref().unwrap_or("none active"),
+            compact_path_label(&self.project_root),
+            compact_cwd_label(&self.project_root, &self.cwd),
+            self.provider.as_deref().unwrap_or("none"),
             self.model.as_deref().unwrap_or("none"),
-            default_no_network_line()
+            compact_no_network_label()
         )
     }
 }
@@ -163,10 +167,30 @@ fn default_no_network_line() -> &'static str {
     "default no-network stub"
 }
 
-fn region_block(title: &'static str) -> Block<'static> {
+fn compact_no_network_label() -> &'static str {
+    "stub/no-network"
+}
+
+fn compact_path_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn compact_cwd_label(project_root: &Path, cwd: &Path) -> String {
+    if cwd == project_root {
+        ".".to_string()
+    } else {
+        compact_path_label(cwd)
+    }
+}
+
+fn divider_block(title: &'static str) -> Block<'static> {
     Block::default()
         .title(title)
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .border_style(Style::default().fg(Color::DarkGray))
 }
 
@@ -320,8 +344,9 @@ mod tests {
         assert!(text.contains("(empty conversation)"));
         assert!(text.contains("> "));
         assert!(text.contains("ready"));
-        assert!(text.contains("provider: none active"));
-        assert!(text.contains("model: none"));
+        assert!(text.contains("prov:none"));
+        assert!(text.contains("model:none"));
+        assert!(!text.contains("br:"));
         assert!(text.contains("default no-network stub"));
         assert!(!text.contains("lm-studio"));
     }
@@ -332,15 +357,17 @@ mod tests {
         let context = TerminalShellContext::new("/repo", "/repo/crates");
         let text = draw_to_text(&shell, &context);
 
-        assert!(text.contains("Conversation"));
         assert!(text.contains("(empty conversation)"));
-        assert!(text.contains("Input"));
         assert!(text.contains("> "));
-        assert!(text.contains("Status"));
-        assert!(text.contains("project: /repo"));
-        assert!(text.contains("cwd: /repo/crates"));
-        assert!(text.contains("provider: none active"));
-        assert!(!text.contains("Pending Action"));
+        assert!(text.contains("proj:repo"));
+        assert!(text.contains("cwd:crates"));
+        assert!(!text.contains("br:"));
+        assert!(text.contains("prov:none"));
+        assert!(!text.contains("review action"));
+        assert!(!text.contains("┌"));
+        assert!(!text.contains("┐"));
+        assert!(!text.contains("└"));
+        assert!(!text.contains("┘"));
     }
 
     #[test]
@@ -354,15 +381,14 @@ mod tests {
 
         let text = draw_to_text(&shell, &TerminalShellContext::from_session(&session));
 
-        assert!(text.contains("Conversation"));
         assert!(text.contains("Review needed: action-1 WriteFile write hello.py"));
-        assert!(text.contains("Pending Action"));
+        assert!(text.contains("review action"));
         assert!(text.contains("Action: action-1 WriteFile"));
         assert!(text.contains("State: waiting for approval"));
         assert!(text.contains("No file has been changed yet"));
         assert!(text.contains("Press F5 to approve or F6 to reject"));
-        assert!(text.contains("Input"));
-        assert!(text.contains("Status"));
+        assert!(text.contains("> "));
+        assert!(text.contains("review action"));
     }
 
     #[test]
@@ -378,8 +404,8 @@ mod tests {
         let context = TerminalShellContext::from_session(&session);
         let text = draw_to_text(&shell, &context);
 
-        assert!(text.contains("provider: local"));
-        assert!(text.contains("model: model-a"));
+        assert!(text.contains("prov:local"));
+        assert!(text.contains("model:model-a"));
         assert!(text.contains("Provider progress: response ready from local"));
     }
 
@@ -398,11 +424,10 @@ mod tests {
 
         assert!(text.contains("line 0"));
         assert!(!text.contains("Review needed: action-1 WriteFile write hello.py"));
-        assert!(text.contains("Pending Action"));
+        assert!(text.contains("review action"));
         assert!(text.contains("Action: action-1 WriteFile"));
-        assert!(text.contains("Input"));
         assert!(text.contains("> "));
-        assert!(text.contains("Status"));
+        assert!(text.contains("proj:repo"));
     }
 
     #[test]
