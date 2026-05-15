@@ -1,4 +1,5 @@
 pub mod action_panel;
+mod input;
 pub mod layout;
 pub mod panes;
 pub mod shell;

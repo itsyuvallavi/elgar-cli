@@ -18,7 +18,12 @@ use ratatui::{
     Frame, Terminal,
 };
 
-use crate::TuiShell;
+use elgar_core::controller::Controller;
+
+use crate::{
+    input::{TerminalInput, TerminalInputAction},
+    TuiShell,
+};
 
 type CrosstermTerminal = Terminal<CrosstermBackend<Stdout>>;
 
@@ -34,10 +39,11 @@ pub fn run_terminal_shell_at(
     let _guard = TerminalModeGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
-    let shell = TuiShell::new();
-    let context = TerminalShellContext::new(project_root, cwd);
+    let controller = Controller::default();
+    let mut session = Session::new("terminal-tui-session", project_root.as_ref(), cwd.as_ref());
+    let mut shell = TuiShell::new();
 
-    let result = run_terminal_loop(&mut terminal, &shell, &context);
+    let result = run_terminal_loop(&mut terminal, &controller, &mut session, &mut shell);
     let cursor_result = terminal.show_cursor();
 
     result.and(cursor_result)
@@ -161,15 +167,24 @@ fn region_block(title: &'static str) -> Block<'static> {
 
 fn run_terminal_loop(
     terminal: &mut CrosstermTerminal,
-    shell: &TuiShell,
-    context: &TerminalShellContext,
+    controller: &Controller,
+    session: &mut Session,
+    shell: &mut TuiShell,
 ) -> io::Result<()> {
+    let mut input = TerminalInput::default();
+
     loop {
-        terminal.draw(|frame| render_tui_shell(frame, shell, context))?;
+        shell.input.text = input.text().to_string();
+        let context = TerminalShellContext::from_session(session);
+        terminal.draw(|frame| render_tui_shell(frame, shell, &context))?;
 
         if event::poll(Duration::from_millis(250))? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press && should_exit(key) => break,
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if handle_terminal_key(key, &mut input, controller, session, shell) {
+                        break;
+                    }
+                }
                 _ => {}
             }
         }
@@ -179,8 +194,33 @@ fn run_terminal_loop(
 }
 
 fn should_exit(key: crossterm::event::KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
+    matches!(key.code, KeyCode::Esc)
         || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
+}
+
+fn handle_terminal_key(
+    key: crossterm::event::KeyEvent,
+    input: &mut TerminalInput,
+    controller: &Controller,
+    session: &mut Session,
+    shell: &mut TuiShell,
+) -> bool {
+    if should_exit(key) {
+        return true;
+    }
+
+    match input.handle_key(key) {
+        TerminalInputAction::Continue => false,
+        TerminalInputAction::Exit => true,
+        TerminalInputAction::Submit => {
+            let submitted = input.drain();
+            shell.input.text.clear();
+            if !submitted.trim().is_empty() {
+                shell.submit_input(controller, session, &submitted);
+            }
+            false
+        }
+    }
 }
 
 struct TerminalModeGuard;
@@ -188,8 +228,9 @@ struct TerminalModeGuard;
 impl TerminalModeGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
+        let guard = Self;
         execute!(io::stdout(), EnterAlternateScreen)?;
-        Ok(Self)
+        Ok(guard)
     }
 }
 
@@ -205,9 +246,12 @@ mod tests {
     use elgar_core::{controller::Controller, session::Session};
     use ratatui::{backend::TestBackend, Terminal};
 
-    use crate::TuiShell;
+    use crate::{input::TerminalInput, TuiShell};
 
-    use super::{default_shell_text, render_tui_shell, should_exit, TerminalShellContext};
+    use super::{
+        default_shell_text, handle_terminal_key, render_tui_shell, should_exit,
+        TerminalShellContext,
+    };
 
     fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
         let backend = TestBackend::new(80, 20);
@@ -299,10 +343,6 @@ mod tests {
             crossterm::event::KeyModifiers::NONE
         )));
         assert!(should_exit(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('q'),
-            crossterm::event::KeyModifiers::NONE
-        )));
-        assert!(should_exit(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('c'),
             crossterm::event::KeyModifiers::CONTROL
         )));
@@ -310,5 +350,81 @@ mod tests {
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE
         )));
+        assert!(!should_exit(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE
+        )));
+    }
+
+    #[test]
+    fn terminal_enter_submits_input_through_controller_backed_shell() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", "/repo", "/repo");
+        let mut shell = TuiShell::new();
+        let mut input = TerminalInput::default();
+
+        for character in "what does the harness do?".chars() {
+            let exited = handle_terminal_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(character),
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                &mut input,
+                &controller,
+                &mut session,
+                &mut shell,
+            );
+            assert!(!exited);
+        }
+
+        let exited = handle_terminal_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
+            &controller,
+            &mut session,
+            &mut shell,
+        );
+
+        assert!(!exited);
+        assert!(input.text().is_empty());
+        assert!(shell.render().contains("You: what does the harness do?"));
+        assert!(shell.render().contains("Assistant: stub provider response"));
+        assert_eq!(session.events().len(), 4);
+    }
+
+    #[test]
+    fn terminal_enter_ignores_empty_input_without_controller_turn() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", "/repo", "/repo");
+        let mut shell = TuiShell::new();
+        let mut input = TerminalInput::default();
+
+        handle_terminal_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(' '),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
+            &controller,
+            &mut session,
+            &mut shell,
+        );
+        let exited = handle_terminal_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
+            &controller,
+            &mut session,
+            &mut shell,
+        );
+
+        assert!(!exited);
+        assert!(session.events().is_empty());
+        assert!(input.text().is_empty());
     }
 }
