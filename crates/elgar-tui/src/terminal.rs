@@ -78,8 +78,13 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
             .split(area)
     };
 
+    let conversation_view_height = chunks[0].height.saturating_sub(2);
     let conversation = Paragraph::new(shell.conversation.render_body())
         .wrap(Wrap { trim: false })
+        .scroll((
+            shell.conversation.scroll_offset(conversation_view_height),
+            0,
+        ))
         .block(region_block("Conversation"));
     frame.render_widget(conversation, chunks[0]);
 
@@ -219,6 +224,10 @@ fn handle_terminal_key(
         return false;
     }
 
+    if handle_scroll_key(key, shell) {
+        return false;
+    }
+
     match input.handle_key(key) {
         TerminalInputAction::Continue => false,
         TerminalInputAction::Exit => true,
@@ -230,6 +239,24 @@ fn handle_terminal_key(
             }
             false
         }
+    }
+}
+
+fn handle_scroll_key(key: crossterm::event::KeyEvent, shell: &mut TuiShell) -> bool {
+    match key.code {
+        KeyCode::PageUp => {
+            shell.conversation.scroll_up(5);
+            true
+        }
+        KeyCode::PageDown => {
+            shell.conversation.scroll_down(5);
+            true
+        }
+        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            shell.conversation.follow_latest();
+            true
+        }
+        _ => false,
     }
 }
 
@@ -267,8 +294,8 @@ mod tests {
     use crate::{input::TerminalInput, TuiShell};
 
     use super::{
-        default_shell_text, handle_terminal_key, is_approval_key, is_rejection_key,
-        render_tui_shell, should_exit, TerminalShellContext,
+        default_shell_text, handle_scroll_key, handle_terminal_key, is_approval_key,
+        is_rejection_key, render_tui_shell, should_exit, TerminalShellContext,
     };
 
     fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -357,6 +384,28 @@ mod tests {
     }
 
     #[test]
+    fn terminal_conversation_scrollback_keeps_input_status_and_pending_visible() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", "/repo", "/repo");
+        let mut shell = TuiShell::new();
+
+        shell.conversation.lines = (0..20).map(|index| format!("line {index}")).collect();
+        let result = controller.turn(&mut session, "create file hello.py");
+        shell.consume_events(&result.events);
+        shell.conversation.scroll_up(100);
+
+        let text = draw_to_text(&shell, &TerminalShellContext::from_session(&session));
+
+        assert!(text.contains("line 0"));
+        assert!(!text.contains("Review needed: action-1 WriteFile write hello.py"));
+        assert!(text.contains("Pending Action"));
+        assert!(text.contains("Action: action-1 WriteFile"));
+        assert!(text.contains("Input"));
+        assert!(text.contains("> "));
+        assert!(text.contains("Status"));
+    }
+
+    #[test]
     fn terminal_shell_exit_keys_are_minimal() {
         assert!(should_exit(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Esc,
@@ -394,6 +443,83 @@ mod tests {
             crossterm::event::KeyCode::Char('r'),
             crossterm::event::KeyModifiers::NONE
         )));
+    }
+
+    #[test]
+    fn terminal_page_keys_update_only_ui_scrollback() {
+        let session = Session::new("session-1", "/repo", "/repo");
+        let before_session = session.clone();
+        let mut shell = TuiShell::new();
+        shell.conversation.lines = (0..10).map(|index| format!("line {index}")).collect();
+        let before_lines = shell.conversation.lines.clone();
+
+        assert!(handle_scroll_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::PageUp,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut shell,
+        ));
+        assert_eq!(shell.conversation.scroll_offset(4), 1);
+
+        assert!(handle_scroll_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::PageDown,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut shell,
+        ));
+        assert_eq!(shell.conversation.scroll_offset(4), 6);
+
+        assert_eq!(session, before_session);
+        assert_eq!(shell.conversation.lines, before_lines);
+        assert!(session.events().is_empty());
+    }
+
+    #[test]
+    fn terminal_plain_end_edits_input_instead_of_following_latest() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", "/repo", "/repo");
+        let mut shell = TuiShell::new();
+        shell.conversation.lines = (0..10).map(|index| format!("line {index}")).collect();
+        shell.conversation.scroll_up(5);
+        let mut input = TerminalInput::default();
+
+        for code in [
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyCode::Left,
+            crossterm::event::KeyCode::End,
+            crossterm::event::KeyCode::Char('d'),
+        ] {
+            handle_terminal_key(
+                crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+                &mut input,
+                &controller,
+                &mut session,
+                &mut shell,
+            );
+        }
+
+        assert_eq!(input.text(), "acd");
+        assert_eq!(shell.conversation.scroll_offset(4), 1);
+    }
+
+    #[test]
+    fn terminal_ctrl_end_follows_latest() {
+        let mut shell = TuiShell::new();
+        shell.conversation.lines = (0..10).map(|index| format!("line {index}")).collect();
+        shell.conversation.scroll_up(5);
+
+        assert!(handle_scroll_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::End,
+                crossterm::event::KeyModifiers::CONTROL,
+            ),
+            &mut shell,
+        ));
+
+        assert_eq!(shell.conversation.scroll_offset(4), 6);
     }
 
     #[test]

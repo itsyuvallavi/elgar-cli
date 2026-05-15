@@ -103,6 +103,7 @@ impl TuiShell {
     {
         let result = controller.turn(session, input);
         self.consume_events(&result.events);
+        self.conversation.follow_latest();
         result
     }
 }
@@ -216,6 +217,26 @@ mod tests {
         assert_eq!(session.actions()[0].verified_result, None);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn submitting_input_follows_latest_without_mutating_session_truth() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", ".", ".");
+        let before = session.clone();
+        let mut shell = TuiShell::new();
+        shell.conversation.lines = (0..10).map(|index| format!("line {index}")).collect();
+        shell.conversation.scroll_up(5);
+
+        let result = shell.submit_input(&controller, &mut session, "what does the harness do?");
+
+        assert_eq!(result.route, elgar_core::router::Route::AskModel);
+        assert_eq!(
+            shell.conversation.scroll_offset(4),
+            shell.conversation.lines.len() as u16 - 4
+        );
+        assert_eq!(before.events().len(), 0);
+        assert_eq!(session.events().len(), result.events.len());
     }
 
     #[test]

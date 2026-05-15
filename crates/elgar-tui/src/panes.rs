@@ -3,11 +3,33 @@ use elgar_core::event::{AssistantMessageSource, Event, VerifiedActionResult};
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationPane {
     pub lines: Vec<String>,
+    scrollback: ConversationScrollback,
 }
 
 impl ConversationPane {
     pub fn push_event(&mut self, event: &Event) {
         self.lines.push(render_tui_event(event));
+    }
+
+    pub(crate) fn scroll_up(&mut self, lines: usize) {
+        self.scrollback.scroll_up(lines);
+    }
+
+    pub(crate) fn scroll_down(&mut self, lines: usize) {
+        self.scrollback.scroll_down(lines);
+    }
+
+    pub(crate) fn follow_latest(&mut self) {
+        self.scrollback.follow_latest();
+    }
+
+    pub(crate) fn scroll_offset(&self, viewport_height: u16) -> u16 {
+        self.scrollback
+            .offset_for(self.render_line_count(), usize::from(viewport_height))
+    }
+
+    fn render_line_count(&self) -> usize {
+        self.lines.len().max(1)
     }
 
     pub(crate) fn render_body(&self) -> String {
@@ -16,6 +38,32 @@ impl ConversationPane {
         } else {
             self.lines.join("\n")
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ConversationScrollback {
+    lines_from_bottom: usize,
+}
+
+impl ConversationScrollback {
+    fn scroll_up(&mut self, lines: usize) {
+        self.lines_from_bottom = self.lines_from_bottom.saturating_add(lines);
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        self.lines_from_bottom = self.lines_from_bottom.saturating_sub(lines);
+    }
+
+    fn follow_latest(&mut self) {
+        self.lines_from_bottom = 0;
+    }
+
+    fn offset_for(&self, content_lines: usize, viewport_lines: usize) -> u16 {
+        let max_offset = content_lines.saturating_sub(viewport_lines.max(1));
+        max_offset
+            .saturating_sub(self.lines_from_bottom.min(max_offset))
+            .min(usize::from(u16::MAX)) as u16
     }
 }
 
@@ -279,6 +327,40 @@ mod tests {
             conversation.render_body(),
             "Error: Input was not recognized."
         );
+    }
+
+    #[test]
+    fn conversation_scrollback_computes_view_offset_without_changing_lines() {
+        let mut conversation = ConversationPane {
+            lines: (0..10).map(|index| format!("line {index}")).collect(),
+            ..ConversationPane::default()
+        };
+        let original_lines = conversation.lines.clone();
+
+        assert_eq!(conversation.scroll_offset(4), 6);
+
+        conversation.scroll_up(2);
+        assert_eq!(conversation.scroll_offset(4), 4);
+        assert_eq!(conversation.lines, original_lines);
+
+        conversation.scroll_down(1);
+        assert_eq!(conversation.scroll_offset(4), 5);
+
+        conversation.follow_latest();
+        assert_eq!(conversation.scroll_offset(4), 6);
+    }
+
+    #[test]
+    fn conversation_scrollback_clamps_to_available_content() {
+        let mut conversation = ConversationPane {
+            lines: (0..3).map(|index| format!("line {index}")).collect(),
+            ..ConversationPane::default()
+        };
+
+        assert_eq!(conversation.scroll_offset(6), 0);
+
+        conversation.scroll_up(100);
+        assert_eq!(conversation.scroll_offset(2), 0);
     }
 
     #[test]
