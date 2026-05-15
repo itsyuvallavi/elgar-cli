@@ -29,6 +29,21 @@ fn main() {
         }
         return;
     }
+    if args
+        .first()
+        .is_some_and(|arg| arg == elgar_cli::TUI_CONTROLLER_SMOKE_COMMAND)
+    {
+        let prompt = elgar_cli::provider_smoke_prompt(&args[1..]);
+        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        match elgar_cli::render_tui_controller_smoke_from_env(&prompt, &cwd, &cwd) {
+            Ok(rendered) => println!("{rendered}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     let input = args.join(" ");
     if input.is_empty() {

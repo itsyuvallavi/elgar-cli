@@ -75,3 +75,64 @@ fn controller_smoke_command_requires_model_env_without_network() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("ELGAR_LM_STUDIO_MODEL"));
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn tui_controller_smoke_command_requires_model_env_without_network() {
+    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .arg("tui-controller-smoke")
+        .arg("Say hello.")
+        .env_remove("ELGAR_LM_STUDIO_MODEL")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ELGAR_LM_STUDIO_MODEL"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn tui_controller_smoke_command_renders_tui_provider_error_without_network() {
+    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .arg("tui-controller-smoke")
+        .arg("Say hello.")
+        .env("ELGAR_LM_STUDIO_MODEL", "local-model")
+        .env("ELGAR_LM_STUDIO_BASE_URL", "https://127.0.0.1:1234/v1")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[Conversation]"));
+    assert!(stdout.contains("You: Say hello."));
+    assert!(stdout.contains("Thinking with lm-studio..."));
+    assert!(stdout.contains(
+        "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
+    ));
+    assert!(stdout.contains("[Status]\nprovider error"));
+    assert!(!stdout.contains("stub-provider"));
+}
+
+#[test]
+fn default_cli_path_uses_stub_controller_even_when_lm_studio_env_is_set() {
+    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .arg("what does the harness do?")
+        .env(
+            "ELGAR_LM_STUDIO_MODEL",
+            "loaded-model-that-must-not-be-used",
+        )
+        .env("ELGAR_LM_STUDIO_BASE_URL", "https://127.0.0.1:1234/v1")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("provider started: stub-provider request stub-request-1"));
+    assert!(stdout.contains("provider finished: stub-provider request stub-request-1"));
+    assert!(stdout.contains("assistant Provider: stub provider response"));
+    assert!(!stdout.contains("lm-studio"));
+    assert!(!stdout.contains("LM Studio smoke failed"));
+}

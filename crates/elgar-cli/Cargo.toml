@@ -9,4 +9,4 @@ path = "src/main.rs"
 
 [dependencies]
 elgar-core = { path = "../elgar-core" }
-
+elgar-tui = { path = "../elgar-tui" }

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+echo "==> cargo fmt --check"
+cargo fmt --check
+
+echo "==> cargo check --workspace"
+cargo check --workspace
+
+echo "==> cargo test --workspace"
+cargo test --workspace
+
+echo "==> local checks passed"

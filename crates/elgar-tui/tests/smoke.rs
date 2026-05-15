@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
@@ -6,12 +7,16 @@ use std::{
 use elgar_core::{
     action::ActionLifecycleState,
     controller::Controller,
-    event::{Event, VerifiedActionResult},
-    provider::ProviderStub,
+    event::{Event, ProviderOutput, VerifiedActionResult},
+    provider::{
+        ControllerProvider, ProviderConfig, ProviderError, ProviderRequestMetadata, ProviderStub,
+    },
     router::Route,
     session::Session,
 };
-use elgar_tui::TuiShell;
+use elgar_tui::{
+    run_controller_smoke, run_default_controller_smoke, run_lm_studio_controller_smoke, TuiShell,
+};
 
 fn smoke_root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("elgar-tui-smoke-{}-{name}", std::process::id()));
@@ -22,6 +27,46 @@ fn smoke_root(name: &str) -> PathBuf {
 
 fn session_at(root: &Path) -> Session {
     Session::new("tui-smoke-session", root, root)
+}
+
+#[derive(Debug, Clone)]
+struct FailingProvider;
+
+impl ControllerProvider for FailingProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "fake-provider",
+            Some("fake-model".to_string()),
+            "fake-request-1",
+        )
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Err(ProviderError::provider("model missing", Some(404), None))
+    }
+}
+
+struct EnvGuard {
+    name: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self { name, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::env::set_var(self.name, previous);
+        } else {
+            std::env::remove_var(self.name);
+        }
+    }
 }
 
 #[test]
@@ -46,11 +91,114 @@ fn renders_core_events_from_controller_turns() {
     shell.consume_events(&result.events);
 
     let rendered = shell.render();
-    assert!(rendered.contains("user: what does the harness do?"));
-    assert!(rendered.contains("provider started: stub-provider request stub-request-1"));
-    assert!(rendered.contains("provider finished: stub-provider request stub-request-1"));
-    assert!(rendered.contains("assistant Provider: stub provider response"));
-    assert!(rendered.contains("[Status]\nassistant message"));
+    assert!(rendered.contains("You: what does the harness do?"));
+    assert!(rendered.contains("Thinking with stub-provider..."));
+    assert!(rendered.contains("Response from stub-provider: stub provider response"));
+    assert!(rendered.contains("Assistant: stub provider response"));
+    assert!(rendered.contains("[Status]\nreply ready"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn default_controller_smoke_uses_stub_even_when_lm_studio_env_is_set() {
+    let _model = EnvGuard::set(
+        "ELGAR_LM_STUDIO_MODEL",
+        "loaded-model-that-must-not-be-used",
+    );
+    let _base_url = EnvGuard::set("ELGAR_LM_STUDIO_BASE_URL", "https://127.0.0.1:1234/v1");
+    let root = smoke_root("default-smoke-env");
+
+    let smoke = run_default_controller_smoke("what does the harness do?", &root, &root);
+
+    assert_eq!(smoke.turn.route, Route::AskModel);
+    assert_eq!(
+        smoke
+            .session
+            .provider_metadata()
+            .map(|metadata| metadata.provider.as_str()),
+        Some("stub-provider")
+    );
+    assert_eq!(
+        smoke
+            .session
+            .provider_metadata()
+            .and_then(|metadata| metadata.request_id.as_deref()),
+        Some("stub-request-1")
+    );
+    assert!(smoke.rendered.contains("Thinking with stub-provider..."));
+    assert!(smoke
+        .rendered
+        .contains("Response from stub-provider: stub provider response"));
+    assert!(smoke.rendered.contains("Assistant: stub provider response"));
+    assert!(!smoke.rendered.contains("lm-studio"));
+    assert!(!smoke
+        .rendered
+        .contains("only http:// provider URLs are supported"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn explicit_controller_smoke_uses_the_passed_controller() {
+    let controller = Controller::new(ProviderStub::new("tui-smoke-provider").with_model("model-a"));
+    let root = smoke_root("explicit-smoke-controller");
+
+    let smoke = run_controller_smoke(&controller, "what does this do?", &root, &root);
+
+    assert_eq!(smoke.turn.route, Route::AskModel);
+    assert_eq!(
+        smoke
+            .session
+            .provider_metadata()
+            .map(|metadata| metadata.provider.as_str()),
+        Some("tui-smoke-provider")
+    );
+    assert_eq!(
+        smoke
+            .session
+            .provider_metadata()
+            .and_then(|metadata| metadata.model.as_deref()),
+        Some("model-a")
+    );
+    assert!(smoke.rendered.contains("You: what does this do?"));
+    assert!(smoke
+        .rendered
+        .contains("Thinking with tui-smoke-provider..."));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn explicit_lm_studio_tui_smoke_renders_through_tui_shell_without_network() {
+    let root = smoke_root("explicit-lm-studio-no-network");
+
+    let smoke = run_lm_studio_controller_smoke(
+        ProviderConfig {
+            model: Some("local-model".to_string()),
+            base_url: "https://127.0.0.1:1234/v1".to_string(),
+            ..ProviderConfig::default()
+        },
+        "Say hello in one sentence.",
+        &root,
+        &root,
+    );
+
+    assert_eq!(smoke.turn.route, Route::AskModel);
+    assert_eq!(
+        smoke
+            .session
+            .provider_metadata()
+            .map(|metadata| metadata.provider.as_str()),
+        Some("lm-studio")
+    );
+    assert!(smoke.rendered.contains("You: Say hello in one sentence."));
+    assert!(smoke.rendered.contains("Thinking with lm-studio..."));
+    assert!(smoke.rendered.contains(
+        "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
+    ));
+    assert!(smoke.rendered.contains("[Status]\nprovider error"));
+    assert!(!smoke.rendered.contains("stub-provider"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -83,7 +231,36 @@ fn submits_user_input_through_shared_controller() {
         .events()
         .iter()
         .any(|event| matches!(event, Event::ProviderStarted(_))));
-    assert!(shell.render().contains("user: what does this do?"));
+    assert!(shell.render().contains("You: what does this do?"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn renders_provider_error_events_without_network() {
+    let controller = Controller::new(FailingProvider);
+    let root = smoke_root("provider-error");
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::new();
+
+    let result = shell.submit_input(&controller, &mut session, "what does this do?");
+
+    assert_eq!(result.route, Route::AskModel);
+    assert!(session.actions().is_empty());
+    assert!(session.events().iter().any(|event| match event {
+        Event::Error(error) => error.message.contains("model missing"),
+        _ => false,
+    }));
+    assert!(session
+        .events()
+        .iter()
+        .all(|event| !matches!(event, Event::ProviderFinished(_))));
+
+    let rendered = shell.render();
+    assert!(rendered.contains(
+        "Provider error from fake-provider: Provider provider error (404): model missing"
+    ));
+    assert!(rendered.contains("[Status]\nprovider error"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -106,12 +283,11 @@ fn displays_proposed_write_file_action_without_writing() {
     );
 
     let rendered = shell.render();
-    assert!(rendered.contains("[Pending Action]\naction id: action-1"));
-    assert!(rendered.contains("action type: WriteFile"));
-    assert!(rendered.contains("target: hello.py"));
-    assert!(rendered.contains("summary: write hello.py"));
-    assert!(rendered.contains("state: pending approval"));
-    assert!(rendered.contains("instructions: type approve to apply or reject to decline"));
+    assert!(rendered.contains("[Pending Action]\nAction: action-1 WriteFile"));
+    assert!(rendered.contains("Target: hello.py"));
+    assert!(rendered.contains("Summary: write hello.py"));
+    assert!(rendered.contains("State: waiting for approval"));
+    assert!(rendered.contains("Approve to apply, or reject to leave things unchanged."));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -141,8 +317,8 @@ fn approves_write_file_through_controller_and_renders_verified_result() {
     );
 
     let rendered = shell.render();
-    assert!(rendered.contains("state: applied"));
-    assert!(rendered.contains(&format!("result: file written: {}", target.display())));
+    assert!(rendered.contains("State: applied and verified"));
+    assert!(rendered.contains(&format!("Result: file written: {}", target.display())));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -167,9 +343,9 @@ fn rejects_write_file_through_controller_without_writing() {
     assert_eq!(session.actions()[0].verified_result, None);
 
     let rendered = shell.render();
-    assert!(rendered.contains("state: rejected"));
-    assert!(rendered.contains("result: rejected by user; no filesystem change was made"));
-    assert!(rendered.contains("rejected actions are terminal"));
+    assert!(rendered.contains("State: rejected"));
+    assert!(rendered.contains("Result: Rejected. No file was changed."));
+    assert!(rendered.contains("Rejected actions are final"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -188,7 +364,7 @@ fn rendering_and_rejection_do_not_call_provider_or_mutate_files_directly() {
     let before_render = session.clone();
     let rendered = shell.render();
 
-    assert!(rendered.contains("state: pending approval"));
+    assert!(rendered.contains("State: waiting for approval"));
     assert_eq!(session, before_render);
     assert!(!target.exists());
     assert_eq!(session.provider_metadata(), None);

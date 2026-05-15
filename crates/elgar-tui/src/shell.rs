@@ -1,8 +1,14 @@
 use elgar_core::{
     controller::{Controller, TurnResult},
-    event::{ActionEvent, Event},
-    renderer::render_event,
+    event::Event,
+    provider::ControllerProvider,
     session::Session,
+};
+
+use crate::{
+    action_panel::PendingActionArea,
+    layout::{render_section, LayoutRegion},
+    panes::{ConversationPane, InputArea, StatusLine},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,28 +70,37 @@ impl TuiShell {
         self.pending_action.observe_event(event);
     }
 
-    pub fn submit_approval(
+    pub fn submit_approval<P>(
         &mut self,
-        controller: &Controller,
+        controller: &Controller<P>,
         session: &mut Session,
-    ) -> TurnResult {
+    ) -> TurnResult
+    where
+        P: ControllerProvider,
+    {
         self.submit_input(controller, session, "approve")
     }
 
-    pub fn submit_rejection(
+    pub fn submit_rejection<P>(
         &mut self,
-        controller: &Controller,
+        controller: &Controller<P>,
         session: &mut Session,
-    ) -> TurnResult {
+    ) -> TurnResult
+    where
+        P: ControllerProvider,
+    {
         self.submit_input(controller, session, "reject")
     }
 
-    pub fn submit_input(
+    pub fn submit_input<P>(
         &mut self,
-        controller: &Controller,
+        controller: &Controller<P>,
         session: &mut Session,
         input: &str,
-    ) -> TurnResult {
+    ) -> TurnResult
+    where
+        P: ControllerProvider,
+    {
         let result = controller.turn(session, input);
         self.consume_events(&result.events);
         result
@@ -98,289 +113,16 @@ impl Default for TuiShell {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ConversationPane {
-    pub lines: Vec<String>,
-}
-
-impl ConversationPane {
-    pub fn push_event(&mut self, event: &Event) {
-        self.lines.push(render_event(event));
-    }
-
-    fn render_body(&self) -> String {
-        if self.lines.is_empty() {
-            "(empty conversation)".to_string()
-        } else {
-            self.lines.join("\n")
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct InputArea {
-    pub text: String,
-}
-
-impl InputArea {
-    fn render_body(&self) -> String {
-        format!("> {}", self.text)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusLine {
-    pub text: String,
-}
-
-impl StatusLine {
-    pub fn ready() -> Self {
-        Self {
-            text: "ready".to_string(),
-        }
-    }
-
-    pub fn observe_event(&mut self, event: &Event) {
-        self.text = match event {
-            Event::UserMessage(_) => "input recorded".to_string(),
-            Event::AssistantMessage(_) => "assistant message".to_string(),
-            Event::ProviderStarted(started) => {
-                format!(
-                    "provider {} request {} started",
-                    started.provider, started.request_id
-                )
-            }
-            Event::ProviderFinished(finished) => {
-                format!(
-                    "provider {} request {} finished",
-                    finished.provider, finished.request_id
-                )
-            }
-            Event::ActionProposed(action) => {
-                format!("action {} proposed", action.action_id)
-            }
-            Event::ActionApproved(action) => {
-                format!("action {} approved", action.action_id)
-            }
-            Event::ActionRejected(action) => {
-                format!("action {} rejected", action.action_id)
-            }
-            Event::ActionApplied(action) => {
-                format!("action {} applied", action.action_id)
-            }
-            Event::ActionFailed(action) => {
-                format!("action {} failed", action.action_id)
-            }
-            Event::Error(_) => "error".to_string(),
-        };
-    }
-
-    fn render_body(&self) -> String {
-        self.text.clone()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct PendingActionArea {
-    pub panel: Option<ActionApprovalPanel>,
-}
-
-impl PendingActionArea {
-    pub fn observe_event(&mut self, event: &Event) {
-        match event {
-            Event::ActionProposed(action) => {
-                self.panel = Some(ActionApprovalPanel::pending(action));
-            }
-            Event::ActionApproved(action) => {
-                self.update_or_replace(action, ActionPanelState::Approved, None)
-            }
-            Event::ActionRejected(action) => self.update_or_replace(
-                action,
-                ActionPanelState::Rejected,
-                Some("rejected by user; no filesystem change was made".to_string()),
-            ),
-            Event::ActionApplied(action) => self.update_result(
-                &action.action_id,
-                ActionPanelState::Applied,
-                Some(render_verified_result(&action.result)),
-            ),
-            Event::ActionFailed(action) => self.update_result(
-                &action.action_id,
-                ActionPanelState::Failed,
-                Some(action.reason.clone()),
-            ),
-            _ => {}
-        }
-    }
-
-    fn update_or_replace(
-        &mut self,
-        action: &ActionEvent,
-        state: ActionPanelState,
-        result: Option<String>,
-    ) {
-        if let Some(panel) = self
-            .panel
-            .as_mut()
-            .filter(|panel| panel.action_id == action.action_id)
-        {
-            panel.state = state;
-            panel.result = result;
-        } else {
-            let mut panel = ActionApprovalPanel::pending(action);
-            panel.state = state;
-            panel.result = result;
-            self.panel = Some(panel);
-        }
-    }
-
-    fn update_result(&mut self, action_id: &str, state: ActionPanelState, result: Option<String>) {
-        if let Some(panel) = self
-            .panel
-            .as_mut()
-            .filter(|panel| panel.action_id == action_id)
-        {
-            panel.state = state;
-            panel.result = result;
-        } else {
-            self.panel = Some(ActionApprovalPanel {
-                action_id: action_id.to_string(),
-                action_type: "unknown".to_string(),
-                target: None,
-                summary: "not available from this result event".to_string(),
-                state,
-                result,
-            });
-        }
-    }
-
-    fn render_body(&self) -> String {
-        self.panel
-            .as_ref()
-            .map(ActionApprovalPanel::render)
-            .unwrap_or_else(|| "none".to_string())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionApprovalPanel {
-    pub action_id: String,
-    pub action_type: String,
-    pub target: Option<String>,
-    pub summary: String,
-    pub state: ActionPanelState,
-    pub result: Option<String>,
-}
-
-impl ActionApprovalPanel {
-    fn pending(action: &ActionEvent) -> Self {
-        Self {
-            action_id: action.action_id.clone(),
-            action_type: format!("{:?}", action.action_kind),
-            target: action.target.clone(),
-            summary: action.summary.clone(),
-            state: ActionPanelState::Proposed,
-            result: None,
-        }
-    }
-
-    fn render(&self) -> String {
-        let mut lines = vec![
-            format!("action id: {}", self.action_id),
-            format!("action type: {}", self.action_type),
-            format!(
-                "target: {}",
-                self.target.as_deref().unwrap_or("unavailable")
-            ),
-            format!("summary: {}", self.summary),
-            format!("state: {}", self.state.render()),
-        ];
-
-        if let Some(result) = &self.result {
-            lines.push(format!("result: {result}"));
-        }
-
-        lines.push(format!("instructions: {}", self.state.instructions()));
-        lines.join("\n")
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionPanelState {
-    Proposed,
-    Approved,
-    Applied,
-    Rejected,
-    Failed,
-}
-
-impl ActionPanelState {
-    fn render(self) -> &'static str {
-        match self {
-            Self::Proposed => "pending approval",
-            Self::Approved => "approved",
-            Self::Applied => "applied",
-            Self::Rejected => "rejected",
-            Self::Failed => "failed",
-        }
-    }
-
-    fn instructions(self) -> &'static str {
-        match self {
-            Self::Proposed => "type approve to apply or reject to decline",
-            Self::Approved => "approval recorded by controller",
-            Self::Applied => "verified result recorded by controller",
-            Self::Rejected => "rejected actions are terminal; submit a new proposal to reconsider",
-            Self::Failed => "failure recorded by controller",
-        }
-    }
-}
-
-fn render_verified_result(result: &elgar_core::event::VerifiedActionResult) -> String {
-    match result {
-        elgar_core::event::VerifiedActionResult::FileWritten { path } => {
-            format!("file written: {path}")
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LayoutRegion {
-    Conversation,
-    Input,
-    Status,
-    PendingAction,
-}
-
-impl LayoutRegion {
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Conversation => "Conversation",
-            Self::Input => "Input",
-            Self::Status => "Status",
-            Self::PendingAction => "Pending Action",
-        }
-    }
-}
-
-fn render_section(title: &str, body: &str) -> String {
-    format!("[{title}]\n{body}\n")
-}
-
 #[cfg(test)]
 mod tests {
     use elgar_core::{
-        action::ActionLifecycleState,
-        controller::Controller,
-        event::{
-            ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
-            ErrorEvent, Event, ProviderFinished, ProviderOutput, ProviderStarted, UserMessage,
-            VerifiedActionResult,
-        },
+        action::ActionLifecycleState, controller::Controller, event::VerifiedActionResult,
         session::Session,
     };
 
-    use super::{ActionPanelState, LayoutRegion, TuiShell};
+    use crate::layout::LayoutRegion;
+
+    use super::TuiShell;
 
     #[test]
     fn tui_shell_initializes_without_provider_access() {
@@ -439,132 +181,11 @@ mod tests {
 
         let rendered = shell.render();
 
-        assert!(rendered.contains("user: what does the harness do?"));
-        assert!(rendered.contains("provider started: stub-provider request stub-request-1"));
-        assert!(rendered.contains("provider finished: stub-provider request stub-request-1"));
-        assert!(rendered.contains("assistant Provider: stub provider response"));
+        assert!(rendered.contains("You: what does the harness do?"));
+        assert!(rendered.contains("Thinking with stub-provider..."));
+        assert!(rendered.contains("Response from stub-provider: stub provider response"));
+        assert!(rendered.contains("Assistant: stub provider response"));
         assert!(session.actions().is_empty());
-    }
-
-    #[test]
-    fn conversation_displays_user_assistant_provider_action_and_error_output() {
-        let mut shell = TuiShell::new();
-        let events = vec![
-            Event::UserMessage(UserMessage::new("hello")),
-            Event::AssistantMessage(AssistantMessage::new(
-                "hi",
-                AssistantMessageSource::Controller,
-            )),
-            Event::ProviderStarted(ProviderStarted::new("stub-provider", "request-1")),
-            Event::ProviderFinished(ProviderFinished::new(
-                "stub-provider",
-                "request-1",
-                ProviderOutput::new("provider text"),
-            )),
-            Event::ActionProposed(ActionEvent::new(
-                "action-1",
-                elgar_core::event::ActionKind::WriteFile,
-                "write hello.py",
-            )),
-            Event::ActionApproved(ActionEvent::new(
-                "action-1",
-                elgar_core::event::ActionKind::WriteFile,
-                "write hello.py",
-            )),
-            Event::ActionApplied(ActionApplied::new(
-                "action-1",
-                elgar_core::event::ActionKind::WriteFile,
-                VerifiedActionResult::FileWritten {
-                    path: "hello.py".to_string(),
-                },
-            )),
-            Event::ActionRejected(ActionEvent::new(
-                "action-2",
-                elgar_core::event::ActionKind::WriteFile,
-                "write rejected.py",
-            )),
-            Event::ActionFailed(ActionFailed::new(
-                "action-3",
-                elgar_core::event::ActionKind::WriteFile,
-                "permission denied",
-            )),
-            Event::Error(ErrorEvent::new("boom")),
-        ];
-
-        shell.consume_events(&events);
-
-        let rendered = shell.render();
-        assert!(rendered.contains("user: hello"));
-        assert!(rendered.contains("assistant Controller: hi"));
-        assert!(rendered.contains("provider started: stub-provider request request-1"));
-        assert!(
-            rendered.contains("provider finished: stub-provider request request-1: provider text")
-        );
-        assert!(rendered.contains("action proposed: action-1 WriteFile write hello.py"));
-        assert!(rendered.contains("action approved: action-1 WriteFile write hello.py"));
-        assert!(rendered.contains("action applied: action-1 WriteFile file written: hello.py"));
-        assert!(rendered.contains("action rejected: action-2 WriteFile write rejected.py"));
-        assert!(rendered.contains("action failed: action-3 WriteFile permission denied"));
-        assert!(rendered.contains("error: boom"));
-        assert!(rendered.contains("[Status]\nerror"));
-    }
-
-    #[test]
-    fn pending_action_area_shows_proposed_action_from_core_event() {
-        let mut shell = TuiShell::new();
-
-        shell.consume_event(&Event::ActionProposed(
-            ActionEvent::new(
-                "action-1",
-                elgar_core::event::ActionKind::WriteFile,
-                "write hello.py",
-            )
-            .with_target("hello.py"),
-        ));
-
-        let panel = shell.pending_action.panel.as_ref().unwrap();
-        assert_eq!(panel.action_id, "action-1");
-        assert_eq!(panel.action_type, "WriteFile");
-        assert_eq!(panel.target.as_deref(), Some("hello.py"));
-        assert_eq!(panel.summary, "write hello.py");
-        assert_eq!(panel.state, ActionPanelState::Proposed);
-
-        let rendered = shell.render();
-        assert!(rendered.contains("[Pending Action]\naction id: action-1"));
-        assert!(rendered.contains("action type: WriteFile"));
-        assert!(rendered.contains("target: hello.py"));
-        assert!(rendered.contains("summary: write hello.py"));
-        assert!(rendered.contains("state: pending approval"));
-        assert!(rendered.contains("instructions: type approve to apply or reject to decline"));
-    }
-
-    #[test]
-    fn terminal_action_events_render_result_state() {
-        let mut shell = TuiShell::new();
-
-        shell.consume_event(&Event::ActionProposed(
-            ActionEvent::new(
-                "action-1",
-                elgar_core::event::ActionKind::WriteFile,
-                "write hello.py",
-            )
-            .with_target("hello.py"),
-        ));
-        shell.consume_event(&Event::ActionRejected(
-            ActionEvent::new(
-                "action-1",
-                elgar_core::event::ActionKind::WriteFile,
-                "write hello.py",
-            )
-            .with_target("hello.py"),
-        ));
-
-        let rendered = shell.render();
-        assert!(rendered.contains("state: rejected"));
-        assert!(rendered.contains("result: rejected by user; no filesystem change was made"));
-        assert!(rendered.contains(
-            "instructions: rejected actions are terminal; submit a new proposal to reconsider"
-        ));
     }
 
     #[test]
@@ -608,7 +229,7 @@ mod tests {
         let proposed = controller.turn(&mut session, "create file hello.py");
         shell.consume_events(&proposed.events);
         assert!(!target.exists());
-        assert!(shell.render().contains("state: pending approval"));
+        assert!(shell.render().contains("State: waiting for approval"));
 
         let approved = shell.submit_approval(&controller, &mut session);
 
@@ -624,11 +245,10 @@ mod tests {
         ));
 
         let rendered = shell.render();
-        assert!(rendered.contains("action id: action-1"));
-        assert!(rendered.contains("action type: WriteFile"));
-        assert!(rendered.contains("target: hello.py"));
-        assert!(rendered.contains("state: applied"));
-        assert!(rendered.contains("result: file written:"));
+        assert!(rendered.contains("Action: action-1 WriteFile"));
+        assert!(rendered.contains("Target: hello.py"));
+        assert!(rendered.contains("State: applied and verified"));
+        assert!(rendered.contains("Result: file written:"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -655,8 +275,8 @@ mod tests {
         assert_eq!(session.actions()[0].verified_result, None);
 
         let rendered = shell.render();
-        assert!(rendered.contains("state: rejected"));
-        assert!(rendered.contains("result: rejected by user; no filesystem change was made"));
+        assert!(rendered.contains("State: rejected"));
+        assert!(rendered.contains("Result: Rejected. No file was changed."));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -684,8 +304,8 @@ mod tests {
         );
 
         let rendered = shell.render();
-        assert!(rendered.contains("state: failed"));
-        assert!(rendered.contains("result: unsafe write target"));
+        assert!(rendered.contains("State: failed"));
+        assert!(rendered.contains("Result: unsafe write target"));
 
         let _ = std::fs::remove_dir_all(root);
     }

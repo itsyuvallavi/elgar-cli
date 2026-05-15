@@ -11,6 +11,7 @@ use elgar_core::{
 
 pub const PROVIDER_SMOKE_COMMAND: &str = "provider-smoke";
 pub const CONTROLLER_SMOKE_COMMAND: &str = "controller-smoke";
+pub const TUI_CONTROLLER_SMOKE_COMMAND: &str = "tui-controller-smoke";
 pub const PROVIDER_SMOKE_DEFAULT_PROMPT: &str = "Say hello in one sentence.";
 pub const LM_STUDIO_MODEL_ENV: &str = "ELGAR_LM_STUDIO_MODEL";
 pub const LM_STUDIO_BASE_URL_ENV: &str = "ELGAR_LM_STUDIO_BASE_URL";
@@ -99,11 +100,7 @@ pub fn run_provider_smoke_from_env(prompt: &str) -> Result<String, ProviderSmoke
 }
 
 pub fn run_provider_smoke(config: ProviderSmokeConfig) -> Result<String, ProviderSmokeError> {
-    let provider_config = ProviderConfig {
-        base_url: config.base_url,
-        model: Some(config.model),
-        ..ProviderConfig::default()
-    };
+    let provider_config = provider_config_from_smoke_config(&config);
 
     chat_lm_studio(&provider_config, vec![ChatMessage::user(config.prompt)])
         .map(|output| output.text)
@@ -124,11 +121,7 @@ pub fn render_controller_smoke(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> String {
-    let provider_config = ProviderConfig {
-        base_url: config.base_url,
-        model: Some(config.model),
-        ..ProviderConfig::default()
-    };
+    let provider_config = provider_config_from_smoke_config(&config);
     let controller = Controller::with_lm_studio_provider(provider_config);
     let mut session = Session::new(
         "cli-controller-smoke-session",
@@ -138,6 +131,33 @@ pub fn render_controller_smoke(
 
     controller.turn(&mut session, &config.prompt);
     render_session(&session)
+}
+
+pub fn render_tui_controller_smoke_from_env(
+    prompt: &str,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+) -> Result<String, ProviderSmokeError> {
+    let config = provider_smoke_config_from_env(prompt)?;
+    Ok(render_tui_controller_smoke(config, project_root, cwd))
+}
+
+pub fn render_tui_controller_smoke(
+    config: ProviderSmokeConfig,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+) -> String {
+    let provider_config = provider_config_from_smoke_config(&config);
+    elgar_tui::run_lm_studio_controller_smoke(provider_config, &config.prompt, project_root, cwd)
+        .rendered
+}
+
+fn provider_config_from_smoke_config(config: &ProviderSmokeConfig) -> ProviderConfig {
+    ProviderConfig {
+        base_url: config.base_url.clone(),
+        model: Some(config.model.clone()),
+        ..ProviderConfig::default()
+    }
 }
 
 fn normalize_prompt(prompt: impl Into<String>) -> String {
@@ -165,8 +185,9 @@ mod tests {
     use elgar_core::provider::LM_STUDIO_DEFAULT_BASE_URL;
 
     use super::{
-        provider_smoke_config, provider_smoke_prompt, render_controller_smoke, ProviderSmokeConfig,
-        ProviderSmokeError, PROVIDER_SMOKE_DEFAULT_PROMPT,
+        provider_smoke_config, provider_smoke_prompt, render_controller_smoke,
+        render_tui_controller_smoke, ProviderSmokeConfig, ProviderSmokeError,
+        PROVIDER_SMOKE_DEFAULT_PROMPT,
     };
 
     #[test]
@@ -237,5 +258,26 @@ mod tests {
         assert!(rendered.contains("only http:// provider URLs are supported"));
         assert!(!rendered.contains("action proposed"));
         assert!(!rendered.contains("action applied"));
+    }
+
+    #[test]
+    fn tui_controller_smoke_renders_live_provider_error_with_tui_copy_without_network() {
+        let rendered = render_tui_controller_smoke(
+            ProviderSmokeConfig {
+                model: "local-model".to_string(),
+                base_url: "https://127.0.0.1:1234/v1".to_string(),
+                prompt: "Say hello in one sentence.".to_string(),
+            },
+            ".",
+            ".",
+        );
+
+        assert!(rendered.contains("You: Say hello in one sentence."));
+        assert!(rendered.contains("Thinking with lm-studio..."));
+        assert!(rendered.contains(
+            "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
+        ));
+        assert!(rendered.contains("[Status]\nprovider error"));
+        assert!(!rendered.contains("stub-provider"));
     }
 }

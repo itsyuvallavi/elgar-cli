@@ -7,6 +7,7 @@ name = "elgar-cli"
 version = "0.2.0"
 dependencies = [
  "elgar-core",
+ "elgar-tui",
 ]
 
 [[package]]
