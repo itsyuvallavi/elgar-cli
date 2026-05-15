@@ -96,8 +96,12 @@ impl StatusLine {
         self.text = match event {
             Event::UserMessage(_) => "sent".to_string(),
             Event::AssistantMessage(_) => "reply ready".to_string(),
-            Event::ProviderStarted(started) => format!("thinking with {}", started.provider),
-            Event::ProviderFinished(finished) => format!("response from {}", finished.provider),
+            Event::ProviderStarted(started) => {
+                format!("provider working: {}", started.provider)
+            }
+            Event::ProviderFinished(finished) => {
+                format!("provider response ready: {}", finished.provider)
+            }
             Event::ActionProposed(action) => {
                 format!("review {}", action.action_id)
             }
@@ -128,17 +132,22 @@ fn render_tui_event(event: &Event) -> String {
         Event::AssistantMessage(message) => {
             let speaker = match message.source {
                 AssistantMessageSource::Controller => "Elgar",
-                AssistantMessageSource::Provider => "Assistant",
+                AssistantMessageSource::Provider => "Assistant suggestion",
             };
             render_assistant_output(speaker, &message.content)
         }
         Event::ProviderStarted(started) => {
-            format!("Thinking with {}...", started.provider)
+            format!(
+                "Provider progress: working with {} (request {}).",
+                started.provider, started.request_id
+            )
         }
-        Event::ProviderFinished(finished) => render_assistant_output(
-            &format!("Response from {}", finished.provider),
-            &finished.output.text,
-        ),
+        Event::ProviderFinished(finished) => {
+            format!(
+                "Provider progress: response ready from {} (request {}). Provider text is suggestion only.",
+                finished.provider, finished.request_id
+            )
+        }
         Event::ActionProposed(action) => {
             format!(
                 "Review needed: {} {:?} {}",
@@ -282,8 +291,12 @@ mod tests {
         let rendered = conversation.render_body();
         assert!(rendered.contains("You: hello"));
         assert!(rendered.contains("Elgar: hi"));
-        assert!(rendered.contains("Thinking with stub-provider..."));
-        assert!(rendered.contains("Response from stub-provider: provider text"));
+        assert!(
+            rendered.contains("Provider progress: working with stub-provider (request request-1).")
+        );
+        assert!(rendered.contains(
+            "Provider progress: response ready from stub-provider (request request-1). Provider text is suggestion only."
+        ));
         assert!(rendered.contains("Review needed: action-1 WriteFile write hello.py"));
         assert!(rendered.contains("Approved: action-1 WriteFile write hello.py"));
         assert!(rendered.contains("Applied and verified: action-1 WriteFile hello.py was written"));
@@ -348,7 +361,7 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Assistant:\nPlan:\n- read files\n- render output"));
+        assert!(rendered.contains("Assistant suggestion:\nPlan:\n- read files\n- render output"));
         assert!(rendered.contains("code (rust):\n    fn main() {}"));
         assert!(!rendered.contains("```"));
         assert!(!rendered.contains("**read**"));
@@ -364,7 +377,7 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Assistant:\n  File"));
+        assert!(rendered.contains("Assistant suggestion:\n  File"));
         assert!(rendered.contains("src/lib.rs"));
         assert!(rendered.contains("changed"));
         assert!(!rendered.contains("| --- |"));
@@ -425,13 +438,13 @@ mod tests {
             "stub-provider",
             "request-1",
         )));
-        assert_eq!(status.text, "thinking with stub-provider");
+        assert_eq!(status.text, "provider working: stub-provider");
 
         status.observe_event(&Event::ProviderFinished(ProviderFinished::new(
             "stub-provider",
             "request-1",
             ProviderOutput::new("provider text"),
         )));
-        assert_eq!(status.text, "response from stub-provider");
+        assert_eq!(status.text, "provider response ready: stub-provider");
     }
 }

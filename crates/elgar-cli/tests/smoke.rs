@@ -107,7 +107,9 @@ fn tui_controller_smoke_command_renders_tui_provider_error_without_network() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("[Conversation]"));
     assert!(stdout.contains("You: Say hello."));
-    assert!(stdout.contains("Thinking with lm-studio..."));
+    assert!(
+        stdout.contains("Provider progress: working with lm-studio (request lm-studio-request-1).")
+    );
     assert!(stdout.contains(
         "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
     ));
@@ -145,8 +147,10 @@ fn tui_command_reads_stdin_renders_stub_turn_and_exits() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Elgar TUI. Type /exit or /quit to leave."));
     assert!(stdout.contains("You: what does the harness do?"));
-    assert!(stdout.contains("Thinking with stub-provider..."));
-    assert!(stdout.contains("Assistant: stub provider response"));
+    assert!(
+        stdout.contains("Provider progress: working with stub-provider (request stub-request-1).")
+    );
+    assert!(stdout.contains("Assistant suggestion: stub provider response"));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("lm-studio"));
 }

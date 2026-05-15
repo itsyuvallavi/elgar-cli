@@ -183,9 +183,10 @@ mod tests {
         let rendered = shell.render();
 
         assert!(rendered.contains("You: what does the harness do?"));
-        assert!(rendered.contains("Thinking with stub-provider..."));
-        assert!(rendered.contains("Response from stub-provider: stub provider response"));
-        assert!(rendered.contains("Assistant: stub provider response"));
+        assert!(rendered
+            .contains("Provider progress: working with stub-provider (request stub-request-1)."));
+        assert!(rendered.contains("Provider text is suggestion only."));
+        assert!(rendered.contains("Assistant suggestion: stub provider response"));
         assert!(session.actions().is_empty());
     }
 

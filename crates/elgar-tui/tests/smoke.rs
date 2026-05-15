@@ -46,6 +46,25 @@ impl ControllerProvider for FailingProvider {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ClaimingProvider;
+
+impl ControllerProvider for ClaimingProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "claiming-provider",
+            Some("claiming-model".to_string()),
+            "claiming-request-1",
+        )
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new(
+            "I wrote hello.py and applied the action successfully.",
+        ))
+    }
+}
+
 struct EnvGuard {
     name: &'static str,
     previous: Option<OsString>,
@@ -92,9 +111,12 @@ fn renders_core_events_from_controller_turns() {
 
     let rendered = shell.render();
     assert!(rendered.contains("You: what does the harness do?"));
-    assert!(rendered.contains("Thinking with stub-provider..."));
-    assert!(rendered.contains("Response from stub-provider: stub provider response"));
-    assert!(rendered.contains("Assistant: stub provider response"));
+    assert!(rendered
+        .contains("Provider progress: working with stub-provider (request stub-request-1)."));
+    assert!(rendered.contains(
+        "Provider progress: response ready from stub-provider (request stub-request-1). Provider text is suggestion only."
+    ));
+    assert!(rendered.contains("Assistant suggestion: stub provider response"));
     assert!(rendered.contains("[Status]\nreply ready"));
 
     let _ = fs::remove_dir_all(root);
@@ -126,11 +148,13 @@ fn default_controller_smoke_uses_stub_even_when_lm_studio_env_is_set() {
             .and_then(|metadata| metadata.request_id.as_deref()),
         Some("stub-request-1")
     );
-    assert!(smoke.rendered.contains("Thinking with stub-provider..."));
     assert!(smoke
         .rendered
-        .contains("Response from stub-provider: stub provider response"));
-    assert!(smoke.rendered.contains("Assistant: stub provider response"));
+        .contains("Provider progress: working with stub-provider (request stub-request-1)."));
+    assert!(smoke.rendered.contains("Provider text is suggestion only."));
+    assert!(smoke
+        .rendered
+        .contains("Assistant suggestion: stub provider response"));
     assert!(!smoke.rendered.contains("lm-studio"));
     assert!(!smoke
         .rendered
@@ -164,7 +188,7 @@ fn explicit_controller_smoke_uses_the_passed_controller() {
     assert!(smoke.rendered.contains("You: what does this do?"));
     assert!(smoke
         .rendered
-        .contains("Thinking with tui-smoke-provider..."));
+        .contains("Provider progress: working with tui-smoke-provider (request stub-request-1)."));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -193,7 +217,9 @@ fn explicit_lm_studio_tui_smoke_renders_through_tui_shell_without_network() {
         Some("lm-studio")
     );
     assert!(smoke.rendered.contains("You: Say hello in one sentence."));
-    assert!(smoke.rendered.contains("Thinking with lm-studio..."));
+    assert!(smoke
+        .rendered
+        .contains("Provider progress: working with lm-studio (request lm-studio-request-1)."));
     assert!(smoke.rendered.contains(
         "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
     ));
@@ -261,6 +287,41 @@ fn renders_provider_error_events_without_network() {
         "Provider error from fake-provider: Provider provider error (404): model missing"
     ));
     assert!(rendered.contains("[Status]\nprovider error"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_progress_and_text_remain_separate_from_verified_action_truth() {
+    let controller = Controller::new(ClaimingProvider);
+    let root = smoke_root("provider-progress-boundary");
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::new();
+    let target = root.join("hello.py");
+
+    let result = shell.submit_input(&controller, &mut session, "what happened?");
+
+    assert_eq!(result.route, Route::AskModel);
+    assert!(!target.exists());
+    assert!(session.actions().is_empty());
+    assert!(session.events().iter().all(|event| {
+        !matches!(
+            event,
+            Event::ActionProposed(_) | Event::ActionApproved(_) | Event::ActionApplied(_)
+        )
+    }));
+
+    let rendered = shell.render();
+    assert!(rendered.contains(
+        "Provider progress: working with claiming-provider (request claiming-request-1)."
+    ));
+    assert!(rendered.contains(
+        "Provider progress: response ready from claiming-provider (request claiming-request-1). Provider text is suggestion only."
+    ));
+    assert!(rendered
+        .contains("Assistant suggestion: I wrote hello.py and applied the action successfully."));
+    assert!(!rendered.contains("Applied and verified"));
+    assert!(!rendered.contains("file written:"));
 
     let _ = fs::remove_dir_all(root);
 }

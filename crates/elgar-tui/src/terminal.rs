@@ -380,7 +380,7 @@ mod tests {
 
         assert!(text.contains("provider: local"));
         assert!(text.contains("model: model-a"));
-        assert!(text.contains("Response from local"));
+        assert!(text.contains("Provider progress: response ready from local"));
     }
 
     #[test]
@@ -557,7 +557,9 @@ mod tests {
         assert!(!exited);
         assert!(input.text().is_empty());
         assert!(shell.render().contains("You: what does the harness do?"));
-        assert!(shell.render().contains("Assistant: stub provider response"));
+        assert!(shell
+            .render()
+            .contains("Assistant suggestion: stub provider response"));
         assert_eq!(session.events().len(), 4);
     }
 
