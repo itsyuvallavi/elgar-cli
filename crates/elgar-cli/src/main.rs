@@ -44,6 +44,19 @@ fn main() {
         }
         return;
     }
+    if args
+        .first()
+        .is_some_and(|arg| arg == elgar_cli::TUI_COMMAND)
+    {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        let stdin = std::io::stdin();
+        let stdout = std::io::stdout();
+        if let Err(error) = elgar_cli::run_tui_loop(stdin.lock(), stdout.lock(), &cwd, &cwd) {
+            eprintln!("TUI failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let input = args.join(" ");
     if input.is_empty() {
