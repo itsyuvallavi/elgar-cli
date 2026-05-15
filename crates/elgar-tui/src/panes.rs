@@ -1,5 +1,7 @@
 use elgar_core::event::{AssistantMessageSource, Event, VerifiedActionResult};
 
+use crate::markdown::render_assistant_markdown;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationPane {
     pub lines: Vec<String>,
@@ -29,7 +31,7 @@ impl ConversationPane {
     }
 
     fn render_line_count(&self) -> usize {
-        self.lines.len().max(1)
+        self.render_body().lines().count().max(1)
     }
 
     pub(crate) fn render_body(&self) -> String {
@@ -128,17 +130,15 @@ fn render_tui_event(event: &Event) -> String {
                 AssistantMessageSource::Controller => "Elgar",
                 AssistantMessageSource::Provider => "Assistant",
             };
-            format!("{speaker}: {}", message.content)
+            render_assistant_output(speaker, &message.content)
         }
         Event::ProviderStarted(started) => {
             format!("Thinking with {}...", started.provider)
         }
-        Event::ProviderFinished(finished) => {
-            format!(
-                "Response from {}: {}",
-                finished.provider, finished.output.text
-            )
-        }
+        Event::ProviderFinished(finished) => render_assistant_output(
+            &format!("Response from {}", finished.provider),
+            &finished.output.text,
+        ),
         Event::ActionProposed(action) => {
             format!(
                 "Review needed: {} {:?} {}",
@@ -172,6 +172,15 @@ fn render_tui_event(event: &Event) -> String {
             )
         }
         Event::Error(error) => render_error_line(&error.message),
+    }
+}
+
+fn render_assistant_output(speaker: &str, content: &str) -> String {
+    let rendered = render_assistant_markdown(content);
+    if rendered.contains('\n') {
+        format!("{speaker}:\n{rendered}")
+    } else {
+        format!("{speaker}: {rendered}")
     }
 }
 
@@ -327,6 +336,38 @@ mod tests {
             conversation.render_body(),
             "Error: Input was not recognized."
         );
+    }
+
+    #[test]
+    fn conversation_renders_assistant_markdown_as_presentation_only_text() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "Plan:\n- **read** files\n- `render` output\n\n```rust\nfn main() {}\n```",
+            AssistantMessageSource::Provider,
+        )));
+
+        let rendered = conversation.render_body();
+        assert!(rendered.contains("Assistant:\nPlan:\n- read files\n- render output"));
+        assert!(rendered.contains("code (rust):\n    fn main() {}"));
+        assert!(!rendered.contains("```"));
+        assert!(!rendered.contains("**read**"));
+    }
+
+    #[test]
+    fn conversation_renders_assistant_markdown_tables_readably() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "| File | State |\n| --- | --- |\n| src/lib.rs | changed |",
+            AssistantMessageSource::Provider,
+        )));
+
+        let rendered = conversation.render_body();
+        assert!(rendered.contains("Assistant:\n  File"));
+        assert!(rendered.contains("src/lib.rs"));
+        assert!(rendered.contains("changed"));
+        assert!(!rendered.contains("| --- |"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 pub mod action_panel;
 mod input;
 pub mod layout;
+mod markdown;
 pub mod panes;
 pub mod shell;
 pub mod smoke;
