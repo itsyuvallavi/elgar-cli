@@ -3,6 +3,7 @@ pub mod layout;
 pub mod panes;
 pub mod shell;
 pub mod smoke;
+pub mod terminal;
 
 pub use action_panel::{ActionApprovalPanel, ActionPanelState, PendingActionArea};
 pub use layout::LayoutRegion;
@@ -12,3 +13,4 @@ pub use smoke::{
     run_controller_smoke, run_default_controller_smoke, run_lm_studio_controller_smoke,
     TuiControllerSmoke,
 };
+pub use terminal::{default_shell_text, run_terminal_shell};

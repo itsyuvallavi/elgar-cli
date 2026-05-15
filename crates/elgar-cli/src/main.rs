@@ -57,6 +57,16 @@ fn main() {
         }
         return;
     }
+    if args
+        .first()
+        .is_some_and(|arg| arg == elgar_cli::TUI_TERMINAL_COMMAND)
+    {
+        if let Err(error) = elgar_cli::run_tui_terminal() {
+            eprintln!("TUI terminal failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let input = args.join(" ");
     if input.is_empty() {

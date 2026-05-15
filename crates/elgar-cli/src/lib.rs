@@ -16,6 +16,7 @@ pub const PROVIDER_SMOKE_COMMAND: &str = "provider-smoke";
 pub const CONTROLLER_SMOKE_COMMAND: &str = "controller-smoke";
 pub const TUI_CONTROLLER_SMOKE_COMMAND: &str = "tui-controller-smoke";
 pub const TUI_COMMAND: &str = "tui";
+pub const TUI_TERMINAL_COMMAND: &str = "tui-terminal";
 pub const PROVIDER_SMOKE_DEFAULT_PROMPT: &str = "Say hello in one sentence.";
 pub const LM_STUDIO_MODEL_ENV: &str = "ELGAR_LM_STUDIO_MODEL";
 pub const LM_STUDIO_BASE_URL_ENV: &str = "ELGAR_LM_STUDIO_BASE_URL";
@@ -129,6 +130,10 @@ where
     }
 
     Ok(())
+}
+
+pub fn run_tui_terminal() -> io::Result<()> {
+    elgar_tui::run_terminal_shell()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +298,7 @@ mod tests {
         is_tui_rejection_command, provider_smoke_config, provider_smoke_prompt,
         render_controller_smoke, render_tui_controller_smoke, render_tui_help, render_tui_script,
         run_tui_loop, ProviderSmokeConfig, ProviderSmokeError, PROVIDER_SMOKE_DEFAULT_PROMPT,
+        TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
     fn temp_root(name: &str) -> PathBuf {
@@ -400,6 +406,12 @@ mod tests {
         assert!(is_tui_exit_command(" /quit "));
         assert!(!is_tui_exit_command("exit"));
         assert!(!is_tui_exit_command("/help"));
+    }
+
+    #[test]
+    fn terminal_tui_command_is_separate_from_line_loop_command() {
+        assert_eq!(TUI_COMMAND, "tui");
+        assert_eq!(TUI_TERMINAL_COMMAND, "tui-terminal");
     }
 
     #[test]
