@@ -209,6 +209,16 @@ fn handle_terminal_key(
         return true;
     }
 
+    if is_approval_key(key) {
+        shell.submit_approval(controller, session);
+        return false;
+    }
+
+    if is_rejection_key(key) {
+        shell.submit_rejection(controller, session);
+        return false;
+    }
+
     match input.handle_key(key) {
         TerminalInputAction::Continue => false,
         TerminalInputAction::Exit => true,
@@ -221,6 +231,14 @@ fn handle_terminal_key(
             false
         }
     }
+}
+
+fn is_approval_key(key: crossterm::event::KeyEvent) -> bool {
+    key.code == KeyCode::F(5) && key.modifiers.is_empty()
+}
+
+fn is_rejection_key(key: crossterm::event::KeyEvent) -> bool {
+    key.code == KeyCode::F(6) && key.modifiers.is_empty()
 }
 
 struct TerminalModeGuard;
@@ -243,14 +261,14 @@ impl Drop for TerminalModeGuard {
 
 #[cfg(test)]
 mod tests {
-    use elgar_core::{controller::Controller, session::Session};
+    use elgar_core::{action::ActionLifecycleState, controller::Controller, session::Session};
     use ratatui::{backend::TestBackend, Terminal};
 
     use crate::{input::TerminalInput, TuiShell};
 
     use super::{
-        default_shell_text, handle_terminal_key, render_tui_shell, should_exit,
-        TerminalShellContext,
+        default_shell_text, handle_terminal_key, is_approval_key, is_rejection_key,
+        render_tui_shell, should_exit, TerminalShellContext,
     };
 
     fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -314,6 +332,8 @@ mod tests {
         assert!(text.contains("Pending Action"));
         assert!(text.contains("Action: action-1 WriteFile"));
         assert!(text.contains("State: waiting for approval"));
+        assert!(text.contains("No file has been changed yet"));
+        assert!(text.contains("Press F5 to approve or F6 to reject"));
         assert!(text.contains("Input"));
         assert!(text.contains("Status"));
     }
@@ -352,6 +372,26 @@ mod tests {
         )));
         assert!(!should_exit(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE
+        )));
+    }
+
+    #[test]
+    fn terminal_approval_and_rejection_keys_are_deliberate() {
+        assert!(is_approval_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::F(5),
+            crossterm::event::KeyModifiers::NONE
+        )));
+        assert!(is_rejection_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::F(6),
+            crossterm::event::KeyModifiers::NONE
+        )));
+        assert!(!is_approval_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::NONE
+        )));
+        assert!(!is_rejection_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('r'),
             crossterm::event::KeyModifiers::NONE
         )));
     }
@@ -426,5 +466,119 @@ mod tests {
         assert!(!exited);
         assert!(session.events().is_empty());
         assert!(input.text().is_empty());
+    }
+
+    #[test]
+    fn terminal_f5_approves_pending_action_through_shell() {
+        let controller = Controller::default();
+        let root = temp_root("terminal-f5-approve");
+        let target = root.join("approved.py");
+        let mut session = Session::new("session-1", root.clone(), root.clone());
+        let mut shell = TuiShell::new();
+        let mut input = TerminalInput::default();
+
+        shell.submit_input(&controller, &mut session, "create file approved.py");
+        assert!(!target.exists());
+
+        let exited = handle_terminal_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::F(5),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
+            &controller,
+            &mut session,
+            &mut shell,
+        );
+
+        assert!(!exited);
+        assert!(target.exists());
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Applied
+        );
+        assert!(shell.render().contains("State: applied and verified"));
+        assert!(shell.render().contains("Result: file written:"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_f6_rejects_pending_action_through_shell() {
+        let controller = Controller::default();
+        let root = temp_root("terminal-f6-reject");
+        let target = root.join("rejected.py");
+        let mut session = Session::new("session-1", root.clone(), root.clone());
+        let mut shell = TuiShell::new();
+        let mut input = TerminalInput::default();
+
+        shell.submit_input(&controller, &mut session, "create file rejected.py");
+
+        let exited = handle_terminal_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::F(6),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
+            &controller,
+            &mut session,
+            &mut shell,
+        );
+
+        assert!(!exited);
+        assert!(!target.exists());
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Rejected
+        );
+        assert!(shell.render().contains("State: rejected"));
+        assert!(shell
+            .render()
+            .contains("Result: Rejected. No file was changed."));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_approval_keys_show_no_pending_feedback() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", "/repo", "/repo");
+        let mut shell = TuiShell::new();
+        let mut input = TerminalInput::default();
+
+        handle_terminal_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::F(5),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
+            &controller,
+            &mut session,
+            &mut shell,
+        );
+        handle_terminal_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::F(6),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
+            &controller,
+            &mut session,
+            &mut shell,
+        );
+
+        let rendered = shell.render();
+        assert!(rendered.contains("No proposed action is waiting for approval."));
+        assert!(rendered.contains("No proposed action is waiting for rejection."));
+        assert!(input.text().is_empty());
+        assert!(session.actions().is_empty());
+    }
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("elgar-terminal-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
     }
 }
