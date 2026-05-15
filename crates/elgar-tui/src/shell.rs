@@ -8,7 +8,7 @@ use elgar_core::{
 use crate::{
     action_panel::PendingActionArea,
     layout::{render_section, LayoutRegion},
-    panes::{ConversationPane, InputArea, StatusLine},
+    panes::{ConversationPane, CopyArea, InputArea, StatusLine},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +17,7 @@ pub struct TuiShell {
     pub input: InputArea,
     pub status: StatusLine,
     pub pending_action: PendingActionArea,
+    pub copy: CopyArea,
 }
 
 impl TuiShell {
@@ -26,6 +27,7 @@ impl TuiShell {
             input: InputArea::default(),
             status: StatusLine::ready(),
             pending_action: PendingActionArea::default(),
+            copy: CopyArea::default(),
         }
     }
 
@@ -106,6 +108,10 @@ impl TuiShell {
         self.conversation.follow_latest();
         result
     }
+
+    pub fn conversation_copy_text(&self) -> String {
+        self.conversation.render_body()
+    }
 }
 
 impl Default for TuiShell {
@@ -133,6 +139,10 @@ mod tests {
         assert!(shell.input.text.is_empty());
         assert_eq!(shell.status.text, "ready");
         assert_eq!(shell.pending_action.panel, None);
+        assert_eq!(
+            shell.copy.render_hint(),
+            "select visible text natively | PgUp/PgDn scroll | Ctrl+Y copy conversation"
+        );
     }
 
     #[test]

@@ -38,6 +38,23 @@ The repo already has:
 The current loop is useful as a proving path, not the final terminal
 experience. It prints a complete rendered shell after each submitted line.
 
+## Terminal Selection And Scrolling
+
+The terminal TUI preserves native text selection for visible text by not enabling
+mouse capture. Select visible conversation, input, pending-action, or footer text
+with the terminal emulator's normal selection behavior.
+
+Conversation scrollback is in-app state:
+
+- `PageUp` scrolls older conversation content into the visible conversation area.
+- `PageDown` scrolls back toward the latest conversation content.
+- `Ctrl-End` follows the latest conversation content.
+- `Ctrl-Y` copies the full rendered conversation through the terminal clipboard
+  OSC 52 path when the terminal supports it.
+
+Input, footer, and pending-action controls remain visible while the conversation
+scrolls.
+
 ## Target V0 Experience
 
 V0 should feel like a calm local conversation with visible trust checks:

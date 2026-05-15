@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Stdout},
+    io::{self, Stdout, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -64,7 +64,7 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
                 Constraint::Min(3),
                 Constraint::Length(7),
                 Constraint::Length(2),
-                Constraint::Length(1),
+                Constraint::Length(2),
             ])
             .split(area)
     } else {
@@ -73,7 +73,7 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
             .constraints([
                 Constraint::Min(3),
                 Constraint::Length(2),
-                Constraint::Length(1),
+                Constraint::Length(2),
             ])
             .split(area)
     };
@@ -104,10 +104,11 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
         .block(divider_block(""));
     frame.render_widget(input, chunks[input_index]);
 
-    let status = Paragraph::new(context.footer_body(&shell.status.render_body()))
-        .style(Style::default().fg(Color::DarkGray))
-        .wrap(Wrap { trim: false })
-        .block(Block::default());
+    let status =
+        Paragraph::new(context.footer_body(&shell.status.render_body(), &shell.copy.render_hint()))
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: false })
+            .block(Block::default());
     frame.render_widget(status, chunks[status_index]);
 }
 
@@ -118,7 +119,7 @@ pub fn default_shell_text() -> String {
         "{}\n{}\n{}\n{}",
         shell.conversation.render_body(),
         shell.input.render_body(),
-        context.footer_body(&shell.status.render_body()),
+        context.footer_body(&shell.status.render_body(), &shell.copy.render_hint()),
         default_no_network_line()
     )
 }
@@ -150,15 +151,16 @@ impl TerminalShellContext {
         context
     }
 
-    fn footer_body(&self, status: &str) -> String {
+    fn footer_body(&self, status: &str, copy_hint: &str) -> String {
         format!(
-            "{} | proj:{} | cwd:{} | prov:{} | model:{} | {}",
+            "{} | proj:{} | cwd:{} | prov:{} | model:{} | {} | {}",
             status,
             compact_path_label(&self.project_root),
             compact_cwd_label(&self.project_root, &self.cwd),
             self.provider.as_deref().unwrap_or("none"),
             self.model.as_deref().unwrap_or("none"),
-            compact_no_network_label()
+            compact_no_network_label(),
+            copy_hint
         )
     }
 }
@@ -234,6 +236,17 @@ fn handle_terminal_key(
     session: &mut Session,
     shell: &mut TuiShell,
 ) -> bool {
+    handle_terminal_key_with_copy_writer(key, input, controller, session, shell, io::stdout())
+}
+
+fn handle_terminal_key_with_copy_writer(
+    key: crossterm::event::KeyEvent,
+    input: &mut TerminalInput,
+    controller: &Controller,
+    session: &mut Session,
+    shell: &mut TuiShell,
+    copy_writer: impl Write,
+) -> bool {
     if should_exit(key) {
         return true;
     }
@@ -245,6 +258,11 @@ fn handle_terminal_key(
 
     if is_rejection_key(key) {
         shell.submit_rejection(controller, session);
+        return false;
+    }
+
+    if is_copy_key(key) {
+        let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);
         return false;
     }
 
@@ -292,6 +310,64 @@ fn is_rejection_key(key: crossterm::event::KeyEvent) -> bool {
     key.code == KeyCode::F(6) && key.modifiers.is_empty()
 }
 
+fn is_copy_key(key: crossterm::event::KeyEvent) -> bool {
+    key.code == KeyCode::Char('y') && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn copy_conversation_to_terminal_clipboard(
+    mut writer: impl Write,
+    shell: &mut TuiShell,
+) -> io::Result<()> {
+    let text = shell.conversation_copy_text();
+    let result = writer
+        .write_all(osc52_clipboard_sequence(&text).as_bytes())
+        .and_then(|_| writer.flush());
+
+    match result {
+        Ok(()) => {
+            shell.copy.mark_copied(text.len());
+            Ok(())
+        }
+        Err(error) => {
+            shell.copy.mark_failed(error.to_string());
+            Err(error)
+        }
+    }
+}
+
+fn osc52_clipboard_sequence(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", encode_base64(text.as_bytes()))
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = *chunk.get(1).unwrap_or(&0);
+        let third = *chunk.get(2).unwrap_or(&0);
+        let triple = u32::from(first) << 16 | u32::from(second) << 8 | u32::from(third);
+
+        encoded.push(TABLE[((triple >> 18) & 0x3f) as usize] as char);
+        encoded.push(TABLE[((triple >> 12) & 0x3f) as usize] as char);
+
+        if chunk.len() > 1 {
+            encoded.push(TABLE[((triple >> 6) & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+
+        if chunk.len() > 2 {
+            encoded.push(TABLE[(triple & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+
+    encoded
+}
+
 struct TerminalModeGuard;
 
 impl TerminalModeGuard {
@@ -318,8 +394,10 @@ mod tests {
     use crate::{input::TerminalInput, TuiShell};
 
     use super::{
-        default_shell_text, handle_scroll_key, handle_terminal_key, is_approval_key,
-        is_rejection_key, render_tui_shell, should_exit, TerminalShellContext,
+        copy_conversation_to_terminal_clipboard, default_shell_text, encode_base64,
+        handle_scroll_key, handle_terminal_key, handle_terminal_key_with_copy_writer,
+        is_approval_key, is_copy_key, is_rejection_key, osc52_clipboard_sequence, render_tui_shell,
+        should_exit, TerminalShellContext,
     };
 
     fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -346,6 +424,8 @@ mod tests {
         assert!(text.contains("ready"));
         assert!(text.contains("prov:none"));
         assert!(text.contains("model:none"));
+        assert!(text.contains("select visible text natively"));
+        assert!(text.contains("Ctrl+Y copy conversation"));
         assert!(!text.contains("br:"));
         assert!(text.contains("default no-network stub"));
         assert!(!text.contains("lm-studio"));
@@ -361,6 +441,7 @@ mod tests {
         assert!(text.contains("> "));
         assert!(text.contains("proj:repo"));
         assert!(text.contains("cwd:crates"));
+        assert!(text.contains("select visible text"));
         assert!(!text.contains("br:"));
         assert!(text.contains("prov:none"));
         assert!(!text.contains("review action"));
@@ -471,6 +552,18 @@ mod tests {
     }
 
     #[test]
+    fn terminal_copy_key_is_explicit_and_keeps_native_selection_available() {
+        assert!(is_copy_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('y'),
+            crossterm::event::KeyModifiers::CONTROL
+        )));
+        assert!(!is_copy_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('y'),
+            crossterm::event::KeyModifiers::NONE
+        )));
+    }
+
+    #[test]
     fn terminal_page_keys_update_only_ui_scrollback() {
         let session = Session::new("session-1", "/repo", "/repo");
         let before_session = session.clone();
@@ -499,6 +592,71 @@ mod tests {
         assert_eq!(session, before_session);
         assert_eq!(shell.conversation.lines, before_lines);
         assert!(session.events().is_empty());
+    }
+
+    #[test]
+    fn terminal_copy_uses_osc52_for_full_rendered_conversation() {
+        let mut shell = TuiShell::new();
+        shell.conversation.lines = vec![
+            "first visible line".to_string(),
+            "older scrolled line".to_string(),
+        ];
+        let mut output = Vec::new();
+
+        copy_conversation_to_terminal_clipboard(&mut output, &mut shell).unwrap();
+
+        let copied = String::from_utf8(output).unwrap();
+        assert_eq!(
+            copied,
+            osc52_clipboard_sequence("first visible line\nolder scrolled line")
+        );
+        assert_eq!(shell.copy.render_hint(), "copied conversation (38 bytes)");
+    }
+
+    #[test]
+    fn terminal_copy_key_does_not_change_controller_or_scroll_state() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", "/repo", "/repo");
+        let before_session = session.clone();
+        let mut shell = TuiShell::new();
+        shell.conversation.lines = (0..10).map(|index| format!("line {index}")).collect();
+        shell.conversation.scroll_up(5);
+        let mut input = TerminalInput::default();
+
+        let mut output = Vec::new();
+        let exited = handle_terminal_key_with_copy_writer(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('y'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ),
+            &mut input,
+            &controller,
+            &mut session,
+            &mut shell,
+            &mut output,
+        );
+
+        assert!(!exited);
+        assert_eq!(session, before_session);
+        assert_eq!(input.text(), "");
+        assert_eq!(shell.conversation.scroll_offset(4), 1);
+        assert!(shell.copy.render_hint().starts_with("copied conversation"));
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            osc52_clipboard_sequence(&shell.conversation_copy_text())
+        );
+    }
+
+    #[test]
+    fn terminal_clipboard_encoding_is_standard_base64() {
+        assert_eq!(encode_base64(b""), "");
+        assert_eq!(encode_base64(b"f"), "Zg==");
+        assert_eq!(encode_base64(b"fo"), "Zm8=");
+        assert_eq!(encode_base64(b"foo"), "Zm9v");
+        assert_eq!(
+            osc52_clipboard_sequence("copy me"),
+            "\x1b]52;c;Y29weSBtZQ==\x07"
+        );
     }
 
     #[test]

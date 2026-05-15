@@ -80,6 +80,42 @@ impl InputArea {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CopyArea {
+    last_result: Option<CopyResult>,
+}
+
+impl CopyArea {
+    pub(crate) fn mark_copied(&mut self, bytes: usize) {
+        self.last_result = Some(CopyResult::Copied { bytes });
+    }
+
+    pub(crate) fn mark_failed(&mut self, message: impl Into<String>) {
+        self.last_result = Some(CopyResult::Failed {
+            message: message.into(),
+        });
+    }
+
+    pub(crate) fn render_hint(&self) -> String {
+        match &self.last_result {
+            Some(CopyResult::Copied { bytes }) => {
+                format!("copied conversation ({bytes} bytes)")
+            }
+            Some(CopyResult::Failed { message }) => {
+                format!("copy failed: {message}")
+            }
+            None => "select visible text natively | PgUp/PgDn scroll | Ctrl+Y copy conversation"
+                .to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CopyResult {
+    Copied { bytes: usize },
+    Failed { message: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusLine {
     pub text: String,
@@ -237,7 +273,7 @@ mod tests {
         VerifiedActionResult,
     };
 
-    use super::{ConversationPane, InputArea, StatusLine};
+    use super::{ConversationPane, CopyArea, InputArea, StatusLine};
 
     #[test]
     fn conversation_displays_user_assistant_provider_action_and_error_output() {
@@ -313,6 +349,21 @@ mod tests {
             "(empty conversation)"
         );
         assert_eq!(InputArea::default().render_body(), "> ");
+        assert_eq!(
+            CopyArea::default().render_hint(),
+            "select visible text natively | PgUp/PgDn scroll | Ctrl+Y copy conversation"
+        );
+    }
+
+    #[test]
+    fn copy_area_tracks_copy_result_without_changing_conversation() {
+        let mut copy = CopyArea::default();
+
+        copy.mark_copied(12);
+        assert_eq!(copy.render_hint(), "copied conversation (12 bytes)");
+
+        copy.mark_failed("terminal rejected OSC 52");
+        assert_eq!(copy.render_hint(), "copy failed: terminal rejected OSC 52");
     }
 
     #[test]
