@@ -1,3 +1,10 @@
+use std::{
+    fmt, io,
+    io::{Read, Write},
+    net::TcpStream,
+    time::Duration,
+};
+
 use serde::{Deserialize, Serialize};
 
 use crate::event::ProviderOutput;
@@ -189,12 +196,38 @@ pub fn parse_provider_error_json(status_code: Option<u16>, payload: &str) -> Pro
     }
 }
 
+/// Explicit, opt-in live call for LM Studio/OpenAI-compatible local servers.
+///
+/// This is intentionally not used by `Controller::turn` yet. Normal controller
+/// behavior and tests remain no-network until a later issue wires provider mode.
+pub fn chat_lm_studio(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+) -> Result<ProviderOutput, ProviderError> {
+    let request = format_chat_request(config, messages)?;
+    let body = serde_json::to_string(&request)
+        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+    let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
+    let timeout = Duration::from_millis(config.timeout_millis);
+    let response = post_json(&endpoint, &body, timeout)?;
+
+    if response.status_code.is_success() {
+        parse_chat_response_json(&response.body)
+    } else {
+        Err(parse_provider_error_json(
+            Some(response.status_code.as_u16()),
+            &response.body,
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderErrorKind {
     Configuration,
     ResponseParse,
     Provider,
     EmptyResponse,
+    Network,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +261,10 @@ impl ProviderError {
         Self::new(ProviderErrorKind::EmptyResponse, message)
     }
 
+    pub fn network(message: impl Into<String>) -> Self {
+        Self::new(ProviderErrorKind::Network, message)
+    }
+
     fn new(kind: ProviderErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
@@ -246,6 +283,177 @@ impl ProviderError {
         self.code = code;
         self
     }
+}
+
+impl fmt::Display for ProviderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.status_code, self.code.as_deref()) {
+            (Some(status), Some(code)) => write!(
+                formatter,
+                "{:?} provider error ({status}, {code}): {}",
+                self.kind, self.message
+            ),
+            (Some(status), None) => {
+                write!(
+                    formatter,
+                    "{:?} provider error ({status}): {}",
+                    self.kind, self.message
+                )
+            }
+            (None, Some(code)) => write!(
+                formatter,
+                "{:?} provider error ({code}): {}",
+                self.kind, self.message
+            ),
+            (None, None) => write!(
+                formatter,
+                "{:?} provider error: {}",
+                self.kind, self.message
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HttpEndpoint {
+    host: String,
+    port: u16,
+    path: String,
+}
+
+impl HttpEndpoint {
+    fn parse(url: &str) -> Result<Self, ProviderError> {
+        let rest = url.strip_prefix("http://").ok_or_else(|| {
+            ProviderError::configuration("only http:// provider URLs are supported")
+        })?;
+        let (authority, path) = rest.split_once('/').ok_or_else(|| {
+            ProviderError::configuration("provider URL must include a request path")
+        })?;
+        let (host, port) = parse_authority(authority)?;
+        Ok(Self {
+            host,
+            port,
+            path: format!("/{path}"),
+        })
+    }
+
+    fn authority(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HttpStatusCode(u16);
+
+impl HttpStatusCode {
+    fn as_u16(self) -> u16 {
+        self.0
+    }
+
+    fn is_success(self) -> bool {
+        (200..300).contains(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HttpResponse {
+    status_code: HttpStatusCode,
+    body: String,
+}
+
+fn parse_authority(authority: &str) -> Result<(String, u16), ProviderError> {
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            let parsed_port = port
+                .parse::<u16>()
+                .map_err(|_| ProviderError::configuration("provider URL port is invalid"))?;
+            (host, parsed_port)
+        }
+        None => (authority, 80),
+    };
+
+    if host.trim().is_empty() {
+        return Err(ProviderError::configuration(
+            "provider URL host must not be empty",
+        ));
+    }
+
+    Ok((host.to_string(), port))
+}
+
+fn post_json(
+    endpoint: &HttpEndpoint,
+    body: &str,
+    timeout: Duration,
+) -> Result<HttpResponse, ProviderError> {
+    let mut stream = TcpStream::connect(endpoint.authority())
+        .map_err(|error| ProviderError::network(error.to_string()))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| ProviderError::network(error.to_string()))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|error| ProviderError::network(error.to_string()))?;
+
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        endpoint.path,
+        endpoint.authority(),
+        body.len(),
+        body
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| ProviderError::network(error.to_string()))?;
+
+    read_http_response(stream)
+}
+
+fn read_http_response(mut stream: TcpStream) -> Result<HttpResponse, ProviderError> {
+    let mut bytes = Vec::new();
+    stream
+        .read_to_end(&mut bytes)
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                ProviderError::network("provider request timed out")
+            }
+            _ => ProviderError::network(error.to_string()),
+        })?;
+    let raw = String::from_utf8(bytes)
+        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+    parse_http_response(&raw)
+}
+
+fn parse_http_response(raw: &str) -> Result<HttpResponse, ProviderError> {
+    let (head, body) = raw
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| ProviderError::response_parse("HTTP response missing header/body split"))?;
+    let status_line = head
+        .lines()
+        .next()
+        .ok_or_else(|| ProviderError::response_parse("HTTP response missing status line"))?;
+    let status_code = parse_status_code(status_line)?;
+
+    Ok(HttpResponse {
+        status_code,
+        body: body.to_string(),
+    })
+}
+
+fn parse_status_code(status_line: &str) -> Result<HttpStatusCode, ProviderError> {
+    let mut parts = status_line.split_whitespace();
+    let _version = parts
+        .next()
+        .ok_or_else(|| ProviderError::response_parse("HTTP response missing version"))?;
+    let status = parts
+        .next()
+        .ok_or_else(|| ProviderError::response_parse("HTTP response missing status code"))?;
+    let code = status
+        .parse::<u16>()
+        .map_err(|_| ProviderError::response_parse("HTTP response status code is invalid"))?;
+    Ok(HttpStatusCode(code))
 }
 
 /// Deterministic provider stub for no-model controller tests.
@@ -300,9 +508,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        format_chat_request, parse_chat_response_json, parse_provider_error_json, ChatMessage,
-        ProviderConfig, ProviderErrorKind, LM_STUDIO_DEFAULT_BASE_URL,
-        LM_STUDIO_DEFAULT_TIMEOUT_MILLIS, LM_STUDIO_PROVIDER_NAME,
+        format_chat_request, parse_chat_response_json, parse_http_response,
+        parse_provider_error_json, ChatMessage, HttpEndpoint, ProviderConfig, ProviderErrorKind,
+        LM_STUDIO_DEFAULT_BASE_URL, LM_STUDIO_DEFAULT_TIMEOUT_MILLIS, LM_STUDIO_PROVIDER_NAME,
     };
 
     #[test]
@@ -456,5 +664,57 @@ mod tests {
         assert_eq!(error.kind, ProviderErrorKind::ResponseParse);
         assert_eq!(error.status_code, Some(500));
         assert!(error.message.contains("expected"));
+    }
+
+    #[test]
+    fn live_chat_endpoint_parses_http_local_urls_only() {
+        let endpoint = HttpEndpoint::parse("http://127.0.0.1:1234/v1/chat/completions").unwrap();
+
+        assert_eq!(endpoint.host, "127.0.0.1");
+        assert_eq!(endpoint.port, 1234);
+        assert_eq!(endpoint.path, "/v1/chat/completions");
+        assert_eq!(endpoint.authority(), "127.0.0.1:1234");
+
+        let https = HttpEndpoint::parse("https://127.0.0.1:1234/v1/chat/completions").unwrap_err();
+        assert_eq!(https.kind, ProviderErrorKind::Configuration);
+        assert!(https.message.contains("http://"));
+    }
+
+    #[test]
+    fn http_success_response_parses_as_provider_output() {
+        let response = parse_http_response(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\
+            {\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}",
+        )
+        .unwrap();
+
+        assert!(response.status_code.is_success());
+        let output = parse_chat_response_json(&response.body).unwrap();
+        assert_eq!(output.text, "hello");
+    }
+
+    #[test]
+    fn http_provider_error_response_maps_status_and_payload() {
+        let response = parse_http_response(
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n\
+            {\"error\":{\"message\":\"model missing\",\"code\":\"model_not_found\"}}",
+        )
+        .unwrap();
+
+        assert!(!response.status_code.is_success());
+        let error = parse_provider_error_json(Some(response.status_code.as_u16()), &response.body);
+
+        assert_eq!(error.kind, ProviderErrorKind::Provider);
+        assert_eq!(error.status_code, Some(404));
+        assert_eq!(error.code.as_deref(), Some("model_not_found"));
+        assert_eq!(error.message, "model missing");
+    }
+
+    #[test]
+    fn malformed_http_response_maps_to_parse_error() {
+        let error = parse_http_response("HTTP/1.1 nope\r\n\r\n{}").unwrap_err();
+
+        assert_eq!(error.kind, ProviderErrorKind::ResponseParse);
+        assert!(error.message.contains("status code"));
     }
 }
