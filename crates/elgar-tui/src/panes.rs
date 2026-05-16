@@ -5,13 +5,21 @@ use crate::markdown::render_assistant_markdown;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationPane {
     pub lines: Vec<String>,
+    line_styles: Vec<ConversationLineStyle>,
     scrollback: ConversationScrollback,
+    loading_pulse: ThinkingPulse,
 }
 
 impl ConversationPane {
     pub fn push_event(&mut self, event: &Event) {
-        if let Some(line) = render_tui_event(event) {
-            self.lines.push(line);
+        match event {
+            Event::ProviderStarted(_) => self.loading_pulse.reset(),
+            Event::ProviderFinished(_) | Event::Error(_) => self.remove_loading_pulse(),
+            _ => {}
+        }
+
+        if let Some((line, style)) = render_tui_event(event) {
+            self.push_line(line, style);
         }
     }
 
@@ -25,6 +33,41 @@ impl ConversationPane {
 
     pub(crate) fn follow_latest(&mut self) {
         self.scrollback.follow_latest();
+    }
+
+    pub(crate) fn advance_loading_pulse(&mut self) {
+        if self.last_line_style() == Some(ConversationLineStyle::Loading) {
+            self.loading_pulse.advance();
+            if let Some(last_line) = self.lines.last_mut() {
+                *last_line = self.loading_pulse.label().to_string();
+            }
+        }
+    }
+
+    pub(crate) fn push_pending_provider_turn(&mut self, content: &str) {
+        self.loading_pulse.reset();
+        self.push_line(render_user_message(content), ConversationLineStyle::User);
+        self.push_line(
+            self.loading_pulse.label().to_string(),
+            ConversationLineStyle::Loading,
+        );
+    }
+
+    pub(crate) fn discard_pending_provider_turn(&mut self) {
+        self.remove_loading_pulse();
+        if self.last_line_style() == Some(ConversationLineStyle::User) {
+            self.pop_line();
+        }
+    }
+
+    fn remove_loading_pulse(&mut self) {
+        if self.last_line_style() == Some(ConversationLineStyle::Loading) {
+            self.pop_line();
+        }
+    }
+
+    pub fn push_local_message(&mut self, message: impl Into<String>) {
+        self.push_line(message.into(), ConversationLineStyle::Plain);
     }
 
     #[cfg(test)]
@@ -53,6 +96,69 @@ impl ConversationPane {
             self.lines.join("\n")
         }
     }
+
+    pub(crate) fn render_lines_with_styles(&self) -> Vec<(String, ConversationLineStyle)> {
+        if self.lines.is_empty() {
+            return vec![(
+                "(empty conversation)".to_string(),
+                ConversationLineStyle::Plain,
+            )];
+        }
+
+        self.lines
+            .iter()
+            .enumerate()
+            .flat_map(|(index, entry)| {
+                let style = self.line_style(index);
+                entry
+                    .lines()
+                    .map(move |line| (line.to_string(), style))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn push_line(&mut self, line: String, style: ConversationLineStyle) {
+        self.align_line_styles();
+        self.lines.push(line);
+        self.line_styles.push(style);
+    }
+
+    fn pop_line(&mut self) -> Option<String> {
+        let line = self.lines.pop();
+        if self.line_styles.len() > self.lines.len() {
+            self.line_styles.pop();
+        }
+        line
+    }
+
+    fn last_line_style(&self) -> Option<ConversationLineStyle> {
+        self.lines
+            .len()
+            .checked_sub(1)
+            .map(|index| self.line_style(index))
+    }
+
+    fn line_style(&self, index: usize) -> ConversationLineStyle {
+        self.line_styles
+            .get(index)
+            .copied()
+            .unwrap_or(ConversationLineStyle::Plain)
+    }
+
+    fn align_line_styles(&mut self) {
+        while self.line_styles.len() < self.lines.len() {
+            self.line_styles.push(ConversationLineStyle::Plain);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ConversationLineStyle {
+    #[default]
+    Plain,
+    User,
+    Loading,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -116,9 +222,7 @@ impl CopyArea {
             Some(CopyResult::Failed { message }) => {
                 format!("copy failed: {message}")
             }
-            None => {
-                "select visible text natively | PgUp/PgDn scroll | /copy conversation".to_string()
-            }
+            None => String::new(),
         }
     }
 }
@@ -238,62 +342,82 @@ impl ThinkingPulse {
     }
 }
 
-fn render_tui_event(event: &Event) -> Option<String> {
+fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
     match event {
-        Event::UserMessage(message) => Some(render_user_message(&message.content)),
+        Event::UserMessage(message) => Some((
+            render_user_message(&message.content),
+            ConversationLineStyle::User,
+        )),
         Event::AssistantMessage(message) => {
             let speaker = match message.source {
                 AssistantMessageSource::Controller => "Elgar",
                 AssistantMessageSource::Provider => "Model",
             };
-            Some(render_labeled_output(speaker, &message.content))
+            Some((
+                render_labeled_output(speaker, &message.content),
+                ConversationLineStyle::Plain,
+            ))
         }
-        Event::ProviderStarted(_) => Some(render_thinking_progress()),
+        Event::ProviderStarted(_) => {
+            Some((render_thinking_progress(), ConversationLineStyle::Loading))
+        }
         Event::ProviderFinished(finished) => {
             render_provider_thinking(finished.output.thinking.as_deref())
+                .map(|line| (line, ConversationLineStyle::Plain))
         }
         Event::ActionProposed(action) => Some(format!(
             "Review needed: {} {:?} {}",
             action.action_id, action.action_kind, action.summary
-        )),
+        ))
+        .map(|line| (line, ConversationLineStyle::Plain)),
         Event::ActionApproved(action) => Some(format!(
             "Approved: {} {:?} {}",
             action.action_id, action.action_kind, action.summary
-        )),
+        ))
+        .map(|line| (line, ConversationLineStyle::Plain)),
         Event::ActionRejected(action) => Some(format!(
             "Rejected: {} {:?} {}. No file was changed.",
             action.action_id, action.action_kind, action.summary
-        )),
+        ))
+        .map(|line| (line, ConversationLineStyle::Plain)),
         Event::ActionApplied(applied) => Some(format!(
             "Applied and verified: {} {:?} {}",
             applied.action_id,
             applied.action_kind,
             render_verified_result(&applied.result)
-        )),
+        ))
+        .map(|line| (line, ConversationLineStyle::Plain)),
         Event::ActionFailed(failed) => Some(format!(
             "Action failed: {} {:?} {}",
             failed.action_id, failed.action_kind, failed.reason
+        ))
+        .map(|line| (line, ConversationLineStyle::Plain)),
+        Event::Error(error) => Some((
+            render_error_line(&error.message),
+            ConversationLineStyle::Plain,
         )),
-        Event::Error(error) => Some(render_error_line(&error.message)),
     }
 }
 
 fn render_user_message(content: &str) -> String {
-    let rendered = content
+    content
         .lines()
         .map(|line| format!("> {line}"))
         .collect::<Vec<_>>()
-        .join("\n");
-    format!("User\n{rendered}")
+        .join("\n")
 }
 
 fn render_labeled_output(label: &str, content: &str) -> String {
     let rendered = render_assistant_markdown(content);
-    format!("{label}\n{rendered}")
+    if rendered.contains('\n') {
+        format!("{label}:\n{rendered}")
+    } else {
+        format!("{label}: {rendered}")
+    }
 }
 
 fn render_thinking_progress() -> String {
-    "Thinking\nThinking...".to_string()
+    "thinking".to_string()
 }
 
 fn render_provider_thinking(thinking: Option<&str>) -> Option<String> {
@@ -302,7 +426,7 @@ fn render_provider_thinking(thinking: Option<&str>) -> Option<String> {
         return None;
     }
 
-    Some(render_labeled_output("Thinking", thinking))
+    Some(render_assistant_markdown(thinking))
 }
 
 fn render_verified_result(result: &VerifiedActionResult) -> String {
@@ -393,9 +517,10 @@ mod tests {
         }
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("User\n> hello"));
-        assert!(rendered.contains("Elgar\nhi"));
-        assert!(rendered.contains("Thinking\nThinking..."));
+        assert!(rendered.contains("> hello"));
+        assert!(!rendered.contains("User\n"));
+        assert!(rendered.contains("Elgar: hi"));
+        assert!(!rendered.contains("thinking"));
         assert!(!rendered.contains("request-1"));
         assert!(!rendered.contains("Provider text is suggestion only."));
         assert!(rendered.contains("Review needed: action-1 WriteFile write hello.py"));
@@ -414,10 +539,7 @@ mod tests {
             "(empty conversation)"
         );
         assert_eq!(InputArea::default().render_body(), "> ");
-        assert_eq!(
-            CopyArea::default().render_hint(),
-            "select visible text natively | PgUp/PgDn scroll | /copy conversation"
-        );
+        assert_eq!(CopyArea::default().render_hint(), "");
     }
 
     #[test]
@@ -477,7 +599,7 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Model\nPlan:\n- read files\n- render output"));
+        assert!(rendered.contains("Model:\nPlan:\n- read files\n- render output"));
         assert!(rendered.contains("code (rust):\n    fn main() {}"));
         assert!(!rendered.contains("```"));
         assert!(!rendered.contains("**read**"));
@@ -493,10 +615,42 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Model\n  File"));
+        assert!(rendered.contains("Model:\n  File"));
         assert!(rendered.contains("src/lib.rs"));
         assert!(rendered.contains("changed"));
         assert!(!rendered.contains("| --- |"));
+    }
+
+    #[test]
+    fn conversation_uses_pi_style_user_block_and_light_model_label() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::UserMessage(UserMessage::new(
+            "explain this\nin two lines",
+        )));
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "short answer",
+            AssistantMessageSource::Provider,
+        )));
+
+        assert_eq!(
+            conversation.render_body(),
+            "> explain this\n> in two lines\nModel: short answer"
+        );
+    }
+
+    #[test]
+    fn conversation_pulses_loading_inside_transcript() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_pending_provider_turn("hello");
+        assert_eq!(conversation.render_body(), "> hello\nthinking");
+
+        conversation.advance_loading_pulse();
+        assert_eq!(conversation.render_body(), "> hello\nthinking.");
+
+        conversation.discard_pending_provider_turn();
+        assert_eq!(conversation.render_body(), "(empty conversation)");
     }
 
     #[test]
@@ -519,10 +673,11 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        let thinking_index = rendered.find("Thinking\nRead the prompt.").unwrap();
-        let model_index = rendered.find("Model\nfinal answer").unwrap();
+        let thinking_index = rendered.find("Read the prompt.").unwrap();
+        let model_index = rendered.find("Model: final answer").unwrap();
 
-        assert!(rendered.contains("Thinking\nThinking..."));
+        assert!(!rendered.contains("Thinking\n"));
+        assert!(!rendered.contains("thinking"));
         assert!(thinking_index < model_index);
         assert!(rendered.contains("Return concise text."));
         assert!(!rendered.contains("request-1"));
@@ -548,8 +703,8 @@ mod tests {
 
         let rendered = conversation.render_body();
 
-        assert!(rendered.contains("Thinking\nThinking..."));
-        assert!(rendered.contains("Model\nfinal answer"));
+        assert!(!rendered.contains("thinking"));
+        assert!(rendered.contains("Model: final answer"));
         assert!(!rendered.contains("Thinking\nfinal answer"));
     }
 

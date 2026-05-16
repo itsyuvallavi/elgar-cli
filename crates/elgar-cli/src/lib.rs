@@ -10,6 +10,7 @@ use elgar_core::{
         chat_lm_studio, ChatMessage, ProviderConfig, ProviderError, LM_STUDIO_DEFAULT_BASE_URL,
     },
     renderer::render_session,
+    router::{route_input, Route},
     session::Session,
 };
 use serde::Deserialize;
@@ -261,6 +262,11 @@ fn submit_tui_input(
         shell.submit_approval(controller, session);
     } else if is_tui_rejection_command(input) {
         shell.submit_rejection(controller, session);
+    } else if matches!(
+        route_input(input),
+        Route::ApproveAction | Route::RejectAction
+    ) {
+        shell.push_local_message("Action commands must use /approve or /reject.");
     } else {
         shell.submit_input(controller, session, input);
     }
@@ -661,8 +667,7 @@ mod tests {
             ".",
         );
 
-        assert!(rendered.contains("User\n> Say hello in one sentence."));
-        assert!(rendered.contains("Thinking\nThinking..."));
+        assert!(rendered.contains("> Say hello in one sentence."));
         assert!(!rendered.contains("lm-studio-request-1"));
         assert!(rendered.contains(
             "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
@@ -737,9 +742,8 @@ mod tests {
             ".",
         );
 
-        assert!(rendered.contains("User\n> what does the harness do?"));
-        assert!(rendered.contains("Thinking\nThinking..."));
-        assert!(rendered.contains("Model\nstub provider response"));
+        assert!(rendered.contains("> what does the harness do?"));
+        assert!(rendered.contains("Model: stub provider response"));
         assert!(!rendered.contains("stub-request-1"));
         assert!(!rendered.contains("what should not run?"));
         assert!(!rendered.contains("lm-studio"));
@@ -753,8 +757,8 @@ mod tests {
         assert!(rendered.contains("/approve"));
         assert!(rendered.contains("/reject"));
         assert!(rendered.contains("/copy"));
-        assert!(!rendered.contains("User\n> /help"));
-        assert!(!rendered.contains("User\n> /commands"));
+        assert!(!rendered.contains("> /help"));
+        assert!(!rendered.contains("> /commands"));
         assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("stub-provider"));
         assert!(!rendered.contains("lm-studio"));
@@ -764,9 +768,9 @@ mod tests {
     fn tui_script_copy_command_returns_full_conversation_without_provider_call() {
         let rendered = render_tui_script(["what does the harness do?", "/copy"], ".", ".");
 
-        assert!(rendered.contains("User\n> what does the harness do?"));
-        assert!(rendered.contains("Model\nstub provider response"));
-        assert!(!rendered.contains("User\n> /copy"));
+        assert!(rendered.contains("> what does the harness do?"));
+        assert!(rendered.contains("Model: stub provider response"));
+        assert!(!rendered.contains("> /copy"));
         assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("lm-studio"));
     }
@@ -779,12 +783,29 @@ mod tests {
         let rendered = render_tui_script(["create file hello.py", "/approve"], &root, &root);
 
         assert!(target.exists());
-        assert!(rendered.contains("User\n> create file hello.py"));
+        assert!(rendered.contains("> create file hello.py"));
         assert!(rendered.contains("Review needed: action-1 WriteFile write hello.py"));
-        assert!(rendered.contains("User\n> approve"));
+        assert!(rendered.contains("> approve"));
         assert!(rendered.contains("Approved: action-1 WriteFile write hello.py"));
         assert!(rendered.contains("Applied and verified: action-1 WriteFile"));
         assert!(rendered.contains("hello.py was written"));
+        assert!(!rendered.contains("lm-studio"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tui_script_plain_approval_words_do_not_apply_pending_actions() {
+        let root = temp_root("plain-approval-command");
+        let target = root.join("hello.py");
+
+        let rendered =
+            render_tui_script(["create file hello.py", "approve", "reject"], &root, &root);
+
+        assert!(!target.exists());
+        assert!(rendered.contains("Action commands must use /approve or /reject."));
+        assert!(!rendered.contains("Applied and verified"));
+        assert!(!rendered.contains("Rejected: action-1"));
         assert!(!rendered.contains("lm-studio"));
 
         let _ = fs::remove_dir_all(root);
@@ -798,9 +819,9 @@ mod tests {
         let rendered = render_tui_script(["create file hello.py", "/reject"], &root, &root);
 
         assert!(!target.exists());
-        assert!(rendered.contains("User\n> create file hello.py"));
+        assert!(rendered.contains("> create file hello.py"));
         assert!(rendered.contains("Review needed: action-1 WriteFile write hello.py"));
-        assert!(rendered.contains("User\n> reject"));
+        assert!(rendered.contains("> reject"));
         assert!(
             rendered.contains("Rejected: action-1 WriteFile write hello.py. No file was changed.")
         );
@@ -813,9 +834,9 @@ mod tests {
     fn tui_script_no_pending_approval_gets_controller_feedback() {
         let rendered = render_tui_script(["/approve", "/reject"], ".", ".");
 
-        assert!(rendered.contains("User\n> approve"));
+        assert!(rendered.contains("> approve"));
         assert!(rendered.contains("No proposed action is waiting for approval."));
-        assert!(rendered.contains("User\n> reject"));
+        assert!(rendered.contains("> reject"));
         assert!(rendered.contains("No proposed action is waiting for rejection."));
         assert!(!rendered.contains("lm-studio"));
     }
@@ -829,8 +850,7 @@ mod tests {
 
         let rendered = String::from_utf8(output).unwrap();
         assert!(rendered.contains("Elgar TUI. Type /exit or /quit to leave."));
-        assert!(rendered.contains("User\n> what does the harness do?"));
-        assert!(rendered.contains("Thinking\nThinking..."));
+        assert!(rendered.contains("> what does the harness do?"));
         assert!(!rendered.contains("stub-request-1"));
         assert!(rendered.contains("Exiting Elgar TUI."));
     }
@@ -845,11 +865,10 @@ mod tests {
         let rendered = String::from_utf8(output).unwrap();
         assert!(rendered.contains("Commands\n/commands"));
         assert!(rendered.contains("/commands"));
-        assert!(rendered.contains("User\n> what does the harness do?"));
-        assert!(rendered.contains("Thinking\nThinking..."));
+        assert!(rendered.contains("> what does the harness do?"));
         assert!(!rendered.contains("stub-request-1"));
         assert!(rendered.contains("Exiting Elgar TUI."));
-        assert!(!rendered.contains("User\n> /help"));
+        assert!(!rendered.contains("> /help"));
         assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("lm-studio"));
     }
@@ -865,8 +884,8 @@ mod tests {
 
         let rendered = String::from_utf8(output).unwrap();
         assert!(target.exists());
-        assert!(rendered.contains("User\n> create file hello.py"));
-        assert!(rendered.contains("User\n> approve"));
+        assert!(rendered.contains("> create file hello.py"));
+        assert!(rendered.contains("> approve"));
         assert!(rendered.contains("Applied and verified: action-1 WriteFile"));
         assert!(rendered.contains("hello.py was written"));
         assert!(rendered.contains("Exiting Elgar TUI."));

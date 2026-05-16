@@ -110,9 +110,8 @@ fn renders_core_events_from_controller_turns() {
     shell.consume_events(&result.events);
 
     let rendered = shell.render();
-    assert!(rendered.contains("User\n> what does the harness do?"));
-    assert!(rendered.contains("Thinking\nThinking..."));
-    assert!(rendered.contains("Model\nstub provider response"));
+    assert!(rendered.contains("> what does the harness do?"));
+    assert!(rendered.contains("Model: stub provider response"));
     assert!(!rendered.contains("stub-request-1"));
     assert!(!rendered.contains("Provider text is suggestion only."));
     assert!(rendered.contains("Status\nreply ready"));
@@ -146,10 +145,9 @@ fn default_controller_smoke_uses_stub_even_when_lm_studio_env_is_set() {
             .and_then(|metadata| metadata.request_id.as_deref()),
         Some("stub-request-1")
     );
-    assert!(smoke.rendered.contains("Thinking\nThinking..."));
     assert!(!smoke.rendered.contains("stub-request-1"));
     assert!(!smoke.rendered.contains("Provider text is suggestion only."));
-    assert!(smoke.rendered.contains("Model\nstub provider response"));
+    assert!(smoke.rendered.contains("Model: stub provider response"));
     assert!(!smoke.rendered.contains("lm-studio"));
     assert!(!smoke
         .rendered
@@ -180,9 +178,8 @@ fn explicit_controller_smoke_uses_the_passed_controller() {
             .and_then(|metadata| metadata.model.as_deref()),
         Some("model-a")
     );
-    assert!(smoke.rendered.contains("User\n> what does this do?"));
-    assert!(smoke.rendered.contains("Thinking\nThinking..."));
-    assert!(smoke.rendered.contains("Model\nstub provider response"));
+    assert!(smoke.rendered.contains("> what does this do?"));
+    assert!(smoke.rendered.contains("Model: stub provider response"));
     assert!(!smoke.rendered.contains("stub-request-1"));
 
     let _ = fs::remove_dir_all(root);
@@ -211,10 +208,7 @@ fn explicit_lm_studio_tui_smoke_renders_through_tui_shell_without_network() {
             .map(|metadata| metadata.provider.as_str()),
         Some("lm-studio")
     );
-    assert!(smoke
-        .rendered
-        .contains("User\n> Say hello in one sentence."));
-    assert!(smoke.rendered.contains("Thinking\nThinking..."));
+    assert!(smoke.rendered.contains("> Say hello in one sentence."));
     assert!(!smoke.rendered.contains("lm-studio-request-1"));
     assert!(smoke.rendered.contains(
         "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
@@ -253,7 +247,7 @@ fn submits_user_input_through_shared_controller() {
         .events()
         .iter()
         .any(|event| matches!(event, Event::ProviderStarted(_))));
-    assert!(shell.render().contains("User\n> what does this do?"));
+    assert!(shell.render().contains("> what does this do?"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -308,8 +302,7 @@ fn provider_progress_and_text_remain_separate_from_verified_action_truth() {
     }));
 
     let rendered = shell.render();
-    assert!(rendered.contains("Thinking\nThinking..."));
-    assert!(rendered.contains("Model\nI wrote hello.py and applied the action successfully."));
+    assert!(rendered.contains("Model: I wrote hello.py and applied the action successfully."));
     assert!(!rendered.contains("claiming-request-1"));
     assert!(!rendered.contains("Provider text is suggestion only."));
     assert!(!rendered.contains("Applied and verified"));

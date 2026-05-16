@@ -17,6 +17,7 @@ pub(crate) fn accent() -> Style {
 pub(crate) fn user_input_block() -> Style {
     Style::default()
         .fg(Color::Rgb(142, 210, 201))
+        .bg(Color::Rgb(25, 47, 50))
         .add_modifier(Modifier::BOLD)
 }
 
@@ -28,6 +29,7 @@ pub(crate) fn model_output() -> Style {
     primary()
 }
 
+#[cfg(test)]
 pub(crate) fn success() -> Style {
     Style::default().fg(Color::Rgb(143, 188, 143))
 }
@@ -38,6 +40,7 @@ pub(crate) fn warning_action() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+#[cfg(test)]
 pub(crate) fn error() -> Style {
     Style::default()
         .fg(Color::Rgb(218, 118, 118))
@@ -59,6 +62,7 @@ mod tests {
         assert_eq!(muted().fg, Some(Color::Rgb(117, 126, 138)));
         assert_eq!(accent().fg, Some(Color::Rgb(117, 196, 187)));
         assert_eq!(user_input_block().fg, Some(Color::Rgb(142, 210, 201)));
+        assert_eq!(user_input_block().bg, Some(Color::Rgb(25, 47, 50)));
         assert_eq!(thinking().fg, Some(Color::Rgb(150, 159, 176)));
         assert_eq!(model_output().fg, primary().fg);
         assert_eq!(success().fg, Some(Color::Rgb(143, 188, 143)));

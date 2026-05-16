@@ -25,7 +25,7 @@ impl StartupBlock {
 
     pub fn render(&self) -> String {
         format!(
-            "elgar v0.2\nCommands: /commands /approve /reject /copy /exit /quit /help\nController is local; provider text is suggestion only; write actions require /approve.\n[Context] {}\n[Provider] {} / {}",
+            "elgar v0.2\n/commands · /approve · /reject · /copy · /exit\n\nElgar uses your local LM Studio model and keeps file changes behind approval.\n\n[Context]\n{}\n\n[Provider]\n  {} · {}",
             self.render_context_files(),
             self.provider.as_deref().unwrap_or("none"),
             self.model.as_deref().unwrap_or("none")
@@ -34,9 +34,13 @@ impl StartupBlock {
 
     fn render_context_files(&self) -> String {
         if self.context_files.is_empty() {
-            "(none)".to_string()
+            "  (none)".to_string()
         } else {
-            self.context_files.join(", ")
+            self.context_files
+                .iter()
+                .map(|file_name| format!("  {file_name}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         }
     }
 }
@@ -73,15 +77,17 @@ mod tests {
 
         let rendered = block.render();
 
-        assert!(rendered.contains("elgar v0.2"));
-        assert!(rendered.contains("/approve"));
-        assert!(rendered.contains("/reject"));
-        assert!(rendered.contains("/copy"));
-        assert!(rendered.contains("[Context] AGENTS.md"));
+        assert_eq!(
+            rendered,
+            "elgar v0.2\n/commands · /approve · /reject · /copy · /exit\n\nElgar uses your local LM Studio model and keeps file changes behind approval.\n\n[Context]\n  AGENTS.md\n\n[Provider]\n  lm-studio · openai/gpt-oss-20b"
+        );
         assert!(!rendered.contains("elgar-provider.json"));
-        assert!(rendered.contains("[Provider] lm-studio / openai/gpt-oss-20b"));
+        assert!(!rendered.contains("Commands:"));
         assert!(!rendered.contains("Skills"));
         assert!(!rendered.contains("MCP"));
+        assert!(!rendered.contains("Bash"));
+        assert!(!rendered.contains("API"));
+        assert!(!rendered.contains("settings"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -92,8 +98,8 @@ mod tests {
 
         let rendered = StartupBlock::new(&root, &root, None, None).render();
 
-        assert!(rendered.contains("[Context] (none)"));
-        assert!(rendered.contains("[Provider] none / none"));
+        assert!(rendered.contains("[Context]\n  (none)"));
+        assert!(rendered.contains("[Provider]\n  none · none"));
 
         let _ = fs::remove_dir_all(root);
     }

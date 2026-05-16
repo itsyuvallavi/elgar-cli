@@ -112,6 +112,11 @@ impl TuiShell {
     pub fn conversation_copy_text(&self) -> String {
         self.conversation.render_body()
     }
+
+    pub fn push_local_message(&mut self, message: impl Into<String>) {
+        self.conversation.push_local_message(message);
+        self.conversation.follow_latest();
+    }
 }
 
 impl Default for TuiShell {
@@ -139,10 +144,7 @@ mod tests {
         assert!(shell.input.text.is_empty());
         assert_eq!(shell.status.text, "ready");
         assert_eq!(shell.pending_action.panel, None);
-        assert_eq!(
-            shell.copy.render_hint(),
-            "select visible text natively | PgUp/PgDn scroll | /copy conversation"
-        );
+        assert_eq!(shell.copy.render_hint(), "");
     }
 
     #[test]
@@ -192,9 +194,10 @@ mod tests {
 
         let rendered = shell.render();
 
-        assert!(rendered.contains("User\n> what does the harness do?"));
-        assert!(rendered.contains("Thinking\nThinking..."));
-        assert!(rendered.contains("Model\nstub provider response"));
+        assert!(rendered.contains("> what does the harness do?"));
+        assert!(!rendered.contains("User\n"));
+        assert!(!rendered.contains("thinking"));
+        assert!(rendered.contains("Model: stub provider response"));
         assert!(!rendered.contains("stub-request-1"));
         assert!(!rendered.contains("Provider text is suggestion only."));
         assert!(session.actions().is_empty());
@@ -242,7 +245,7 @@ mod tests {
         let result = shell.submit_input(&controller, &mut session, "what does the harness do?");
 
         assert_eq!(result.route, elgar_core::router::Route::AskModel);
-        assert_eq!(shell.conversation.scroll_offset(4), 12);
+        assert_eq!(shell.conversation.scroll_offset(4), 8);
         assert_eq!(before.events().len(), 0);
         assert_eq!(session.events().len(), result.events.len());
     }

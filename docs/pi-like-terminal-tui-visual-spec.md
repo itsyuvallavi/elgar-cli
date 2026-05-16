@@ -10,6 +10,8 @@ The target is a borderless terminal chat that feels calm, local, and truthful.
 It should not become a boxed dashboard, model console, settings app, or fake
 agent platform.
 
+Before committing TUI polish, use `docs/tui-visual-qa-checklist.md`.
+
 The controller boundary remains the product boundary:
 
 ```text
@@ -30,13 +32,11 @@ Commands
 Context
 Provider
 
-User
-> create hello.py
+create hello.py
 
-Thinking
-Thinking...
+thinking...
 
-Model
+Model:
 I can propose that file. Review the action before applying.
 
 Action review
@@ -44,10 +44,10 @@ Proposed WriteFile: hello.py
 No file has been changed yet.
 /approve to apply, /reject to leave the filesystem unchanged.
 
-input: |
+> |
 
-repo: elgar  folder: /Users/yuval/__git/elgar  branch: <branch>  context: TBD
-                                                model: <provider>/<model>
+~/__git/elgar (<branch>)                         <model>
+context: TBD
 ```
 
 Avoid panel borders around normal chat. Use whitespace, short labels, and muted
@@ -84,18 +84,19 @@ Rules:
 
 ## Chat Blocks
 
-Use simple message blocks with plain labels:
+Use simple message blocks with minimal labels:
 
-- `User` for the submitted user message
-- `Thinking` for transient work state
-- `Model` for the final provider or controller response
+- Submitted user messages render as a full-width muted block, without a `User`
+  label and without a visible `>` prompt marker in the transcript area.
+- Transient work renders as muted `thinking`, `thinking.`, `thinking..`, or
+  `thinking...` inside the chat area.
+- Final provider or controller responses keep the light `Model:` label.
 - `Action review` for pending permissioned actions
 
-`Thinking` should be muted and short:
+Thinking should be muted and short:
 
 ```text
-Thinking
-Thinking...
+thinking...
 ```
 
 Do not stream verbose internal logs into the main chat. Errors should be plain
@@ -124,18 +125,21 @@ confirms it.
 The footer is a compact environment line:
 
 ```text
-repo: elgar  folder: /Users/yuval/__git/elgar  branch: <branch>  context: TBD
-                                                model: <provider>/<model>
+~/__git/elgar (<branch>)                         openai/gpt-oss-20b
+context: TBD
 ```
 
 Rules:
 
-- left side: repo, folder, branch, context
-- right side: model/provider
+- first line left side: folder/repo and branch when known
+- first line right side: model when known, otherwise the provider if no model is known
+- second line: `context: TBD` until real controller-backed accounting exists
 - `context: TBD` is acceptable until controller-backed context accounting exists
 - do not fake `128k`, token counts, percentages, context budget bars, or max
   window size
 - omit unknown values or mark them plainly as `TBD`
+- do not show helper copy such as native selection, PgUp/PgDn, or `/copy` in
+  the footer
 
 ## Native Terminal Behavior
 

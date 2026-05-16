@@ -8,8 +8,7 @@ use std::{
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
 use elgar_core::{
     provider::{ControllerProvider, ProviderConfig},
@@ -19,6 +18,7 @@ use elgar_core::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
+    text::{Line, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame, Terminal,
 };
@@ -27,6 +27,7 @@ use elgar_core::controller::Controller;
 
 use crate::{
     input::{TerminalInput, TerminalInputAction},
+    panes::{ConversationLineStyle, ConversationPane},
     startup::StartupBlock,
     theme, TuiShell,
 };
@@ -99,18 +100,23 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
             .split(area)
     };
 
-    let conversation_body = render_terminal_conversation(shell, context);
-    let conversation_line_count = conversation_body.lines().count().max(1);
+    let startup_body = render_terminal_startup(context);
+    let conversation_line_count =
+        terminal_conversation_line_count(&startup_body, &shell.conversation);
     let conversation_view_height = chunks[0].height;
-    let conversation = Paragraph::new(conversation_body)
-        .style(theme::model_output())
-        .wrap(Wrap { trim: false })
-        .scroll((
-            shell
-                .conversation
-                .scroll_offset_for_lines(conversation_line_count, conversation_view_height),
-            0,
-        ));
+    let conversation = Paragraph::new(style_terminal_conversation(
+        &startup_body,
+        &shell.conversation,
+        usize::from(chunks[0].width),
+    ))
+    .style(theme::model_output())
+    .wrap(Wrap { trim: false })
+    .scroll((
+        shell
+            .conversation
+            .scroll_offset_for_lines(conversation_line_count, conversation_view_height),
+        0,
+    ));
     frame.render_widget(conversation, chunks[0]);
 
     let (input_index, status_index) = if shell.pending_action.panel.is_some() {
@@ -130,8 +136,8 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
     frame.render_widget(input, chunks[input_index]);
 
     let status =
-        Paragraph::new(context.footer_body(&shell.status.render_body(), &shell.copy.render_hint()))
-            .style(status_style(&shell.status.render_body()))
+        Paragraph::new(context.footer_body_for_width(usize::from(chunks[status_index].width)))
+            .style(theme::muted())
             .wrap(Wrap { trim: false })
             .block(Block::default());
     frame.render_widget(status, chunks[status_index]);
@@ -182,45 +188,109 @@ impl TerminalShellContext {
         context
     }
 
-    fn footer_body(&self, status: &str, copy_hint: &str) -> String {
-        format!(
-            "{} | provider:{} model:{} | {}\ncontext: TBD | {}",
-            repo_context_label(&self.project_root, &self.cwd),
-            self.provider.as_deref().unwrap_or("none"),
-            self.model.as_deref().unwrap_or("none"),
-            status,
-            copy_hint
-        )
+    fn footer_body(&self, _status: &str, _copy_hint: &str) -> String {
+        self.footer_body_for_width(80)
+    }
+
+    fn footer_body_for_width(&self, width: usize) -> String {
+        let left = footer_location_label(&self.project_root, &self.cwd);
+        let right = self
+            .model
+            .as_deref()
+            .or(self.provider.as_deref())
+            .unwrap_or("");
+        let first_line = if right.is_empty() {
+            left
+        } else {
+            align_footer_line(&left, right, width)
+        };
+
+        format!("{first_line}\ncontext: TBD")
     }
 }
 
 fn render_terminal_conversation(shell: &TuiShell, context: &TerminalShellContext) -> String {
+    let startup = render_terminal_startup(context);
+    format!("{}\n\n{}", startup, shell.conversation.render_body())
+}
+
+fn render_terminal_startup(context: &TerminalShellContext) -> String {
     let startup = StartupBlock::new(
         &context.project_root,
         &context.cwd,
         context.provider.clone(),
         context.model.clone(),
     );
-    format!(
-        "{}\n\n{}",
-        startup.render(),
-        shell.conversation.render_body()
-    )
+    startup.render()
+}
+
+fn terminal_conversation_line_count(startup: &str, conversation: &ConversationPane) -> usize {
+    startup.lines().count() + 2 + conversation.render_lines_with_styles().len()
+}
+
+fn style_terminal_conversation(
+    startup: &str,
+    conversation: &ConversationPane,
+    width: usize,
+) -> Text<'static> {
+    let mut lines = startup
+        .lines()
+        .map(|line| Line::raw(line.to_string()))
+        .collect::<Vec<_>>();
+    lines.push(Line::raw(String::new()));
+    lines.push(Line::raw(String::new()));
+
+    lines.extend(conversation.render_lines_with_styles().into_iter().map(
+        |(line, style)| match style {
+            ConversationLineStyle::User => {
+                let visible = line.strip_prefix("> ").unwrap_or(&line);
+                Line::styled(pad_line(visible, width), theme::user_input_block())
+            }
+            ConversationLineStyle::Loading => Line::styled(line, theme::thinking()),
+            ConversationLineStyle::Plain => Line::raw(line),
+        },
+    ));
+
+    Text::from(lines)
+}
+
+fn pad_line(line: &str, width: usize) -> String {
+    let visible_width = line.chars().count();
+    if visible_width >= width {
+        line.to_string()
+    } else {
+        format!("{line}{:padding$}", "", padding = width - visible_width)
+    }
 }
 
 fn default_no_network_line() -> &'static str {
     "default no-network stub"
 }
 
-fn repo_context_label(project_root: &Path, cwd: &Path) -> String {
-    let mut parts = vec![
-        format!("repo:{}", compact_path_label(project_root)),
-        format!("cwd:{}", compact_cwd_label(project_root, cwd)),
-    ];
+fn footer_location_label(project_root: &Path, cwd: &Path) -> String {
+    let mut parts = vec![project_footer_label(project_root)];
+    if cwd != project_root {
+        parts.push(compact_cwd_label(project_root, cwd));
+    }
     if let Some(branch) = current_git_branch(project_root) {
-        parts.push(format!("branch:{branch}"));
+        parts.push(format!("({branch})"));
     }
     parts.join(" ")
+}
+
+fn align_footer_line(left: &str, right: &str, width: usize) -> String {
+    let left_width = left.chars().count();
+    let right_width = right.chars().count();
+    let minimum_gap = 2;
+    if width > left_width + right_width + minimum_gap {
+        format!(
+            "{left}{:gap$}{right}",
+            "",
+            gap = width - left_width - right_width
+        )
+    } else {
+        format!("{left}  {right}")
+    }
 }
 
 fn current_git_branch(project_root: &Path) -> Option<String> {
@@ -249,9 +319,50 @@ fn compact_path_label(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+fn project_footer_label(project_root: &Path) -> String {
+    if let Some(home_label) = home_relative_label(project_root) {
+        return home_label;
+    }
+    compact_repo_label(project_root)
+}
+
+fn home_relative_label(path: &Path) -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let home = PathBuf::from(home);
+    let relative = path.strip_prefix(home).ok()?;
+    let label = relative.display().to_string();
+    if label.is_empty() {
+        Some("~".to_string())
+    } else {
+        Some(format!("~/{}", label))
+    }
+}
+
+fn compact_repo_label(project_root: &Path) -> String {
+    let repo = compact_path_label(project_root);
+    let Some(parent) = project_root.parent() else {
+        return repo;
+    };
+    let Some(parent_name) = parent.file_name().and_then(|name| name.to_str()) else {
+        return repo;
+    };
+    if parent_name.is_empty() {
+        repo
+    } else {
+        format!("{parent_name}/{repo}")
+    }
+}
+
 fn compact_cwd_label(project_root: &Path, cwd: &Path) -> String {
     if cwd == project_root {
         ".".to_string()
+    } else if let Ok(relative) = cwd.strip_prefix(project_root) {
+        let label = relative.display().to_string();
+        if label.is_empty() {
+            ".".to_string()
+        } else {
+            label
+        }
     } else {
         compact_path_label(cwd)
     }
@@ -265,6 +376,7 @@ fn divider_block(title: &'static str) -> Block<'static> {
         .border_style(theme::muted())
 }
 
+#[cfg(test)]
 fn status_style(status: &str) -> ratatui::style::Style {
     if status.contains("error") || status.starts_with("failed") {
         theme::error()
@@ -299,6 +411,7 @@ where
             match task.try_complete() {
                 Ok(Some(completed)) => {
                     *session = completed.session;
+                    shell.conversation.discard_pending_provider_turn();
                     shell.consume_events(&completed.events);
                     shell.conversation.follow_latest();
                 }
@@ -308,6 +421,7 @@ where
         }
 
         shell.status.advance_thinking_pulse();
+        shell.conversation.advance_loading_pulse();
         shell.input.text = input.text().to_string();
         let mut context = TerminalShellContext::from_session(session);
         if context.provider.is_none() {
@@ -521,7 +635,7 @@ where
         }
         TerminalCommand::Exit => return true,
         TerminalCommand::Unknown(command) => {
-            shell.conversation.lines.push(format!(
+            shell.conversation.push_local_message(format!(
                 "Unknown command: {command}. Type /commands for commands."
             ));
             shell.conversation.follow_latest();
@@ -545,15 +659,13 @@ fn handle_terminal_text_input<P>(
         Route::ApproveAction | Route::RejectAction => {
             shell
                 .conversation
-                .lines
-                .push("Action commands must use /approve or /reject.".to_string());
+                .push_local_message("Action commands must use /approve or /reject.");
             shell.conversation.follow_latest();
         }
         Route::Help => {
             shell
                 .conversation
-                .lines
-                .push("Type /commands to show available commands.".to_string());
+                .push_local_message("Type /commands to show available commands.");
             shell.conversation.follow_latest();
         }
         _ => {
@@ -574,6 +686,8 @@ where
 {
     match parse_terminal_command(submitted) {
         TerminalCommand::Text(text) if route_input(text) == Route::AskModel => {
+            shell.conversation.push_pending_provider_turn(text);
+            shell.conversation.follow_latest();
             shell.status.start_thinking_pulse();
             *pending_turn = Some(start_provider_turn(
                 controller.clone(),
@@ -693,16 +807,13 @@ struct TerminalModeGuard;
 impl TerminalModeGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        let guard = Self;
-        execute!(io::stdout(), EnterAlternateScreen)?;
-        Ok(guard)
+        Ok(Self)
     }
 }
 
 impl Drop for TerminalModeGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
     }
 }
 
@@ -711,14 +822,15 @@ mod tests {
     use elgar_core::{action::ActionLifecycleState, controller::Controller, session::Session};
     use ratatui::{backend::TestBackend, Terminal};
 
-    use crate::{input::TerminalInput, TuiShell};
+    use crate::{input::TerminalInput, panes::ConversationPane, TuiShell};
 
     use super::{
         copy_conversation_to_terminal_clipboard, default_shell_text, encode_base64,
         handle_scroll_key, handle_submitted_terminal_input_for_loop, handle_terminal_key,
         handle_terminal_key_while_provider_active, handle_terminal_key_with_copy_writer,
         osc52_clipboard_sequence, parse_terminal_command, render_terminal_help, render_tui_shell,
-        should_exit, status_style, TerminalCommand, TerminalShellContext,
+        should_exit, status_style, style_terminal_conversation, TerminalCommand,
+        TerminalShellContext,
     };
 
     fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -734,6 +846,24 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+
+    #[test]
+    fn terminal_user_message_renders_as_padded_block_without_prompt_marker() {
+        let mut conversation = ConversationPane::default();
+        conversation.push_pending_provider_turn("hello");
+        let styled = style_terminal_conversation("startup", &conversation, 12);
+        let user_line = styled
+            .lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .first()
+                    .is_some_and(|span| span.content.as_ref() == "hello       ")
+            })
+            .unwrap();
+
+        assert_eq!(user_line.style, crate::theme::user_input_block());
     }
 
     fn submit_text(
@@ -774,28 +904,39 @@ mod tests {
         let text = default_shell_text();
 
         assert!(text.contains("elgar v0.2"));
-        assert!(text.contains("Commands: /commands /approve /reject /copy /exit /quit /help"));
+        assert!(text.contains("/commands · /approve · /reject · /copy · /exit"));
         assert!(text.contains(
-            "Controller is local; provider text is suggestion only; write actions require /approve."
+            "Elgar uses your local LM Studio model and keeps file changes behind approval."
         ));
         assert!(text.contains("[Context]"));
-        assert!(text.contains("[Provider] stub-provider / none"));
+        assert!(text.contains("[Provider]\n  stub-provider · none"));
         assert!(text.contains("(empty conversation)"));
         assert!(text.contains("> "));
-        assert!(text.contains("ready"));
-        assert!(text.contains("repo:."));
-        assert!(text.contains("cwd:."));
-        assert!(text.contains("provider:stub-provider"));
-        assert!(text.contains("model:none"));
         assert!(text.contains("context: TBD"));
-        assert!(text.contains("select visible text natively"));
-        assert!(text.contains("/copy conversation"));
+        let footer = TerminalShellContext::new(".", ".")
+            .with_provider("stub-provider", None)
+            .footer_body(
+                "ready",
+                "select visible text natively | PgUp/PgDn scroll | /copy conversation",
+            );
+        assert!(!footer.contains("select visible text natively"));
+        assert!(!footer.contains("PgUp/PgDn"));
+        assert!(!footer.contains("/copy conversation"));
+        assert!(!footer.contains("repo:"));
+        assert!(!footer.contains("cwd:"));
+        assert!(!footer.contains("provider:"));
+        assert!(!footer.contains("model:"));
+        assert!(!footer.contains('|'));
         assert!(!text.contains("Ctrl+Y copy conversation"));
         assert!(!text.contains("br:"));
         assert!(text.contains("default no-network stub"));
         assert!(!text.contains("lm-studio"));
+        assert!(!text.contains("Commands:"));
         assert!(!text.contains("Skills"));
         assert!(!text.contains("MCP"));
+        assert!(!text.contains("Bash"));
+        assert!(!text.contains("API"));
+        assert!(!text.contains("settings"));
     }
 
     #[test]
@@ -810,10 +951,19 @@ mod tests {
         let text = draw_to_text(&shell, &context);
 
         assert!(text.contains("elgar v0.2"));
-        assert!(text.contains("[Context] AGENTS.md, elgar-provider.json"));
-        assert!(text.contains("[Provider] lm-studio / openai/gpt-oss-20b"));
+        assert!(text.contains("[Context]"));
+        assert!(text.contains("AGENTS.md"));
+        assert!(text.contains("elgar-provider.json"));
+        assert!(text.contains("[Provider]"));
+        assert!(text.contains("lm-studio · openai/gpt-oss-20b"));
+        assert!(!text.contains("AGENTS.md, elgar-provider.json"));
+        assert!(!text.contains("lm-studio / openai/gpt-oss-20b"));
+        assert!(!text.contains("Commands:"));
         assert!(!text.contains("Skills"));
         assert!(!text.contains("MCP"));
+        assert!(!text.contains("Bash"));
+        assert!(!text.contains("API"));
+        assert!(!text.contains("settings"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -826,12 +976,12 @@ mod tests {
 
         assert!(text.contains("(empty conversation)"));
         assert!(text.contains("> "));
-        assert!(text.contains("repo:repo"));
-        assert!(text.contains("cwd:crates"));
+        assert!(text.contains("repo crates"));
         assert!(text.contains("context: TBD"));
-        assert!(text.contains("select visible text"));
         assert!(!text.contains("br:"));
-        assert!(text.contains("provider:none"));
+        assert!(!text.contains("select visible text"));
+        assert!(!text.contains("provider:"));
+        assert!(!text.contains("model:"));
         assert!(!text.contains("review action"));
         assert!(!text.contains("┌"));
         assert!(!text.contains("┐"));
@@ -874,9 +1024,13 @@ mod tests {
         let text = draw_to_text(&shell, &context);
         let footer = context.footer_body("reply ready", "select visible text");
 
-        assert!(text.contains("provider:local"));
-        assert!(text.contains("model:model-a"));
+        assert!(text.contains("model-a"));
+        assert!(footer.contains("model-a"));
         assert!(footer.contains("context: TBD"));
+        assert!(!footer.contains("reply ready"));
+        assert!(!footer.contains("select visible text"));
+        assert!(!footer.contains("provider:"));
+        assert!(!footer.contains("model:"));
         assert!(!footer.contains("provider configured"));
         assert!(!footer.contains("stub/no-network"));
         assert!(!text.contains("Provider progress:"));
@@ -898,14 +1052,18 @@ mod tests {
 
         let footer = context.footer_body("ready", "select visible text");
 
-        assert!(footer.contains(&format!(
-            "repo:{}",
-            root.file_name().unwrap().to_str().unwrap()
-        )));
-        assert!(footer.contains("cwd:elgar-tui"));
-        assert!(footer.contains("branch:feature/footer"));
-        assert!(footer.contains("provider:lm-studio model:openai/gpt-oss-20b"));
+        assert!(footer.contains(&format!("{}", root.file_name().unwrap().to_str().unwrap())));
+        assert!(footer.contains("crates/elgar-tui"));
+        assert!(footer.contains("(feature/footer)"));
+        assert!(footer.contains("openai/gpt-oss-20b"));
         assert!(footer.contains("context: TBD"));
+        assert!(!footer.contains("repo:"));
+        assert!(!footer.contains("cwd:"));
+        assert!(!footer.contains("branch:"));
+        assert!(!footer.contains("provider:"));
+        assert!(!footer.contains("model:"));
+        assert!(!footer.contains("select visible text"));
+        assert!(!footer.contains('|'));
         assert!(!footer.contains('%'));
         assert!(!footer.contains("tokens"));
 
@@ -931,8 +1089,14 @@ mod tests {
         assert!(pending_turn.is_some());
         assert_eq!(shell.status.render_body(), "thinking");
         assert!(shell.status.provider_active());
+        assert!(shell
+            .conversation
+            .render_body()
+            .contains("> what does the harness do?\nthinking"));
         shell.status.advance_thinking_pulse();
+        shell.conversation.advance_loading_pulse();
         assert_eq!(shell.status.render_body(), "thinking.");
+        assert!(shell.conversation.render_body().contains("thinking."));
 
         let task = pending_turn.take().unwrap();
         let completed = (0..20)
@@ -946,12 +1110,14 @@ mod tests {
             .expect("stub provider turn should complete");
 
         session = completed.session;
+        shell.conversation.discard_pending_provider_turn();
         shell.consume_events(&completed.events);
 
         assert_eq!(session.events().len(), completed.events.len());
         assert_eq!(shell.status.render_body(), "reply ready");
         assert!(!shell.status.provider_active());
-        assert!(shell.render().contains("Model\nstub provider response"));
+        assert!(!shell.render().contains("User\n"));
+        assert!(shell.render().contains("Model: stub provider response"));
     }
 
     #[test]
@@ -984,9 +1150,11 @@ mod tests {
 
         let footer = context.footer_body("ready", "select visible text");
 
-        assert!(footer.contains("provider:lm-studio"));
-        assert!(footer.contains("model:openai/gpt-oss-20b"));
+        assert!(footer.contains("openai/gpt-oss-20b"));
         assert!(footer.contains("context: TBD"));
+        assert!(!footer.contains("provider:"));
+        assert!(!footer.contains("model:"));
+        assert!(!footer.contains("select visible text"));
         assert!(!footer.contains("live/local"));
         assert!(!footer.contains("stub/no-network"));
     }
@@ -1004,12 +1172,12 @@ mod tests {
 
         let text = draw_to_text(&shell, &TerminalShellContext::from_session(&session));
 
-        assert!(text.contains("line 0"));
+        assert!(text.contains("elgar v0.2"));
         assert!(!text.contains("Review needed: action-1 WriteFile write hello.py"));
         assert!(text.contains("review action"));
         assert!(text.contains("Action: action-1 WriteFile"));
         assert!(text.contains("> "));
-        assert!(text.contains("repo:repo"));
+        assert!(text.contains("repo"));
     }
 
     #[test]
@@ -1318,8 +1486,9 @@ mod tests {
 
         assert!(!exited);
         assert!(input.text().is_empty());
-        assert!(shell.render().contains("User\n> what does the harness do?"));
-        assert!(shell.render().contains("Model\nstub provider response"));
+        assert!(shell.render().contains("> what does the harness do?"));
+        assert!(!shell.render().contains("User\n"));
+        assert!(shell.render().contains("Model: stub provider response"));
         assert_eq!(session.events().len(), 4);
     }
 
@@ -1334,8 +1503,9 @@ mod tests {
 
         assert!(!exited);
         let rendered = shell.render();
-        assert!(rendered.contains("User\n> hello!"));
-        assert!(rendered.contains("Model\n"));
+        assert!(rendered.contains("> hello!"));
+        assert!(!rendered.contains("User\n"));
+        assert!(rendered.contains("Model:"));
         assert!(rendered.contains("stub provider response (no-network) to: hello!"));
         assert!(rendered.contains("No live provider call was made"));
         assert!(rendered.contains("tui-controller-smoke"));
@@ -1497,7 +1667,7 @@ mod tests {
         assert!(!target.exists());
         assert_eq!(session, before_session);
         assert_eq!(input.text(), "q");
-        assert!(shell.copy.render_hint().contains("/copy conversation"));
+        assert_eq!(shell.copy.render_hint(), "");
 
         let _ = std::fs::remove_dir_all(root);
     }
