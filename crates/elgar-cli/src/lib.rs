@@ -657,8 +657,8 @@ mod tests {
         );
 
         assert!(rendered.contains("You: Say hello in one sentence."));
-        assert!(rendered
-            .contains("Provider progress: working with lm-studio (request lm-studio-request-1)."));
+        assert!(rendered.contains("thinking..."));
+        assert!(!rendered.contains("lm-studio-request-1"));
         assert!(rendered.contains(
             "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
         ));
@@ -731,9 +731,9 @@ mod tests {
         );
 
         assert!(rendered.contains("You: what does the harness do?"));
-        assert!(rendered
-            .contains("Provider progress: working with stub-provider (request stub-request-1)."));
-        assert!(rendered.contains("Assistant suggestion: stub provider response"));
+        assert!(rendered.contains("thinking..."));
+        assert!(rendered.contains("Model: stub provider response"));
+        assert!(!rendered.contains("stub-request-1"));
         assert!(!rendered.contains("what should not run?"));
         assert!(!rendered.contains("lm-studio"));
     }
@@ -758,7 +758,7 @@ mod tests {
         let rendered = render_tui_script(["what does the harness do?", "/copy"], ".", ".");
 
         assert!(rendered.contains("You: what does the harness do?"));
-        assert!(rendered.contains("Assistant suggestion: stub provider response"));
+        assert!(rendered.contains("Model: stub provider response"));
         assert!(!rendered.contains("You: /copy"));
         assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("lm-studio"));
@@ -823,8 +823,8 @@ mod tests {
         let rendered = String::from_utf8(output).unwrap();
         assert!(rendered.contains("Elgar TUI. Type /exit or /quit to leave."));
         assert!(rendered.contains("You: what does the harness do?"));
-        assert!(rendered
-            .contains("Provider progress: working with stub-provider (request stub-request-1)."));
+        assert!(rendered.contains("thinking..."));
+        assert!(!rendered.contains("stub-request-1"));
         assert!(rendered.contains("Exiting Elgar TUI."));
     }
 
@@ -839,8 +839,8 @@ mod tests {
         assert!(rendered.contains("Elgar TUI commands:"));
         assert!(rendered.contains("/commands"));
         assert!(rendered.contains("You: what does the harness do?"));
-        assert!(rendered
-            .contains("Provider progress: working with stub-provider (request stub-request-1)."));
+        assert!(rendered.contains("thinking..."));
+        assert!(!rendered.contains("stub-request-1"));
         assert!(rendered.contains("Exiting Elgar TUI."));
         assert!(!rendered.contains("You: /help"));
         assert!(!rendered.contains("Input was not recognized"));

@@ -42,17 +42,19 @@ pub fn parse_chat_response_json(payload: &str) -> Result<ProviderOutput, Provide
     let response: ChatResponse = serde_json::from_str(payload)
         .map_err(|error| ProviderError::response_parse(error.to_string()))?;
 
-    let text = response
+    let message = response
         .choices
         .iter()
         .filter_map(|choice| choice.message.as_ref())
-        .find_map(|message| {
-            let content = message.content.trim();
-            (!content.is_empty()).then(|| content.to_string())
-        })
+        .find(|message| !message.content.trim().is_empty())
         .ok_or_else(|| ProviderError::empty_response("provider response contained no text"))?;
 
-    Ok(ProviderOutput::new(text))
+    let output = ProviderOutput::new(message.content.trim().to_string());
+
+    Ok(match message.explicit_thinking() {
+        Some(thinking) => output.with_thinking(thinking),
+        None => output,
+    })
 }
 
 pub fn parse_provider_error_json(status_code: Option<u16>, payload: &str) -> ProviderError {
@@ -192,6 +194,36 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.text, "Suggested next step.");
+        assert_eq!(output.thinking, None);
+    }
+
+    #[test]
+    fn parses_explicit_thinking_separately_from_assistant_response() {
+        let output = parse_chat_response_json(
+            r#"{
+                "id": "chatcmpl-local",
+                "model": "loaded-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "reasoning_content": "  I should explain the next step.  ",
+                            "thinking": "Keep it concise.",
+                            "content": "  Suggested next step.  "
+                        },
+                        "finish_reason": "stop"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(output.text, "Suggested next step.");
+        assert_eq!(
+            output.thinking.as_deref(),
+            Some("I should explain the next step.\n\nKeep it concise.")
+        );
     }
 
     #[test]

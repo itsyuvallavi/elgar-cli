@@ -17,6 +17,18 @@ pub enum ChatRole {
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
+    #[serde(
+        default,
+        alias = "reasoning_content",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning: Option<String>,
+    #[serde(
+        default,
+        alias = "thinking_content",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub thinking: Option<String>,
 }
 
 impl ChatMessage {
@@ -36,7 +48,21 @@ impl ChatMessage {
         Self {
             role,
             content: content.into(),
+            reasoning: None,
+            thinking: None,
         }
+    }
+
+    pub fn explicit_thinking(&self) -> Option<String> {
+        let thinking = [self.reasoning.as_deref(), self.thinking.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        (!thinking.is_empty()).then_some(thinking)
     }
 }
 

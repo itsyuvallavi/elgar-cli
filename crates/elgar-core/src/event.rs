@@ -115,11 +115,21 @@ impl ProviderFinished {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderOutput {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 impl ProviderOutput {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into() }
+        Self {
+            text: text.into(),
+            thinking: None,
+        }
+    }
+
+    pub fn with_thinking(mut self, thinking: impl Into<String>) -> Self {
+        self.thinking = Some(thinking.into());
+        self
     }
 }
 
@@ -214,5 +224,19 @@ impl ErrorEvent {
         Self {
             message: message.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderOutput;
+
+    #[test]
+    fn provider_output_deserializes_old_content_only_shape() {
+        let output: ProviderOutput =
+            serde_json::from_str(r#"{"text":"provider response"}"#).unwrap();
+
+        assert_eq!(output.text, "provider response");
+        assert_eq!(output.thinking, None);
     }
 }

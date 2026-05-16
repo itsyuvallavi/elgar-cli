@@ -10,7 +10,9 @@ pub struct ConversationPane {
 
 impl ConversationPane {
     pub fn push_event(&mut self, event: &Event) {
-        self.lines.push(render_tui_event(event));
+        if let Some(line) = render_tui_event(event) {
+            self.lines.push(line);
+        }
     }
 
     pub(crate) fn scroll_up(&mut self, lines: usize) {
@@ -133,12 +135,8 @@ impl StatusLine {
         self.text = match event {
             Event::UserMessage(_) => "sent".to_string(),
             Event::AssistantMessage(_) => "reply ready".to_string(),
-            Event::ProviderStarted(started) => {
-                format!("provider working: {}", started.provider)
-            }
-            Event::ProviderFinished(finished) => {
-                format!("provider response ready: {}", finished.provider)
-            }
+            Event::ProviderStarted(_) => "thinking...".to_string(),
+            Event::ProviderFinished(_) => "reply ready".to_string(),
             Event::ActionProposed(action) => {
                 format!("review {}", action.action_id)
             }
@@ -163,61 +161,41 @@ impl StatusLine {
     }
 }
 
-fn render_tui_event(event: &Event) -> String {
+fn render_tui_event(event: &Event) -> Option<String> {
     match event {
-        Event::UserMessage(message) => format!("You: {}", message.content),
+        Event::UserMessage(message) => Some(format!("You: {}", message.content)),
         Event::AssistantMessage(message) => {
             let speaker = match message.source {
                 AssistantMessageSource::Controller => "Elgar",
-                AssistantMessageSource::Provider => "Assistant suggestion",
+                AssistantMessageSource::Provider => "Model",
             };
-            render_assistant_output(speaker, &message.content)
+            Some(render_assistant_output(speaker, &message.content))
         }
-        Event::ProviderStarted(started) => {
-            format!(
-                "Provider progress: working with {} (request {}).",
-                started.provider, started.request_id
-            )
-        }
-        Event::ProviderFinished(finished) => {
-            format!(
-                "Provider progress: response ready from {} (request {}). Provider text is suggestion only.",
-                finished.provider, finished.request_id
-            )
-        }
-        Event::ActionProposed(action) => {
-            format!(
-                "Review needed: {} {:?} {}",
-                action.action_id, action.action_kind, action.summary
-            )
-        }
-        Event::ActionApproved(action) => {
-            format!(
-                "Approved: {} {:?} {}",
-                action.action_id, action.action_kind, action.summary
-            )
-        }
-        Event::ActionRejected(action) => {
-            format!(
-                "Rejected: {} {:?} {}. No file was changed.",
-                action.action_id, action.action_kind, action.summary
-            )
-        }
-        Event::ActionApplied(applied) => {
-            format!(
-                "Applied and verified: {} {:?} {}",
-                applied.action_id,
-                applied.action_kind,
-                render_verified_result(&applied.result)
-            )
-        }
-        Event::ActionFailed(failed) => {
-            format!(
-                "Action failed: {} {:?} {}",
-                failed.action_id, failed.action_kind, failed.reason
-            )
-        }
-        Event::Error(error) => render_error_line(&error.message),
+        Event::ProviderStarted(_) => Some("thinking...".to_string()),
+        Event::ProviderFinished(_) => None,
+        Event::ActionProposed(action) => Some(format!(
+            "Review needed: {} {:?} {}",
+            action.action_id, action.action_kind, action.summary
+        )),
+        Event::ActionApproved(action) => Some(format!(
+            "Approved: {} {:?} {}",
+            action.action_id, action.action_kind, action.summary
+        )),
+        Event::ActionRejected(action) => Some(format!(
+            "Rejected: {} {:?} {}. No file was changed.",
+            action.action_id, action.action_kind, action.summary
+        )),
+        Event::ActionApplied(applied) => Some(format!(
+            "Applied and verified: {} {:?} {}",
+            applied.action_id,
+            applied.action_kind,
+            render_verified_result(&applied.result)
+        )),
+        Event::ActionFailed(failed) => Some(format!(
+            "Action failed: {} {:?} {}",
+            failed.action_id, failed.action_kind, failed.reason
+        )),
+        Event::Error(error) => Some(render_error_line(&error.message)),
     }
 }
 
@@ -328,12 +306,9 @@ mod tests {
         let rendered = conversation.render_body();
         assert!(rendered.contains("You: hello"));
         assert!(rendered.contains("Elgar: hi"));
-        assert!(
-            rendered.contains("Provider progress: working with stub-provider (request request-1).")
-        );
-        assert!(rendered.contains(
-            "Provider progress: response ready from stub-provider (request request-1). Provider text is suggestion only."
-        ));
+        assert!(rendered.contains("thinking..."));
+        assert!(!rendered.contains("request-1"));
+        assert!(!rendered.contains("Provider text is suggestion only."));
         assert!(rendered.contains("Review needed: action-1 WriteFile write hello.py"));
         assert!(rendered.contains("Approved: action-1 WriteFile write hello.py"));
         assert!(rendered.contains("Applied and verified: action-1 WriteFile hello.py was written"));
@@ -413,7 +388,7 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Assistant suggestion:\nPlan:\n- read files\n- render output"));
+        assert!(rendered.contains("Model:\nPlan:\n- read files\n- render output"));
         assert!(rendered.contains("code (rust):\n    fn main() {}"));
         assert!(!rendered.contains("```"));
         assert!(!rendered.contains("**read**"));
@@ -429,7 +404,7 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Assistant suggestion:\n  File"));
+        assert!(rendered.contains("Model:\n  File"));
         assert!(rendered.contains("src/lib.rs"));
         assert!(rendered.contains("changed"));
         assert!(!rendered.contains("| --- |"));
@@ -490,13 +465,13 @@ mod tests {
             "stub-provider",
             "request-1",
         )));
-        assert_eq!(status.text, "provider working: stub-provider");
+        assert_eq!(status.text, "thinking...");
 
         status.observe_event(&Event::ProviderFinished(ProviderFinished::new(
             "stub-provider",
             "request-1",
             ProviderOutput::new("provider text"),
         )));
-        assert_eq!(status.text, "provider response ready: stub-provider");
+        assert_eq!(status.text, "reply ready");
     }
 }

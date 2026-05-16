@@ -593,7 +593,9 @@ mod tests {
         assert!(text.contains("model:model-a"));
         assert!(footer.contains("provider configured"));
         assert!(!footer.contains("stub/no-network"));
-        assert!(text.contains("Provider progress: response ready from local"));
+        assert!(text.contains("thinking..."));
+        assert!(text.contains("Model: stub provider response"));
+        assert!(!text.contains("Provider progress:"));
     }
 
     #[test]
@@ -877,9 +879,7 @@ mod tests {
         assert!(!exited);
         assert!(input.text().is_empty());
         assert!(shell.render().contains("You: what does the harness do?"));
-        assert!(shell
-            .render()
-            .contains("Assistant suggestion: stub provider response"));
+        assert!(shell.render().contains("Model: stub provider response"));
         assert_eq!(session.events().len(), 4);
     }
 
@@ -895,7 +895,7 @@ mod tests {
         assert!(!exited);
         let rendered = shell.render();
         assert!(rendered.contains("You: hello!"));
-        assert!(rendered.contains("Assistant suggestion:"));
+        assert!(rendered.contains("Model:"));
         assert!(rendered.contains("stub provider response (no-network) to: hello!"));
         assert!(rendered.contains("No live provider call was made"));
         assert!(rendered.contains("tui-controller-smoke"));
