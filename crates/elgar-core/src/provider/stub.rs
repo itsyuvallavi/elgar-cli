@@ -33,7 +33,10 @@ impl ProviderStub {
             provider: self.provider.clone(),
             model: self.model.clone(),
             request_id: "stub-request-1".to_string(),
-            output: ProviderOutput::new(format!("stub provider response to: {}", prompt.trim())),
+            output: ProviderOutput::new(format!(
+                "stub provider response (no-network) to: {}. No live provider call was made. For explicit LM Studio TUI smoke, set ELGAR_LM_STUDIO_MODEL and run `cargo run -p elgar-cli -- tui-controller-smoke \"Say hello in one sentence.\"`.",
+                prompt.trim()
+            )),
         }
     }
 }

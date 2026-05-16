@@ -156,6 +156,42 @@ fn tui_command_reads_stdin_renders_stub_turn_and_exits() {
 }
 
 #[test]
+fn tui_command_greeting_gets_stub_guidance_without_live_provider() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .arg("tui")
+        .env(
+            "ELGAR_LM_STUDIO_MODEL",
+            "loaded-model-that-must-not-be-used",
+        )
+        .env("ELGAR_LM_STUDIO_BASE_URL", "https://127.0.0.1:1234/v1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"hello!\n/exit\n")
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("You: hello!"));
+    assert!(stdout.contains("stub provider response (no-network) to: hello!"));
+    assert!(stdout.contains("No live provider call was made"));
+    assert!(stdout.contains("tui-controller-smoke"));
+    assert!(!stdout.contains("Input was not recognized"));
+    assert!(!stdout.contains("lm-studio"));
+}
+
+#[test]
 fn tui_command_help_is_local_and_does_not_call_provider() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")

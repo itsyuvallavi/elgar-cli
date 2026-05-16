@@ -385,6 +385,36 @@ mod tests {
     }
 
     #[test]
+    fn greeting_routes_to_stub_chat_with_no_network_guidance() {
+        let controller = Controller::default();
+        let mut session = session();
+
+        let result = controller.turn(&mut session, "hello!");
+
+        assert_eq!(result.route, Route::AskModel);
+        assert!(session.actions().is_empty());
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ProviderStarted(started) if started.provider == "stub-provider")));
+
+        let provider_message = session.events().iter().find_map(|event| match event {
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider =>
+            {
+                Some(message.content.as_str())
+            }
+            _ => None,
+        });
+
+        assert!(provider_message.is_some_and(|message| {
+            message.contains("stub provider response (no-network) to: hello!")
+                && message.contains("No live provider call was made")
+                && message.contains("tui-controller-smoke")
+        }));
+    }
+
+    #[test]
     fn non_provider_routes_do_not_call_provider() {
         let controller = Controller::default();
         let mut session = session();

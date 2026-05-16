@@ -41,6 +41,10 @@ pub fn route_input(input: &str) -> Route {
         return Route::AskModel;
     }
 
+    if is_common_chat_text(&normalized) {
+        return Route::AskModel;
+    }
+
     Route::Unknown
 }
 
@@ -72,6 +76,17 @@ fn is_model_question(input: &str) -> bool {
         || input.starts_with("can you ")
         || input.starts_with("tell me ")
         || input.starts_with("say ")
+}
+
+fn is_common_chat_text(input: &str) -> bool {
+    let chat = input.trim_matches(|character: char| {
+        character.is_ascii_whitespace() || matches!(character, '.' | '!' | '?')
+    });
+
+    matches!(
+        chat,
+        "hello" | "hi" | "hey" | "hello elgar" | "hi elgar" | "hey elgar"
+    )
 }
 
 #[cfg(test)]
@@ -107,6 +122,12 @@ mod tests {
         assert_eq!(route_input("explain this function"), Route::AskModel);
         assert_eq!(route_input("what does this code do?"), Route::AskModel);
         assert_eq!(route_input("Say hello in one sentence."), Route::AskModel);
+    }
+
+    #[test]
+    fn classifies_common_chat_greetings_as_model_input() {
+        assert_eq!(route_input("hello!"), Route::AskModel);
+        assert_eq!(route_input("Hi Elgar."), Route::AskModel);
     }
 
     #[test]

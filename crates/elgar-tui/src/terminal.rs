@@ -827,6 +827,26 @@ mod tests {
     }
 
     #[test]
+    fn terminal_greeting_uses_stub_chat_with_live_path_guidance() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", "/repo", "/repo");
+        let mut shell = TuiShell::new();
+        let mut input = TerminalInput::default();
+
+        let exited = submit_text("hello!", &mut input, &controller, &mut session, &mut shell);
+
+        assert!(!exited);
+        let rendered = shell.render();
+        assert!(rendered.contains("You: hello!"));
+        assert!(rendered.contains("Assistant suggestion:"));
+        assert!(rendered.contains("stub provider response (no-network) to: hello!"));
+        assert!(rendered.contains("No live provider call was made"));
+        assert!(rendered.contains("tui-controller-smoke"));
+        assert!(!rendered.contains("Input was not recognized"));
+        assert!(session.actions().is_empty());
+    }
+
+    #[test]
     fn terminal_enter_ignores_empty_input_without_controller_turn() {
         let controller = Controller::default();
         let mut session = Session::new("session-1", "/repo", "/repo");
