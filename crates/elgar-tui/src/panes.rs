@@ -172,7 +172,9 @@ fn render_tui_event(event: &Event) -> Option<String> {
             Some(render_assistant_output(speaker, &message.content))
         }
         Event::ProviderStarted(_) => Some("thinking...".to_string()),
-        Event::ProviderFinished(_) => None,
+        Event::ProviderFinished(finished) => {
+            render_provider_thinking(finished.output.thinking.as_deref())
+        }
         Event::ActionProposed(action) => Some(format!(
             "Review needed: {} {:?} {}",
             action.action_id, action.action_kind, action.summary
@@ -206,6 +208,15 @@ fn render_assistant_output(speaker: &str, content: &str) -> String {
     } else {
         format!("{speaker}: {rendered}")
     }
+}
+
+fn render_provider_thinking(thinking: Option<&str>) -> Option<String> {
+    let thinking = thinking?.trim();
+    if thinking.is_empty() {
+        return None;
+    }
+
+    Some(render_assistant_output("Thinking", thinking))
 }
 
 fn render_verified_result(result: &VerifiedActionResult) -> String {
@@ -408,6 +419,60 @@ mod tests {
         assert!(rendered.contains("src/lib.rs"));
         assert!(rendered.contains("changed"));
         assert!(!rendered.contains("| --- |"));
+    }
+
+    #[test]
+    fn conversation_renders_explicit_provider_thinking_before_model_answer() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ProviderStarted(ProviderStarted::new(
+            "stub-provider",
+            "request-1",
+        )));
+        conversation.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "stub-provider",
+            "request-1",
+            ProviderOutput::new("final answer")
+                .with_thinking("Read the prompt.\nReturn concise text."),
+        )));
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "final answer",
+            AssistantMessageSource::Provider,
+        )));
+
+        let rendered = conversation.render_body();
+        let thinking_index = rendered.find("Thinking:\nRead the prompt.").unwrap();
+        let model_index = rendered.find("Model: final answer").unwrap();
+
+        assert!(rendered.contains("thinking..."));
+        assert!(thinking_index < model_index);
+        assert!(rendered.contains("Return concise text."));
+        assert!(!rendered.contains("request-1"));
+    }
+
+    #[test]
+    fn conversation_keeps_existing_progress_when_provider_thinking_is_absent() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ProviderStarted(ProviderStarted::new(
+            "stub-provider",
+            "request-1",
+        )));
+        conversation.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "stub-provider",
+            "request-1",
+            ProviderOutput::new("final answer"),
+        )));
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "final answer",
+            AssistantMessageSource::Provider,
+        )));
+
+        let rendered = conversation.render_body();
+
+        assert!(rendered.contains("thinking..."));
+        assert!(rendered.contains("Model: final answer"));
+        assert!(!rendered.contains("Thinking:"));
     }
 
     #[test]
