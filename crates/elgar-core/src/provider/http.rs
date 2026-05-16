@@ -145,11 +145,13 @@ pub(super) fn parse_http_response(raw: &str) -> Result<HttpResponse, ProviderErr
         .next()
         .ok_or_else(|| ProviderError::response_parse("HTTP response missing status line"))?;
     let status_code = parse_status_code(status_line)?;
+    let body = if has_chunked_transfer_encoding(head) {
+        decode_chunked_body(body)?
+    } else {
+        body.to_string()
+    };
 
-    Ok(HttpResponse {
-        status_code,
-        body: body.to_string(),
-    })
+    Ok(HttpResponse { status_code, body })
 }
 
 fn parse_status_code(status_line: &str) -> Result<HttpStatusCode, ProviderError> {
@@ -164,6 +166,67 @@ fn parse_status_code(status_line: &str) -> Result<HttpStatusCode, ProviderError>
         .parse::<u16>()
         .map_err(|_| ProviderError::response_parse("HTTP response status code is invalid"))?;
     Ok(HttpStatusCode(code))
+}
+
+fn has_chunked_transfer_encoding(head: &str) -> bool {
+    head.lines().skip(1).any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.trim().eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("chunked"))
+    })
+}
+
+fn decode_chunked_body(body: &str) -> Result<String, ProviderError> {
+    let bytes = body.as_bytes();
+    let mut offset = 0;
+    let mut decoded = Vec::new();
+
+    loop {
+        let size_end = find_crlf(bytes, offset)
+            .ok_or_else(|| ProviderError::response_parse("chunked body missing chunk size"))?;
+        let size_line = std::str::from_utf8(&bytes[offset..size_end])
+            .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+        let size_hex = size_line
+            .split_once(';')
+            .map(|(size, _extension)| size)
+            .unwrap_or(size_line)
+            .trim();
+        let size = usize::from_str_radix(size_hex, 16)
+            .map_err(|_| ProviderError::response_parse("chunked body chunk size is invalid"))?;
+        offset = size_end + 2;
+
+        if size == 0 {
+            return String::from_utf8(decoded)
+                .map_err(|error| ProviderError::response_parse(error.to_string()));
+        }
+
+        let data_end = offset + size;
+        if bytes.len() < data_end + 2 {
+            return Err(ProviderError::response_parse(
+                "chunked body ended before chunk data",
+            ));
+        }
+
+        decoded.extend_from_slice(&bytes[offset..data_end]);
+        if &bytes[data_end..data_end + 2] != b"\r\n" {
+            return Err(ProviderError::response_parse(
+                "chunked body missing chunk terminator",
+            ));
+        }
+        offset = data_end + 2;
+    }
+}
+
+fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
+    bytes
+        .get(start..)?
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .map(|position| start + position)
 }
 
 #[cfg(test)]
@@ -227,6 +290,17 @@ mod tests {
             response.body,
             "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}"
         );
+    }
+
+    #[test]
+    fn http_chunked_response_body_is_decoded() {
+        let response = parse_http_response(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\ndata: a\r\n7\r\ndata: b\r\n0\r\n\r\n",
+        )
+        .unwrap();
+
+        assert!(response.status_code.is_success());
+        assert_eq!(response.body, "data: adata: b");
     }
 
     #[test]

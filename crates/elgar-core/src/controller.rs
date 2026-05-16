@@ -653,6 +653,10 @@ mod tests {
             }
         }
 
+        fn output(output: ProviderOutput) -> Self {
+            Self { output: Ok(output) }
+        }
+
         fn failure(message: impl Into<String>) -> Self {
             Self {
                 output: Err(ProviderError::provider(message, Some(404), None)),
@@ -697,6 +701,40 @@ mod tests {
             .events()
             .iter()
             .any(|event| matches!(event, Event::ProviderStarted(_))));
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ProviderFinished(_))));
+        assert!(session
+            .events()
+            .iter()
+            .all(|event| !matches!(event, Event::ActionApproved(_) | Event::ActionApplied(_))));
+    }
+
+    #[test]
+    fn streamed_provider_output_remains_suggestion_only_controller_text() {
+        let output = crate::provider::parse_chat_stream_response(
+            r#"data: {"choices":[{"delta":{"content":"I approved "}}]}
+data: {"choices":[{"delta":{"content":"and wrote hello.py."}}]}
+data: [DONE]
+"#,
+        )
+        .unwrap();
+        let controller = Controller::new(FakeProvider::output(output));
+        let (mut session, _root) = rooted_session("streamed-provider-output");
+        let path = session.project_root.join("hello.py");
+        let _ = std::fs::remove_file(&path);
+
+        controller.turn(&mut session, "create hello.py");
+        controller.turn(&mut session, "what if you approve and write hello.py?");
+
+        assert!(!path.exists());
+        assert_eq!(session.actions().len(), 1);
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Proposed
+        );
+        assert_eq!(session.actions()[0].verified_result, None);
         assert!(session
             .events()
             .iter()

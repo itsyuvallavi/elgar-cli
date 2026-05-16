@@ -33,7 +33,7 @@ pub fn format_chat_request(
     Ok(ChatRequest {
         model: model.clone(),
         messages,
-        stream: false,
+        stream: config.stream,
         temperature: None,
     })
 }
@@ -54,6 +54,56 @@ pub fn parse_chat_response_json(payload: &str) -> Result<ProviderOutput, Provide
     Ok(match message.explicit_thinking() {
         Some(thinking) => output.with_thinking(thinking),
         None => output,
+    })
+}
+
+pub fn parse_chat_stream_response(payload: &str) -> Result<ProviderOutput, ProviderError> {
+    let mut text = String::new();
+    let mut thinking = String::new();
+
+    for line in payload.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data == "[DONE]" {
+            break;
+        }
+
+        let response: ChatStreamResponse = serde_json::from_str(data)
+            .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+        for choice in response.choices {
+            if let Some(delta) = choice.delta {
+                if let Some(content) = delta.content {
+                    text.push_str(&content);
+                }
+                if let Some(reasoning) = delta.reasoning {
+                    thinking.push_str(&reasoning);
+                }
+                if let Some(chunk) = delta.thinking {
+                    thinking.push_str(&chunk);
+                }
+            }
+        }
+    }
+
+    let trimmed_text = text.trim();
+    if trimmed_text.is_empty() {
+        return Err(ProviderError::empty_response(
+            "provider stream contained no text",
+        ));
+    }
+
+    let output = ProviderOutput::new(trimmed_text.to_string());
+    let trimmed_thinking = thinking.trim();
+    Ok(if trimmed_thinking.is_empty() {
+        output
+    } else {
+        output.with_thinking(trimmed_thinking.to_string())
     })
 }
 
@@ -82,7 +132,11 @@ pub fn chat_lm_studio(
     let response = post_json(&endpoint, &body, timeout)?;
 
     if response.status_code.is_success() {
-        parse_chat_response_json(&response.body)
+        if request.stream {
+            parse_chat_stream_response(&response.body)
+        } else {
+            parse_chat_response_json(&response.body)
+        }
     } else {
         Err(parse_provider_error_json(
             Some(response.status_code.as_u16()),
@@ -101,6 +155,27 @@ impl LmStudioProvider {
     pub fn new(config: ProviderConfig) -> Self {
         Self { config }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct ChatStreamResponse {
+    #[serde(default)]
+    choices: Vec<ChatStreamChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct ChatStreamChoice {
+    delta: Option<ChatStreamDelta>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct ChatStreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default, alias = "reasoning_content")]
+    reasoning: Option<String>,
+    #[serde(default, alias = "thinking_content")]
+    thinking: Option<String>,
 }
 
 impl ControllerProvider for LmStudioProvider {
@@ -122,8 +197,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        format_chat_request, parse_chat_response_json, parse_provider_error_json, ChatMessage,
-        ProviderConfig,
+        format_chat_request, parse_chat_response_json, parse_chat_stream_response,
+        parse_provider_error_json, ChatMessage, ProviderConfig,
     };
     use crate::provider::{http::parse_http_response, ProviderErrorKind};
 
@@ -152,6 +227,28 @@ mod tests {
                     { "role": "user", "content": "Summarize this file." }
                 ],
                 "stream": false
+            })
+        );
+    }
+
+    #[test]
+    fn formats_opt_in_streaming_openai_compatible_chat_request() {
+        let config = ProviderConfig {
+            stream: true,
+            ..ProviderConfig::lm_studio("loaded-model")
+        };
+
+        let request = format_chat_request(&config, vec![ChatMessage::user("hello")]).unwrap();
+
+        assert!(request.stream);
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            json!({
+                "model": "loaded-model",
+                "messages": [
+                    { "role": "user", "content": "hello" }
+                ],
+                "stream": true
             })
         );
     }
@@ -224,6 +321,51 @@ mod tests {
             output.thinking.as_deref(),
             Some("I should explain the next step.\n\nKeep it concise.")
         );
+    }
+
+    #[test]
+    fn parses_lm_studio_streaming_chunks_as_provider_suggestion() {
+        let output = parse_chat_stream_response(
+            r#"data: {"choices":[{"delta":{"role":"assistant"}}]}
+data: {"choices":[{"delta":{"content":"  Suggested"}}]}
+data: {"choices":[{"delta":{"content":" next"}}]}
+data: {"choices":[{"delta":{"content":" step.  "},"finish_reason":"stop"}]}
+data: [DONE]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(output.text, "Suggested next step.");
+        assert_eq!(output.thinking, None);
+    }
+
+    #[test]
+    fn parses_streaming_thinking_separately_from_provider_text() {
+        let output = parse_chat_stream_response(
+            r#"data: {"choices":[{"delta":{"reasoning_content":"  Think"}}]}
+data: {"choices":[{"delta":{"thinking":" first.  "}}]}
+data: {"choices":[{"delta":{"content":"Answer."}}]}
+data: [DONE]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(output.text, "Answer.");
+        assert_eq!(output.thinking.as_deref(), Some("Think first."));
+    }
+
+    #[test]
+    fn streaming_parser_reports_malformed_or_empty_payloads() {
+        let malformed = parse_chat_stream_response("data: {not json").unwrap_err();
+        assert_eq!(malformed.kind, ProviderErrorKind::ResponseParse);
+
+        let empty = parse_chat_stream_response(
+            r#"data: {"choices":[{"delta":{"content":"   "}}]}
+data: [DONE]
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(empty.kind, ProviderErrorKind::EmptyResponse);
     }
 
     #[test]

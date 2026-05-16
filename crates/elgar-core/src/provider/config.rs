@@ -18,6 +18,8 @@ pub struct ProviderConfig {
     pub model: Option<String>,
     #[serde(default = "default_timeout_millis")]
     pub timeout_millis: u64,
+    #[serde(default)]
+    pub stream: bool,
 }
 
 impl ProviderConfig {
@@ -40,6 +42,7 @@ impl Default for ProviderConfig {
             base_url: default_base_url(),
             model: None,
             timeout_millis: default_timeout_millis(),
+            stream: false,
         }
     }
 }
@@ -73,6 +76,7 @@ mod tests {
         assert_eq!(config.base_url, LM_STUDIO_DEFAULT_BASE_URL);
         assert_eq!(config.model, None);
         assert_eq!(config.timeout_millis, LM_STUDIO_DEFAULT_TIMEOUT_MILLIS);
+        assert!(!config.stream);
         assert_eq!(
             config.chat_completions_url(),
             "http://127.0.0.1:1234/v1/chat/completions"
@@ -90,6 +94,18 @@ mod tests {
         assert_eq!(config.base_url, LM_STUDIO_DEFAULT_BASE_URL);
         assert_eq!(config.model.as_deref(), Some("local-model"));
         assert_eq!(config.timeout_millis, LM_STUDIO_DEFAULT_TIMEOUT_MILLIS);
+        assert!(!config.stream);
+    }
+
+    #[test]
+    fn provider_config_deserializes_opt_in_streaming() {
+        let config: ProviderConfig = serde_json::from_value(json!({
+            "model": "local-model",
+            "stream": true
+        }))
+        .unwrap();
+
+        assert!(config.stream);
     }
 
     #[test]

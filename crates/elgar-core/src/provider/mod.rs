@@ -9,8 +9,8 @@ pub use config::{
     LM_STUDIO_PROVIDER_NAME,
 };
 pub use lm_studio::{
-    chat_lm_studio, format_chat_request, parse_chat_response_json, parse_provider_error_json,
-    LmStudioProvider,
+    chat_lm_studio, format_chat_request, parse_chat_response_json, parse_chat_stream_response,
+    parse_provider_error_json, LmStudioProvider,
 };
 pub use stub::{ProviderStub, ProviderStubResponse};
 pub use types::{

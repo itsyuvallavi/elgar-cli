@@ -94,6 +94,8 @@ struct RuntimeProviderConfigFile {
     mode: String,
     #[serde(default)]
     timeout_millis: Option<u64>,
+    #[serde(default)]
+    stream: bool,
 }
 
 pub fn render_cli_turn(
@@ -221,6 +223,7 @@ fn runtime_provider_from_file(
     if let Some(timeout_millis) = file.timeout_millis {
         config.timeout_millis = timeout_millis;
     }
+    config.stream = file.stream;
 
     Ok(Some(RuntimeProvider {
         config,
@@ -577,7 +580,8 @@ mod tests {
               "provider": "lm-studio",
               "base_url": "http://127.0.0.1:1234/v1",
               "default_model": "openai/gpt-oss-20b",
-              "mode": "live"
+              "mode": "live",
+              "stream": true
             }"#,
         )
         .unwrap();
@@ -587,6 +591,7 @@ mod tests {
         assert_eq!(runtime.config.provider, "lm-studio");
         assert_eq!(runtime.config.base_url, "http://127.0.0.1:1234/v1");
         assert_eq!(runtime.config.model.as_deref(), Some("openai/gpt-oss-20b"));
+        assert!(runtime.config.stream);
 
         let _ = fs::remove_dir_all(root);
     }
