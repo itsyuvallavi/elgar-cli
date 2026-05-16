@@ -16,7 +16,6 @@ use elgar_core::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame, Terminal,
 };
@@ -25,7 +24,7 @@ use elgar_core::controller::Controller;
 
 use crate::{
     input::{TerminalInput, TerminalInputAction},
-    TuiShell,
+    theme, TuiShell,
 };
 
 type CrosstermTerminal = Terminal<CrosstermBackend<Stdout>>;
@@ -98,7 +97,7 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
 
     let conversation_view_height = chunks[0].height;
     let conversation = Paragraph::new(shell.conversation.render_body())
-        .style(Style::default().fg(Color::Gray))
+        .style(theme::model_output())
         .wrap(Wrap { trim: false })
         .scroll((
             shell.conversation.scroll_offset(conversation_view_height),
@@ -108,7 +107,7 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
 
     let (input_index, status_index) = if shell.pending_action.panel.is_some() {
         let pending = Paragraph::new(shell.pending_action.render_body())
-            .style(Style::default().fg(Color::Gray))
+            .style(theme::warning_action())
             .wrap(Wrap { trim: false })
             .block(divider_block("review action"));
         frame.render_widget(pending, chunks[1]);
@@ -118,13 +117,13 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
     };
 
     let input = Paragraph::new(shell.input.render_body())
-        .style(Style::default().fg(Color::Cyan))
+        .style(theme::user_input_block())
         .block(divider_block(""));
     frame.render_widget(input, chunks[input_index]);
 
     let status =
         Paragraph::new(context.footer_body(&shell.status.render_body(), &shell.copy.render_hint()))
-            .style(Style::default().fg(Color::DarkGray))
+            .style(status_style(&shell.status.render_body()))
             .wrap(Wrap { trim: false })
             .block(Block::default());
     frame.render_widget(status, chunks[status_index]);
@@ -219,7 +218,25 @@ fn divider_block(title: &'static str) -> Block<'static> {
     Block::default()
         .title(title)
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .title_style(theme::accent())
+        .border_style(theme::muted())
+}
+
+fn status_style(status: &str) -> ratatui::style::Style {
+    if status.contains("error") || status.starts_with("failed") {
+        theme::error()
+    } else if status.starts_with("thinking") {
+        theme::thinking()
+    } else if status.starts_with("applied") || status == "reply ready" || status == "ready" {
+        theme::success()
+    } else if status.starts_with("review")
+        || status.starts_with("approved")
+        || status.starts_with("rejected")
+    {
+        theme::warning_action()
+    } else {
+        theme::muted()
+    }
 }
 
 fn run_terminal_loop<P>(
@@ -466,7 +483,7 @@ mod tests {
         copy_conversation_to_terminal_clipboard, default_shell_text, encode_base64,
         handle_scroll_key, handle_terminal_key, handle_terminal_key_with_copy_writer,
         osc52_clipboard_sequence, parse_terminal_command, render_terminal_help, render_tui_shell,
-        should_exit, TerminalCommand, TerminalShellContext,
+        should_exit, status_style, TerminalCommand, TerminalShellContext,
     };
 
     fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -596,6 +613,28 @@ mod tests {
         assert!(text.contains("thinking..."));
         assert!(text.contains("Model: stub provider response"));
         assert!(!text.contains("Provider progress:"));
+    }
+
+    #[test]
+    fn terminal_status_uses_named_theme_styles_by_state() {
+        assert_eq!(status_style("ready"), crate::theme::success());
+        assert_eq!(status_style("reply ready"), crate::theme::success());
+        assert_eq!(status_style("thinking..."), crate::theme::thinking());
+        assert_eq!(
+            status_style("review action-1"),
+            crate::theme::warning_action()
+        );
+        assert_eq!(
+            status_style("approved action-1"),
+            crate::theme::warning_action()
+        );
+        assert_eq!(
+            status_style("rejected action-1"),
+            crate::theme::warning_action()
+        );
+        assert_eq!(status_style("failed action-1"), crate::theme::error());
+        assert_eq!(status_style("provider error"), crate::theme::error());
+        assert_eq!(status_style("sent"), crate::theme::muted());
     }
 
     #[test]

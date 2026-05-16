@@ -6,6 +6,7 @@ pub mod panes;
 pub mod shell;
 pub mod smoke;
 pub mod terminal;
+mod theme;
 
 pub use action_panel::{ActionApprovalPanel, ActionPanelState, PendingActionArea};
 pub use layout::LayoutRegion;
