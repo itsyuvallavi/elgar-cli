@@ -250,7 +250,7 @@ fn tui_command_help_is_local_and_does_not_call_provider() {
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Elgar TUI commands:"));
+    assert!(stdout.contains("Commands\n/commands"));
     assert!(stdout.contains("/approve"));
     assert!(stdout.contains("/reject"));
     assert!(stdout.contains("/copy"));
@@ -261,6 +261,8 @@ fn tui_command_help_is_local_and_does_not_call_provider() {
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("/model"));
     assert!(!stdout.contains("/settings"));
+    assert!(!stdout.contains("/bash"));
+    assert!(!stdout.contains("/api"));
     assert!(!stdout.contains("User\n> /help"));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("stub-provider"));

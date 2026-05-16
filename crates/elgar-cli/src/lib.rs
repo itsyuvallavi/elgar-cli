@@ -267,7 +267,7 @@ fn submit_tui_input(
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Elgar TUI commands:\n  /help      Show these commands.\n  /commands  Show these commands.\n  /approve   Approve the pending action.\n  /reject    Reject the pending action.\n  /copy      Copy the full conversation in terminal mode.\n  /exit      Exit the TUI.\n  /quit      Exit the TUI."
+    "Commands\n/commands  Show commands\n/approve   Apply the pending action\n/reject    Reject the pending action\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/help      Show commands"
 }
 
 pub fn render_tui_script<I, S>(
@@ -693,17 +693,19 @@ mod tests {
         assert!(is_tui_help_command(" /commands "));
         assert!(!is_tui_help_command("help"));
         assert!(!is_tui_help_command("/model"));
-        assert!(help.contains("/help"));
-        assert!(help.contains("/commands"));
+        assert!(help.starts_with("Commands\n/commands"));
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
         assert!(help.contains("/copy"));
         assert!(help.contains("/exit"));
         assert!(help.contains("/quit"));
+        assert!(help.contains("/help"));
         assert!(!help.contains("/model"));
         assert!(!help.contains("/settings"));
         assert!(!help.contains("/login"));
         assert!(!help.contains("/provider"));
+        assert!(!help.contains("/bash"));
+        assert!(!help.contains("/api"));
     }
 
     #[test]
@@ -747,7 +749,7 @@ mod tests {
     fn tui_script_help_is_local_and_does_not_call_controller_or_provider() {
         let rendered = render_tui_script(["/help", "/commands"], ".", ".");
 
-        assert!(rendered.contains("Elgar TUI commands:"));
+        assert!(rendered.contains("Commands\n/commands"));
         assert!(rendered.contains("/approve"));
         assert!(rendered.contains("/reject"));
         assert!(rendered.contains("/copy"));
@@ -841,7 +843,7 @@ mod tests {
         run_tui_loop(&input[..], &mut output, ".", ".").unwrap();
 
         let rendered = String::from_utf8(output).unwrap();
-        assert!(rendered.contains("Elgar TUI commands:"));
+        assert!(rendered.contains("Commands\n/commands"));
         assert!(rendered.contains("/commands"));
         assert!(rendered.contains("User\n> what does the harness do?"));
         assert!(rendered.contains("Thinking\nThinking..."));

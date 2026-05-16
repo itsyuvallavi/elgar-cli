@@ -25,7 +25,7 @@ impl StartupBlock {
 
     pub fn render(&self) -> String {
         format!(
-            "elgar v0.2\nCommands: /help /commands /approve /reject /copy /exit /quit\nController is local; provider text is suggestion only; write actions require /approve.\n[Context] {}\n[Provider] {} / {}",
+            "elgar v0.2\nCommands: /commands /approve /reject /copy /exit /quit /help\nController is local; provider text is suggestion only; write actions require /approve.\n[Context] {}\n[Provider] {} / {}",
             self.render_context_files(),
             self.provider.as_deref().unwrap_or("none"),
             self.model.as_deref().unwrap_or("none")

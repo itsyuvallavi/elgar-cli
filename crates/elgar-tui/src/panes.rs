@@ -132,42 +132,109 @@ enum CopyResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusLine {
     pub text: String,
+    thinking_pulse: ThinkingPulse,
+    provider_active: bool,
 }
 
 impl StatusLine {
     pub fn ready() -> Self {
         Self {
             text: "ready".to_string(),
+            thinking_pulse: ThinkingPulse::default(),
+            provider_active: false,
         }
     }
 
     pub fn observe_event(&mut self, event: &Event) {
-        self.text = match event {
-            Event::UserMessage(_) => "sent".to_string(),
-            Event::AssistantMessage(_) => "reply ready".to_string(),
-            Event::ProviderStarted(_) => "thinking...".to_string(),
-            Event::ProviderFinished(_) => "reply ready".to_string(),
-            Event::ActionProposed(action) => {
-                format!("review {}", action.action_id)
+        match event {
+            Event::ProviderStarted(_) => self.start_thinking_pulse(),
+            Event::ProviderFinished(_) => self.finish("reply ready"),
+            Event::Error(error) => {
+                if parse_provider_error(&error.message).is_some() {
+                    self.finish("provider error");
+                } else {
+                    self.finish("error");
+                }
             }
-            Event::ActionApproved(action) => {
-                format!("approved {}", action.action_id)
+            _ => {
+                self.provider_active = false;
+                self.text = match event {
+                    Event::UserMessage(_) => "sent".to_string(),
+                    Event::AssistantMessage(_) => "reply ready".to_string(),
+                    Event::ActionProposed(action) => {
+                        format!("review {}", action.action_id)
+                    }
+                    Event::ActionApproved(action) => {
+                        format!("approved {}", action.action_id)
+                    }
+                    Event::ActionRejected(action) => {
+                        format!("rejected {}", action.action_id)
+                    }
+                    Event::ActionApplied(action) => {
+                        format!("applied {}", action.action_id)
+                    }
+                    Event::ActionFailed(action) => {
+                        format!("failed {}", action.action_id)
+                    }
+                    Event::ProviderStarted(_) | Event::ProviderFinished(_) | Event::Error(_) => {
+                        unreachable!("provider and error events are handled above")
+                    }
+                };
             }
-            Event::ActionRejected(action) => {
-                format!("rejected {}", action.action_id)
-            }
-            Event::ActionApplied(action) => {
-                format!("applied {}", action.action_id)
-            }
-            Event::ActionFailed(action) => {
-                format!("failed {}", action.action_id)
-            }
-            Event::Error(error) => render_error_status(&error.message),
-        };
+        }
+    }
+
+    pub(crate) fn start_thinking_pulse(&mut self) {
+        self.provider_active = true;
+        self.thinking_pulse.reset();
+        self.text = self.thinking_pulse.label().to_string();
+    }
+
+    pub(crate) fn advance_thinking_pulse(&mut self) {
+        if self.provider_active {
+            self.thinking_pulse.advance();
+            self.text = self.thinking_pulse.label().to_string();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn provider_active(&self) -> bool {
+        self.provider_active
+    }
+
+    pub(crate) fn finish_with_error(&mut self, message: impl Into<String>) {
+        self.provider_active = false;
+        self.text = format!("error: {}", message.into());
     }
 
     pub(crate) fn render_body(&self) -> String {
         self.text.clone()
+    }
+
+    fn finish(&mut self, text: &'static str) {
+        self.provider_active = false;
+        self.text = text.to_string();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct ThinkingPulse {
+    index: usize,
+}
+
+impl ThinkingPulse {
+    const LABELS: [&'static str; 4] = ["thinking", "thinking.", "thinking..", "thinking..."];
+
+    fn label(&self) -> &'static str {
+        Self::LABELS[self.index]
+    }
+
+    fn advance(&mut self) {
+        self.index = (self.index + 1) % Self::LABELS.len();
+    }
+
+    fn reset(&mut self) {
+        self.index = 0;
     }
 }
 
@@ -252,14 +319,6 @@ fn render_error_line(message: &str) -> String {
         )
     } else {
         format!("Error: {message}")
-    }
-}
-
-fn render_error_status(message: &str) -> String {
-    if parse_provider_error(message).is_some() {
-        "provider error".to_string()
-    } else {
-        "error".to_string()
     }
 }
 
@@ -549,7 +608,8 @@ mod tests {
             "stub-provider",
             "request-1",
         )));
-        assert_eq!(status.text, "thinking...");
+        assert_eq!(status.text, "thinking");
+        assert!(status.provider_active());
 
         status.observe_event(&Event::ProviderFinished(ProviderFinished::new(
             "stub-provider",
@@ -557,5 +617,34 @@ mod tests {
             ProviderOutput::new("provider text"),
         )));
         assert_eq!(status.text, "reply ready");
+        assert!(!status.provider_active());
+    }
+
+    #[test]
+    fn status_line_cycles_terminal_safe_thinking_pulse() {
+        let mut status = StatusLine::ready();
+
+        status.start_thinking_pulse();
+        assert_eq!(status.render_body(), "thinking");
+
+        status.advance_thinking_pulse();
+        assert_eq!(status.render_body(), "thinking.");
+
+        status.advance_thinking_pulse();
+        assert_eq!(status.render_body(), "thinking..");
+
+        status.advance_thinking_pulse();
+        assert_eq!(status.render_body(), "thinking...");
+
+        status.advance_thinking_pulse();
+        assert_eq!(status.render_body(), "thinking");
+
+        status.observe_event(&Event::ProviderFinished(ProviderFinished::new(
+            "stub-provider",
+            "request-1",
+            ProviderOutput::new("provider text"),
+        )));
+        status.advance_thinking_pulse();
+        assert_eq!(status.render_body(), "reply ready");
     }
 }

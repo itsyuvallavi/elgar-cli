@@ -1,6 +1,8 @@
 use std::{
     io::{self, Stdout, Write},
     path::{Path, PathBuf},
+    sync::mpsc,
+    thread,
     time::Duration,
 };
 
@@ -11,6 +13,7 @@ use crossterm::{
 };
 use elgar_core::{
     provider::{ControllerProvider, ProviderConfig},
+    router::{route_input, Route},
     session::Session,
 };
 use ratatui::{
@@ -53,7 +56,7 @@ fn run_terminal_shell_with_controller<P>(
     controller: Controller<P>,
 ) -> io::Result<()>
 where
-    P: ControllerProvider,
+    P: ControllerProvider + Clone + Send + 'static,
 {
     let _guard = TerminalModeGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
@@ -181,23 +184,13 @@ impl TerminalShellContext {
 
     fn footer_body(&self, status: &str, copy_hint: &str) -> String {
         format!(
-            "{} | proj:{} | cwd:{} | prov:{} | model:{} | {} | {}",
-            status,
-            compact_path_label(&self.project_root),
-            compact_cwd_label(&self.project_root, &self.cwd),
+            "{} | provider:{} model:{} | {}\ncontext: TBD | {}",
+            repo_context_label(&self.project_root, &self.cwd),
             self.provider.as_deref().unwrap_or("none"),
             self.model.as_deref().unwrap_or("none"),
-            self.provider_mode_label(),
+            status,
             copy_hint
         )
-    }
-
-    fn provider_mode_label(&self) -> &'static str {
-        match self.provider.as_deref() {
-            Some("lm-studio") => "live/local",
-            Some("stub-provider") | None => compact_no_network_label(),
-            Some(_) => "provider configured",
-        }
     }
 }
 
@@ -219,8 +212,33 @@ fn default_no_network_line() -> &'static str {
     "default no-network stub"
 }
 
-fn compact_no_network_label() -> &'static str {
-    "stub/no-network"
+fn repo_context_label(project_root: &Path, cwd: &Path) -> String {
+    let mut parts = vec![
+        format!("repo:{}", compact_path_label(project_root)),
+        format!("cwd:{}", compact_cwd_label(project_root, cwd)),
+    ];
+    if let Some(branch) = current_git_branch(project_root) {
+        parts.push(format!("branch:{branch}"));
+    }
+    parts.join(" ")
+}
+
+fn current_git_branch(project_root: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(project_root.join(".git").join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
+        return non_empty_label(branch);
+    }
+    None
+}
+
+fn non_empty_label(label: &str) -> Option<String> {
+    let label = label.trim();
+    if label.is_empty() {
+        None
+    } else {
+        Some(label.to_string())
+    }
 }
 
 fn compact_path_label(path: &Path) -> String {
@@ -271,11 +289,25 @@ fn run_terminal_loop<P>(
     shell: &mut TuiShell,
 ) -> io::Result<()>
 where
-    P: ControllerProvider,
+    P: ControllerProvider + Clone + Send + 'static,
 {
     let mut input = TerminalInput::default();
+    let mut pending_turn: Option<ProviderTurnTask> = None;
 
     loop {
+        if let Some(task) = pending_turn.take() {
+            match task.try_complete() {
+                Ok(Some(completed)) => {
+                    *session = completed.session;
+                    shell.consume_events(&completed.events);
+                    shell.conversation.follow_latest();
+                }
+                Ok(None) => pending_turn = Some(task),
+                Err(message) => shell.status.finish_with_error(message),
+            }
+        }
+
+        shell.status.advance_thinking_pulse();
         shell.input.text = input.text().to_string();
         let mut context = TerminalShellContext::from_session(session);
         if context.provider.is_none() {
@@ -288,7 +320,18 @@ where
         if event::poll(Duration::from_millis(250))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if handle_terminal_key(key, &mut input, controller, session, shell) {
+                    if pending_turn.is_some() {
+                        if handle_terminal_key_while_provider_active(key, &mut input, shell) {
+                            break;
+                        }
+                    } else if handle_terminal_key_for_loop(
+                        key,
+                        &mut input,
+                        controller,
+                        session,
+                        shell,
+                        &mut pending_turn,
+                    ) {
                         break;
                     }
                 }
@@ -300,11 +343,53 @@ where
     Ok(())
 }
 
+struct ProviderTurnTask {
+    receiver: mpsc::Receiver<Result<CompletedProviderTurn, String>>,
+}
+
+impl ProviderTurnTask {
+    fn try_complete(&self) -> Result<Option<CompletedProviderTurn>, String> {
+        match self.receiver.try_recv() {
+            Ok(result) => result.map(Some),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("provider request worker disconnected".to_string())
+            }
+        }
+    }
+}
+
+struct CompletedProviderTurn {
+    session: Session,
+    events: Vec<elgar_core::event::Event>,
+}
+
+fn start_provider_turn<P>(
+    controller: Controller<P>,
+    mut session: Session,
+    input: String,
+) -> ProviderTurnTask
+where
+    P: ControllerProvider + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let result = controller.turn(&mut session, &input);
+        let _ = sender.send(Ok(CompletedProviderTurn {
+            session,
+            events: result.events,
+        }));
+    });
+
+    ProviderTurnTask { receiver }
+}
+
 fn should_exit(key: crossterm::event::KeyEvent) -> bool {
     matches!(key.code, KeyCode::Esc)
         || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
 }
 
+#[cfg(test)]
 fn handle_terminal_key<P>(
     key: crossterm::event::KeyEvent,
     input: &mut TerminalInput,
@@ -318,6 +403,64 @@ where
     handle_terminal_key_with_copy_writer(key, input, controller, session, shell, io::stdout())
 }
 
+fn handle_terminal_key_for_loop<P>(
+    key: crossterm::event::KeyEvent,
+    input: &mut TerminalInput,
+    controller: &Controller<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+    pending_turn: &mut Option<ProviderTurnTask>,
+) -> bool
+where
+    P: ControllerProvider + Clone + Send + 'static,
+{
+    if should_exit(key) {
+        return true;
+    }
+
+    if handle_scroll_key(key, shell) {
+        return false;
+    }
+
+    match input.handle_key(key) {
+        TerminalInputAction::Continue => false,
+        TerminalInputAction::Exit => true,
+        TerminalInputAction::Submit => {
+            let submitted = input.drain();
+            shell.input.text.clear();
+            handle_submitted_terminal_input_for_loop(
+                &submitted,
+                controller,
+                session,
+                shell,
+                pending_turn,
+            )
+        }
+    }
+}
+
+fn handle_terminal_key_while_provider_active(
+    key: crossterm::event::KeyEvent,
+    input: &mut TerminalInput,
+    shell: &mut TuiShell,
+) -> bool {
+    if should_exit(key) {
+        return true;
+    }
+
+    if handle_scroll_key(key, shell) {
+        return false;
+    }
+
+    if matches!(key.code, KeyCode::Enter) {
+        let _ = input.drain();
+        shell.input.text.clear();
+    }
+
+    false
+}
+
+#[cfg(test)]
 fn handle_terminal_key_with_copy_writer<P>(
     key: crossterm::event::KeyEvent,
     input: &mut TerminalInput,
@@ -343,37 +486,103 @@ where
         TerminalInputAction::Submit => {
             let submitted = input.drain();
             shell.input.text.clear();
-            match parse_terminal_command(&submitted) {
-                TerminalCommand::Empty => {}
-                TerminalCommand::Help => {
-                    shell
-                        .conversation
-                        .lines
-                        .push(render_terminal_help().to_string());
-                    shell.conversation.follow_latest();
-                }
-                TerminalCommand::Approve => {
-                    shell.submit_approval(controller, session);
-                }
-                TerminalCommand::Reject => {
-                    shell.submit_rejection(controller, session);
-                }
-                TerminalCommand::Copy => {
-                    let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);
-                }
-                TerminalCommand::Exit => return true,
-                TerminalCommand::Unknown(command) => {
-                    shell.conversation.lines.push(format!(
-                        "Unknown command: {command}. Type /help for commands."
-                    ));
-                    shell.conversation.follow_latest();
-                }
-                TerminalCommand::Text(text) => {
-                    shell.submit_input(controller, session, text);
-                }
-            }
+            handle_submitted_terminal_input(&submitted, controller, session, shell, copy_writer)
+        }
+    }
+}
+
+fn handle_submitted_terminal_input<P>(
+    submitted: &str,
+    controller: &Controller<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+    copy_writer: impl Write,
+) -> bool
+where
+    P: ControllerProvider,
+{
+    match parse_terminal_command(submitted) {
+        TerminalCommand::Empty => {}
+        TerminalCommand::Help => {
+            shell
+                .conversation
+                .lines
+                .push(render_terminal_help().to_string());
+            shell.conversation.follow_latest();
+        }
+        TerminalCommand::Approve => {
+            shell.submit_approval(controller, session);
+        }
+        TerminalCommand::Reject => {
+            shell.submit_rejection(controller, session);
+        }
+        TerminalCommand::Copy => {
+            let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);
+        }
+        TerminalCommand::Exit => return true,
+        TerminalCommand::Unknown(command) => {
+            shell.conversation.lines.push(format!(
+                "Unknown command: {command}. Type /commands for commands."
+            ));
+            shell.conversation.follow_latest();
+        }
+        TerminalCommand::Text(text) => {
+            handle_terminal_text_input(text, controller, session, shell);
+        }
+    }
+    false
+}
+
+fn handle_terminal_text_input<P>(
+    text: &str,
+    controller: &Controller<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+) where
+    P: ControllerProvider,
+{
+    match route_input(text) {
+        Route::ApproveAction | Route::RejectAction => {
+            shell
+                .conversation
+                .lines
+                .push("Action commands must use /approve or /reject.".to_string());
+            shell.conversation.follow_latest();
+        }
+        Route::Help => {
+            shell
+                .conversation
+                .lines
+                .push("Type /commands to show available commands.".to_string());
+            shell.conversation.follow_latest();
+        }
+        _ => {
+            shell.submit_input(controller, session, text);
+        }
+    }
+}
+
+fn handle_submitted_terminal_input_for_loop<P>(
+    submitted: &str,
+    controller: &Controller<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+    pending_turn: &mut Option<ProviderTurnTask>,
+) -> bool
+where
+    P: ControllerProvider + Clone + Send + 'static,
+{
+    match parse_terminal_command(submitted) {
+        TerminalCommand::Text(text) if route_input(text) == Route::AskModel => {
+            shell.status.start_thinking_pulse();
+            *pending_turn = Some(start_provider_turn(
+                controller.clone(),
+                session.clone(),
+                text.to_string(),
+            ));
             false
         }
+        _ => handle_submitted_terminal_input(submitted, controller, session, shell, io::stdout()),
     }
 }
 
@@ -404,7 +613,7 @@ fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
 }
 
 fn render_terminal_help() -> &'static str {
-    "Elgar terminal commands:\n  /help      Show these commands.\n  /commands  Show these commands.\n  /approve   Approve the pending action.\n  /reject    Reject the pending action.\n  /copy      Copy the full conversation.\n  /exit      Exit the TUI.\n  /quit      Exit the TUI."
+    "Commands\n/commands  Show commands\n/approve   Apply the pending action\n/reject    Reject the pending action\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/help      Show commands"
 }
 
 fn handle_scroll_key(key: crossterm::event::KeyEvent, shell: &mut TuiShell) -> bool {
@@ -506,7 +715,8 @@ mod tests {
 
     use super::{
         copy_conversation_to_terminal_clipboard, default_shell_text, encode_base64,
-        handle_scroll_key, handle_terminal_key, handle_terminal_key_with_copy_writer,
+        handle_scroll_key, handle_submitted_terminal_input_for_loop, handle_terminal_key,
+        handle_terminal_key_while_provider_active, handle_terminal_key_with_copy_writer,
         osc52_clipboard_sequence, parse_terminal_command, render_terminal_help, render_tui_shell,
         should_exit, status_style, TerminalCommand, TerminalShellContext,
     };
@@ -564,7 +774,7 @@ mod tests {
         let text = default_shell_text();
 
         assert!(text.contains("elgar v0.2"));
-        assert!(text.contains("Commands: /help /commands /approve /reject /copy /exit /quit"));
+        assert!(text.contains("Commands: /commands /approve /reject /copy /exit /quit /help"));
         assert!(text.contains(
             "Controller is local; provider text is suggestion only; write actions require /approve."
         ));
@@ -573,8 +783,11 @@ mod tests {
         assert!(text.contains("(empty conversation)"));
         assert!(text.contains("> "));
         assert!(text.contains("ready"));
-        assert!(text.contains("prov:stub-provider"));
+        assert!(text.contains("repo:."));
+        assert!(text.contains("cwd:."));
+        assert!(text.contains("provider:stub-provider"));
         assert!(text.contains("model:none"));
+        assert!(text.contains("context: TBD"));
         assert!(text.contains("select visible text natively"));
         assert!(text.contains("/copy conversation"));
         assert!(!text.contains("Ctrl+Y copy conversation"));
@@ -613,11 +826,12 @@ mod tests {
 
         assert!(text.contains("(empty conversation)"));
         assert!(text.contains("> "));
-        assert!(text.contains("proj:repo"));
+        assert!(text.contains("repo:repo"));
         assert!(text.contains("cwd:crates"));
+        assert!(text.contains("context: TBD"));
         assert!(text.contains("select visible text"));
         assert!(!text.contains("br:"));
-        assert!(text.contains("prov:none"));
+        assert!(text.contains("provider:none"));
         assert!(!text.contains("review action"));
         assert!(!text.contains("┌"));
         assert!(!text.contains("┐"));
@@ -660,11 +874,84 @@ mod tests {
         let text = draw_to_text(&shell, &context);
         let footer = context.footer_body("reply ready", "select visible text");
 
-        assert!(text.contains("prov:local"));
+        assert!(text.contains("provider:local"));
         assert!(text.contains("model:model-a"));
-        assert!(footer.contains("provider configured"));
+        assert!(footer.contains("context: TBD"));
+        assert!(!footer.contains("provider configured"));
         assert!(!footer.contains("stub/no-network"));
         assert!(!text.contains("Provider progress:"));
+    }
+
+    #[test]
+    fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
+        let root = temp_root("terminal-footer-git-context");
+        let cwd = root.join("crates").join("elgar-tui");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(
+            root.join(".git").join("HEAD"),
+            "ref: refs/heads/feature/footer\n",
+        )
+        .unwrap();
+        let context = TerminalShellContext::new(&root, &cwd)
+            .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()));
+
+        let footer = context.footer_body("ready", "select visible text");
+
+        assert!(footer.contains(&format!(
+            "repo:{}",
+            root.file_name().unwrap().to_str().unwrap()
+        )));
+        assert!(footer.contains("cwd:elgar-tui"));
+        assert!(footer.contains("branch:feature/footer"));
+        assert!(footer.contains("provider:lm-studio model:openai/gpt-oss-20b"));
+        assert!(footer.contains("context: TBD"));
+        assert!(!footer.contains('%'));
+        assert!(!footer.contains("tokens"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_loop_starts_provider_text_turn_as_active_pulse() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", "/repo", "/repo");
+        let mut shell = TuiShell::new();
+        let mut pending_turn = None;
+
+        let exited = handle_submitted_terminal_input_for_loop(
+            "what does the harness do?",
+            &controller,
+            &mut session,
+            &mut shell,
+            &mut pending_turn,
+        );
+
+        assert!(!exited);
+        assert!(pending_turn.is_some());
+        assert_eq!(shell.status.render_body(), "thinking");
+        assert!(shell.status.provider_active());
+        shell.status.advance_thinking_pulse();
+        assert_eq!(shell.status.render_body(), "thinking.");
+
+        let task = pending_turn.take().unwrap();
+        let completed = (0..20)
+            .find_map(|_| {
+                let result = task.try_complete().unwrap();
+                if result.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                result
+            })
+            .expect("stub provider turn should complete");
+
+        session = completed.session;
+        shell.consume_events(&completed.events);
+
+        assert_eq!(session.events().len(), completed.events.len());
+        assert_eq!(shell.status.render_body(), "reply ready");
+        assert!(!shell.status.provider_active());
+        assert!(shell.render().contains("Model\nstub provider response"));
     }
 
     #[test]
@@ -690,16 +977,17 @@ mod tests {
     }
 
     #[test]
-    fn terminal_footer_labels_lm_studio_as_live_local() {
+    fn terminal_footer_shows_lm_studio_provider_and_model_without_usage_claims() {
         let mut context = TerminalShellContext::new("/repo", "/repo");
         context.provider = Some("lm-studio".to_string());
         context.model = Some("openai/gpt-oss-20b".to_string());
 
         let footer = context.footer_body("ready", "select visible text");
 
-        assert!(footer.contains("prov:lm-studio"));
+        assert!(footer.contains("provider:lm-studio"));
         assert!(footer.contains("model:openai/gpt-oss-20b"));
-        assert!(footer.contains("live/local"));
+        assert!(footer.contains("context: TBD"));
+        assert!(!footer.contains("live/local"));
         assert!(!footer.contains("stub/no-network"));
     }
 
@@ -721,7 +1009,7 @@ mod tests {
         assert!(text.contains("review action"));
         assert!(text.contains("Action: action-1 WriteFile"));
         assert!(text.contains("> "));
-        assert!(text.contains("proj:repo"));
+        assert!(text.contains("repo:repo"));
     }
 
     #[test]
@@ -767,15 +1055,76 @@ mod tests {
         );
 
         let help = render_terminal_help();
-        assert!(help.contains("/help"));
-        assert!(help.contains("/commands"));
+        assert!(help.starts_with("Commands\n/commands"));
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
         assert!(help.contains("/copy"));
         assert!(help.contains("/exit"));
         assert!(help.contains("/quit"));
+        assert!(help.contains("/help"));
         assert!(!help.contains("/model"));
         assert!(!help.contains("/settings"));
+        assert!(!help.contains("/bash"));
+        assert!(!help.contains("/api"));
+    }
+
+    #[test]
+    fn terminal_plain_approval_words_do_not_apply_pending_actions() {
+        let controller = Controller::default();
+        let root = temp_root("terminal-plain-approval-blocked");
+        let target = root.join("approved.py");
+        let mut session = Session::new("session-1", root.clone(), root.clone());
+        let mut shell = TuiShell::new();
+        let mut input = TerminalInput::default();
+
+        shell.submit_input(&controller, &mut session, "create file approved.py");
+        let before_session = session.clone();
+
+        let exited = submit_text("approve", &mut input, &controller, &mut session, &mut shell);
+
+        assert!(!exited);
+        assert!(!target.exists());
+        assert_eq!(session, before_session);
+        assert!(shell
+            .render()
+            .contains("Action commands must use /approve or /reject."));
+        assert!(input.text().is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_rejects_stale_input_while_provider_is_active() {
+        let mut input = TerminalInput::default();
+        let mut shell = TuiShell::new();
+        shell.status.start_thinking_pulse();
+
+        for character in "/approve".chars() {
+            let exited = handle_terminal_key_while_provider_active(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(character),
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                &mut input,
+                &mut shell,
+            );
+            assert!(!exited);
+        }
+
+        assert!(input.text().is_empty());
+
+        let exited = handle_terminal_key_while_provider_active(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
+            &mut shell,
+        );
+
+        assert!(!exited);
+        assert!(input.text().is_empty());
+        assert!(shell.status.provider_active());
     }
 
     #[test]
