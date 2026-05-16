@@ -106,8 +106,8 @@ fn tui_controller_smoke_command_renders_tui_provider_error_without_network() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Conversation\n"));
-    assert!(stdout.contains("You: Say hello."));
-    assert!(stdout.contains("thinking..."));
+    assert!(stdout.contains("User\n> Say hello."));
+    assert!(stdout.contains("Thinking\nThinking..."));
     assert!(!stdout.contains("lm-studio-request-1"));
     assert!(stdout.contains(
         "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
@@ -178,9 +178,9 @@ fn tui_command_reads_stdin_renders_stub_turn_and_exits() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Elgar TUI. Type /exit or /quit to leave."));
-    assert!(stdout.contains("You: what does the harness do?"));
-    assert!(stdout.contains("thinking..."));
-    assert!(stdout.contains("Model: stub provider response"));
+    assert!(stdout.contains("User\n> what does the harness do?"));
+    assert!(stdout.contains("Thinking\nThinking..."));
+    assert!(stdout.contains("Model\nstub provider response"));
     assert!(!stdout.contains("stub-request-1"));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("lm-studio"));
@@ -214,7 +214,7 @@ fn tui_command_greeting_gets_stub_guidance_without_live_provider() {
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("You: hello!"));
+    assert!(stdout.contains("User\n> hello!"));
     assert!(stdout.contains("stub provider response (no-network) to: hello!"));
     assert!(stdout.contains("No live provider call was made"));
     assert!(stdout.contains("tui-controller-smoke"));
@@ -261,7 +261,7 @@ fn tui_command_help_is_local_and_does_not_call_provider() {
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("/model"));
     assert!(!stdout.contains("/settings"));
-    assert!(!stdout.contains("You: /help"));
+    assert!(!stdout.contains("User\n> /help"));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("stub-provider"));
     assert!(!stdout.contains("lm-studio"));
@@ -391,7 +391,7 @@ fn tui_command_line_loop_preserves_controller_backed_action_lifecycle() {
     assert_eq!(fs::read_to_string(&approved_target).unwrap(), "");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("You: create file rejected.py"));
+    assert!(stdout.contains("User\n> create file rejected.py"));
     assert!(stdout.contains("Action: action-1 WriteFile"));
     assert!(stdout.contains("Target: rejected.py"));
     assert!(stdout.contains("State: waiting for approval"));
@@ -399,7 +399,7 @@ fn tui_command_line_loop_preserves_controller_backed_action_lifecycle() {
     assert!(stdout.contains("Result: Rejected. No file was changed."));
     assert!(stdout.contains("Rejected actions are final"));
     assert!(stdout.contains("No proposed action is waiting for approval."));
-    assert!(stdout.contains("You: create file approved.py"));
+    assert!(stdout.contains("User\n> create file approved.py"));
     assert!(stdout.contains("Action: action-2 WriteFile"));
     assert!(stdout.contains("Target: approved.py"));
     assert!(stdout.contains("State: applied and verified"));

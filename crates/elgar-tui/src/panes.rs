@@ -27,11 +27,21 @@ impl ConversationPane {
         self.scrollback.follow_latest();
     }
 
+    #[cfg(test)]
     pub(crate) fn scroll_offset(&self, viewport_height: u16) -> u16 {
-        self.scrollback
-            .offset_for(self.render_line_count(), usize::from(viewport_height))
+        self.scroll_offset_for_lines(self.render_line_count(), viewport_height)
     }
 
+    pub(crate) fn scroll_offset_for_lines(
+        &self,
+        content_lines: usize,
+        viewport_height: u16,
+    ) -> u16 {
+        self.scrollback
+            .offset_for(content_lines, usize::from(viewport_height))
+    }
+
+    #[cfg(test)]
     fn render_line_count(&self) -> usize {
         self.render_body().lines().count().max(1)
     }
@@ -163,15 +173,15 @@ impl StatusLine {
 
 fn render_tui_event(event: &Event) -> Option<String> {
     match event {
-        Event::UserMessage(message) => Some(format!("You: {}", message.content)),
+        Event::UserMessage(message) => Some(render_user_message(&message.content)),
         Event::AssistantMessage(message) => {
             let speaker = match message.source {
                 AssistantMessageSource::Controller => "Elgar",
                 AssistantMessageSource::Provider => "Model",
             };
-            Some(render_assistant_output(speaker, &message.content))
+            Some(render_labeled_output(speaker, &message.content))
         }
-        Event::ProviderStarted(_) => Some("thinking...".to_string()),
+        Event::ProviderStarted(_) => Some(render_thinking_progress()),
         Event::ProviderFinished(finished) => {
             render_provider_thinking(finished.output.thinking.as_deref())
         }
@@ -201,13 +211,22 @@ fn render_tui_event(event: &Event) -> Option<String> {
     }
 }
 
-fn render_assistant_output(speaker: &str, content: &str) -> String {
+fn render_user_message(content: &str) -> String {
+    let rendered = content
+        .lines()
+        .map(|line| format!("> {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("User\n{rendered}")
+}
+
+fn render_labeled_output(label: &str, content: &str) -> String {
     let rendered = render_assistant_markdown(content);
-    if rendered.contains('\n') {
-        format!("{speaker}:\n{rendered}")
-    } else {
-        format!("{speaker}: {rendered}")
-    }
+    format!("{label}\n{rendered}")
+}
+
+fn render_thinking_progress() -> String {
+    "Thinking\nThinking...".to_string()
 }
 
 fn render_provider_thinking(thinking: Option<&str>) -> Option<String> {
@@ -216,7 +235,7 @@ fn render_provider_thinking(thinking: Option<&str>) -> Option<String> {
         return None;
     }
 
-    Some(render_assistant_output("Thinking", thinking))
+    Some(render_labeled_output("Thinking", thinking))
 }
 
 fn render_verified_result(result: &VerifiedActionResult) -> String {
@@ -315,9 +334,9 @@ mod tests {
         }
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("You: hello"));
-        assert!(rendered.contains("Elgar: hi"));
-        assert!(rendered.contains("thinking..."));
+        assert!(rendered.contains("User\n> hello"));
+        assert!(rendered.contains("Elgar\nhi"));
+        assert!(rendered.contains("Thinking\nThinking..."));
         assert!(!rendered.contains("request-1"));
         assert!(!rendered.contains("Provider text is suggestion only."));
         assert!(rendered.contains("Review needed: action-1 WriteFile write hello.py"));
@@ -399,7 +418,7 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Model:\nPlan:\n- read files\n- render output"));
+        assert!(rendered.contains("Model\nPlan:\n- read files\n- render output"));
         assert!(rendered.contains("code (rust):\n    fn main() {}"));
         assert!(!rendered.contains("```"));
         assert!(!rendered.contains("**read**"));
@@ -415,7 +434,7 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Model:\n  File"));
+        assert!(rendered.contains("Model\n  File"));
         assert!(rendered.contains("src/lib.rs"));
         assert!(rendered.contains("changed"));
         assert!(!rendered.contains("| --- |"));
@@ -441,10 +460,10 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        let thinking_index = rendered.find("Thinking:\nRead the prompt.").unwrap();
-        let model_index = rendered.find("Model: final answer").unwrap();
+        let thinking_index = rendered.find("Thinking\nRead the prompt.").unwrap();
+        let model_index = rendered.find("Model\nfinal answer").unwrap();
 
-        assert!(rendered.contains("thinking..."));
+        assert!(rendered.contains("Thinking\nThinking..."));
         assert!(thinking_index < model_index);
         assert!(rendered.contains("Return concise text."));
         assert!(!rendered.contains("request-1"));
@@ -470,9 +489,9 @@ mod tests {
 
         let rendered = conversation.render_body();
 
-        assert!(rendered.contains("thinking..."));
-        assert!(rendered.contains("Model: final answer"));
-        assert!(!rendered.contains("Thinking:"));
+        assert!(rendered.contains("Thinking\nThinking..."));
+        assert!(rendered.contains("Model\nfinal answer"));
+        assert!(!rendered.contains("Thinking\nfinal answer"));
     }
 
     #[test]

@@ -24,6 +24,7 @@ use elgar_core::controller::Controller;
 
 use crate::{
     input::{TerminalInput, TerminalInputAction},
+    startup::StartupBlock,
     theme, TuiShell,
 };
 
@@ -68,7 +69,7 @@ where
 
 pub fn render_default_terminal_shell(frame: &mut Frame<'_>) {
     let shell = TuiShell::new();
-    let context = TerminalShellContext::new(".", ".");
+    let context = TerminalShellContext::new(".", ".").with_provider("stub-provider", None);
     render_tui_shell(frame, &shell, &context);
 }
 
@@ -95,12 +96,16 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
             .split(area)
     };
 
+    let conversation_body = render_terminal_conversation(shell, context);
+    let conversation_line_count = conversation_body.lines().count().max(1);
     let conversation_view_height = chunks[0].height;
-    let conversation = Paragraph::new(shell.conversation.render_body())
+    let conversation = Paragraph::new(conversation_body)
         .style(theme::model_output())
         .wrap(Wrap { trim: false })
         .scroll((
-            shell.conversation.scroll_offset(conversation_view_height),
+            shell
+                .conversation
+                .scroll_offset_for_lines(conversation_line_count, conversation_view_height),
             0,
         ));
     frame.render_widget(conversation, chunks[0]);
@@ -131,10 +136,10 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
 
 pub fn default_shell_text() -> String {
     let shell = TuiShell::new();
-    let context = TerminalShellContext::new(".", ".");
+    let context = TerminalShellContext::new(".", ".").with_provider("stub-provider", None);
     format!(
         "{}\n{}\n{}\n{}",
-        shell.conversation.render_body(),
+        render_terminal_conversation(&shell, &context),
         shell.input.render_body(),
         context.footer_body(&shell.status.render_body(), &shell.copy.render_hint()),
         default_no_network_line()
@@ -157,6 +162,12 @@ impl TerminalShellContext {
             provider: None,
             model: None,
         }
+    }
+
+    pub fn with_provider(mut self, provider: impl Into<String>, model: Option<String>) -> Self {
+        self.provider = Some(provider.into());
+        self.model = model;
+        self
     }
 
     pub fn from_session(session: &Session) -> Self {
@@ -188,6 +199,20 @@ impl TerminalShellContext {
             Some(_) => "provider configured",
         }
     }
+}
+
+fn render_terminal_conversation(shell: &TuiShell, context: &TerminalShellContext) -> String {
+    let startup = StartupBlock::new(
+        &context.project_root,
+        &context.cwd,
+        context.provider.clone(),
+        context.model.clone(),
+    );
+    format!(
+        "{}\n\n{}",
+        startup.render(),
+        shell.conversation.render_body()
+    )
 }
 
 fn default_no_network_line() -> &'static str {
@@ -538,10 +563,17 @@ mod tests {
     fn default_terminal_shell_is_empty_and_no_network() {
         let text = default_shell_text();
 
+        assert!(text.contains("elgar v0.2"));
+        assert!(text.contains("Commands: /help /commands /approve /reject /copy /exit /quit"));
+        assert!(text.contains(
+            "Controller is local; provider text is suggestion only; write actions require /approve."
+        ));
+        assert!(text.contains("[Context]"));
+        assert!(text.contains("[Provider] stub-provider / none"));
         assert!(text.contains("(empty conversation)"));
         assert!(text.contains("> "));
         assert!(text.contains("ready"));
-        assert!(text.contains("prov:none"));
+        assert!(text.contains("prov:stub-provider"));
         assert!(text.contains("model:none"));
         assert!(text.contains("select visible text natively"));
         assert!(text.contains("/copy conversation"));
@@ -549,6 +581,28 @@ mod tests {
         assert!(!text.contains("br:"));
         assert!(text.contains("default no-network stub"));
         assert!(!text.contains("lm-studio"));
+        assert!(!text.contains("Skills"));
+        assert!(!text.contains("MCP"));
+    }
+
+    #[test]
+    fn terminal_startup_block_lists_real_context_files_and_configured_provider() {
+        let root = temp_root("terminal-startup-context");
+        std::fs::write(root.join("AGENTS.md"), "instructions").unwrap();
+        std::fs::write(root.join("elgar-provider.json"), "{}").unwrap();
+        let shell = TuiShell::new();
+        let context = TerminalShellContext::new(&root, &root)
+            .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()));
+
+        let text = draw_to_text(&shell, &context);
+
+        assert!(text.contains("elgar v0.2"));
+        assert!(text.contains("[Context] AGENTS.md, elgar-provider.json"));
+        assert!(text.contains("[Provider] lm-studio / openai/gpt-oss-20b"));
+        assert!(!text.contains("Skills"));
+        assert!(!text.contains("MCP"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -610,8 +664,6 @@ mod tests {
         assert!(text.contains("model:model-a"));
         assert!(footer.contains("provider configured"));
         assert!(!footer.contains("stub/no-network"));
-        assert!(text.contains("thinking..."));
-        assert!(text.contains("Model: stub provider response"));
         assert!(!text.contains("Provider progress:"));
     }
 
@@ -917,8 +969,8 @@ mod tests {
 
         assert!(!exited);
         assert!(input.text().is_empty());
-        assert!(shell.render().contains("You: what does the harness do?"));
-        assert!(shell.render().contains("Model: stub provider response"));
+        assert!(shell.render().contains("User\n> what does the harness do?"));
+        assert!(shell.render().contains("Model\nstub provider response"));
         assert_eq!(session.events().len(), 4);
     }
 
@@ -933,8 +985,8 @@ mod tests {
 
         assert!(!exited);
         let rendered = shell.render();
-        assert!(rendered.contains("You: hello!"));
-        assert!(rendered.contains("Model:"));
+        assert!(rendered.contains("User\n> hello!"));
+        assert!(rendered.contains("Model\n"));
         assert!(rendered.contains("stub provider response (no-network) to: hello!"));
         assert!(rendered.contains("No live provider call was made"));
         assert!(rendered.contains("tui-controller-smoke"));

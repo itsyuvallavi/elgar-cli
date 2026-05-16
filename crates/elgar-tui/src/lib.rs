@@ -5,6 +5,7 @@ mod markdown;
 pub mod panes;
 pub mod shell;
 pub mod smoke;
+mod startup;
 pub mod terminal;
 mod theme;
 

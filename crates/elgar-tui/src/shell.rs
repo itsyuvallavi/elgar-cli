@@ -192,9 +192,9 @@ mod tests {
 
         let rendered = shell.render();
 
-        assert!(rendered.contains("You: what does the harness do?"));
-        assert!(rendered.contains("thinking..."));
-        assert!(rendered.contains("Model: stub provider response"));
+        assert!(rendered.contains("User\n> what does the harness do?"));
+        assert!(rendered.contains("Thinking\nThinking..."));
+        assert!(rendered.contains("Model\nstub provider response"));
         assert!(!rendered.contains("stub-request-1"));
         assert!(!rendered.contains("Provider text is suggestion only."));
         assert!(session.actions().is_empty());
@@ -242,10 +242,7 @@ mod tests {
         let result = shell.submit_input(&controller, &mut session, "what does the harness do?");
 
         assert_eq!(result.route, elgar_core::router::Route::AskModel);
-        assert_eq!(
-            shell.conversation.scroll_offset(4),
-            shell.conversation.lines.len() as u16 - 4
-        );
+        assert_eq!(shell.conversation.scroll_offset(4), 12);
         assert_eq!(before.events().len(), 0);
         assert_eq!(session.events().len(), result.events.len());
     }
