@@ -251,21 +251,6 @@ fn handle_terminal_key_with_copy_writer(
         return true;
     }
 
-    if is_approval_key(key) {
-        shell.submit_approval(controller, session);
-        return false;
-    }
-
-    if is_rejection_key(key) {
-        shell.submit_rejection(controller, session);
-        return false;
-    }
-
-    if is_copy_key(key) {
-        let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);
-        return false;
-    }
-
     if handle_scroll_key(key, shell) {
         return false;
     }
@@ -276,12 +261,68 @@ fn handle_terminal_key_with_copy_writer(
         TerminalInputAction::Submit => {
             let submitted = input.drain();
             shell.input.text.clear();
-            if !submitted.trim().is_empty() {
-                shell.submit_input(controller, session, &submitted);
+            match parse_terminal_command(&submitted) {
+                TerminalCommand::Empty => {}
+                TerminalCommand::Help => {
+                    shell
+                        .conversation
+                        .lines
+                        .push(render_terminal_help().to_string());
+                    shell.conversation.follow_latest();
+                }
+                TerminalCommand::Approve => {
+                    shell.submit_approval(controller, session);
+                }
+                TerminalCommand::Reject => {
+                    shell.submit_rejection(controller, session);
+                }
+                TerminalCommand::Copy => {
+                    let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);
+                }
+                TerminalCommand::Exit => return true,
+                TerminalCommand::Unknown(command) => {
+                    shell.conversation.lines.push(format!(
+                        "Unknown command: {command}. Type /help for commands."
+                    ));
+                    shell.conversation.follow_latest();
+                }
+                TerminalCommand::Text(text) => {
+                    shell.submit_input(controller, session, text);
+                }
             }
             false
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalCommand<'a> {
+    Empty,
+    Help,
+    Approve,
+    Reject,
+    Copy,
+    Exit,
+    Unknown(&'a str),
+    Text(&'a str),
+}
+
+fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
+    let trimmed = input.trim();
+    match trimmed {
+        "" => TerminalCommand::Empty,
+        "/help" | "/commands" => TerminalCommand::Help,
+        "/approve" => TerminalCommand::Approve,
+        "/reject" => TerminalCommand::Reject,
+        "/copy" => TerminalCommand::Copy,
+        "/exit" | "/quit" => TerminalCommand::Exit,
+        command if command.starts_with('/') => TerminalCommand::Unknown(command),
+        text => TerminalCommand::Text(text),
+    }
+}
+
+fn render_terminal_help() -> &'static str {
+    "Elgar terminal commands:\n  /help      Show these commands.\n  /commands  Show these commands.\n  /approve   Approve the pending action.\n  /reject    Reject the pending action.\n  /copy      Copy the full conversation.\n  /exit      Exit the TUI.\n  /quit      Exit the TUI."
 }
 
 fn handle_scroll_key(key: crossterm::event::KeyEvent, shell: &mut TuiShell) -> bool {
@@ -300,18 +341,6 @@ fn handle_scroll_key(key: crossterm::event::KeyEvent, shell: &mut TuiShell) -> b
         }
         _ => false,
     }
-}
-
-fn is_approval_key(key: crossterm::event::KeyEvent) -> bool {
-    key.code == KeyCode::F(5) && key.modifiers.is_empty()
-}
-
-fn is_rejection_key(key: crossterm::event::KeyEvent) -> bool {
-    key.code == KeyCode::F(6) && key.modifiers.is_empty()
-}
-
-fn is_copy_key(key: crossterm::event::KeyEvent) -> bool {
-    key.code == KeyCode::Char('y') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 fn copy_conversation_to_terminal_clipboard(
@@ -396,8 +425,8 @@ mod tests {
     use super::{
         copy_conversation_to_terminal_clipboard, default_shell_text, encode_base64,
         handle_scroll_key, handle_terminal_key, handle_terminal_key_with_copy_writer,
-        is_approval_key, is_copy_key, is_rejection_key, osc52_clipboard_sequence, render_tui_shell,
-        should_exit, TerminalShellContext,
+        osc52_clipboard_sequence, parse_terminal_command, render_terminal_help, render_tui_shell,
+        should_exit, TerminalCommand, TerminalShellContext,
     };
 
     fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -415,6 +444,39 @@ mod tests {
             .collect::<String>()
     }
 
+    fn submit_text(
+        text: &str,
+        input: &mut TerminalInput,
+        controller: &Controller,
+        session: &mut Session,
+        shell: &mut TuiShell,
+    ) -> bool {
+        for character in text.chars() {
+            let exited = handle_terminal_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(character),
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                input,
+                controller,
+                session,
+                shell,
+            );
+            assert!(!exited);
+        }
+
+        handle_terminal_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            input,
+            controller,
+            session,
+            shell,
+        )
+    }
+
     #[test]
     fn default_terminal_shell_is_empty_and_no_network() {
         let text = default_shell_text();
@@ -425,7 +487,8 @@ mod tests {
         assert!(text.contains("prov:none"));
         assert!(text.contains("model:none"));
         assert!(text.contains("select visible text natively"));
-        assert!(text.contains("Ctrl+Y copy conversation"));
+        assert!(text.contains("/copy conversation"));
+        assert!(!text.contains("Ctrl+Y copy conversation"));
         assert!(!text.contains("br:"));
         assert!(text.contains("default no-network stub"));
         assert!(!text.contains("lm-studio"));
@@ -467,7 +530,7 @@ mod tests {
         assert!(text.contains("Action: action-1 WriteFile"));
         assert!(text.contains("State: waiting for approval"));
         assert!(text.contains("No file has been changed yet"));
-        assert!(text.contains("Press F5 to approve or F6 to reject"));
+        assert!(text.contains("Use /approve or /reject"));
         assert!(text.contains("> "));
         assert!(text.contains("review action"));
     }
@@ -532,35 +595,37 @@ mod tests {
     }
 
     #[test]
-    fn terminal_approval_and_rejection_keys_are_deliberate() {
-        assert!(is_approval_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::F(5),
-            crossterm::event::KeyModifiers::NONE
-        )));
-        assert!(is_rejection_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::F(6),
-            crossterm::event::KeyModifiers::NONE
-        )));
-        assert!(!is_approval_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('a'),
-            crossterm::event::KeyModifiers::NONE
-        )));
-        assert!(!is_rejection_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::NONE
-        )));
-    }
+    fn terminal_commands_are_slash_only() {
+        assert_eq!(parse_terminal_command("/help"), TerminalCommand::Help);
+        assert_eq!(parse_terminal_command(" /commands "), TerminalCommand::Help);
+        assert_eq!(parse_terminal_command("/approve"), TerminalCommand::Approve);
+        assert_eq!(parse_terminal_command("/reject"), TerminalCommand::Reject);
+        assert_eq!(parse_terminal_command("/copy"), TerminalCommand::Copy);
+        assert_eq!(parse_terminal_command("/exit"), TerminalCommand::Exit);
+        assert_eq!(parse_terminal_command("/quit"), TerminalCommand::Exit);
+        assert_eq!(
+            parse_terminal_command("/model"),
+            TerminalCommand::Unknown("/model")
+        );
+        assert_eq!(
+            parse_terminal_command("approve"),
+            TerminalCommand::Text("approve")
+        );
+        assert_eq!(
+            parse_terminal_command("reject"),
+            TerminalCommand::Text("reject")
+        );
 
-    #[test]
-    fn terminal_copy_key_is_explicit_and_keeps_native_selection_available() {
-        assert!(is_copy_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('y'),
-            crossterm::event::KeyModifiers::CONTROL
-        )));
-        assert!(!is_copy_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('y'),
-            crossterm::event::KeyModifiers::NONE
-        )));
+        let help = render_terminal_help();
+        assert!(help.contains("/help"));
+        assert!(help.contains("/commands"));
+        assert!(help.contains("/approve"));
+        assert!(help.contains("/reject"));
+        assert!(help.contains("/copy"));
+        assert!(help.contains("/exit"));
+        assert!(help.contains("/quit"));
+        assert!(!help.contains("/model"));
+        assert!(!help.contains("/settings"));
     }
 
     #[test]
@@ -614,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_copy_key_does_not_change_controller_or_scroll_state() {
+    fn terminal_copy_slash_command_does_not_change_controller_or_scroll_state() {
         let controller = Controller::default();
         let mut session = Session::new("session-1", "/repo", "/repo");
         let before_session = session.clone();
@@ -624,10 +689,25 @@ mod tests {
         let mut input = TerminalInput::default();
 
         let mut output = Vec::new();
+        for character in "/copy".chars() {
+            let exited = handle_terminal_key_with_copy_writer(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(character),
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                &mut input,
+                &controller,
+                &mut session,
+                &mut shell,
+                &mut output,
+            );
+            assert!(!exited);
+        }
+
         let exited = handle_terminal_key_with_copy_writer(
             crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('y'),
-                crossterm::event::KeyModifiers::CONTROL,
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
             ),
             &mut input,
             &controller,
@@ -780,9 +860,9 @@ mod tests {
     }
 
     #[test]
-    fn terminal_f5_approves_pending_action_through_shell() {
+    fn terminal_approve_slash_command_approves_pending_action_through_shell() {
         let controller = Controller::default();
-        let root = temp_root("terminal-f5-approve");
+        let root = temp_root("terminal-slash-approve");
         let target = root.join("approved.py");
         let mut session = Session::new("session-1", root.clone(), root.clone());
         let mut shell = TuiShell::new();
@@ -791,11 +871,8 @@ mod tests {
         shell.submit_input(&controller, &mut session, "create file approved.py");
         assert!(!target.exists());
 
-        let exited = handle_terminal_key(
-            crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::F(5),
-                crossterm::event::KeyModifiers::NONE,
-            ),
+        let exited = submit_text(
+            "/approve",
             &mut input,
             &controller,
             &mut session,
@@ -815,9 +892,9 @@ mod tests {
     }
 
     #[test]
-    fn terminal_f6_rejects_pending_action_through_shell() {
+    fn terminal_reject_slash_command_rejects_pending_action_through_shell() {
         let controller = Controller::default();
-        let root = temp_root("terminal-f6-reject");
+        let root = temp_root("terminal-slash-reject");
         let target = root.join("rejected.py");
         let mut session = Session::new("session-1", root.clone(), root.clone());
         let mut shell = TuiShell::new();
@@ -825,16 +902,7 @@ mod tests {
 
         shell.submit_input(&controller, &mut session, "create file rejected.py");
 
-        let exited = handle_terminal_key(
-            crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::F(6),
-                crossterm::event::KeyModifiers::NONE,
-            ),
-            &mut input,
-            &controller,
-            &mut session,
-            &mut shell,
-        );
+        let exited = submit_text("/reject", &mut input, &controller, &mut session, &mut shell);
 
         assert!(!exited);
         assert!(!target.exists());
@@ -851,38 +919,70 @@ mod tests {
     }
 
     #[test]
-    fn terminal_approval_keys_show_no_pending_feedback() {
+    fn terminal_approval_slash_commands_show_no_pending_feedback() {
         let controller = Controller::default();
         let mut session = Session::new("session-1", "/repo", "/repo");
         let mut shell = TuiShell::new();
         let mut input = TerminalInput::default();
 
-        handle_terminal_key(
-            crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::F(5),
-                crossterm::event::KeyModifiers::NONE,
-            ),
+        submit_text(
+            "/approve",
             &mut input,
             &controller,
             &mut session,
             &mut shell,
         );
-        handle_terminal_key(
-            crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::F(6),
-                crossterm::event::KeyModifiers::NONE,
-            ),
-            &mut input,
-            &controller,
-            &mut session,
-            &mut shell,
-        );
+        submit_text("/reject", &mut input, &controller, &mut session, &mut shell);
 
         let rendered = shell.render();
         assert!(rendered.contains("No proposed action is waiting for approval."));
         assert!(rendered.contains("No proposed action is waiting for rejection."));
         assert!(input.text().is_empty());
         assert!(session.actions().is_empty());
+    }
+
+    #[test]
+    fn terminal_function_keys_and_ctrl_y_are_not_command_actions() {
+        let controller = Controller::default();
+        let root = temp_root("terminal-no-key-commands");
+        let target = root.join("approved.py");
+        let mut session = Session::new("session-1", root.clone(), root.clone());
+        let before_session;
+        let mut shell = TuiShell::new();
+        let mut input = TerminalInput::default();
+
+        shell.submit_input(&controller, &mut session, "create file approved.py");
+        before_session = session.clone();
+
+        for key in [
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::F(5),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::F(6),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('y'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ),
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ] {
+            let exited =
+                handle_terminal_key(key, &mut input, &controller, &mut session, &mut shell);
+            assert!(!exited);
+        }
+
+        assert!(!target.exists());
+        assert_eq!(session, before_session);
+        assert_eq!(input.text(), "q");
+        assert!(shell.copy.render_hint().contains("/copy conversation"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn temp_root(name: &str) -> std::path::PathBuf {

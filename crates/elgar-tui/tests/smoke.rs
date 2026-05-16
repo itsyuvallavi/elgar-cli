@@ -348,7 +348,7 @@ fn displays_proposed_write_file_action_without_writing() {
     assert!(rendered.contains("Target: hello.py"));
     assert!(rendered.contains("Summary: write hello.py"));
     assert!(rendered.contains("State: waiting for approval"));
-    assert!(rendered.contains("No file has been changed yet. Press F5 to approve or F6 to reject."));
+    assert!(rendered.contains("No file has been changed yet. Use /approve or /reject."));
 
     let _ = fs::remove_dir_all(root);
 }

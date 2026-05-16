@@ -146,7 +146,7 @@ impl ActionPanelState {
 
     fn instructions(self) -> &'static str {
         match self {
-            Self::Proposed => "No file has been changed yet. Press F5 to approve or F6 to reject.",
+            Self::Proposed => "No file has been changed yet. Use /approve or /reject.",
             Self::Approved => "Approval recorded. Applying through the controller.",
             Self::Applied => "Verified by the controller.",
             Self::Rejected => "Rejected actions are final. Start a new proposal to reconsider.",
@@ -194,9 +194,7 @@ mod tests {
         assert!(rendered.contains("Target: hello.py"));
         assert!(rendered.contains("Summary: write hello.py"));
         assert!(rendered.contains("State: waiting for approval"));
-        assert!(
-            rendered.contains("No file has been changed yet. Press F5 to approve or F6 to reject.")
-        );
+        assert!(rendered.contains("No file has been changed yet. Use /approve or /reject."));
     }
 
     #[test]

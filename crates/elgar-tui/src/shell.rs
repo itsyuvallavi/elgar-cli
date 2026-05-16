@@ -141,7 +141,7 @@ mod tests {
         assert_eq!(shell.pending_action.panel, None);
         assert_eq!(
             shell.copy.render_hint(),
-            "select visible text natively | PgUp/PgDn scroll | Ctrl+Y copy conversation"
+            "select visible text natively | PgUp/PgDn scroll | /copy conversation"
         );
     }
 

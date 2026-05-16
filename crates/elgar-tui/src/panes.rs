@@ -104,8 +104,9 @@ impl CopyArea {
             Some(CopyResult::Failed { message }) => {
                 format!("copy failed: {message}")
             }
-            None => "select visible text natively | PgUp/PgDn scroll | Ctrl+Y copy conversation"
-                .to_string(),
+            None => {
+                "select visible text natively | PgUp/PgDn scroll | /copy conversation".to_string()
+            }
         }
     }
 }
@@ -351,7 +352,7 @@ mod tests {
         assert_eq!(InputArea::default().render_body(), "> ");
         assert_eq!(
             CopyArea::default().render_hint(),
-            "select visible text natively | PgUp/PgDn scroll | Ctrl+Y copy conversation"
+            "select visible text natively | PgUp/PgDn scroll | /copy conversation"
         );
     }
 

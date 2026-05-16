@@ -186,6 +186,7 @@ fn tui_command_help_is_local_and_does_not_call_provider() {
     assert!(stdout.contains("Elgar TUI commands:"));
     assert!(stdout.contains("/approve"));
     assert!(stdout.contains("/reject"));
+    assert!(stdout.contains("/copy"));
     assert!(stdout.contains("/help"));
     assert!(stdout.contains("/commands"));
     assert!(stdout.contains("/exit"));

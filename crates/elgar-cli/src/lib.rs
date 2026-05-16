@@ -49,6 +49,10 @@ pub fn is_tui_rejection_command(input: &str) -> bool {
     input.trim() == "/reject"
 }
 
+pub fn is_tui_copy_command(input: &str) -> bool {
+    input.trim() == "/copy"
+}
+
 fn submit_tui_input(
     shell: &mut elgar_tui::TuiShell,
     controller: &Controller,
@@ -65,7 +69,7 @@ fn submit_tui_input(
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Elgar TUI commands:\n  /help      Show these commands.\n  /commands  Show these commands.\n  /approve   Approve the pending action.\n  /reject    Reject the pending action.\n  /exit      Exit the TUI.\n  /quit      Exit the TUI."
+    "Elgar TUI commands:\n  /help      Show these commands.\n  /commands  Show these commands.\n  /approve   Approve the pending action.\n  /reject    Reject the pending action.\n  /copy      Copy the full conversation in terminal mode.\n  /exit      Exit the TUI.\n  /quit      Exit the TUI."
 }
 
 pub fn render_tui_script<I, S>(
@@ -90,6 +94,8 @@ where
 
         if is_tui_help_command(input) {
             rendered_turns.push(render_tui_help().to_string());
+        } else if is_tui_copy_command(input) {
+            rendered_turns.push(shell.conversation_copy_text());
         } else {
             submit_tui_input(&mut shell, &controller, &mut session, input);
             rendered_turns.push(shell.render());
@@ -123,6 +129,8 @@ where
 
         if is_tui_help_command(&input) {
             writeln!(writer, "{}", render_tui_help())?;
+        } else if is_tui_copy_command(&input) {
+            writeln!(writer, "{}", shell.conversation_copy_text())?;
         } else {
             submit_tui_input(&mut shell, &controller, &mut session, &input);
             writeln!(writer, "{}", shell.render())?;
@@ -294,7 +302,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::{
-        is_tui_approval_command, is_tui_exit_command, is_tui_help_command,
+        is_tui_approval_command, is_tui_copy_command, is_tui_exit_command, is_tui_help_command,
         is_tui_rejection_command, provider_smoke_config, provider_smoke_prompt,
         render_controller_smoke, render_tui_controller_smoke, render_tui_help, render_tui_script,
         run_tui_loop, ProviderSmokeConfig, ProviderSmokeError, PROVIDER_SMOKE_DEFAULT_PROMPT,
@@ -427,6 +435,7 @@ mod tests {
         assert!(help.contains("/commands"));
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
+        assert!(help.contains("/copy"));
         assert!(help.contains("/exit"));
         assert!(help.contains("/quit"));
         assert!(!help.contains("/model"));
@@ -446,6 +455,14 @@ mod tests {
         assert!(!is_tui_rejection_command("reject"));
         assert!(!is_tui_approval_command("/approved"));
         assert!(!is_tui_rejection_command("/rejected"));
+    }
+
+    #[test]
+    fn tui_copy_command_is_explicit() {
+        assert!(is_tui_copy_command("/copy"));
+        assert!(is_tui_copy_command(" /copy "));
+        assert!(!is_tui_copy_command("copy"));
+        assert!(!is_tui_copy_command("/clipboard"));
     }
 
     #[test]
@@ -471,10 +488,22 @@ mod tests {
         assert!(rendered.contains("Elgar TUI commands:"));
         assert!(rendered.contains("/approve"));
         assert!(rendered.contains("/reject"));
+        assert!(rendered.contains("/copy"));
         assert!(!rendered.contains("You: /help"));
         assert!(!rendered.contains("You: /commands"));
         assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("stub-provider"));
+        assert!(!rendered.contains("lm-studio"));
+    }
+
+    #[test]
+    fn tui_script_copy_command_returns_full_conversation_without_provider_call() {
+        let rendered = render_tui_script(["what does the harness do?", "/copy"], ".", ".");
+
+        assert!(rendered.contains("You: what does the harness do?"));
+        assert!(rendered.contains("Assistant suggestion: stub provider response"));
+        assert!(!rendered.contains("You: /copy"));
+        assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("lm-studio"));
     }
 
