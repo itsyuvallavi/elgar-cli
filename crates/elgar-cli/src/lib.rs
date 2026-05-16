@@ -1,6 +1,7 @@
 use std::{
+    fs,
     io::{self, BufRead, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use elgar_core::{
@@ -11,6 +12,7 @@ use elgar_core::{
     renderer::render_session,
     session::Session,
 };
+use serde::Deserialize;
 
 pub const PROVIDER_SMOKE_COMMAND: &str = "provider-smoke";
 pub const CONTROLLER_SMOKE_COMMAND: &str = "controller-smoke";
@@ -20,6 +22,79 @@ pub const TUI_TERMINAL_COMMAND: &str = "tui-terminal";
 pub const PROVIDER_SMOKE_DEFAULT_PROMPT: &str = "Say hello in one sentence.";
 pub const LM_STUDIO_MODEL_ENV: &str = "ELGAR_LM_STUDIO_MODEL";
 pub const LM_STUDIO_BASE_URL_ENV: &str = "ELGAR_LM_STUDIO_BASE_URL";
+pub const PROVIDER_CONFIG_ENV: &str = "ELGAR_PROVIDER_CONFIG";
+pub const PROVIDER_CONFIG_FILE: &str = "elgar-provider.json";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeProvider {
+    pub config: ProviderConfig,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeProviderConfigError {
+    InvalidEnvironment { name: &'static str },
+    ReadFailed { path: PathBuf, message: String },
+    ParseFailed { path: PathBuf, message: String },
+    UnsupportedProvider { provider: String },
+    MissingModel { path: PathBuf },
+}
+
+impl std::fmt::Display for RuntimeProviderConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidEnvironment { name } => {
+                write!(
+                    formatter,
+                    "provider config failed: environment variable {name} is not valid Unicode"
+                )
+            }
+            Self::ReadFailed { path, message } => {
+                write!(
+                    formatter,
+                    "provider config failed: could not read {}: {message}",
+                    path.display()
+                )
+            }
+            Self::ParseFailed { path, message } => {
+                write!(
+                    formatter,
+                    "provider config failed: could not parse {}: {message}",
+                    path.display()
+                )
+            }
+            Self::UnsupportedProvider { provider } => {
+                write!(
+                    formatter,
+                    "provider config failed: unsupported provider {provider}"
+                )
+            }
+            Self::MissingModel { path } => {
+                write!(
+                    formatter,
+                    "provider config failed: {} is live but has no default_model",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RuntimeProviderConfigError {}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RuntimeProviderConfigFile {
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    default_model: Option<String>,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    timeout_millis: Option<u64>,
+}
 
 pub fn render_cli_turn(
     input: &str,
@@ -31,6 +106,126 @@ pub fn render_cli_turn(
 
     controller.turn(&mut session, input);
     render_session(&session)
+}
+
+pub fn render_cli_turn_from_runtime_config(
+    input: &str,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+) -> Result<String, RuntimeProviderConfigError> {
+    let cwd_ref = cwd.as_ref();
+    let Some(runtime) = load_runtime_provider(cwd_ref)? else {
+        return Ok(render_cli_turn(input, project_root, cwd_ref));
+    };
+
+    let controller = Controller::with_lm_studio_provider(runtime.config);
+    let mut session = Session::new("cli-runtime-session", project_root.as_ref(), cwd_ref);
+
+    controller.turn(&mut session, input);
+    Ok(render_session(&session))
+}
+
+pub fn load_runtime_provider(
+    start: impl AsRef<Path>,
+) -> Result<Option<RuntimeProvider>, RuntimeProviderConfigError> {
+    let Some(path) = runtime_provider_config_path(start)? else {
+        return Ok(None);
+    };
+
+    let contents =
+        fs::read_to_string(&path).map_err(|error| RuntimeProviderConfigError::ReadFailed {
+            path: path.clone(),
+            message: error.to_string(),
+        })?;
+    let file: RuntimeProviderConfigFile = serde_json::from_str(&contents).map_err(|error| {
+        RuntimeProviderConfigError::ParseFailed {
+            path: path.clone(),
+            message: error.to_string(),
+        }
+    })?;
+
+    runtime_provider_from_file(path, file)
+}
+
+fn runtime_provider_config_path(
+    start: impl AsRef<Path>,
+) -> Result<Option<PathBuf>, RuntimeProviderConfigError> {
+    match std::env::var(PROVIDER_CONFIG_ENV) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if matches!(trimmed, "" | "off" | "none" | "disabled") {
+                return Ok(None);
+            }
+            return Ok(Some(PathBuf::from(trimmed)));
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(RuntimeProviderConfigError::InvalidEnvironment {
+                name: PROVIDER_CONFIG_ENV,
+            });
+        }
+    }
+
+    Ok(find_provider_config_file(start))
+}
+
+fn find_provider_config_file(start: impl AsRef<Path>) -> Option<PathBuf> {
+    let mut current = start.as_ref();
+    loop {
+        let candidate = current.join(PROVIDER_CONFIG_FILE);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+
+        let parent = current.parent()?;
+        current = parent;
+    }
+}
+
+fn runtime_provider_from_file(
+    path: PathBuf,
+    file: RuntimeProviderConfigFile,
+) -> Result<Option<RuntimeProvider>, RuntimeProviderConfigError> {
+    let mode = file.mode.trim();
+    if !mode.eq_ignore_ascii_case("live") {
+        return Ok(None);
+    }
+
+    let provider = if file.provider.trim().is_empty() {
+        "lm-studio"
+    } else {
+        file.provider.trim()
+    };
+    if provider != "lm-studio" {
+        return Err(RuntimeProviderConfigError::UnsupportedProvider {
+            provider: provider.to_string(),
+        });
+    }
+
+    let model = file
+        .default_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| RuntimeProviderConfigError::MissingModel { path: path.clone() })?;
+
+    let mut config = ProviderConfig::lm_studio(model);
+    if let Some(base_url) = file
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        config.base_url = base_url.to_string();
+    }
+    if let Some(timeout_millis) = file.timeout_millis {
+        config.timeout_millis = timeout_millis;
+    }
+
+    Ok(Some(RuntimeProvider {
+        config,
+        source_path: path,
+    }))
 }
 
 pub fn is_tui_exit_command(input: &str) -> bool {
@@ -141,7 +336,12 @@ where
 }
 
 pub fn run_tui_terminal() -> io::Result<()> {
-    elgar_tui::run_terminal_shell()
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match load_runtime_provider(&cwd) {
+        Ok(Some(runtime)) => elgar_tui::run_terminal_shell_with_lm_studio_provider(runtime.config),
+        Ok(None) => elgar_tui::run_terminal_shell(),
+        Err(error) => Err(io::Error::new(io::ErrorKind::InvalidInput, error)),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,10 +503,11 @@ mod tests {
 
     use super::{
         is_tui_approval_command, is_tui_copy_command, is_tui_exit_command, is_tui_help_command,
-        is_tui_rejection_command, provider_smoke_config, provider_smoke_prompt,
-        render_controller_smoke, render_tui_controller_smoke, render_tui_help, render_tui_script,
-        run_tui_loop, ProviderSmokeConfig, ProviderSmokeError, PROVIDER_SMOKE_DEFAULT_PROMPT,
-        TUI_COMMAND, TUI_TERMINAL_COMMAND,
+        is_tui_rejection_command, load_runtime_provider, provider_smoke_config,
+        provider_smoke_prompt, render_cli_turn_from_runtime_config, render_controller_smoke,
+        render_tui_controller_smoke, render_tui_help, render_tui_script, run_tui_loop,
+        ProviderSmokeConfig, ProviderSmokeError, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
+        PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
     fn temp_root(name: &str) -> PathBuf {
@@ -365,6 +566,62 @@ mod tests {
 
         assert_eq!(config.base_url, "http://localhost:4321/v1");
         assert_eq!(config.prompt, "hello");
+    }
+
+    #[test]
+    fn runtime_provider_config_loads_live_lm_studio_file() {
+        let root = temp_root("runtime-provider-live");
+        fs::write(
+            root.join(PROVIDER_CONFIG_FILE),
+            r#"{
+              "provider": "lm-studio",
+              "base_url": "http://127.0.0.1:1234/v1",
+              "default_model": "openai/gpt-oss-20b",
+              "mode": "live"
+            }"#,
+        )
+        .unwrap();
+
+        let runtime = load_runtime_provider(&root).unwrap().unwrap();
+
+        assert_eq!(runtime.config.provider, "lm-studio");
+        assert_eq!(runtime.config.base_url, "http://127.0.0.1:1234/v1");
+        assert_eq!(runtime.config.model.as_deref(), Some("openai/gpt-oss-20b"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_provider_config_absent_keeps_stub_fallback() {
+        let root = temp_root("runtime-provider-absent");
+
+        assert_eq!(load_runtime_provider(&root).unwrap(), None);
+
+        let rendered = render_cli_turn_from_runtime_config("hello", &root, &root).unwrap();
+        assert!(rendered.contains("provider started: stub-provider"));
+        assert!(!rendered.contains("lm-studio"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_provider_config_live_requires_model() {
+        let root = temp_root("runtime-provider-missing-model");
+        let path = root.join(PROVIDER_CONFIG_FILE);
+        fs::write(
+            &path,
+            r#"{
+              "provider": "lm-studio",
+              "mode": "live"
+            }"#,
+        )
+        .unwrap();
+
+        let error = load_runtime_provider(&root).unwrap_err();
+
+        assert_eq!(error, RuntimeProviderConfigError::MissingModel { path });
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -15,4 +15,6 @@ pub use smoke::{
     run_controller_smoke, run_default_controller_smoke, run_lm_studio_controller_smoke,
     TuiControllerSmoke,
 };
-pub use terminal::{default_shell_text, run_terminal_shell};
+pub use terminal::{
+    default_shell_text, run_terminal_shell, run_terminal_shell_with_lm_studio_provider,
+};

@@ -85,6 +85,8 @@ version = "0.2.0"
 dependencies = [
  "elgar-core",
  "elgar-tui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -9,7 +9,10 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use elgar_core::session::Session;
+use elgar_core::{
+    provider::{ControllerProvider, ProviderConfig},
+    session::Session,
+};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -32,14 +35,29 @@ pub fn run_terminal_shell() -> io::Result<()> {
     run_terminal_shell_at(&cwd, &cwd)
 }
 
+pub fn run_terminal_shell_with_lm_studio_provider(config: ProviderConfig) -> io::Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    run_terminal_shell_with_controller(&cwd, &cwd, Controller::with_lm_studio_provider(config))
+}
+
 pub fn run_terminal_shell_at(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> io::Result<()> {
+    run_terminal_shell_with_controller(project_root, cwd, Controller::default())
+}
+
+fn run_terminal_shell_with_controller<P>(
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    controller: Controller<P>,
+) -> io::Result<()>
+where
+    P: ControllerProvider,
+{
     let _guard = TerminalModeGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
-    let controller = Controller::default();
     let mut session = Session::new("terminal-tui-session", project_root.as_ref(), cwd.as_ref());
     let mut shell = TuiShell::new();
 
@@ -159,9 +177,17 @@ impl TerminalShellContext {
             compact_cwd_label(&self.project_root, &self.cwd),
             self.provider.as_deref().unwrap_or("none"),
             self.model.as_deref().unwrap_or("none"),
-            compact_no_network_label(),
+            self.provider_mode_label(),
             copy_hint
         )
+    }
+
+    fn provider_mode_label(&self) -> &'static str {
+        match self.provider.as_deref() {
+            Some("lm-studio") => "live/local",
+            Some("stub-provider") | None => compact_no_network_label(),
+            Some(_) => "provider configured",
+        }
     }
 }
 
@@ -196,17 +222,25 @@ fn divider_block(title: &'static str) -> Block<'static> {
         .border_style(Style::default().fg(Color::DarkGray))
 }
 
-fn run_terminal_loop(
+fn run_terminal_loop<P>(
     terminal: &mut CrosstermTerminal,
-    controller: &Controller,
+    controller: &Controller<P>,
     session: &mut Session,
     shell: &mut TuiShell,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    P: ControllerProvider,
+{
     let mut input = TerminalInput::default();
 
     loop {
         shell.input.text = input.text().to_string();
-        let context = TerminalShellContext::from_session(session);
+        let mut context = TerminalShellContext::from_session(session);
+        if context.provider.is_none() {
+            let request = controller.provider.request_metadata();
+            context.provider = Some(request.provider);
+            context.model = request.model;
+        }
         terminal.draw(|frame| render_tui_shell(frame, shell, &context))?;
 
         if event::poll(Duration::from_millis(250))? {
@@ -229,24 +263,30 @@ fn should_exit(key: crossterm::event::KeyEvent) -> bool {
         || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
 }
 
-fn handle_terminal_key(
+fn handle_terminal_key<P>(
     key: crossterm::event::KeyEvent,
     input: &mut TerminalInput,
-    controller: &Controller,
+    controller: &Controller<P>,
     session: &mut Session,
     shell: &mut TuiShell,
-) -> bool {
+) -> bool
+where
+    P: ControllerProvider,
+{
     handle_terminal_key_with_copy_writer(key, input, controller, session, shell, io::stdout())
 }
 
-fn handle_terminal_key_with_copy_writer(
+fn handle_terminal_key_with_copy_writer<P>(
     key: crossterm::event::KeyEvent,
     input: &mut TerminalInput,
-    controller: &Controller,
+    controller: &Controller<P>,
     session: &mut Session,
     shell: &mut TuiShell,
     copy_writer: impl Write,
-) -> bool {
+) -> bool
+where
+    P: ControllerProvider,
+{
     if should_exit(key) {
         return true;
     }
@@ -547,10 +587,27 @@ mod tests {
 
         let context = TerminalShellContext::from_session(&session);
         let text = draw_to_text(&shell, &context);
+        let footer = context.footer_body("reply ready", "select visible text");
 
         assert!(text.contains("prov:local"));
         assert!(text.contains("model:model-a"));
+        assert!(footer.contains("provider configured"));
+        assert!(!footer.contains("stub/no-network"));
         assert!(text.contains("Provider progress: response ready from local"));
+    }
+
+    #[test]
+    fn terminal_footer_labels_lm_studio_as_live_local() {
+        let mut context = TerminalShellContext::new("/repo", "/repo");
+        context.provider = Some("lm-studio".to_string());
+        context.model = Some("openai/gpt-oss-20b".to_string());
+
+        let footer = context.footer_body("ready", "select visible text");
+
+        assert!(footer.contains("prov:lm-studio"));
+        assert!(footer.contains("model:openai/gpt-oss-20b"));
+        assert!(footer.contains("live/local"));
+        assert!(!footer.contains("stub/no-network"));
     }
 
     #[test]

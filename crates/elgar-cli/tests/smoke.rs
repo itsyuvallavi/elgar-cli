@@ -118,6 +118,39 @@ fn tui_controller_smoke_command_renders_tui_provider_error_without_network() {
 }
 
 #[test]
+fn normal_cli_uses_repo_provider_config_when_present() {
+    let root = smoke_root("runtime-config-cli");
+    fs::write(
+        root.join("elgar-provider.json"),
+        r#"{
+          "provider": "lm-studio",
+          "base_url": "https://127.0.0.1:1234/v1",
+          "default_model": "openai/gpt-oss-20b",
+          "mode": "live"
+        }"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .current_dir(&root)
+        .arg("Say hello in one sentence.")
+        .env_remove("ELGAR_PROVIDER_CONFIG")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("user: Say hello in one sentence."));
+    assert!(stdout.contains("provider started: lm-studio request lm-studio-request-1"));
+    assert!(stdout.contains("only http:// provider URLs are supported"));
+    assert!(!stdout.contains("stub-provider"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn tui_command_reads_stdin_renders_stub_turn_and_exits() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
@@ -386,6 +419,7 @@ fn tui_command_line_loop_preserves_controller_backed_action_lifecycle() {
 fn default_cli_path_uses_stub_controller_even_when_lm_studio_env_is_set() {
     let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("what does the harness do?")
+        .env("ELGAR_PROVIDER_CONFIG", "off")
         .env(
             "ELGAR_LM_STUDIO_MODEL",
             "loaded-model-that-must-not-be-used",

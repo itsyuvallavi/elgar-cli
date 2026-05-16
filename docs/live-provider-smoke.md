@@ -1,7 +1,8 @@
-# Live Provider Smoke Commands
+# Live Provider Configuration and Smoke Commands
 
-Elgar's normal CLI and controller path remains no-network by default. Live LM
-Studio calls are only made through the explicit smoke commands below.
+Elgar can use LM Studio in normal CLI and terminal TUI runs when a local provider
+config file enables live mode. Without that file, Elgar falls back to
+stub/no-network mode.
 
 Before running either command, start LM Studio, load the model, and set
 `ELGAR_LM_STUDIO_MODEL` to the actual loaded model name shown by LM Studio. Do
@@ -10,30 +11,41 @@ not leave it as a placeholder.
 `ELGAR_LM_STUDIO_BASE_URL` is optional. When unset, Elgar uses
 `http://127.0.0.1:1234/v1`.
 
-## Provider Config Decision
+## Normal CLI/TUI Config
 
-For the current smoke stage, keep provider configuration in environment
-variables.
+The repo-local config file is:
 
-Use:
+```text
+elgar-provider.json
+```
+
+Current local config:
+
+```json
+{
+  "provider": "lm-studio",
+  "base_url": "http://127.0.0.1:1234/v1",
+  "default_model": "openai/gpt-oss-20b",
+  "mode": "live"
+}
+```
+
+The model name must match the loaded model name shown in LM Studio.
+
+When `mode` is `live`, normal CLI text and `tui-terminal` use the configured LM
+Studio model. The line-oriented `tui` command remains a stub/no-network harness
+path for now.
+
+To temporarily disable this file without editing it:
+
+```sh
+ELGAR_PROVIDER_CONFIG=off cargo run -p elgar-cli -- tui-terminal
+```
+
+Smoke commands still support environment variables:
 
 - `ELGAR_LM_STUDIO_MODEL`: required loaded LM Studio model name
 - `ELGAR_LM_STUDIO_BASE_URL`: optional OpenAI-compatible base URL
-
-Do not add JSON config yet. The smoke commands are explicit, short-lived, and
-developer-run, so env vars keep live provider access visible and avoid creating
-a persistent provider mode before the CLI and TUI are ready to share it.
-
-Add JSON config when provider mode becomes persistent or shared, such as:
-
-- normal CLI or TUI sessions need to remember a provider/model between runs
-- CLI and TUI need one common provider configuration source
-- more than one provider/backend is selectable
-- provider health/model-list checks become part of normal startup
-- user-facing provider settings need validation, display, or editing
-
-Until then, default CLI/TUI paths remain no-network/stub, and live provider
-access remains opt-in through the smoke commands below.
 
 ## Next Slice Decision
 

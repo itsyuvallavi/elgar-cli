@@ -75,5 +75,11 @@ fn main() {
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    println!("{}", elgar_cli::render_cli_turn(&input, &cwd, &cwd));
+    match elgar_cli::render_cli_turn_from_runtime_config(&input, &cwd, &cwd) {
+        Ok(rendered) => println!("{rendered}"),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
 }
