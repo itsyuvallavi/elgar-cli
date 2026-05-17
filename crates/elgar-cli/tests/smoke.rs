@@ -176,9 +176,10 @@ fn tui_command_reads_stdin_renders_stub_turn_and_exits() {
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Elgar TUI. Type /exit or /quit to leave."));
+    assert!(stdout.contains("Elgar TUI. Type /exit, /quit, or /q to leave."));
     assert!(stdout.contains("> what does the harness do?"));
-    assert!(stdout.contains("Model: stub provider response"));
+    assert!(stdout.contains("stub provider response"));
+    assert!(!stdout.contains("Model:"));
     assert!(!stdout.contains("stub-request-1"));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("lm-studio"));
@@ -249,6 +250,8 @@ fn tui_command_help_is_local_and_does_not_call_provider() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Commands\n/commands"));
+    assert!(stdout.contains("/clear"));
+    assert!(stdout.contains("/new"));
     assert!(stdout.contains("/approve"));
     assert!(stdout.contains("/reject"));
     assert!(stdout.contains("/copy"));
@@ -256,6 +259,7 @@ fn tui_command_help_is_local_and_does_not_call_provider() {
     assert!(stdout.contains("/commands"));
     assert!(stdout.contains("/exit"));
     assert!(stdout.contains("/quit"));
+    assert!(stdout.contains("/q"));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("/model"));
     assert!(!stdout.contains("/settings"));

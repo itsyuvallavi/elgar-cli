@@ -24,7 +24,12 @@ UI reports.
 
 ## Screen Shape
 
-Use a borderless vertical layout:
+Use an inline terminal layout, not a full-screen redraw. Startup prints once.
+While editing, Elgar redraws only a small prompt/footer frame. After submit, the
+prompt frame is cleared and the conversation remains in normal terminal
+scrollback.
+
+The live shape should look like:
 
 ```text
 Startup
@@ -36,7 +41,6 @@ create hello.py
 
 thinking...
 
-Model:
 I can propose that file. Review the action before applying.
 
 Action review
@@ -44,14 +48,15 @@ Proposed WriteFile: hello.py
 No file has been changed yet.
 /approve to apply, /reject to leave the filesystem unchanged.
 
-> |
+▸ |
+────────────────────────────────────────────────────────────
 
 ~/__git/elgar (<branch>)                         <model>
 context: TBD
 ```
 
-Avoid panel borders around normal chat. Use whitespace, short labels, and muted
-color for hierarchy.
+Avoid full-screen panel layouts around normal chat. Use whitespace, short labels,
+and muted color for hierarchy.
 
 ## Startup Block
 
@@ -90,7 +95,8 @@ Use simple message blocks with minimal labels:
   label and without a visible `>` prompt marker in the transcript area.
 - Transient work renders as muted `thinking`, `thinking.`, `thinking..`, or
   `thinking...` inside the chat area.
-- Final provider or controller responses keep the light `Model:` label.
+- Final provider responses render without a visible `Model:` label; controller
+  messages may keep a light `Elgar:` label when the distinction matters.
 - `Action review` for pending permissioned actions
 
 Thinking should be muted and short:
@@ -147,8 +153,9 @@ Preserve native terminal scrolling and text selection. The TUI should not enable
 mouse capture or alternate behavior that prevents selecting visible text with
 the terminal emulator.
 
-Long responses should rely on terminal-native scrollback first. In-app scrolling
-can be added later only if it does not break normal selection.
+Long responses should rely on terminal-native scrollback first. The runtime
+should not keep a large blank full-screen region just to anchor a footer at the
+bottom.
 
 ## What Not To Copy From Pi
 

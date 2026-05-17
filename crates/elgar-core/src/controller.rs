@@ -59,6 +59,21 @@ where
         }
     }
 
+    /// Record an explicit chat turn without asking the router to classify text.
+    ///
+    /// This is for UI surfaces that already know the input is normal chat.
+    /// Permissioned action requests should still use `turn`.
+    pub fn model_turn(&self, session: &mut Session, input: &str) -> TurnResult {
+        let start_index = session.events().len();
+        session.push_event(Event::UserMessage(UserMessage::new(input)));
+        self.handle_ask_model(session, input);
+
+        TurnResult {
+            route: Route::AskModel,
+            events: session.events()[start_index..].to_vec(),
+        }
+    }
+
     fn handle_ask_model(&self, session: &mut Session, input: &str) {
         let request = self.provider.request_metadata();
 
@@ -335,6 +350,22 @@ mod tests {
                 .map(|metadata| metadata.provider.as_str()),
             Some("test-provider")
         );
+        assert!(session.actions().is_empty());
+    }
+
+    #[test]
+    fn explicit_model_turn_sends_unclassified_chat_to_provider() {
+        let controller = Controller::new(ProviderStub::new("test-provider"));
+        let mut session = session();
+
+        let result = controller.model_turn(&mut session, "sadsadad");
+
+        assert_eq!(result.route, Route::AskModel);
+        assert_eq!(result.events.len(), 4);
+        assert!(matches!(result.events[0], Event::UserMessage(_)));
+        assert!(matches!(result.events[1], Event::ProviderStarted(_)));
+        assert!(matches!(result.events[2], Event::ProviderFinished(_)));
+        assert!(matches!(result.events[3], Event::AssistantMessage(_)));
         assert!(session.actions().is_empty());
     }
 

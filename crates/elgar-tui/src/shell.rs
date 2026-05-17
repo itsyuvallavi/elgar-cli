@@ -113,6 +113,11 @@ impl TuiShell {
         self.conversation.render_body()
     }
 
+    pub fn clear_conversation(&mut self) {
+        self.conversation.lines.clear();
+        self.conversation.follow_latest();
+    }
+
     pub fn push_local_message(&mut self, message: impl Into<String>) {
         self.conversation.push_local_message(message);
         self.conversation.follow_latest();
@@ -197,7 +202,8 @@ mod tests {
         assert!(rendered.contains("> what does the harness do?"));
         assert!(!rendered.contains("User\n"));
         assert!(!rendered.contains("thinking"));
-        assert!(rendered.contains("Model: stub provider response"));
+        assert!(rendered.contains("stub provider response"));
+        assert!(!rendered.contains("Model:"));
         assert!(!rendered.contains("stub-request-1"));
         assert!(!rendered.contains("Provider text is suggestion only."));
         assert!(session.actions().is_empty());

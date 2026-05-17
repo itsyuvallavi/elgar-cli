@@ -23,10 +23,12 @@ impl ConversationPane {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn scroll_up(&mut self, lines: usize) {
         self.scrollback.scroll_up(lines);
     }
 
+    #[cfg(test)]
     pub(crate) fn scroll_down(&mut self, lines: usize) {
         self.scrollback.scroll_down(lines);
     }
@@ -35,6 +37,7 @@ impl ConversationPane {
         self.scrollback.follow_latest();
     }
 
+    #[cfg(test)]
     pub(crate) fn advance_loading_pulse(&mut self) {
         if self.last_line_style() == Some(ConversationLineStyle::Loading) {
             self.loading_pulse.advance();
@@ -44,6 +47,7 @@ impl ConversationPane {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn push_pending_provider_turn(&mut self, content: &str) {
         self.loading_pulse.reset();
         self.push_line(render_user_message(content), ConversationLineStyle::User);
@@ -53,6 +57,7 @@ impl ConversationPane {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn discard_pending_provider_turn(&mut self) {
         self.remove_loading_pulse();
         if self.last_line_style() == Some(ConversationLineStyle::User) {
@@ -159,6 +164,7 @@ pub(crate) enum ConversationLineStyle {
     Plain,
     User,
     Loading,
+    Thinking,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -167,10 +173,12 @@ struct ConversationScrollback {
 }
 
 impl ConversationScrollback {
+    #[cfg(test)]
     fn scroll_up(&mut self, lines: usize) {
         self.lines_from_bottom = self.lines_from_bottom.saturating_add(lines);
     }
 
+    #[cfg(test)]
     fn scroll_down(&mut self, lines: usize) {
         self.lines_from_bottom = self.lines_from_bottom.saturating_sub(lines);
     }
@@ -294,6 +302,7 @@ impl StatusLine {
         self.text = self.thinking_pulse.label().to_string();
     }
 
+    #[cfg(test)]
     pub(crate) fn advance_thinking_pulse(&mut self) {
         if self.provider_active {
             self.thinking_pulse.advance();
@@ -304,11 +313,6 @@ impl StatusLine {
     #[cfg(test)]
     pub(crate) fn provider_active(&self) -> bool {
         self.provider_active
-    }
-
-    pub(crate) fn finish_with_error(&mut self, message: impl Into<String>) {
-        self.provider_active = false;
-        self.text = format!("error: {}", message.into());
     }
 
     pub(crate) fn render_body(&self) -> String {
@@ -327,12 +331,13 @@ struct ThinkingPulse {
 }
 
 impl ThinkingPulse {
-    const LABELS: [&'static str; 4] = ["thinking", "thinking.", "thinking..", "thinking..."];
+    const LABELS: [&'static str; 4] = ["◐ working", "◓ working", "◑ working", "◒ working"];
 
     fn label(&self) -> &'static str {
         Self::LABELS[self.index]
     }
 
+    #[cfg(test)]
     fn advance(&mut self) {
         self.index = (self.index + 1) % Self::LABELS.len();
     }
@@ -349,21 +354,20 @@ fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
             ConversationLineStyle::User,
         )),
         Event::AssistantMessage(message) => {
-            let speaker = match message.source {
-                AssistantMessageSource::Controller => "Elgar",
-                AssistantMessageSource::Provider => "Model",
+            let rendered = match message.source {
+                AssistantMessageSource::Controller => {
+                    render_labeled_output("Elgar", &message.content)
+                }
+                AssistantMessageSource::Provider => render_assistant_output(&message.content),
             };
-            Some((
-                render_labeled_output(speaker, &message.content),
-                ConversationLineStyle::Plain,
-            ))
+            Some((rendered, ConversationLineStyle::Plain))
         }
         Event::ProviderStarted(_) => {
             Some((render_thinking_progress(), ConversationLineStyle::Loading))
         }
         Event::ProviderFinished(finished) => {
             render_provider_thinking(finished.output.thinking.as_deref())
-                .map(|line| (line, ConversationLineStyle::Plain))
+                .map(|line| (line, ConversationLineStyle::Thinking))
         }
         Event::ActionProposed(action) => Some(format!(
             "Review needed: {} {:?} {}",
@@ -408,7 +412,7 @@ fn render_user_message(content: &str) -> String {
 }
 
 fn render_labeled_output(label: &str, content: &str) -> String {
-    let rendered = render_assistant_markdown(content);
+    let rendered = render_assistant_output(content);
     if rendered.contains('\n') {
         format!("{label}:\n{rendered}")
     } else {
@@ -416,8 +420,12 @@ fn render_labeled_output(label: &str, content: &str) -> String {
     }
 }
 
+fn render_assistant_output(content: &str) -> String {
+    render_assistant_markdown(content)
+}
+
 fn render_thinking_progress() -> String {
-    "thinking".to_string()
+    ThinkingPulse::default().label().to_string()
 }
 
 fn render_provider_thinking(thinking: Option<&str>) -> Option<String> {
@@ -426,7 +434,46 @@ fn render_provider_thinking(thinking: Option<&str>) -> Option<String> {
         return None;
     }
 
-    Some(render_assistant_markdown(thinking))
+    Some(ThinkingBlock::collapsed(thinking).render_collapsed())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ThinkingBlock {
+    summary: String,
+    detail: String,
+    expanded: bool,
+}
+
+impl ThinkingBlock {
+    fn collapsed(detail: &str) -> Self {
+        Self {
+            summary: compact_thinking_summary(detail),
+            detail: render_assistant_markdown(detail),
+            expanded: false,
+        }
+    }
+
+    fn render_collapsed(&self) -> String {
+        let _future_expanded_detail = if self.expanded {
+            Some(self.detail.as_str())
+        } else {
+            None
+        };
+        format!("thinking: {}", self.summary)
+    }
+}
+
+fn compact_thinking_summary(thinking: &str) -> String {
+    let rendered = render_assistant_markdown(thinking);
+    let summary = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX_CHARS: usize = 96;
+    if summary.chars().count() <= MAX_CHARS {
+        return summary;
+    }
+
+    let mut compact = summary.chars().take(MAX_CHARS - 1).collect::<String>();
+    compact.push('…');
+    compact
 }
 
 fn render_verified_result(result: &VerifiedActionResult) -> String {
@@ -599,7 +646,8 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Model:\nPlan:\n- read files\n- render output"));
+        assert!(rendered.contains("Plan:\n- read files\n- render output"));
+        assert!(!rendered.contains("Model:"));
         assert!(rendered.contains("code (rust):\n    fn main() {}"));
         assert!(!rendered.contains("```"));
         assert!(!rendered.contains("**read**"));
@@ -615,14 +663,15 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Model:\n  File"));
+        assert!(rendered.contains("  File"));
+        assert!(!rendered.contains("Model:"));
         assert!(rendered.contains("src/lib.rs"));
         assert!(rendered.contains("changed"));
         assert!(!rendered.contains("| --- |"));
     }
 
     #[test]
-    fn conversation_uses_pi_style_user_block_and_light_model_label() {
+    fn conversation_uses_pi_style_user_block_and_unlabeled_provider_reply() {
         let mut conversation = ConversationPane::default();
 
         conversation.push_event(&Event::UserMessage(UserMessage::new(
@@ -635,7 +684,7 @@ mod tests {
 
         assert_eq!(
             conversation.render_body(),
-            "> explain this\n> in two lines\nModel: short answer"
+            "> explain this\n> in two lines\nshort answer"
         );
     }
 
@@ -644,10 +693,10 @@ mod tests {
         let mut conversation = ConversationPane::default();
 
         conversation.push_pending_provider_turn("hello");
-        assert_eq!(conversation.render_body(), "> hello\nthinking");
+        assert_eq!(conversation.render_body(), "> hello\n◐ working");
 
         conversation.advance_loading_pulse();
-        assert_eq!(conversation.render_body(), "> hello\nthinking.");
+        assert_eq!(conversation.render_body(), "> hello\n◓ working");
 
         conversation.discard_pending_provider_turn();
         assert_eq!(conversation.render_body(), "(empty conversation)");
@@ -673,11 +722,11 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        let thinking_index = rendered.find("Read the prompt.").unwrap();
-        let model_index = rendered.find("Model: final answer").unwrap();
+        let thinking_index = rendered.find("thinking: Read the prompt.").unwrap();
+        let model_index = rendered.find("final answer").unwrap();
 
         assert!(!rendered.contains("Thinking\n"));
-        assert!(!rendered.contains("thinking"));
+        assert!(rendered.contains("thinking:"));
         assert!(thinking_index < model_index);
         assert!(rendered.contains("Return concise text."));
         assert!(!rendered.contains("request-1"));
@@ -704,7 +753,8 @@ mod tests {
         let rendered = conversation.render_body();
 
         assert!(!rendered.contains("thinking"));
-        assert!(rendered.contains("Model: final answer"));
+        assert!(rendered.contains("final answer"));
+        assert!(!rendered.contains("Model:"));
         assert!(!rendered.contains("Thinking\nfinal answer"));
     }
 
@@ -763,7 +813,7 @@ mod tests {
             "stub-provider",
             "request-1",
         )));
-        assert_eq!(status.text, "thinking");
+        assert_eq!(status.text, "◐ working");
         assert!(status.provider_active());
 
         status.observe_event(&Event::ProviderFinished(ProviderFinished::new(
@@ -780,19 +830,19 @@ mod tests {
         let mut status = StatusLine::ready();
 
         status.start_thinking_pulse();
-        assert_eq!(status.render_body(), "thinking");
+        assert_eq!(status.render_body(), "◐ working");
 
         status.advance_thinking_pulse();
-        assert_eq!(status.render_body(), "thinking.");
+        assert_eq!(status.render_body(), "◓ working");
 
         status.advance_thinking_pulse();
-        assert_eq!(status.render_body(), "thinking..");
+        assert_eq!(status.render_body(), "◑ working");
 
         status.advance_thinking_pulse();
-        assert_eq!(status.render_body(), "thinking...");
+        assert_eq!(status.render_body(), "◒ working");
 
         status.advance_thinking_pulse();
-        assert_eq!(status.render_body(), "thinking");
+        assert_eq!(status.render_body(), "◐ working");
 
         status.observe_event(&Event::ProviderFinished(ProviderFinished::new(
             "stub-provider",

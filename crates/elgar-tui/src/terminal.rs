@@ -1,14 +1,14 @@
 use std::{
-    io::{self, Stdout, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::mpsc,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    terminal::{disable_raw_mode, enable_raw_mode},
+    event::{self, Event, KeyEventKind},
+    terminal::{disable_raw_mode, enable_raw_mode, size as terminal_size},
 };
 use elgar_core::{
     provider::{ControllerProvider, ProviderConfig},
@@ -16,11 +16,10 @@ use elgar_core::{
     session::Session,
 };
 use ratatui::{
-    backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     text::{Line, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame, Terminal,
+    Frame,
 };
 
 use elgar_core::controller::Controller;
@@ -32,7 +31,14 @@ use crate::{
     theme, TuiShell,
 };
 
-type CrosstermTerminal = Terminal<CrosstermBackend<Stdout>>;
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_BOLD: &str = "\x1b[1m";
+const ANSI_CYAN: &str = "\x1b[38;2;143;207;198m";
+const ANSI_MUTED: &str = "\x1b[38;2;118;126;126m";
+const ANSI_TEXT: &str = "\x1b[38;2;214;219;224m";
+const ANSI_USER_BLOCK: &str = "\x1b[1m\x1b[38;2;143;207;198m\x1b[48;2;8;32;32m";
+const ANSI_CURSOR_HIDE: &str = "\x1b[?25l";
+const ANSI_CURSOR_SHOW: &str = "\x1b[?25h";
 
 pub fn run_terminal_shell() -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -59,16 +65,499 @@ fn run_terminal_shell_with_controller<P>(
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
-    let _guard = TerminalModeGuard::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    terminal.clear()?;
     let mut session = Session::new("terminal-tui-session", project_root.as_ref(), cwd.as_ref());
     let mut shell = TuiShell::new();
 
-    let result = run_terminal_loop(&mut terminal, &controller, &mut session, &mut shell);
-    let cursor_result = terminal.show_cursor();
+    let mut context = terminal_context(&session, &controller);
+    print_inline_startup(&context)?;
 
-    result.and(cursor_result)
+    loop {
+        context = terminal_context(&session, &controller);
+        let Some(input) = read_inline_prompt(&context)? else {
+            break;
+        };
+
+        if handle_inline_submission(&input, &controller, &mut session, &mut shell)? {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn terminal_context<P>(session: &Session, controller: &Controller<P>) -> TerminalShellContext
+where
+    P: ControllerProvider,
+{
+    let mut context = TerminalShellContext::from_session(session);
+    if context.provider.is_none() {
+        let request = controller.provider.request_metadata();
+        context.provider = Some(request.provider);
+        context.model = request.model;
+    }
+    context
+}
+
+fn print_inline_startup(context: &TerminalShellContext) -> io::Result<()> {
+    writeln!(io::stdout())?;
+    writeln!(
+        io::stdout(),
+        "{ANSI_MUTED}{}{ANSI_RESET}",
+        frame_separator_line(terminal_width())
+    )?;
+    for line in render_terminal_startup(context).lines() {
+        if line.starts_with("elgar") || line.starts_with('[') {
+            writeln!(io::stdout(), "{ANSI_CYAN}{ANSI_BOLD}{line}{ANSI_RESET}")?;
+        } else if line.trim().is_empty() {
+            writeln!(io::stdout())?;
+        } else {
+            writeln!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}")?;
+        }
+    }
+    writeln!(io::stdout())?;
+    io::stdout().flush()
+}
+
+fn read_inline_prompt(context: &TerminalShellContext) -> io::Result<Option<String>> {
+    let _guard = TerminalModeGuard::enter()?;
+    let mut input = TerminalInput::default();
+    let mut renderer = InlinePromptRenderer::new(context.clone());
+    renderer.render(input.text())?;
+
+    loop {
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match input.handle_key(key) {
+                TerminalInputAction::Continue => renderer.render(input.text())?,
+                TerminalInputAction::Submit => {
+                    let submitted = input.drain().trim().to_string();
+                    renderer.clear()?;
+                    return Ok(Some(submitted));
+                }
+                TerminalInputAction::Exit => {
+                    renderer.clear()?;
+                    return Ok(None);
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
+fn handle_inline_submission<P>(
+    submitted: &str,
+    controller: &Controller<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+) -> io::Result<bool>
+where
+    P: ControllerProvider + Clone + Send + 'static,
+{
+    match parse_terminal_command(submitted) {
+        TerminalCommand::Empty => Ok(false),
+        TerminalCommand::Exit => Ok(true),
+        TerminalCommand::Help => {
+            print_plain_block(render_terminal_help())?;
+            Ok(false)
+        }
+        TerminalCommand::Clear => {
+            clear_terminal_conversation(shell);
+            clear_visible_terminal()?;
+            Ok(false)
+        }
+        TerminalCommand::Copy => {
+            let mut sink = io::stdout();
+            let _ = copy_conversation_to_terminal_clipboard(&mut sink, shell);
+            if !shell.copy.render_hint().is_empty() {
+                print_plain_block(&shell.copy.render_hint())?;
+            }
+            Ok(false)
+        }
+        TerminalCommand::Unknown(command) => {
+            print_plain_block(&format!(
+                "Unknown command: {command}. Type /commands for commands."
+            ))?;
+            Ok(false)
+        }
+        TerminalCommand::Approve | TerminalCommand::Reject => {
+            let before = shell.conversation.render_lines_with_styles().len();
+            let exit = handle_submitted_terminal_input(
+                submitted,
+                controller,
+                session,
+                shell,
+                io::stdout(),
+            );
+            print_new_conversation_lines(shell, before, false)?;
+            Ok(exit)
+        }
+        TerminalCommand::Text(text) if terminal_text_starts_provider_turn(text) => {
+            run_inline_provider_turn(text, controller, session, shell)?;
+            Ok(false)
+        }
+        TerminalCommand::Text(text) => {
+            let before = shell.conversation.render_lines_with_styles().len();
+            handle_terminal_text_input(text, controller, session, shell);
+            print_new_conversation_lines(shell, before, false)?;
+            Ok(false)
+        }
+    }
+}
+
+fn run_inline_provider_turn<P>(
+    text: &str,
+    controller: &Controller<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+) -> io::Result<()>
+where
+    P: ControllerProvider + Clone + Send + 'static,
+{
+    let before = shell.conversation.render_lines_with_styles().len();
+    print_spacer()?;
+    print_user_block(text)?;
+
+    let task = start_provider_turn(controller.clone(), session.clone(), text.to_string());
+    let mut working = InlineWorkingRenderer::new(terminal_context(session, controller));
+    let started = Instant::now();
+    let mut tick = 0usize;
+
+    let completed = loop {
+        match task.try_complete() {
+            Ok(Some(completed)) => break completed,
+            Ok(None) => {
+                working.render(tick, started.elapsed().as_secs())?;
+                tick = tick.wrapping_add(1);
+                thread::sleep(Duration::from_millis(420));
+            }
+            Err(message) => {
+                working.clear()?;
+                print_plain_block(&format!("Provider error: {message}"))?;
+                return Ok(());
+            }
+        }
+    };
+
+    working.clear()?;
+    *session = completed.session;
+    shell.consume_events(&completed.events);
+    shell.conversation.follow_latest();
+    print_new_conversation_lines(shell, before, true)?;
+    Ok(())
+}
+
+fn print_new_conversation_lines(
+    shell: &TuiShell,
+    before: usize,
+    skip_user_and_loading: bool,
+) -> io::Result<()> {
+    let lines = shell.conversation.render_lines_with_styles();
+    for (line, style) in lines.into_iter().skip(before) {
+        if skip_user_and_loading
+            && matches!(
+                style,
+                ConversationLineStyle::User | ConversationLineStyle::Loading
+            )
+        {
+            continue;
+        }
+        print_conversation_line(&line, style)?;
+    }
+    io::stdout().flush()
+}
+
+fn print_conversation_line(line: &str, style: ConversationLineStyle) -> io::Result<()> {
+    match style {
+        ConversationLineStyle::User => {
+            print_spacer()?;
+            let visible = line.strip_prefix("> ").unwrap_or(line);
+            print_user_block(visible)
+        }
+        ConversationLineStyle::Loading => {
+            print_spacer()?;
+            writeln!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}")
+        }
+        ConversationLineStyle::Thinking => {
+            print_spacer()?;
+            writeln!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}")
+        }
+        ConversationLineStyle::Plain => {
+            print_spacer()?;
+            print_plain_block(line)
+        }
+    }
+}
+
+fn print_spacer() -> io::Result<()> {
+    writeln!(io::stdout())
+}
+
+fn print_user_block(input: &str) -> io::Result<()> {
+    let width = drawable_width(terminal_width());
+    for line in non_empty_lines(wrap_words(input, width)) {
+        writeln!(
+            io::stdout(),
+            "{ANSI_USER_BLOCK}{}{ANSI_RESET}",
+            pad_line(&line, width)
+        )?;
+    }
+    io::stdout().flush()
+}
+
+fn print_plain_block(text: &str) -> io::Result<()> {
+    let width = drawable_width(terminal_width());
+    for line in non_empty_lines(wrap_words(text, width)) {
+        writeln!(io::stdout(), "{ANSI_TEXT}{line}{ANSI_RESET}")?;
+    }
+    io::stdout().flush()
+}
+
+fn non_empty_lines(lines: Vec<String>) -> Vec<String> {
+    if lines.is_empty() {
+        vec![String::new()]
+    } else {
+        lines
+    }
+}
+
+#[derive(Debug, Clone)]
+struct InlinePromptRenderer {
+    context: TerminalShellContext,
+    rows: usize,
+}
+
+impl InlinePromptRenderer {
+    fn new(context: TerminalShellContext) -> Self {
+        Self { context, rows: 0 }
+    }
+
+    fn render(&mut self, input: &str) -> io::Result<()> {
+        self.clear()?;
+        let width = terminal_width();
+        let (top_lines, input_lines, bottom_lines, footer_lines) =
+            inline_prompt_frame_lines(&self.context, input, width);
+
+        for line in &top_lines {
+            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+        }
+        for line in &input_lines {
+            write!(io::stdout(), "{ANSI_CYAN}{line}{ANSI_RESET}\r\n")?;
+        }
+        for line in &bottom_lines {
+            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+        }
+        for line in &footer_lines {
+            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+        }
+
+        self.rows = top_lines.len() + input_lines.len() + bottom_lines.len() + footer_lines.len();
+        io::stdout().flush()
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        if self.rows > 0 {
+            write!(io::stdout(), "\x1b[{}A\r\x1b[J", self.rows)?;
+            self.rows = 0;
+        }
+        io::stdout().flush()
+    }
+}
+
+impl Drop for InlinePromptRenderer {
+    fn drop(&mut self) {
+        let _ = self.clear();
+    }
+}
+
+#[derive(Debug)]
+struct InlineWorkingRenderer {
+    context: TerminalShellContext,
+    rows: usize,
+}
+
+impl InlineWorkingRenderer {
+    fn new(context: TerminalShellContext) -> Self {
+        Self { context, rows: 0 }
+    }
+
+    fn render(&mut self, tick: usize, elapsed_secs: u64) -> io::Result<()> {
+        self.clear()?;
+        let width = terminal_width();
+        let (thinking_lines, top_lines, input_lines, bottom_lines, footer_lines) =
+            active_working_frame_lines(&self.context, tick, elapsed_secs, width);
+
+        for line in &thinking_lines {
+            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+        }
+        for line in &top_lines {
+            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+        }
+        for line in &input_lines {
+            write!(io::stdout(), "{ANSI_CYAN}{line}{ANSI_RESET}\r\n")?;
+        }
+        for line in &bottom_lines {
+            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+        }
+        for line in &footer_lines {
+            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+        }
+
+        self.rows = thinking_lines.len()
+            + top_lines.len()
+            + input_lines.len()
+            + bottom_lines.len()
+            + footer_lines.len();
+        io::stdout().flush()
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        if self.rows > 0 {
+            write!(io::stdout(), "\x1b[{}A\r\x1b[J", self.rows)?;
+            self.rows = 0;
+        }
+        io::stdout().flush()
+    }
+}
+
+impl Drop for InlineWorkingRenderer {
+    fn drop(&mut self) {
+        let _ = self.clear();
+    }
+}
+
+fn inline_prompt_frame_lines(
+    context: &TerminalShellContext,
+    input: &str,
+    width: usize,
+) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    (
+        vec![String::new(), frame_separator_line(width)],
+        prompt_input_lines(input, width),
+        vec![frame_separator_line(width)],
+        context
+            .footer_body_for_width(drawable_width(width))
+            .lines()
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+fn active_working_frame_lines(
+    context: &TerminalShellContext,
+    tick: usize,
+    elapsed_secs: u64,
+    width: usize,
+) -> (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+) {
+    let marker = working_marker(tick);
+    let line = format!("{marker} thinking {elapsed_secs}s");
+    let thinking_lines = non_empty_lines(wrap_words(&line, drawable_width(width)));
+    let (top_lines, input_lines, bottom_lines, footer_lines) =
+        inline_prompt_frame_lines(context, "", width);
+    (
+        thinking_lines,
+        top_lines,
+        input_lines,
+        bottom_lines,
+        footer_lines,
+    )
+}
+
+fn working_marker(tick: usize) -> &'static str {
+    const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
+    FRAMES[tick % FRAMES.len()]
+}
+
+fn prompt_input_lines(input: &str, width: usize) -> Vec<String> {
+    let width = drawable_width(width);
+    let prefix = "▸ ";
+    let continuation = "  ";
+    let first_width = width.saturating_sub(prefix.chars().count()).max(1);
+    let continuation_width = width.saturating_sub(continuation.chars().count()).max(1);
+    let wrapped = non_empty_lines(wrap_words(input, first_width));
+    let mut lines = Vec::new();
+    for (index, line) in wrapped.into_iter().enumerate() {
+        if index == 0 {
+            lines.push(format!("{prefix}{line}"));
+        } else {
+            for continuation_line in non_empty_lines(wrap_words(&line, continuation_width)) {
+                lines.push(format!("{continuation}{continuation_line}"));
+            }
+        }
+    }
+    lines
+}
+
+fn frame_separator_line(width: usize) -> String {
+    "─".repeat(drawable_width(width))
+}
+
+fn terminal_width() -> usize {
+    terminal_size()
+        .ok()
+        .map(|(width, _)| usize::from(width))
+        .filter(|width| *width > 0)
+        .unwrap_or(80)
+}
+
+fn drawable_width(width: usize) -> usize {
+    width.saturating_sub(1).max(1)
+}
+
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for raw_line in text.split('\n') {
+        if raw_line.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut line = String::new();
+        for word in raw_line.split_whitespace() {
+            let word_len = word.chars().count();
+            let line_len = line.chars().count();
+            if line.is_empty() {
+                if word_len <= width {
+                    line.push_str(word);
+                } else {
+                    lines.extend(split_long_word(word, width));
+                }
+            } else if line_len + 1 + word_len <= width {
+                line.push(' ');
+                line.push_str(word);
+            } else {
+                lines.push(std::mem::take(&mut line));
+                if word_len <= width {
+                    line.push_str(word);
+                } else {
+                    lines.extend(split_long_word(word, width));
+                }
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+fn split_long_word(word: &str, width: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut chunk = String::new();
+    for character in word.chars() {
+        if chunk.chars().count() == width {
+            chunks.push(std::mem::take(&mut chunk));
+        }
+        chunk.push(character);
+    }
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
 }
 
 pub fn render_default_terminal_shell(frame: &mut Frame<'_>) {
@@ -247,6 +736,7 @@ fn style_terminal_conversation(
                 Line::styled(pad_line(visible, width), theme::user_input_block())
             }
             ConversationLineStyle::Loading => Line::styled(line, theme::thinking()),
+            ConversationLineStyle::Thinking => Line::styled(line, theme::thinking()),
             ConversationLineStyle::Plain => Line::raw(line),
         },
     ));
@@ -380,7 +870,7 @@ fn divider_block(title: &'static str) -> Block<'static> {
 fn status_style(status: &str) -> ratatui::style::Style {
     if status.contains("error") || status.starts_with("failed") {
         theme::error()
-    } else if status.starts_with("thinking") {
+    } else if status.starts_with("thinking") || status.contains("working") {
         theme::thinking()
     } else if status.starts_with("applied") || status == "reply ready" || status == "ready" {
         theme::success()
@@ -392,69 +882,6 @@ fn status_style(status: &str) -> ratatui::style::Style {
     } else {
         theme::muted()
     }
-}
-
-fn run_terminal_loop<P>(
-    terminal: &mut CrosstermTerminal,
-    controller: &Controller<P>,
-    session: &mut Session,
-    shell: &mut TuiShell,
-) -> io::Result<()>
-where
-    P: ControllerProvider + Clone + Send + 'static,
-{
-    let mut input = TerminalInput::default();
-    let mut pending_turn: Option<ProviderTurnTask> = None;
-
-    loop {
-        if let Some(task) = pending_turn.take() {
-            match task.try_complete() {
-                Ok(Some(completed)) => {
-                    *session = completed.session;
-                    shell.conversation.discard_pending_provider_turn();
-                    shell.consume_events(&completed.events);
-                    shell.conversation.follow_latest();
-                }
-                Ok(None) => pending_turn = Some(task),
-                Err(message) => shell.status.finish_with_error(message),
-            }
-        }
-
-        shell.status.advance_thinking_pulse();
-        shell.conversation.advance_loading_pulse();
-        shell.input.text = input.text().to_string();
-        let mut context = TerminalShellContext::from_session(session);
-        if context.provider.is_none() {
-            let request = controller.provider.request_metadata();
-            context.provider = Some(request.provider);
-            context.model = request.model;
-        }
-        terminal.draw(|frame| render_tui_shell(frame, shell, &context))?;
-
-        if event::poll(Duration::from_millis(250))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if pending_turn.is_some() {
-                        if handle_terminal_key_while_provider_active(key, &mut input, shell) {
-                            break;
-                        }
-                    } else if handle_terminal_key_for_loop(
-                        key,
-                        &mut input,
-                        controller,
-                        session,
-                        shell,
-                        &mut pending_turn,
-                    ) {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    Ok(())
 }
 
 struct ProviderTurnTask {
@@ -488,7 +915,7 @@ where
 {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let result = controller.turn(&mut session, &input);
+        let result = controller.model_turn(&mut session, &input);
         let _ = sender.send(Ok(CompletedProviderTurn {
             session,
             events: result.events,
@@ -498,9 +925,13 @@ where
     ProviderTurnTask { receiver }
 }
 
+#[cfg(test)]
 fn should_exit(key: crossterm::event::KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Esc)
-        || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
+    matches!(key.code, crossterm::event::KeyCode::Esc)
+        || (key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL)
+            && key.code == crossterm::event::KeyCode::Char('c'))
 }
 
 #[cfg(test)]
@@ -517,42 +948,7 @@ where
     handle_terminal_key_with_copy_writer(key, input, controller, session, shell, io::stdout())
 }
 
-fn handle_terminal_key_for_loop<P>(
-    key: crossterm::event::KeyEvent,
-    input: &mut TerminalInput,
-    controller: &Controller<P>,
-    session: &mut Session,
-    shell: &mut TuiShell,
-    pending_turn: &mut Option<ProviderTurnTask>,
-) -> bool
-where
-    P: ControllerProvider + Clone + Send + 'static,
-{
-    if should_exit(key) {
-        return true;
-    }
-
-    if handle_scroll_key(key, shell) {
-        return false;
-    }
-
-    match input.handle_key(key) {
-        TerminalInputAction::Continue => false,
-        TerminalInputAction::Exit => true,
-        TerminalInputAction::Submit => {
-            let submitted = input.drain();
-            shell.input.text.clear();
-            handle_submitted_terminal_input_for_loop(
-                &submitted,
-                controller,
-                session,
-                shell,
-                pending_turn,
-            )
-        }
-    }
-}
-
+#[cfg(test)]
 fn handle_terminal_key_while_provider_active(
     key: crossterm::event::KeyEvent,
     input: &mut TerminalInput,
@@ -566,7 +962,7 @@ fn handle_terminal_key_while_provider_active(
         return false;
     }
 
-    if matches!(key.code, KeyCode::Enter) {
+    if matches!(key.code, crossterm::event::KeyCode::Enter) {
         let _ = input.drain();
         shell.input.text.clear();
     }
@@ -624,6 +1020,9 @@ where
                 .push(render_terminal_help().to_string());
             shell.conversation.follow_latest();
         }
+        TerminalCommand::Clear => {
+            clear_terminal_conversation(shell);
+        }
         TerminalCommand::Approve => {
             shell.submit_approval(controller, session);
         }
@@ -674,6 +1073,7 @@ fn handle_terminal_text_input<P>(
     }
 }
 
+#[cfg(test)]
 fn handle_submitted_terminal_input_for_loop<P>(
     submitted: &str,
     controller: &Controller<P>,
@@ -685,7 +1085,7 @@ where
     P: ControllerProvider + Clone + Send + 'static,
 {
     match parse_terminal_command(submitted) {
-        TerminalCommand::Text(text) if route_input(text) == Route::AskModel => {
+        TerminalCommand::Text(text) if terminal_text_starts_provider_turn(text) => {
             shell.conversation.push_pending_provider_turn(text);
             shell.conversation.follow_latest();
             shell.status.start_thinking_pulse();
@@ -704,6 +1104,7 @@ where
 enum TerminalCommand<'a> {
     Empty,
     Help,
+    Clear,
     Approve,
     Reject,
     Copy,
@@ -717,30 +1118,49 @@ fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
     match trimmed {
         "" => TerminalCommand::Empty,
         "/help" | "/commands" => TerminalCommand::Help,
+        "/clear" | "/new" => TerminalCommand::Clear,
         "/approve" => TerminalCommand::Approve,
         "/reject" => TerminalCommand::Reject,
         "/copy" => TerminalCommand::Copy,
-        "/exit" | "/quit" => TerminalCommand::Exit,
+        "/exit" | "/quit" | "/q" => TerminalCommand::Exit,
         command if command.starts_with('/') => TerminalCommand::Unknown(command),
         text => TerminalCommand::Text(text),
     }
 }
 
-fn render_terminal_help() -> &'static str {
-    "Commands\n/commands  Show commands\n/approve   Apply the pending action\n/reject    Reject the pending action\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/help      Show commands"
+fn terminal_text_starts_provider_turn(text: &str) -> bool {
+    matches!(route_input(text), Route::AskModel | Route::Unknown)
 }
 
+fn render_terminal_help() -> &'static str {
+    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/approve   Apply the pending action\n/reject    Reject the pending action\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
+}
+
+fn clear_terminal_conversation(shell: &mut TuiShell) {
+    shell.clear_conversation();
+}
+
+fn clear_visible_terminal() -> io::Result<()> {
+    write!(io::stdout(), "\x1b[2J\x1b[H")?;
+    io::stdout().flush()
+}
+
+#[cfg(test)]
 fn handle_scroll_key(key: crossterm::event::KeyEvent, shell: &mut TuiShell) -> bool {
     match key.code {
-        KeyCode::PageUp => {
+        crossterm::event::KeyCode::PageUp => {
             shell.conversation.scroll_up(5);
             true
         }
-        KeyCode::PageDown => {
+        crossterm::event::KeyCode::PageDown => {
             shell.conversation.scroll_down(5);
             true
         }
-        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        crossterm::event::KeyCode::End
+            if key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
             shell.conversation.follow_latest();
             true
         }
@@ -807,12 +1227,16 @@ struct TerminalModeGuard;
 impl TerminalModeGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
+        write!(io::stdout(), "{ANSI_CURSOR_HIDE}")?;
+        io::stdout().flush()?;
         Ok(Self)
     }
 }
 
 impl Drop for TerminalModeGuard {
     fn drop(&mut self) {
+        let _ = write!(io::stdout(), "{ANSI_CURSOR_SHOW}");
+        let _ = io::stdout().flush();
         let _ = disable_raw_mode();
     }
 }
@@ -825,12 +1249,12 @@ mod tests {
     use crate::{input::TerminalInput, panes::ConversationPane, TuiShell};
 
     use super::{
-        copy_conversation_to_terminal_clipboard, default_shell_text, encode_base64,
-        handle_scroll_key, handle_submitted_terminal_input_for_loop, handle_terminal_key,
-        handle_terminal_key_while_provider_active, handle_terminal_key_with_copy_writer,
-        osc52_clipboard_sequence, parse_terminal_command, render_terminal_help, render_tui_shell,
-        should_exit, status_style, style_terminal_conversation, TerminalCommand,
-        TerminalShellContext,
+        active_working_frame_lines, copy_conversation_to_terminal_clipboard, default_shell_text,
+        encode_base64, handle_scroll_key, handle_submitted_terminal_input_for_loop,
+        handle_terminal_key, handle_terminal_key_while_provider_active,
+        handle_terminal_key_with_copy_writer, inline_prompt_frame_lines, osc52_clipboard_sequence,
+        parse_terminal_command, render_terminal_help, render_tui_shell, should_exit, status_style,
+        style_terminal_conversation, TerminalCommand, TerminalShellContext,
     };
 
     fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -864,6 +1288,42 @@ mod tests {
             .unwrap();
 
         assert_eq!(user_line.style, crate::theme::user_input_block());
+    }
+
+    #[test]
+    fn inline_prompt_frame_matches_old_elgar_runtime_shape() {
+        let context =
+            TerminalShellContext::new("/Users/yuval/__git/elgar", "/Users/yuval/__git/elgar")
+                .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()));
+
+        let (top, input, bottom, footer) = inline_prompt_frame_lines(&context, "hello", 86);
+
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0], "");
+        assert!(top[1].starts_with("────"));
+        assert_eq!(input, vec!["▸ hello"]);
+        assert_eq!(bottom, vec![top[1].clone()]);
+        assert_eq!(footer.len(), 2);
+        assert!(footer[0].contains("openai/gpt-oss-20b"));
+        assert_eq!(footer[1], "context: TBD");
+        assert!(!footer.join("\n").contains("select visible"));
+        assert!(!footer.join("\n").contains("PgUp"));
+    }
+
+    #[test]
+    fn active_working_frame_keeps_prompt_and_footer_visible() {
+        let context = TerminalShellContext::new("/repo", "/repo")
+            .with_provider("lm-studio", Some("model-a".to_string()));
+
+        let (thinking, top, input, bottom, footer) = active_working_frame_lines(&context, 1, 7, 80);
+
+        assert_eq!(thinking, vec!["◓ thinking 7s"]);
+        assert_eq!(top[0], "");
+        assert!(top[1].starts_with("────"));
+        assert_eq!(input, vec!["▸ "]);
+        assert_eq!(bottom, vec![top[1].clone()]);
+        assert!(footer[0].contains("model-a"));
+        assert_eq!(footer[1], "context: TBD");
     }
 
     fn submit_text(
@@ -904,7 +1364,7 @@ mod tests {
         let text = default_shell_text();
 
         assert!(text.contains("elgar v0.2"));
-        assert!(text.contains("/commands · /approve · /reject · /copy · /exit"));
+        assert!(text.contains("/commands · /clear · /approve · /reject · /copy · /exit"));
         assert!(text.contains(
             "Elgar uses your local LM Studio model and keeps file changes behind approval."
         ));
@@ -1087,16 +1547,16 @@ mod tests {
 
         assert!(!exited);
         assert!(pending_turn.is_some());
-        assert_eq!(shell.status.render_body(), "thinking");
+        assert_eq!(shell.status.render_body(), "◐ working");
         assert!(shell.status.provider_active());
         assert!(shell
             .conversation
             .render_body()
-            .contains("> what does the harness do?\nthinking"));
+            .contains("> what does the harness do?\n◐ working"));
         shell.status.advance_thinking_pulse();
         shell.conversation.advance_loading_pulse();
-        assert_eq!(shell.status.render_body(), "thinking.");
-        assert!(shell.conversation.render_body().contains("thinking."));
+        assert_eq!(shell.status.render_body(), "◓ working");
+        assert!(shell.conversation.render_body().contains("◓ working"));
 
         let task = pending_turn.take().unwrap();
         let completed = (0..20)
@@ -1117,14 +1577,61 @@ mod tests {
         assert_eq!(shell.status.render_body(), "reply ready");
         assert!(!shell.status.provider_active());
         assert!(!shell.render().contains("User\n"));
-        assert!(shell.render().contains("Model: stub provider response"));
+        assert!(shell.render().contains("stub provider response"));
+        assert!(!shell.render().contains("Model:"));
+    }
+
+    #[test]
+    fn terminal_loop_sends_unclassified_non_slash_text_to_provider() {
+        let controller = Controller::default();
+        let mut session = Session::new("session-1", "/repo", "/repo");
+        let mut shell = TuiShell::new();
+        let mut pending_turn = None;
+
+        let exited = handle_submitted_terminal_input_for_loop(
+            "sadsadad",
+            &controller,
+            &mut session,
+            &mut shell,
+            &mut pending_turn,
+        );
+
+        assert!(!exited);
+        assert!(pending_turn.is_some());
+        assert!(shell
+            .conversation
+            .render_body()
+            .contains("> sadsadad\n◐ working"));
+        assert!(!shell
+            .conversation
+            .render_body()
+            .contains("Input was not recognized"));
+
+        let task = pending_turn.take().unwrap();
+        let completed = (0..20)
+            .find_map(|_| {
+                let result = task.try_complete().unwrap();
+                if result.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                result
+            })
+            .expect("stub provider turn should complete");
+
+        session = completed.session;
+        shell.conversation.discard_pending_provider_turn();
+        shell.consume_events(&completed.events);
+
+        assert_eq!(session.events().len(), completed.events.len());
+        assert!(shell.render().contains("stub provider response"));
+        assert!(!shell.render().contains("Input was not recognized"));
     }
 
     #[test]
     fn terminal_status_uses_named_theme_styles_by_state() {
         assert_eq!(status_style("ready"), crate::theme::success());
         assert_eq!(status_style("reply ready"), crate::theme::success());
-        assert_eq!(status_style("thinking..."), crate::theme::thinking());
+        assert_eq!(status_style("◐ working"), crate::theme::thinking());
         assert_eq!(
             status_style("review action-1"),
             crate::theme::warning_action()
@@ -1204,14 +1711,27 @@ mod tests {
     fn terminal_commands_are_slash_only() {
         assert_eq!(parse_terminal_command("/help"), TerminalCommand::Help);
         assert_eq!(parse_terminal_command(" /commands "), TerminalCommand::Help);
+        assert_eq!(parse_terminal_command("/clear"), TerminalCommand::Clear);
+        assert_eq!(parse_terminal_command(" /new "), TerminalCommand::Clear);
         assert_eq!(parse_terminal_command("/approve"), TerminalCommand::Approve);
         assert_eq!(parse_terminal_command("/reject"), TerminalCommand::Reject);
         assert_eq!(parse_terminal_command("/copy"), TerminalCommand::Copy);
         assert_eq!(parse_terminal_command("/exit"), TerminalCommand::Exit);
         assert_eq!(parse_terminal_command("/quit"), TerminalCommand::Exit);
+        assert_eq!(parse_terminal_command("/q"), TerminalCommand::Exit);
         assert_eq!(
             parse_terminal_command("/model"),
             TerminalCommand::Unknown("/model")
+        );
+        assert_eq!(
+            parse_terminal_command("clear"),
+            TerminalCommand::Text("clear")
+        );
+        assert_eq!(parse_terminal_command("new"), TerminalCommand::Text("new"));
+        assert_eq!(parse_terminal_command("q"), TerminalCommand::Text("q"));
+        assert_eq!(
+            parse_terminal_command("quit"),
+            TerminalCommand::Text("quit")
         );
         assert_eq!(
             parse_terminal_command("approve"),
@@ -1224,11 +1744,14 @@ mod tests {
 
         let help = render_terminal_help();
         assert!(help.starts_with("Commands\n/commands"));
+        assert!(help.contains("/clear"));
+        assert!(help.contains("/new"));
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
         assert!(help.contains("/copy"));
         assert!(help.contains("/exit"));
         assert!(help.contains("/quit"));
+        assert!(help.contains("/q"));
         assert!(help.contains("/help"));
         assert!(!help.contains("/model"));
         assert!(!help.contains("/settings"));
@@ -1257,6 +1780,40 @@ mod tests {
             .render()
             .contains("Action commands must use /approve or /reject."));
         assert!(input.text().is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_clear_slash_commands_clear_only_local_conversation() {
+        let controller = Controller::default();
+        let root = temp_root("terminal-clear-local");
+        let target = root.join("clear.py");
+        let mut session = Session::new("session-1", root.clone(), root.clone());
+        let mut shell = TuiShell::new();
+        let mut input = TerminalInput::default();
+
+        shell.submit_input(&controller, &mut session, "create file clear.py");
+        let before_session = session.clone();
+        let before_pending = shell.pending_action.clone();
+
+        let exited = submit_text("/clear", &mut input, &controller, &mut session, &mut shell);
+
+        assert!(!exited);
+        assert_eq!(session, before_session);
+        assert_eq!(shell.pending_action, before_pending);
+        assert!(shell.conversation.lines.is_empty());
+        assert!(!target.exists());
+        assert!(input.text().is_empty());
+
+        shell.conversation.lines.push("visible again".to_string());
+        let exited = submit_text("/new", &mut input, &controller, &mut session, &mut shell);
+
+        assert!(!exited);
+        assert_eq!(session, before_session);
+        assert_eq!(shell.pending_action, before_pending);
+        assert!(shell.conversation.lines.is_empty());
+        assert!(!target.exists());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1488,7 +2045,8 @@ mod tests {
         assert!(input.text().is_empty());
         assert!(shell.render().contains("> what does the harness do?"));
         assert!(!shell.render().contains("User\n"));
-        assert!(shell.render().contains("Model: stub provider response"));
+        assert!(shell.render().contains("stub provider response"));
+        assert!(!shell.render().contains("Model:"));
         assert_eq!(session.events().len(), 4);
     }
 
@@ -1505,7 +2063,7 @@ mod tests {
         let rendered = shell.render();
         assert!(rendered.contains("> hello!"));
         assert!(!rendered.contains("User\n"));
-        assert!(rendered.contains("Model:"));
+        assert!(!rendered.contains("Model:"));
         assert!(rendered.contains("stub provider response (no-network) to: hello!"));
         assert!(rendered.contains("No live provider call was made"));
         assert!(rendered.contains("tui-controller-smoke"));

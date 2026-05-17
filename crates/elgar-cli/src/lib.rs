@@ -233,7 +233,7 @@ fn runtime_provider_from_file(
 }
 
 pub fn is_tui_exit_command(input: &str) -> bool {
-    matches!(input.trim(), "/exit" | "/quit")
+    matches!(input.trim(), "/exit" | "/quit" | "/q")
 }
 
 pub fn is_tui_help_command(input: &str) -> bool {
@@ -250,6 +250,10 @@ pub fn is_tui_rejection_command(input: &str) -> bool {
 
 pub fn is_tui_copy_command(input: &str) -> bool {
     input.trim() == "/copy"
+}
+
+pub fn is_tui_clear_command(input: &str) -> bool {
+    matches!(input.trim(), "/clear" | "/new")
 }
 
 fn submit_tui_input(
@@ -273,7 +277,7 @@ fn submit_tui_input(
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\n/commands  Show commands\n/approve   Apply the pending action\n/reject    Reject the pending action\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/help      Show commands"
+    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/approve   Apply the pending action\n/reject    Reject the pending action\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
 }
 
 pub fn render_tui_script<I, S>(
@@ -298,6 +302,9 @@ where
 
         if is_tui_help_command(input) {
             rendered_turns.push(render_tui_help().to_string());
+        } else if is_tui_clear_command(input) {
+            shell.clear_conversation();
+            rendered_turns.push(shell.render());
         } else if is_tui_copy_command(input) {
             rendered_turns.push(shell.conversation_copy_text());
         } else {
@@ -323,7 +330,7 @@ where
     let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
     let mut shell = elgar_tui::TuiShell::new();
 
-    writeln!(writer, "Elgar TUI. Type /exit or /quit to leave.")?;
+    writeln!(writer, "Elgar TUI. Type /exit, /quit, or /q to leave.")?;
     for line in reader.lines() {
         let input = line?;
         if is_tui_exit_command(&input) {
@@ -333,6 +340,9 @@ where
 
         if is_tui_help_command(&input) {
             writeln!(writer, "{}", render_tui_help())?;
+        } else if is_tui_clear_command(&input) {
+            shell.clear_conversation();
+            writeln!(writer, "{}", shell.render())?;
         } else if is_tui_copy_command(&input) {
             writeln!(writer, "{}", shell.conversation_copy_text())?;
         } else {
@@ -511,12 +521,12 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::{
-        is_tui_approval_command, is_tui_copy_command, is_tui_exit_command, is_tui_help_command,
-        is_tui_rejection_command, load_runtime_provider, provider_smoke_config,
-        provider_smoke_prompt, render_cli_turn_from_runtime_config, render_controller_smoke,
-        render_tui_controller_smoke, render_tui_help, render_tui_script, run_tui_loop,
-        ProviderSmokeConfig, ProviderSmokeError, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
-        PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
+        is_tui_approval_command, is_tui_clear_command, is_tui_copy_command, is_tui_exit_command,
+        is_tui_help_command, is_tui_rejection_command, load_runtime_provider,
+        provider_smoke_config, provider_smoke_prompt, render_cli_turn_from_runtime_config,
+        render_controller_smoke, render_tui_controller_smoke, render_tui_help, render_tui_script,
+        run_tui_loop, ProviderSmokeConfig, ProviderSmokeError, RuntimeProviderConfigError,
+        PROVIDER_CONFIG_FILE, PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
     fn temp_root(name: &str) -> PathBuf {
@@ -680,7 +690,10 @@ mod tests {
     fn tui_exit_commands_are_explicit() {
         assert!(is_tui_exit_command("/exit"));
         assert!(is_tui_exit_command(" /quit "));
+        assert!(is_tui_exit_command("/q"));
         assert!(!is_tui_exit_command("exit"));
+        assert!(!is_tui_exit_command("q"));
+        assert!(!is_tui_exit_command("quit"));
         assert!(!is_tui_exit_command("/help"));
     }
 
@@ -699,11 +712,14 @@ mod tests {
         assert!(!is_tui_help_command("help"));
         assert!(!is_tui_help_command("/model"));
         assert!(help.starts_with("Commands\n/commands"));
+        assert!(help.contains("/clear"));
+        assert!(help.contains("/new"));
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
         assert!(help.contains("/copy"));
         assert!(help.contains("/exit"));
         assert!(help.contains("/quit"));
+        assert!(help.contains("/q"));
         assert!(help.contains("/help"));
         assert!(!help.contains("/model"));
         assert!(!help.contains("/settings"));
@@ -735,6 +751,15 @@ mod tests {
     }
 
     #[test]
+    fn tui_clear_commands_are_explicit() {
+        assert!(is_tui_clear_command("/clear"));
+        assert!(is_tui_clear_command(" /new "));
+        assert!(!is_tui_clear_command("clear"));
+        assert!(!is_tui_clear_command("new"));
+        assert!(!is_tui_clear_command("/reset"));
+    }
+
+    #[test]
     fn tui_script_renders_default_stub_turns_and_stops_on_exit() {
         let rendered = render_tui_script(
             ["what does the harness do?", "/exit", "what should not run?"],
@@ -743,8 +768,18 @@ mod tests {
         );
 
         assert!(rendered.contains("> what does the harness do?"));
-        assert!(rendered.contains("Model: stub provider response"));
+        assert!(rendered.contains("stub provider response"));
+        assert!(!rendered.contains("Model:"));
         assert!(!rendered.contains("stub-request-1"));
+        assert!(!rendered.contains("what should not run?"));
+        assert!(!rendered.contains("lm-studio"));
+    }
+
+    #[test]
+    fn tui_script_q_alias_exits_but_plain_q_is_text() {
+        let rendered = render_tui_script(["q", "/q", "what should not run?"], ".", ".");
+
+        assert!(rendered.contains("> q"));
         assert!(!rendered.contains("what should not run?"));
         assert!(!rendered.contains("lm-studio"));
     }
@@ -769,10 +804,32 @@ mod tests {
         let rendered = render_tui_script(["what does the harness do?", "/copy"], ".", ".");
 
         assert!(rendered.contains("> what does the harness do?"));
-        assert!(rendered.contains("Model: stub provider response"));
+        assert!(rendered.contains("stub provider response"));
+        assert!(!rendered.contains("Model:"));
         assert!(!rendered.contains("> /copy"));
         assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("lm-studio"));
+    }
+
+    #[test]
+    fn tui_script_clear_commands_clear_local_rendering_without_controller_call() {
+        let root = temp_root("clear-command");
+
+        let rendered = render_tui_script(
+            ["what does the harness do?", "/clear", "/new"],
+            &root,
+            &root,
+        );
+
+        assert!(!rendered.contains("> /clear"));
+        assert!(!rendered.contains("> /new"));
+        assert!(rendered.contains("stub provider response"));
+        assert!(rendered.contains("(empty conversation)"));
+        assert_eq!(rendered.matches("stub provider response").count(), 1);
+        assert!(!rendered.contains("Input was not recognized"));
+        assert!(!rendered.contains("lm-studio"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -849,7 +906,7 @@ mod tests {
         run_tui_loop(&input[..], &mut output, ".", ".").unwrap();
 
         let rendered = String::from_utf8(output).unwrap();
-        assert!(rendered.contains("Elgar TUI. Type /exit or /quit to leave."));
+        assert!(rendered.contains("Elgar TUI. Type /exit, /quit, or /q to leave."));
         assert!(rendered.contains("> what does the harness do?"));
         assert!(!rendered.contains("stub-request-1"));
         assert!(rendered.contains("Exiting Elgar TUI."));

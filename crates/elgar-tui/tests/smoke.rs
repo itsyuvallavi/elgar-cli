@@ -111,7 +111,8 @@ fn renders_core_events_from_controller_turns() {
 
     let rendered = shell.render();
     assert!(rendered.contains("> what does the harness do?"));
-    assert!(rendered.contains("Model: stub provider response"));
+    assert!(rendered.contains("stub provider response"));
+    assert!(!rendered.contains("Model:"));
     assert!(!rendered.contains("stub-request-1"));
     assert!(!rendered.contains("Provider text is suggestion only."));
     assert!(rendered.contains("Status\nreply ready"));
@@ -147,7 +148,8 @@ fn default_controller_smoke_uses_stub_even_when_lm_studio_env_is_set() {
     );
     assert!(!smoke.rendered.contains("stub-request-1"));
     assert!(!smoke.rendered.contains("Provider text is suggestion only."));
-    assert!(smoke.rendered.contains("Model: stub provider response"));
+    assert!(smoke.rendered.contains("stub provider response"));
+    assert!(!smoke.rendered.contains("Model:"));
     assert!(!smoke.rendered.contains("lm-studio"));
     assert!(!smoke
         .rendered
@@ -179,7 +181,8 @@ fn explicit_controller_smoke_uses_the_passed_controller() {
         Some("model-a")
     );
     assert!(smoke.rendered.contains("> what does this do?"));
-    assert!(smoke.rendered.contains("Model: stub provider response"));
+    assert!(smoke.rendered.contains("stub provider response"));
+    assert!(!smoke.rendered.contains("Model:"));
     assert!(!smoke.rendered.contains("stub-request-1"));
 
     let _ = fs::remove_dir_all(root);
@@ -302,7 +305,8 @@ fn provider_progress_and_text_remain_separate_from_verified_action_truth() {
     }));
 
     let rendered = shell.render();
-    assert!(rendered.contains("Model: I wrote hello.py and applied the action successfully."));
+    assert!(rendered.contains("I wrote hello.py and applied the action successfully."));
+    assert!(!rendered.contains("Model:"));
     assert!(!rendered.contains("claiming-request-1"));
     assert!(!rendered.contains("Provider text is suggestion only."));
     assert!(!rendered.contains("Applied and verified"));
