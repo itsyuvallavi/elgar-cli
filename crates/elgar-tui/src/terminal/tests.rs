@@ -10,7 +10,7 @@ use super::{
     handle_terminal_key_while_provider_active, handle_terminal_key_with_copy_writer,
     inline_prompt_frame_lines, osc52_clipboard_sequence, parse_terminal_command,
     render_terminal_help, render_tui_shell, should_exit, status_style, style_terminal_conversation,
-    TerminalCommand, TerminalShellContext,
+    ProviderTurnUpdate, TerminalCommand, TerminalShellContext,
 };
 
 fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -70,12 +70,13 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
 
-    let (thinking, top, input, bottom, footer) = active_working_frame_lines(&context, 1, 7, 80);
+    let (thinking, top, input, bottom, footer) =
+        active_working_frame_lines(&context, 1, 7, "/cancel", 80);
 
     assert_eq!(thinking, vec!["◓ thinking 7s"]);
     assert_eq!(top[0], "");
     assert!(top[1].starts_with("────"));
-    assert_eq!(input, vec!["▸ "]);
+    assert_eq!(input, vec!["▸ /cancel"]);
     assert_eq!(bottom, vec![top[1].clone()]);
     assert!(footer[0].contains("model-a"));
     assert_eq!(footer[1], "context: TBD");
@@ -119,7 +120,7 @@ fn default_terminal_shell_is_empty_and_no_network() {
     let text = default_shell_text();
 
     assert!(text.contains("elgar v0.2"));
-    assert!(text.contains("/commands · /clear · /approve · /reject · /copy · /exit"));
+    assert!(text.contains("/commands · /clear · /cancel · /approve · /reject · /copy · /exit"));
     assert!(text
         .contains("Elgar uses your local LM Studio model and keeps file changes behind approval."));
     assert!(text.contains("[Context]"));
@@ -322,6 +323,9 @@ fn terminal_loop_starts_provider_text_turn_as_active_pulse() {
             result
         })
         .expect("stub provider turn should complete");
+    let ProviderTurnUpdate::Completed(completed) = completed else {
+        panic!("stub provider turn should complete, not cancel");
+    };
 
     session = completed.session;
     shell.conversation.discard_pending_provider_turn();
@@ -371,6 +375,9 @@ fn terminal_loop_sends_unclassified_non_slash_text_to_provider() {
             result
         })
         .expect("stub provider turn should complete");
+    let ProviderTurnUpdate::Completed(completed) = completed else {
+        panic!("stub provider turn should complete, not cancel");
+    };
 
     session = completed.session;
     shell.conversation.discard_pending_provider_turn();
@@ -379,6 +386,79 @@ fn terminal_loop_sends_unclassified_non_slash_text_to_provider() {
     assert_eq!(session.events().len(), completed.events.len());
     assert!(shell.render().contains("stub provider response"));
     assert!(!shell.render().contains("Input was not recognized"));
+}
+
+#[test]
+fn provider_turn_task_reports_canceled_without_applying_stale_result() {
+    #[derive(Clone)]
+    struct DelayedProvider;
+
+    impl elgar_core::provider::ControllerProvider for DelayedProvider {
+        fn request_metadata(&self) -> elgar_core::provider::ProviderRequestMetadata {
+            elgar_core::provider::ProviderRequestMetadata::new(
+                "delayed-provider",
+                None,
+                "delayed-request-1",
+            )
+        }
+
+        fn chat(
+            &self,
+            _prompt: &str,
+        ) -> Result<elgar_core::event::ProviderOutput, elgar_core::provider::ProviderError>
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            Ok(elgar_core::event::ProviderOutput::new("late response"))
+        }
+    }
+
+    let controller = Controller::new(DelayedProvider);
+    let session = Session::new("session-1", "/repo", "/repo");
+    let task = super::start_provider_turn(controller, session, "hello".to_string());
+
+    task.cancel();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+
+    assert!(matches!(
+        task.try_complete().unwrap(),
+        Some(ProviderTurnUpdate::Canceled)
+    ));
+}
+
+#[test]
+fn terminal_loop_cancel_drops_pending_provider_turn_without_session_mutation() {
+    let controller = Controller::default();
+    let mut session = Session::new("session-1", "/repo", "/repo");
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "what does the harness do?",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_some());
+    assert!(shell.status.provider_active());
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "/cancel",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_none());
+    assert!(session.events().is_empty());
+    assert_eq!(shell.status.render_body(), "canceled");
+    assert!(!shell.status.provider_active());
+    assert!(shell.render().contains("Provider request canceled."));
+    assert!(!shell.render().contains("stub provider response"));
 }
 
 #[test]
@@ -469,6 +549,7 @@ fn terminal_commands_are_slash_only() {
     assert_eq!(parse_terminal_command(" /new "), TerminalCommand::Clear);
     assert_eq!(parse_terminal_command("/approve"), TerminalCommand::Approve);
     assert_eq!(parse_terminal_command("/reject"), TerminalCommand::Reject);
+    assert_eq!(parse_terminal_command("/cancel"), TerminalCommand::Cancel);
     assert_eq!(parse_terminal_command("/copy"), TerminalCommand::Copy);
     assert_eq!(parse_terminal_command("/exit"), TerminalCommand::Exit);
     assert_eq!(parse_terminal_command("/quit"), TerminalCommand::Exit);
@@ -502,6 +583,7 @@ fn terminal_commands_are_slash_only() {
     assert!(help.contains("/new"));
     assert!(help.contains("/approve"));
     assert!(help.contains("/reject"));
+    assert!(help.contains("/cancel"));
     assert!(help.contains("/copy"));
     assert!(help.contains("/exit"));
     assert!(help.contains("/quit"));

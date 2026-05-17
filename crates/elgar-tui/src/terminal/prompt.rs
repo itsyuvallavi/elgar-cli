@@ -72,11 +72,11 @@ impl InlineWorkingRenderer {
         Self { context, rows: 0 }
     }
 
-    pub(super) fn render(&mut self, tick: usize, elapsed_secs: u64) -> io::Result<()> {
+    pub(super) fn render(&mut self, tick: usize, elapsed_secs: u64, input: &str) -> io::Result<()> {
         self.clear()?;
         let width = terminal_width();
         let (thinking_lines, top_lines, input_lines, bottom_lines, footer_lines) =
-            active_working_frame_lines(&self.context, tick, elapsed_secs, width);
+            active_working_frame_lines(&self.context, tick, elapsed_secs, input, width);
 
         for line in &thinking_lines {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
@@ -138,6 +138,7 @@ pub(super) fn active_working_frame_lines(
     context: &TerminalShellContext,
     tick: usize,
     elapsed_secs: u64,
+    input: &str,
     width: usize,
 ) -> (
     Vec<String>,
@@ -150,7 +151,7 @@ pub(super) fn active_working_frame_lines(
     let line = format!("{marker} thinking {elapsed_secs}s");
     let thinking_lines = non_empty_lines(wrap_words(&line, drawable_width(width)));
     let (top_lines, input_lines, bottom_lines, footer_lines) =
-        inline_prompt_frame_lines(context, "", width);
+        inline_prompt_frame_lines(context, input, width);
     (
         thinking_lines,
         top_lines,

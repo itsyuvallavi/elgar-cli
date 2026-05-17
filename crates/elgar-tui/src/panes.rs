@@ -303,6 +303,11 @@ impl StatusLine {
     }
 
     #[cfg(test)]
+    pub(crate) fn cancel_provider_turn(&mut self) {
+        self.finish("canceled");
+    }
+
+    #[cfg(test)]
     pub(crate) fn advance_thinking_pulse(&mut self) {
         if self.provider_active {
             self.thinking_pulse.advance();

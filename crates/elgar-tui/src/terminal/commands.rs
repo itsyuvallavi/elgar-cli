@@ -13,6 +13,7 @@ pub(super) enum TerminalCommand<'a> {
     Clear,
     Approve,
     Reject,
+    Cancel,
     Copy,
     Exit,
     Unknown(&'a str),
@@ -27,6 +28,7 @@ pub(super) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
         "/clear" | "/new" => TerminalCommand::Clear,
         "/approve" => TerminalCommand::Approve,
         "/reject" => TerminalCommand::Reject,
+        "/cancel" => TerminalCommand::Cancel,
         "/copy" => TerminalCommand::Copy,
         "/exit" | "/quit" | "/q" => TerminalCommand::Exit,
         command if command.starts_with('/') => TerminalCommand::Unknown(command),
@@ -39,7 +41,7 @@ pub(super) fn terminal_text_starts_provider_turn(text: &str) -> bool {
 }
 
 pub(super) fn render_terminal_help() -> &'static str {
-    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/approve   Apply the pending action\n/reject    Reject the pending action\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
+    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/cancel    Cancel the active provider turn\n/approve   Apply the pending action\n/reject    Reject the pending action\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
 }
 
 pub(super) fn clear_terminal_conversation(shell: &mut TuiShell) {

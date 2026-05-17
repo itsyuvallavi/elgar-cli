@@ -1,8 +1,6 @@
 use std::{
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::mpsc,
-    thread,
     time::{Duration, Instant},
 };
 
@@ -33,6 +31,7 @@ use crate::{
 
 mod commands;
 mod prompt;
+mod provider_task;
 
 use commands::{
     clear_terminal_conversation, clear_visible_terminal, copy_conversation_to_terminal_clipboard,
@@ -47,6 +46,7 @@ use prompt::{
     drawable_width, frame_separator_line, non_empty_lines, terminal_width, wrap_words,
     InlinePromptRenderer, InlineWorkingRenderer,
 };
+use provider_task::{start_provider_turn, ProviderTurnTask, ProviderTurnUpdate};
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";
@@ -189,6 +189,10 @@ where
             }
             Ok(false)
         }
+        TerminalCommand::Cancel => {
+            print_plain_block("No provider request is running.")?;
+            Ok(false)
+        }
         TerminalCommand::Unknown(command) => {
             print_plain_block(&format!(
                 "Unknown command: {command}. Type /commands for commands."
@@ -234,20 +238,42 @@ where
     print_user_block(text)?;
 
     let task = start_provider_turn(controller.clone(), session.clone(), text.to_string());
+    let guard = TerminalModeGuard::enter()?;
     let mut working = InlineWorkingRenderer::new(terminal_context(session, controller));
+    let mut input = TerminalInput::default();
     let started = Instant::now();
     let mut tick = 0usize;
+    let mut last_render = Instant::now() - Duration::from_millis(420);
 
     let completed = loop {
         match task.try_complete() {
-            Ok(Some(completed)) => break completed,
+            Ok(Some(ProviderTurnUpdate::Completed(completed))) => break completed,
+            Ok(Some(ProviderTurnUpdate::Canceled)) => {
+                working.clear()?;
+                drop(guard);
+                print_plain_block("Provider request canceled.")?;
+                return Ok(());
+            }
             Ok(None) => {
-                working.render(tick, started.elapsed().as_secs())?;
-                tick = tick.wrapping_add(1);
-                thread::sleep(Duration::from_millis(420));
+                if last_render.elapsed() >= Duration::from_millis(420) {
+                    working.render(tick, started.elapsed().as_secs(), input.text())?;
+                    tick = tick.wrapping_add(1);
+                    last_render = Instant::now();
+                }
+
+                if event::poll(Duration::from_millis(60))? {
+                    handle_active_provider_event(
+                        &task,
+                        &mut input,
+                        &mut working,
+                        tick,
+                        started.elapsed().as_secs(),
+                    )?;
+                }
             }
             Err(message) => {
                 working.clear()?;
+                drop(guard);
                 print_plain_block(&format!("Provider error: {message}"))?;
                 return Ok(());
             }
@@ -255,11 +281,42 @@ where
     };
 
     working.clear()?;
+    drop(guard);
     *session = completed.session;
     shell.consume_events(&completed.events);
     shell.conversation.follow_latest();
     print_new_conversation_lines(shell, before, true)?;
     Ok(())
+}
+
+fn handle_active_provider_event(
+    task: &ProviderTurnTask,
+    input: &mut TerminalInput,
+    working: &mut InlineWorkingRenderer,
+    tick: usize,
+    elapsed_secs: u64,
+) -> io::Result<()> {
+    let Event::Key(key) = event::read()? else {
+        return Ok(());
+    };
+    if key.kind != KeyEventKind::Press {
+        return Ok(());
+    }
+
+    match input.handle_key(key) {
+        TerminalInputAction::Continue => working.render(tick, elapsed_secs, input.text()),
+        TerminalInputAction::Submit => {
+            let submitted = input.drain();
+            if matches!(parse_terminal_command(&submitted), TerminalCommand::Cancel) {
+                task.cancel();
+            }
+            working.render(tick, elapsed_secs, input.text())
+        }
+        TerminalInputAction::Exit => {
+            task.cancel();
+            Ok(())
+        }
+    }
 }
 
 fn print_new_conversation_lines(
@@ -652,47 +709,6 @@ fn status_style(status: &str) -> ratatui::style::Style {
     }
 }
 
-struct ProviderTurnTask {
-    receiver: mpsc::Receiver<Result<CompletedProviderTurn, String>>,
-}
-
-impl ProviderTurnTask {
-    fn try_complete(&self) -> Result<Option<CompletedProviderTurn>, String> {
-        match self.receiver.try_recv() {
-            Ok(result) => result.map(Some),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err("provider request worker disconnected".to_string())
-            }
-        }
-    }
-}
-
-struct CompletedProviderTurn {
-    session: Session,
-    events: Vec<elgar_core::event::Event>,
-}
-
-fn start_provider_turn<P>(
-    controller: Controller<P>,
-    mut session: Session,
-    input: String,
-) -> ProviderTurnTask
-where
-    P: ControllerProvider + Send + 'static,
-{
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let result = controller.model_turn(&mut session, &input);
-        let _ = sender.send(Ok(CompletedProviderTurn {
-            session,
-            events: result.events,
-        }));
-    });
-
-    ProviderTurnTask { receiver }
-}
-
 #[cfg(test)]
 fn should_exit(key: crossterm::event::KeyEvent) -> bool {
     matches!(key.code, crossterm::event::KeyCode::Esc)
@@ -797,6 +813,12 @@ where
         TerminalCommand::Reject => {
             shell.submit_rejection(controller, session);
         }
+        TerminalCommand::Cancel => {
+            shell
+                .conversation
+                .push_local_message("No provider request is running.");
+            shell.conversation.follow_latest();
+        }
         TerminalCommand::Copy => {
             let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);
         }
@@ -853,6 +875,23 @@ where
     P: ControllerProvider + Clone + Send + 'static,
 {
     match parse_terminal_command(submitted) {
+        TerminalCommand::Cancel => {
+            if let Some(task) = pending_turn.take() {
+                task.cancel();
+                shell.conversation.discard_pending_provider_turn();
+                shell
+                    .conversation
+                    .push_local_message("Provider request canceled.");
+                shell.conversation.follow_latest();
+                shell.status.cancel_provider_turn();
+            } else {
+                shell
+                    .conversation
+                    .push_local_message("No provider request is running.");
+                shell.conversation.follow_latest();
+            }
+            false
+        }
         TerminalCommand::Text(text) if terminal_text_starts_provider_turn(text) => {
             shell.conversation.push_pending_provider_turn(text);
             shell.conversation.follow_latest();
