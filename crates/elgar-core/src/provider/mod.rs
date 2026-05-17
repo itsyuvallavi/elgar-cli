@@ -9,12 +9,13 @@ pub use config::{
     LM_STUDIO_PROVIDER_NAME,
 };
 pub use lm_studio::{
-    chat_lm_studio, format_chat_request, parse_chat_response_json, parse_chat_stream_response,
+    chat_lm_studio, chat_lm_studio_streaming, format_chat_request, parse_chat_response_json,
+    parse_chat_stream_chunks, parse_chat_stream_line, parse_chat_stream_response,
     parse_provider_error_json, LmStudioProvider,
 };
 pub use stub::{ProviderStub, ProviderStubResponse};
 pub use types::{
     ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatUsage, ControllerProvider,
     ProviderError, ProviderErrorBody, ProviderErrorKind, ProviderErrorResponse,
-    ProviderRequestMetadata,
+    ProviderRequestMetadata, ProviderStreamChunk,
 };

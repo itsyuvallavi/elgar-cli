@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 
 use crossterm::terminal::size as terminal_size;
+use elgar_core::provider::ProviderStreamChunk;
 
 use super::{TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
 
@@ -72,14 +73,40 @@ impl InlineWorkingRenderer {
         Self { context, rows: 0 }
     }
 
-    pub(super) fn render(&mut self, tick: usize, elapsed_secs: u64, input: &str) -> io::Result<()> {
+    pub(super) fn render(
+        &mut self,
+        tick: usize,
+        elapsed_secs: u64,
+        input: &str,
+        live_output: &LiveProviderOutput,
+    ) -> io::Result<()> {
         self.clear()?;
         let width = terminal_width();
-        let (thinking_lines, top_lines, input_lines, bottom_lines, footer_lines) =
-            active_working_frame_lines(&self.context, tick, elapsed_secs, input, width);
+        let (
+            thinking_lines,
+            reasoning_lines,
+            response_lines,
+            top_lines,
+            input_lines,
+            bottom_lines,
+            footer_lines,
+        ) = active_working_frame_lines(
+            &self.context,
+            tick,
+            elapsed_secs,
+            input,
+            live_output,
+            width,
+        );
 
         for line in &thinking_lines {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+        }
+        for line in &reasoning_lines {
+            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+        }
+        for line in &response_lines {
+            write!(io::stdout(), "{ANSI_CYAN}{line}{ANSI_RESET}\r\n")?;
         }
         for line in &top_lines {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
@@ -95,6 +122,8 @@ impl InlineWorkingRenderer {
         }
 
         self.rows = thinking_lines.len()
+            + reasoning_lines.len()
+            + response_lines.len()
             + top_lines.len()
             + input_lines.len()
             + bottom_lines.len()
@@ -114,6 +143,29 @@ impl InlineWorkingRenderer {
 impl Drop for InlineWorkingRenderer {
     fn drop(&mut self) {
         let _ = self.clear();
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct LiveProviderOutput {
+    reasoning: String,
+    response: String,
+}
+
+impl LiveProviderOutput {
+    pub(super) fn push_chunk(&mut self, chunk: ProviderStreamChunk) {
+        match chunk {
+            ProviderStreamChunk::Reasoning(value) => self.reasoning.push_str(&value),
+            ProviderStreamChunk::Text(value) => self.response.push_str(&value),
+        }
+    }
+
+    fn reasoning_summary(&self) -> Option<String> {
+        compact_streaming_text(&self.reasoning).map(|text| format!("thinking: {text}"))
+    }
+
+    fn response_preview(&self) -> Option<String> {
+        compact_streaming_text(&self.response)
     }
 }
 
@@ -139,8 +191,11 @@ pub(super) fn active_working_frame_lines(
     tick: usize,
     elapsed_secs: u64,
     input: &str,
+    live_output: &LiveProviderOutput,
     width: usize,
 ) -> (
+    Vec<String>,
+    Vec<String>,
     Vec<String>,
     Vec<String>,
     Vec<String>,
@@ -150,10 +205,20 @@ pub(super) fn active_working_frame_lines(
     let marker = working_marker(tick);
     let line = format!("{marker} thinking {elapsed_secs}s");
     let thinking_lines = non_empty_lines(wrap_words(&line, drawable_width(width)));
+    let reasoning_lines = live_output
+        .reasoning_summary()
+        .map(|line| non_empty_lines(wrap_words(&line, drawable_width(width))))
+        .unwrap_or_default();
+    let response_lines = live_output
+        .response_preview()
+        .map(|line| non_empty_lines(wrap_words(&line, drawable_width(width))))
+        .unwrap_or_default();
     let (top_lines, input_lines, bottom_lines, footer_lines) =
         inline_prompt_frame_lines(context, input, width);
     (
         thinking_lines,
+        reasoning_lines,
+        response_lines,
         top_lines,
         input_lines,
         bottom_lines,
@@ -164,6 +229,15 @@ pub(super) fn active_working_frame_lines(
 fn working_marker(tick: usize) -> &'static str {
     const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
     FRAMES[tick % FRAMES.len()]
+}
+
+fn compact_streaming_text(text: &str) -> Option<String> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.chars().take(240).collect())
+    }
 }
 
 fn prompt_input_lines(input: &str, width: usize) -> Vec<String> {

@@ -7,7 +7,9 @@ use crate::{
         ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage,
     },
     fs::Filesystem,
-    provider::{ControllerProvider, LmStudioProvider, ProviderConfig, ProviderStub},
+    provider::{
+        ControllerProvider, LmStudioProvider, ProviderConfig, ProviderStreamChunk, ProviderStub,
+    },
     router::{route_input, Route},
     session::{ActionRecord, ProviderMetadata, Session},
 };
@@ -74,7 +76,36 @@ where
         }
     }
 
+    /// Record an explicit chat turn while exposing provider stream chunks.
+    ///
+    /// Stream chunks are provider suggestions only. The controller records
+    /// durable session facts only after the provider call completes or errors.
+    pub fn model_turn_streaming(
+        &self,
+        session: &mut Session,
+        input: &str,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> TurnResult {
+        let start_index = session.events().len();
+        session.push_event(Event::UserMessage(UserMessage::new(input)));
+        self.handle_ask_model_streaming(session, input, on_chunk);
+
+        TurnResult {
+            route: Route::AskModel,
+            events: session.events()[start_index..].to_vec(),
+        }
+    }
+
     fn handle_ask_model(&self, session: &mut Session, input: &str) {
+        self.handle_ask_model_streaming(session, input, &mut |_| {});
+    }
+
+    fn handle_ask_model_streaming(
+        &self,
+        session: &mut Session,
+        input: &str,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) {
         let request = self.provider.request_metadata();
 
         let mut metadata = ProviderMetadata::new(request.provider.clone());
@@ -87,7 +118,7 @@ where
             request.request_id.clone(),
         )));
 
-        match self.provider.chat(input) {
+        match self.provider.chat_stream(input, on_chunk) {
             Ok(output) => {
                 session.push_event(Event::ProviderFinished(ProviderFinished::new(
                     request.provider,
@@ -709,6 +740,38 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct StreamingFakeProvider;
+
+    impl ControllerProvider for StreamingFakeProvider {
+        fn request_metadata(&self) -> crate::provider::ProviderRequestMetadata {
+            crate::provider::ProviderRequestMetadata::new(
+                "stream-provider",
+                Some("stream-model".to_string()),
+                "stream-request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("I approved and wrote hello.py."))
+        }
+
+        fn chat_stream(
+            &self,
+            _prompt: &str,
+            on_chunk: &mut dyn FnMut(crate::provider::ProviderStreamChunk),
+        ) -> Result<ProviderOutput, ProviderError> {
+            on_chunk(crate::provider::ProviderStreamChunk::Reasoning(
+                "Need to describe only.".to_string(),
+            ));
+            on_chunk(crate::provider::ProviderStreamChunk::Text(
+                "I approved and wrote hello.py.".to_string(),
+            ));
+            Ok(ProviderOutput::new("I approved and wrote hello.py.")
+                .with_thinking("Need to describe only."))
+        }
+    }
+
     #[test]
     fn explicit_provider_controller_records_provider_output_without_mutating_truth() {
         let controller = Controller::new(FakeProvider::success(
@@ -770,6 +833,35 @@ data: [DONE]
             .events()
             .iter()
             .any(|event| matches!(event, Event::ProviderFinished(_))));
+        assert!(session
+            .events()
+            .iter()
+            .all(|event| !matches!(event, Event::ActionApproved(_) | Event::ActionApplied(_))));
+    }
+
+    #[test]
+    fn streaming_controller_chunks_do_not_mutate_action_or_filesystem_truth() {
+        let controller = Controller::new(StreamingFakeProvider);
+        let (mut session, _root) = rooted_session("streaming-provider-controller-output");
+        let path = session.project_root.join("hello.py");
+        let _ = std::fs::remove_file(&path);
+
+        controller.turn(&mut session, "create hello.py");
+        let mut chunks = Vec::new();
+        controller.model_turn_streaming(
+            &mut session,
+            "what if you approve and write hello.py?",
+            &mut |chunk| chunks.push(chunk),
+        );
+
+        assert!(!path.exists());
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(session.actions().len(), 1);
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Proposed
+        );
+        assert_eq!(session.actions()[0].verified_result, None);
         assert!(session
             .events()
             .iter()

@@ -141,6 +141,25 @@ pub trait ControllerProvider {
     fn request_metadata(&self) -> ProviderRequestMetadata;
 
     fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError>;
+
+    fn chat_stream(
+        &self,
+        prompt: &str,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> Result<ProviderOutput, ProviderError> {
+        let output = self.chat(prompt)?;
+        if let Some(thinking) = output.thinking.as_ref() {
+            on_chunk(ProviderStreamChunk::Reasoning(thinking.clone()));
+        }
+        on_chunk(ProviderStreamChunk::Text(output.text.clone()));
+        Ok(output)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProviderStreamChunk {
+    Reasoning(String),
+    Text(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,7 @@
-use elgar_core::{action::ActionLifecycleState, controller::Controller, session::Session};
+use elgar_core::{
+    action::ActionLifecycleState, controller::Controller, provider::ProviderStreamChunk,
+    session::Session,
+};
 use ratatui::{backend::TestBackend, Terminal};
 
 use crate::{input::TerminalInput, panes::ConversationPane, TuiShell};
@@ -10,7 +13,7 @@ use super::{
     handle_terminal_key_while_provider_active, handle_terminal_key_with_copy_writer,
     inline_prompt_frame_lines, osc52_clipboard_sequence, parse_terminal_command,
     render_terminal_help, render_tui_shell, should_exit, status_style, style_terminal_conversation,
-    ProviderTurnUpdate, TerminalCommand, TerminalShellContext,
+    LiveProviderOutput, ProviderTurnUpdate, TerminalCommand, TerminalShellContext,
 };
 
 fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -70,16 +73,34 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
 
-    let (thinking, top, input, bottom, footer) =
-        active_working_frame_lines(&context, 1, 7, "/cancel", 80);
+    let live_output = LiveProviderOutput::default();
+    let (thinking, reasoning, response, top, input, bottom, footer) =
+        active_working_frame_lines(&context, 1, 7, "/cancel", &live_output, 80);
 
     assert_eq!(thinking, vec!["◓ thinking 7s"]);
+    assert!(reasoning.is_empty());
+    assert!(response.is_empty());
     assert_eq!(top[0], "");
     assert!(top[1].starts_with("────"));
     assert_eq!(input, vec!["▸ /cancel"]);
     assert_eq!(bottom, vec![top[1].clone()]);
     assert!(footer[0].contains("model-a"));
     assert_eq!(footer[1], "context: TBD");
+}
+
+#[test]
+fn active_working_frame_shows_live_reasoning_and_response_separately() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning("Need greet.".to_string()));
+    live_output.push_chunk(ProviderStreamChunk::Text("Hello".to_string()));
+
+    let (_thinking, reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
+
+    assert_eq!(reasoning, vec!["thinking: Need greet."]);
+    assert_eq!(response, vec!["Hello"]);
 }
 
 fn submit_text(
@@ -113,6 +134,26 @@ fn submit_text(
         session,
         shell,
     )
+}
+
+fn wait_for_completed_provider_turn(
+    task: &super::ProviderTurnTask,
+) -> super::provider_task::CompletedProviderTurn {
+    (0..20)
+        .find_map(|_| {
+            let result = task.try_complete().unwrap();
+            match result {
+                Some(ProviderTurnUpdate::Completed(completed)) => Some(completed),
+                Some(ProviderTurnUpdate::Chunk(_)) | None => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    None
+                }
+                Some(ProviderTurnUpdate::Canceled) => {
+                    panic!("provider turn should complete, not cancel");
+                }
+            }
+        })
+        .expect("stub provider turn should complete")
 }
 
 #[test]
@@ -314,18 +355,7 @@ fn terminal_loop_starts_provider_text_turn_as_active_pulse() {
     assert!(shell.conversation.render_body().contains("◓ working"));
 
     let task = pending_turn.take().unwrap();
-    let completed = (0..20)
-        .find_map(|_| {
-            let result = task.try_complete().unwrap();
-            if result.is_none() {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            result
-        })
-        .expect("stub provider turn should complete");
-    let ProviderTurnUpdate::Completed(completed) = completed else {
-        panic!("stub provider turn should complete, not cancel");
-    };
+    let completed = wait_for_completed_provider_turn(&task);
 
     session = completed.session;
     shell.conversation.discard_pending_provider_turn();
@@ -366,18 +396,7 @@ fn terminal_loop_sends_unclassified_non_slash_text_to_provider() {
         .contains("Input was not recognized"));
 
     let task = pending_turn.take().unwrap();
-    let completed = (0..20)
-        .find_map(|_| {
-            let result = task.try_complete().unwrap();
-            if result.is_none() {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            result
-        })
-        .expect("stub provider turn should complete");
-    let ProviderTurnUpdate::Completed(completed) = completed else {
-        panic!("stub provider turn should complete, not cancel");
-    };
+    let completed = wait_for_completed_provider_turn(&task);
 
     session = completed.session;
     shell.conversation.discard_pending_provider_turn();
@@ -423,6 +442,72 @@ fn provider_turn_task_reports_canceled_without_applying_stale_result() {
         task.try_complete().unwrap(),
         Some(ProviderTurnUpdate::Canceled)
     ));
+}
+
+#[test]
+fn provider_turn_task_reports_streaming_chunks_before_completion() {
+    #[derive(Clone)]
+    struct StreamingProvider;
+
+    impl elgar_core::provider::ControllerProvider for StreamingProvider {
+        fn request_metadata(&self) -> elgar_core::provider::ProviderRequestMetadata {
+            elgar_core::provider::ProviderRequestMetadata::new(
+                "stream-provider",
+                Some("model-a".to_string()),
+                "stream-request-1",
+            )
+        }
+
+        fn chat(
+            &self,
+            _prompt: &str,
+        ) -> Result<elgar_core::event::ProviderOutput, elgar_core::provider::ProviderError>
+        {
+            Ok(elgar_core::event::ProviderOutput::new("Hello"))
+        }
+
+        fn chat_stream(
+            &self,
+            _prompt: &str,
+            on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+        ) -> Result<elgar_core::event::ProviderOutput, elgar_core::provider::ProviderError>
+        {
+            on_chunk(ProviderStreamChunk::Reasoning("Need greet.".to_string()));
+            on_chunk(ProviderStreamChunk::Text("Hello".to_string()));
+            Ok(elgar_core::event::ProviderOutput::new("Hello").with_thinking("Need greet."))
+        }
+    }
+
+    let controller = Controller::new(StreamingProvider);
+    let session = Session::new("session-1", "/repo", "/repo");
+    let task = super::start_provider_turn(controller, session, "hello".to_string());
+    let mut chunks = Vec::new();
+    let completed = (0..20)
+        .find_map(|_| {
+            let result = task.try_complete().unwrap();
+            match result {
+                Some(ProviderTurnUpdate::Chunk(chunk)) => {
+                    chunks.push(chunk);
+                    None
+                }
+                Some(ProviderTurnUpdate::Completed(completed)) => Some(completed),
+                Some(ProviderTurnUpdate::Canceled) => panic!("provider turn should complete"),
+                None => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    None
+                }
+            }
+        })
+        .expect("stream provider turn should complete");
+
+    assert_eq!(
+        chunks,
+        vec![
+            ProviderStreamChunk::Reasoning("Need greet.".to_string()),
+            ProviderStreamChunk::Text("Hello".to_string())
+        ]
+    );
+    assert_eq!(completed.events.len(), 4);
 }
 
 #[test]

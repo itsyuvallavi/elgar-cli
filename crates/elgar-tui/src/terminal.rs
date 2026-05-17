@@ -44,7 +44,7 @@ use commands::{copy_conversation_with_clipboards, encode_base64, osc52_clipboard
 use prompt::{active_working_frame_lines, inline_prompt_frame_lines};
 use prompt::{
     drawable_width, frame_separator_line, non_empty_lines, terminal_width, wrap_words,
-    InlinePromptRenderer, InlineWorkingRenderer,
+    InlinePromptRenderer, InlineWorkingRenderer, LiveProviderOutput,
 };
 use provider_task::{start_provider_turn, ProviderTurnTask, ProviderTurnUpdate};
 
@@ -241,12 +241,22 @@ where
     let guard = TerminalModeGuard::enter()?;
     let mut working = InlineWorkingRenderer::new(terminal_context(session, controller));
     let mut input = TerminalInput::default();
+    let mut live_output = LiveProviderOutput::default();
     let started = Instant::now();
     let mut tick = 0usize;
     let mut last_render = Instant::now() - Duration::from_millis(420);
 
     let completed = loop {
         match task.try_complete() {
+            Ok(Some(ProviderTurnUpdate::Chunk(chunk))) => {
+                live_output.push_chunk(chunk);
+                working.render(
+                    tick,
+                    started.elapsed().as_secs(),
+                    input.text(),
+                    &live_output,
+                )?;
+            }
             Ok(Some(ProviderTurnUpdate::Completed(completed))) => break completed,
             Ok(Some(ProviderTurnUpdate::Canceled)) => {
                 working.clear()?;
@@ -256,7 +266,12 @@ where
             }
             Ok(None) => {
                 if last_render.elapsed() >= Duration::from_millis(420) {
-                    working.render(tick, started.elapsed().as_secs(), input.text())?;
+                    working.render(
+                        tick,
+                        started.elapsed().as_secs(),
+                        input.text(),
+                        &live_output,
+                    )?;
                     tick = tick.wrapping_add(1);
                     last_render = Instant::now();
                 }
@@ -268,6 +283,7 @@ where
                         &mut working,
                         tick,
                         started.elapsed().as_secs(),
+                        &live_output,
                     )?;
                 }
             }
@@ -295,6 +311,7 @@ fn handle_active_provider_event(
     working: &mut InlineWorkingRenderer,
     tick: usize,
     elapsed_secs: u64,
+    live_output: &LiveProviderOutput,
 ) -> io::Result<()> {
     let Event::Key(key) = event::read()? else {
         return Ok(());
@@ -304,13 +321,15 @@ fn handle_active_provider_event(
     }
 
     match input.handle_key(key) {
-        TerminalInputAction::Continue => working.render(tick, elapsed_secs, input.text()),
+        TerminalInputAction::Continue => {
+            working.render(tick, elapsed_secs, input.text(), live_output)
+        }
         TerminalInputAction::Submit => {
             let submitted = input.drain();
             if matches!(parse_terminal_command(&submitted), TerminalCommand::Cancel) {
                 task.cancel();
             }
-            working.render(tick, elapsed_secs, input.text())
+            working.render(tick, elapsed_secs, input.text(), live_output)
         }
         TerminalInputAction::Exit => {
             task.cancel();

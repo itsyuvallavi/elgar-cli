@@ -99,18 +99,52 @@ pub(super) fn post_json(
         .set_write_timeout(Some(timeout))
         .map_err(|error| ProviderError::network(error.to_string()))?;
 
+    write_json_request(&mut stream, endpoint, body, "application/json")?;
+
+    read_http_response(stream)
+}
+
+pub(super) fn post_json_streaming(
+    endpoint: &HttpEndpoint,
+    body: &str,
+    timeout: Duration,
+    on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
+) -> Result<HttpResponse, ProviderError> {
+    let mut stream = connect_with_timeout(endpoint, timeout)?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| ProviderError::network(error.to_string()))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|error| ProviderError::network(error.to_string()))?;
+
+    write_json_request(
+        &mut stream,
+        endpoint,
+        body,
+        "text/event-stream, application/json",
+    )?;
+
+    read_streaming_http_response(stream, on_body_chunk)
+}
+
+fn write_json_request(
+    stream: &mut TcpStream,
+    endpoint: &HttpEndpoint,
+    body: &str,
+    accept: &str,
+) -> Result<(), ProviderError> {
     let request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         endpoint.path,
         endpoint.authority(),
+        accept,
         body.len(),
         body
     );
     stream
         .write_all(request.as_bytes())
-        .map_err(|error| ProviderError::network(error.to_string()))?;
-
-    read_http_response(stream)
+        .map_err(|error| ProviderError::network(error.to_string()))
 }
 
 fn connect_with_timeout(
@@ -136,6 +170,170 @@ fn read_http_response(mut stream: TcpStream) -> Result<HttpResponse, ProviderErr
     parse_http_response(&raw)
 }
 
+fn read_streaming_http_response(
+    mut stream: TcpStream,
+    on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
+) -> Result<HttpResponse, ProviderError> {
+    let mut bytes = Vec::new();
+    let mut read_buffer = [0_u8; 4096];
+    let mut header: Option<StreamingHeader> = None;
+    let mut body = Vec::new();
+    let mut chunk_buffer = Vec::new();
+    let mut chunked_complete = false;
+
+    loop {
+        let read = stream
+            .read(&mut read_buffer)
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                    ProviderError::network("provider request timed out")
+                }
+                _ => ProviderError::network(error.to_string()),
+            })?;
+        if read == 0 {
+            break;
+        }
+
+        bytes.extend_from_slice(&read_buffer[..read]);
+        if header.is_none() {
+            let Some(split) = find_header_body_split(&bytes) else {
+                continue;
+            };
+            let head = String::from_utf8(bytes[..split].to_vec())
+                .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+            let status_code = parse_status_code(head.lines().next().ok_or_else(|| {
+                ProviderError::response_parse("HTTP response missing status line")
+            })?)?;
+            let is_chunked = has_chunked_transfer_encoding(&head);
+            header = Some(StreamingHeader {
+                status_code,
+                is_chunked,
+            });
+            let tail = bytes[(split + 4)..].to_vec();
+            bytes.clear();
+            process_streaming_body_bytes(
+                &tail,
+                header.as_ref().unwrap(),
+                &mut body,
+                &mut chunk_buffer,
+                &mut chunked_complete,
+                on_body_chunk,
+            )?;
+        } else if let Some(header) = header.as_ref() {
+            process_streaming_body_bytes(
+                &read_buffer[..read],
+                header,
+                &mut body,
+                &mut chunk_buffer,
+                &mut chunked_complete,
+                on_body_chunk,
+            )?;
+        }
+    }
+
+    let header =
+        header.ok_or_else(|| ProviderError::response_parse("HTTP response missing headers"))?;
+    if header.is_chunked && !chunked_complete {
+        return Err(ProviderError::response_parse(
+            "chunked body ended before terminal chunk",
+        ));
+    }
+    let body = String::from_utf8(body)
+        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+    Ok(HttpResponse {
+        status_code: header.status_code,
+        body,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StreamingHeader {
+    status_code: HttpStatusCode,
+    is_chunked: bool,
+}
+
+fn process_streaming_body_bytes(
+    bytes: &[u8],
+    header: &StreamingHeader,
+    body: &mut Vec<u8>,
+    chunk_buffer: &mut Vec<u8>,
+    chunked_complete: &mut bool,
+    on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
+) -> Result<(), ProviderError> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+
+    if header.is_chunked {
+        if *chunked_complete {
+            return Ok(());
+        }
+        chunk_buffer.extend_from_slice(bytes);
+        drain_complete_chunked_chunks(
+            chunk_buffer,
+            body,
+            header.status_code.is_success(),
+            chunked_complete,
+            on_body_chunk,
+        )
+    } else {
+        body.extend_from_slice(bytes);
+        if header.status_code.is_success() {
+            let text = String::from_utf8_lossy(bytes);
+            on_body_chunk(&text)?;
+        }
+        Ok(())
+    }
+}
+
+fn drain_complete_chunked_chunks(
+    chunk_buffer: &mut Vec<u8>,
+    body: &mut Vec<u8>,
+    emit_chunks: bool,
+    chunked_complete: &mut bool,
+    on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
+) -> Result<(), ProviderError> {
+    loop {
+        let Some(size_end) = find_crlf(chunk_buffer, 0) else {
+            return Ok(());
+        };
+        let size_line = std::str::from_utf8(&chunk_buffer[..size_end])
+            .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+        let size_hex = size_line
+            .split_once(';')
+            .map(|(size, _extension)| size)
+            .unwrap_or(size_line)
+            .trim();
+        let size = usize::from_str_radix(size_hex, 16)
+            .map_err(|_| ProviderError::response_parse("chunked body chunk size is invalid"))?;
+        let data_start = size_end + 2;
+        let data_end = data_start + size;
+        if chunk_buffer.len() < data_end + 2 {
+            return Ok(());
+        }
+
+        if size == 0 {
+            chunk_buffer.drain(..data_end + 2);
+            *chunked_complete = true;
+            return Ok(());
+        }
+
+        if &chunk_buffer[data_end..data_end + 2] != b"\r\n" {
+            return Err(ProviderError::response_parse(
+                "chunked body missing chunk terminator",
+            ));
+        }
+
+        let data = chunk_buffer[data_start..data_end].to_vec();
+        body.extend_from_slice(&data);
+        if emit_chunks {
+            let text = String::from_utf8_lossy(&data);
+            on_body_chunk(&text)?;
+        }
+        chunk_buffer.drain(..data_end + 2);
+    }
+}
+
 pub(super) fn parse_http_response(raw: &str) -> Result<HttpResponse, ProviderError> {
     let (head, body) = raw
         .split_once("\r\n\r\n")
@@ -152,6 +350,10 @@ pub(super) fn parse_http_response(raw: &str) -> Result<HttpResponse, ProviderErr
     };
 
     Ok(HttpResponse { status_code, body })
+}
+
+fn find_header_body_split(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 fn parse_status_code(status_line: &str) -> Result<HttpStatusCode, ProviderError> {

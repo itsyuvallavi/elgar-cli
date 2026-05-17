@@ -6,10 +6,10 @@ use crate::{
     event::ProviderOutput,
     provider::{
         config::ProviderConfig,
-        http::{post_json, HttpEndpoint},
+        http::{post_json, post_json_streaming, HttpEndpoint},
         types::{
             ChatMessage, ChatRequest, ChatResponse, ControllerProvider, ProviderError,
-            ProviderErrorResponse, ProviderRequestMetadata,
+            ProviderErrorResponse, ProviderRequestMetadata, ProviderStreamChunk,
         },
     },
 };
@@ -61,36 +61,63 @@ pub fn parse_chat_stream_response(payload: &str) -> Result<ProviderOutput, Provi
     let mut text = String::new();
     let mut thinking = String::new();
 
+    for chunk in parse_chat_stream_chunks(payload)? {
+        match chunk {
+            ProviderStreamChunk::Reasoning(value) => thinking.push_str(&value),
+            ProviderStreamChunk::Text(value) => text.push_str(&value),
+        }
+    }
+
+    provider_output_from_stream_parts(text, thinking)
+}
+
+pub fn parse_chat_stream_chunks(payload: &str) -> Result<Vec<ProviderStreamChunk>, ProviderError> {
+    let mut chunks = Vec::new();
+
     for line in payload.lines().map(str::trim) {
-        if line.is_empty() || line.starts_with(':') {
-            continue;
-        }
+        chunks.extend(parse_chat_stream_line(line)?);
+    }
 
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data == "[DONE]" {
-            break;
-        }
+    Ok(chunks)
+}
 
-        let response: ChatStreamResponse = serde_json::from_str(data)
-            .map_err(|error| ProviderError::response_parse(error.to_string()))?;
-        for choice in response.choices {
-            if let Some(delta) = choice.delta {
-                if let Some(content) = delta.content {
-                    text.push_str(&content);
-                }
-                if let Some(reasoning) = delta.reasoning {
-                    thinking.push_str(&reasoning);
-                }
-                if let Some(chunk) = delta.thinking {
-                    thinking.push_str(&chunk);
-                }
+pub fn parse_chat_stream_line(line: &str) -> Result<Vec<ProviderStreamChunk>, ProviderError> {
+    if line.is_empty() || line.starts_with(':') {
+        return Ok(Vec::new());
+    }
+
+    let Some(data) = line.strip_prefix("data:") else {
+        return Ok(Vec::new());
+    };
+    let data = data.trim();
+    if data == "[DONE]" {
+        return Ok(Vec::new());
+    }
+
+    let response: ChatStreamResponse = serde_json::from_str(data)
+        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+    let mut chunks = Vec::new();
+    for choice in response.choices {
+        if let Some(delta) = choice.delta {
+            if let Some(reasoning) = non_empty(delta.reasoning) {
+                chunks.push(ProviderStreamChunk::Reasoning(reasoning));
+            }
+            if let Some(thinking) = non_empty(delta.thinking) {
+                chunks.push(ProviderStreamChunk::Reasoning(thinking));
+            }
+            if let Some(content) = non_empty(delta.content) {
+                chunks.push(ProviderStreamChunk::Text(content));
             }
         }
     }
 
+    Ok(chunks)
+}
+
+fn provider_output_from_stream_parts(
+    text: String,
+    thinking: String,
+) -> Result<ProviderOutput, ProviderError> {
     let trimmed_text = text.trim();
     if trimmed_text.is_empty() {
         return Err(ProviderError::empty_response(
@@ -105,6 +132,10 @@ pub fn parse_chat_stream_response(payload: &str) -> Result<ProviderOutput, Provi
     } else {
         output.with_thinking(trimmed_thinking.to_string())
     })
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|text| !text.is_empty())
 }
 
 pub fn parse_provider_error_json(status_code: Option<u16>, payload: &str) -> ProviderError {
@@ -142,6 +173,97 @@ pub fn chat_lm_studio(
             Some(response.status_code.as_u16()),
             &response.body,
         ))
+    }
+}
+
+pub fn chat_lm_studio_streaming(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+    on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+) -> Result<ProviderOutput, ProviderError> {
+    if !config.stream {
+        let output = chat_lm_studio(config, messages)?;
+        emit_output_chunks(&output, on_chunk);
+        return Ok(output);
+    }
+
+    let request = format_chat_request(config, messages)?;
+    let body = serde_json::to_string(&request)
+        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+    let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
+    let timeout = Duration::from_millis(config.timeout_millis);
+    let mut parts = StreamingOutputParts::default();
+    let response = post_json_streaming(&endpoint, &body, timeout, &mut |body_chunk| {
+        parts.push_body_chunk(body_chunk, on_chunk)
+    })?;
+
+    if response.status_code.is_success() {
+        parts.finish(on_chunk)?;
+        provider_output_from_stream_parts(parts.text, parts.thinking)
+    } else {
+        Err(parse_provider_error_json(
+            Some(response.status_code.as_u16()),
+            &response.body,
+        ))
+    }
+}
+
+fn emit_output_chunks(output: &ProviderOutput, on_chunk: &mut dyn FnMut(ProviderStreamChunk)) {
+    if let Some(thinking) = output.thinking.as_ref() {
+        on_chunk(ProviderStreamChunk::Reasoning(thinking.clone()));
+    }
+    on_chunk(ProviderStreamChunk::Text(output.text.clone()));
+}
+
+#[derive(Debug, Default)]
+struct StreamingOutputParts {
+    text: String,
+    thinking: String,
+    pending_line: String,
+}
+
+impl StreamingOutputParts {
+    fn push_body_chunk(
+        &mut self,
+        body_chunk: &str,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> Result<(), ProviderError> {
+        self.pending_line.push_str(body_chunk);
+        while let Some(newline) = self.pending_line.find('\n') {
+            let mut line = self.pending_line[..newline].to_string();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            self.pending_line.drain(..=newline);
+            self.push_line(&line, on_chunk)?;
+        }
+        Ok(())
+    }
+
+    fn finish(
+        &mut self,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> Result<(), ProviderError> {
+        if !self.pending_line.trim().is_empty() {
+            let line = std::mem::take(&mut self.pending_line);
+            self.push_line(line.trim_end_matches('\r'), on_chunk)?;
+        }
+        Ok(())
+    }
+
+    fn push_line(
+        &mut self,
+        line: &str,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> Result<(), ProviderError> {
+        for chunk in parse_chat_stream_line(line)? {
+            match &chunk {
+                ProviderStreamChunk::Reasoning(value) => self.thinking.push_str(value),
+                ProviderStreamChunk::Text(value) => self.text.push_str(value),
+            }
+            on_chunk(chunk);
+        }
+        Ok(())
     }
 }
 
@@ -190,17 +312,32 @@ impl ControllerProvider for LmStudioProvider {
     fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError> {
         chat_lm_studio(&self.config, vec![ChatMessage::user(prompt)])
     }
+
+    fn chat_stream(
+        &self,
+        prompt: &str,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> Result<ProviderOutput, ProviderError> {
+        chat_lm_studio_streaming(&self.config, vec![ChatMessage::user(prompt)], on_chunk)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
 
     use super::{
-        format_chat_request, parse_chat_response_json, parse_chat_stream_response,
-        parse_provider_error_json, ChatMessage, ProviderConfig,
+        chat_lm_studio_streaming, format_chat_request, parse_chat_response_json,
+        parse_chat_stream_chunks, parse_chat_stream_response, parse_provider_error_json,
+        ChatMessage, ProviderConfig,
     };
-    use crate::provider::{http::parse_http_response, ProviderErrorKind};
+    use crate::provider::{http::parse_http_response, ProviderErrorKind, ProviderStreamChunk};
 
     #[test]
     fn formats_non_streaming_openai_compatible_chat_request() {
@@ -340,6 +477,25 @@ data: [DONE]
     }
 
     #[test]
+    fn streaming_chunk_parser_exposes_reasoning_and_text_separately() {
+        let chunks = parse_chat_stream_chunks(
+            r#"data: {"choices":[{"delta":{"reasoning_content":"Need greet."}}]}
+data: {"choices":[{"delta":{"content":"Hello"}}]}
+data: [DONE]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            chunks,
+            vec![
+                ProviderStreamChunk::Reasoning("Need greet.".to_string()),
+                ProviderStreamChunk::Text("Hello".to_string())
+            ]
+        );
+    }
+
+    #[test]
     fn parses_streaming_thinking_separately_from_provider_text() {
         let output = parse_chat_stream_response(
             r#"data: {"choices":[{"delta":{"reasoning_content":"  Think"}}]}
@@ -427,5 +583,108 @@ data: [DONE]
         assert_eq!(error.status_code, Some(404));
         assert_eq!(error.code.as_deref(), Some("model_not_found"));
         assert_eq!(error.message, "model missing");
+    }
+
+    #[test]
+    fn live_streaming_chat_emits_reasoning_and_response_chunks() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            write_chunk(
+                &mut stream,
+                r#"data: {"choices":[{"delta":{"reasoning_content":"Need greet."}}]}
+
+"#,
+            );
+            thread::sleep(Duration::from_millis(5));
+            write_chunk(
+                &mut stream,
+                r#"data: {"choices":[{"delta":{"content":"Hello"}}]}
+
+"#,
+            );
+            write_chunk(&mut stream, "data: [DONE]\n\n");
+            stream.write_all(b"0\r\n\r\n").unwrap();
+        });
+
+        let config = ProviderConfig {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            stream: true,
+            timeout_millis: 1_000,
+            ..ProviderConfig::lm_studio("loaded-model")
+        };
+        let mut chunks = Vec::new();
+        let output =
+            chat_lm_studio_streaming(&config, vec![ChatMessage::user("hello")], &mut |chunk| {
+                chunks.push(chunk);
+            })
+            .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(output.text, "Hello");
+        assert_eq!(output.thinking.as_deref(), Some("Need greet."));
+        assert_eq!(
+            chunks,
+            vec![
+                ProviderStreamChunk::Reasoning("Need greet.".to_string()),
+                ProviderStreamChunk::Text("Hello".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn live_streaming_chat_rejects_incomplete_chunked_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            write_chunk(
+                &mut stream,
+                r#"data: {"choices":[{"delta":{"content":"Partial"}}]}
+
+"#,
+            );
+        });
+
+        let config = ProviderConfig {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            stream: true,
+            timeout_millis: 1_000,
+            ..ProviderConfig::lm_studio("loaded-model")
+        };
+        let mut chunks = Vec::new();
+        let error =
+            chat_lm_studio_streaming(&config, vec![ChatMessage::user("hello")], &mut |chunk| {
+                chunks.push(chunk);
+            })
+            .unwrap_err();
+
+        server.join().unwrap();
+        assert_eq!(error.kind, ProviderErrorKind::ResponseParse);
+        assert!(error.message.contains("terminal chunk"));
+        assert_eq!(
+            chunks,
+            vec![ProviderStreamChunk::Text("Partial".to_string())]
+        );
+    }
+
+    fn write_chunk(stream: &mut std::net::TcpStream, body: &str) {
+        write!(stream, "{:x}\r\n{}\r\n", body.len(), body).unwrap();
+        stream.flush().unwrap();
     }
 }

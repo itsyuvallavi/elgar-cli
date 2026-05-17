@@ -7,11 +7,14 @@ use std::{
 };
 
 use elgar_core::{
-    controller::Controller, event::Event, provider::ControllerProvider, session::Session,
+    controller::Controller,
+    event::Event,
+    provider::{ControllerProvider, ProviderStreamChunk},
+    session::Session,
 };
 
 pub(super) struct ProviderTurnTask {
-    receiver: mpsc::Receiver<Result<CompletedProviderTurn, String>>,
+    receiver: mpsc::Receiver<ProviderTurnWorkerMessage>,
     canceled: Arc<AtomicBool>,
 }
 
@@ -26,7 +29,10 @@ impl ProviderTurnTask {
         }
 
         match self.receiver.try_recv() {
-            Ok(result) => {
+            Ok(ProviderTurnWorkerMessage::Chunk(chunk)) => {
+                Ok(Some(ProviderTurnUpdate::Chunk(chunk)))
+            }
+            Ok(ProviderTurnWorkerMessage::Complete(result)) => {
                 if self.canceled.load(Ordering::SeqCst) {
                     Ok(Some(ProviderTurnUpdate::Canceled))
                 } else {
@@ -42,6 +48,7 @@ impl ProviderTurnTask {
 }
 
 pub(super) enum ProviderTurnUpdate {
+    Chunk(ProviderStreamChunk),
     Completed(CompletedProviderTurn),
     Canceled,
 }
@@ -64,15 +71,26 @@ where
     let worker_canceled = Arc::clone(&canceled);
 
     thread::spawn(move || {
-        let result = controller.model_turn(&mut session, &input);
+        let result = controller.model_turn_streaming(&mut session, &input, &mut |chunk| {
+            if !worker_canceled.load(Ordering::SeqCst) {
+                let _ = sender.send(ProviderTurnWorkerMessage::Chunk(chunk));
+            }
+        });
         if worker_canceled.load(Ordering::SeqCst) {
             return;
         }
-        let _ = sender.send(Ok(CompletedProviderTurn {
-            session,
-            events: result.events,
-        }));
+        let _ = sender.send(ProviderTurnWorkerMessage::Complete(Ok(
+            CompletedProviderTurn {
+                session,
+                events: result.events,
+            },
+        )));
     });
 
     ProviderTurnTask { receiver, canceled }
+}
+
+enum ProviderTurnWorkerMessage {
+    Chunk(ProviderStreamChunk),
+    Complete(Result<CompletedProviderTurn, String>),
 }
