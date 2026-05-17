@@ -40,7 +40,7 @@ use commands::{
     TerminalCommand,
 };
 #[cfg(test)]
-use commands::{encode_base64, osc52_clipboard_sequence};
+use commands::{copy_conversation_with_clipboards, encode_base64, osc52_clipboard_sequence};
 #[cfg(test)]
 use prompt::{active_working_frame_lines, inline_prompt_frame_lines};
 use prompt::{

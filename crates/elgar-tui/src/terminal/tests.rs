@@ -4,12 +4,13 @@ use ratatui::{backend::TestBackend, Terminal};
 use crate::{input::TerminalInput, panes::ConversationPane, TuiShell};
 
 use super::{
-    active_working_frame_lines, copy_conversation_to_terminal_clipboard, default_shell_text,
-    encode_base64, handle_scroll_key, handle_submitted_terminal_input_for_loop,
-    handle_terminal_key, handle_terminal_key_while_provider_active,
-    handle_terminal_key_with_copy_writer, inline_prompt_frame_lines, osc52_clipboard_sequence,
-    parse_terminal_command, render_terminal_help, render_tui_shell, should_exit, status_style,
-    style_terminal_conversation, TerminalCommand, TerminalShellContext,
+    active_working_frame_lines, copy_conversation_to_terminal_clipboard,
+    copy_conversation_with_clipboards, default_shell_text, encode_base64, handle_scroll_key,
+    handle_submitted_terminal_input_for_loop, handle_terminal_key,
+    handle_terminal_key_while_provider_active, handle_terminal_key_with_copy_writer,
+    inline_prompt_frame_lines, osc52_clipboard_sequence, parse_terminal_command,
+    render_terminal_help, render_tui_shell, should_exit, status_style, style_terminal_conversation,
+    TerminalCommand, TerminalShellContext,
 };
 
 fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -637,6 +638,25 @@ fn terminal_page_keys_update_only_ui_scrollback() {
 }
 
 #[test]
+fn terminal_copy_prefers_system_clipboard_without_terminal_escape() {
+    let mut shell = TuiShell::new();
+    shell.conversation.lines = vec![
+        "first visible line".to_string(),
+        "older scrolled line".to_string(),
+    ];
+    let mut output = Vec::new();
+
+    copy_conversation_with_clipboards(&mut output, &mut shell, |text| {
+        assert_eq!(text, "first visible line\nolder scrolled line");
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(output.is_empty());
+    assert_eq!(shell.copy.render_hint(), "copied conversation (38 bytes)");
+}
+
+#[test]
 fn terminal_copy_uses_osc52_for_full_rendered_conversation() {
     let mut shell = TuiShell::new();
     shell.conversation.lines = vec![
@@ -653,6 +673,39 @@ fn terminal_copy_uses_osc52_for_full_rendered_conversation() {
         osc52_clipboard_sequence("first visible line\nolder scrolled line")
     );
     assert_eq!(shell.copy.render_hint(), "copied conversation (38 bytes)");
+}
+
+#[test]
+fn terminal_copy_reports_failure_when_system_and_terminal_clipboards_fail() {
+    struct FailingWriter;
+
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("terminal rejected OSC 52"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut shell = TuiShell::new();
+    shell.conversation.lines = vec!["copy target".to_string()];
+
+    let error = copy_conversation_with_clipboards(FailingWriter, &mut shell, |_text| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "pbcopy missing",
+        ))
+    })
+    .unwrap_err();
+
+    assert!(error.to_string().contains("pbcopy missing"));
+    assert!(error.to_string().contains("terminal rejected OSC 52"));
+    assert!(shell
+        .copy
+        .render_hint()
+        .contains("system clipboard failed: pbcopy missing"));
 }
 
 #[test]

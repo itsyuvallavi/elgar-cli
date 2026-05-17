@@ -1,4 +1,6 @@
 use std::io::{self, Write};
+#[cfg(all(not(test), target_os = "macos"))]
+use std::process::{Command, Stdio};
 
 use elgar_core::router::{route_input, Route};
 
@@ -50,24 +52,103 @@ pub(super) fn clear_visible_terminal() -> io::Result<()> {
 }
 
 pub(super) fn copy_conversation_to_terminal_clipboard(
-    mut writer: impl Write,
+    writer: impl Write,
     shell: &mut TuiShell,
 ) -> io::Result<()> {
-    let text = shell.conversation_copy_text();
-    let result = writer
-        .write_all(osc52_clipboard_sequence(&text).as_bytes())
-        .and_then(|_| writer.flush());
+    copy_conversation_with_clipboards(writer, shell, copy_text_to_system_clipboard)
+}
 
-    match result {
+pub(super) fn copy_conversation_with_clipboards(
+    mut writer: impl Write,
+    shell: &mut TuiShell,
+    system_clipboard: impl FnOnce(&str) -> io::Result<()>,
+) -> io::Result<()> {
+    let text = shell.conversation_copy_text();
+
+    match system_clipboard(&text) {
         Ok(()) => {
             shell.copy.mark_copied(text.len());
             Ok(())
         }
-        Err(error) => {
-            shell.copy.mark_failed(error.to_string());
-            Err(error)
-        }
+        Err(system_error) => match copy_text_with_osc52(&mut writer, &text) {
+            Ok(()) => {
+                shell.copy.mark_copied(text.len());
+                Ok(())
+            }
+            Err(terminal_error) => {
+                let message = format!(
+                    "system clipboard failed: {system_error}; terminal fallback failed: {terminal_error}"
+                );
+                shell.copy.mark_failed(message.clone());
+                Err(io::Error::new(terminal_error.kind(), message))
+            }
+        },
     }
+}
+
+fn copy_text_with_osc52(mut writer: impl Write, text: &str) -> io::Result<()> {
+    writer.write_all(osc52_clipboard_sequence(text).as_bytes())?;
+    writer.flush()
+}
+
+#[cfg(not(test))]
+fn copy_text_to_system_clipboard(text: &str) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        copy_text_with_command("/usr/bin/pbcopy", text)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = text;
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no local system clipboard command configured",
+        ))
+    }
+}
+
+#[cfg(test)]
+fn copy_text_to_system_clipboard(_text: &str) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "system clipboard disabled in unit tests",
+    ))
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn copy_text_with_command(command: &str, text: &str) -> io::Result<()> {
+    let mut child = Command::new(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "clipboard command did not open stdin",
+        )
+    })?;
+    stdin.write_all(text.as_bytes())?;
+    drop(stdin);
+
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "clipboard command exited with {status}"
+        )))
+    }
+}
+
+#[cfg(all(not(test), not(target_os = "macos")))]
+fn copy_text_with_command(_command: &str, _text: &str) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no local system clipboard command configured",
+    ))
 }
 
 pub(super) fn osc52_clipboard_sequence(text: &str) -> String {
