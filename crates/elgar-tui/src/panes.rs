@@ -464,7 +464,7 @@ impl ThinkingBlock {
         } else {
             None
         };
-        format!("thinking: {}", self.summary)
+        self.summary.clone()
     }
 }
 
@@ -727,11 +727,11 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        let thinking_index = rendered.find("thinking: Read the prompt.").unwrap();
+        let thinking_index = rendered.find("Read the prompt.").unwrap();
         let model_index = rendered.find("final answer").unwrap();
 
         assert!(!rendered.contains("Thinking\n"));
-        assert!(rendered.contains("thinking:"));
+        assert!(!rendered.contains("thinking:"));
         assert!(thinking_index < model_index);
         assert!(rendered.contains("Return concise text."));
         assert!(!rendered.contains("request-1"));

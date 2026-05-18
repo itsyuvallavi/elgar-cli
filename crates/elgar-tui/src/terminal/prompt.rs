@@ -150,6 +150,7 @@ impl Drop for InlineWorkingRenderer {
 pub(super) struct LiveProviderOutput {
     reasoning: String,
     response: String,
+    response_visible_chars: usize,
 }
 
 impl LiveProviderOutput {
@@ -160,12 +161,26 @@ impl LiveProviderOutput {
         }
     }
 
+    pub(super) fn advance_response_reveal(&mut self) {
+        let total = self.response.chars().count();
+        if self.response_visible_chars < total {
+            self.response_visible_chars = (self.response_visible_chars + 8).min(total);
+        }
+    }
+
     fn reasoning_summary(&self) -> Option<String> {
-        compact_streaming_text(&self.reasoning).map(|text| format!("thinking: {text}"))
+        compact_streaming_text(&self.reasoning)
     }
 
     fn response_preview(&self) -> Option<String> {
-        compact_streaming_text(&self.response)
+        compact_streaming_text(&self.visible_response())
+    }
+
+    fn visible_response(&self) -> String {
+        self.response
+            .chars()
+            .take(self.response_visible_chars)
+            .collect()
     }
 }
 

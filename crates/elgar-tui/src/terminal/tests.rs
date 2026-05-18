@@ -95,12 +95,33 @@ fn active_working_frame_shows_live_reasoning_and_response_separately() {
     let mut live_output = LiveProviderOutput::default();
     live_output.push_chunk(ProviderStreamChunk::Reasoning("Need greet.".to_string()));
     live_output.push_chunk(ProviderStreamChunk::Text("Hello".to_string()));
+    live_output.advance_response_reveal();
 
     let (_thinking, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
-    assert_eq!(reasoning, vec!["thinking: Need greet."]);
+    assert_eq!(reasoning, vec!["Need greet."]);
     assert_eq!(response, vec!["Hello"]);
+}
+
+#[test]
+fn active_working_frame_reveals_response_incrementally() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Text(
+        "Hello! How can I help you today?".to_string(),
+    ));
+
+    let (_thinking, _reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
+    assert!(response.is_empty());
+
+    live_output.advance_response_reveal();
+    let (_thinking, _reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
+
+    assert_eq!(response, vec!["Hello! H"]);
 }
 
 fn submit_text(

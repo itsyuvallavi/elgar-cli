@@ -250,6 +250,7 @@ where
         match task.try_complete() {
             Ok(Some(ProviderTurnUpdate::Chunk(chunk))) => {
                 live_output.push_chunk(chunk);
+                live_output.advance_response_reveal();
                 working.render(
                     tick,
                     started.elapsed().as_secs(),
@@ -266,6 +267,7 @@ where
             }
             Ok(None) => {
                 if last_render.elapsed() >= Duration::from_millis(420) {
+                    live_output.advance_response_reveal();
                     working.render(
                         tick,
                         started.elapsed().as_secs(),
