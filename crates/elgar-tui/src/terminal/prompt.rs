@@ -252,11 +252,11 @@ pub(super) fn active_working_frame_lines(
     let progress_lines = Vec::new();
     let reasoning_lines = live_output
         .reasoning_summary()
-        .map(|line| non_empty_lines(wrap_words(&line, drawable_width(width))))
+        .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
         .unwrap_or_default();
     let response_lines = live_output
         .response_preview()
-        .map(|line| non_empty_lines(wrap_words(&line, drawable_width(width))))
+        .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
         .unwrap_or_default();
     let (top_lines, input_lines, bottom_lines, footer_lines) =
         inline_prompt_frame_lines(context, input, width);
@@ -269,6 +269,13 @@ pub(super) fn active_working_frame_lines(
         bottom_lines,
         footer_lines,
     )
+}
+
+fn with_leading_spacer(mut lines: Vec<String>) -> Vec<String> {
+    let mut spaced = Vec::with_capacity(lines.len() + 1);
+    spaced.push(String::new());
+    spaced.append(&mut lines);
+    spaced
 }
 
 fn compact_streaming_text(text: &str) -> Option<String> {

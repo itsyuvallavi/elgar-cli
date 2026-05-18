@@ -106,8 +106,8 @@ fn active_working_frame_shows_live_reasoning_and_response_separately() {
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
     assert!(progress.is_empty());
-    assert_eq!(reasoning, vec!["Need greet."]);
-    assert_eq!(response, vec!["Hello"]);
+    assert_eq!(reasoning, vec!["", "Need greet."]);
+    assert_eq!(response, vec!["", "Hello"]);
     assert!(!reasoning.join("\n").contains("thinking"));
 }
 
@@ -120,15 +120,15 @@ fn active_working_frame_reveals_response_incrementally() {
         "Hello! How can I help you today?".to_string(),
     ));
 
-    let (_thinking, _reasoning, response, _top, _input, _bottom, _footer) =
+    let (_progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
     assert!(response.is_empty());
 
     live_output.advance_response_reveal();
-    let (_thinking, _reasoning, response, _top, _input, _bottom, _footer) =
+    let (_progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
-    assert_eq!(response, vec!["Hello! H"]);
+    assert_eq!(response, vec!["", "Hello! H"]);
 }
 
 #[test]
