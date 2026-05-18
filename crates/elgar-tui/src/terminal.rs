@@ -742,11 +742,12 @@ fn status_style(status: &str) -> ratatui::style::Style {
 
 #[cfg(test)]
 fn should_exit(key: crossterm::event::KeyEvent) -> bool {
-    matches!(key.code, crossterm::event::KeyCode::Esc)
-        || (key
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::CONTROL)
-            && key.code == crossterm::event::KeyCode::Char('c'))
+    key.modifiers
+        .contains(crossterm::event::KeyModifiers::CONTROL)
+        && matches!(
+            key.code,
+            crossterm::event::KeyCode::Char('c') | crossterm::event::KeyCode::Char('d')
+        )
 }
 
 #[cfg(test)]

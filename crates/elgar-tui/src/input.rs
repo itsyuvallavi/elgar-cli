@@ -21,7 +21,14 @@ impl TerminalInput {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 TerminalInputAction::Exit
             }
-            KeyCode::Esc => TerminalInputAction::Exit,
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                TerminalInputAction::Exit
+            }
+            KeyCode::Esc => {
+                self.text.clear();
+                self.cursor = 0;
+                TerminalInputAction::Continue
+            }
             KeyCode::Enter => TerminalInputAction::Submit,
             KeyCode::Backspace => {
                 if self.cursor > 0 {
@@ -116,15 +123,22 @@ mod tests {
     }
 
     #[test]
-    fn escape_and_ctrl_c_exit() {
+    fn escape_clears_input_and_ctrl_c_ctrl_d_exit() {
         let mut input = TerminalInput::default();
 
+        input.handle_key(key(KeyCode::Char('h')));
+        input.handle_key(key(KeyCode::Char('i')));
         assert_eq!(
             input.handle_key(key(KeyCode::Esc)),
+            TerminalInputAction::Continue
+        );
+        assert_eq!(input.text(), "");
+        assert_eq!(
+            input.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             TerminalInputAction::Exit
         );
         assert_eq!(
-            input.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            input.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
             TerminalInputAction::Exit
         );
     }

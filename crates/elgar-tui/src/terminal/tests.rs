@@ -759,12 +759,16 @@ fn terminal_conversation_scrollback_keeps_input_status_and_pending_visible() {
 
 #[test]
 fn terminal_shell_exit_keys_are_minimal() {
-    assert!(should_exit(crossterm::event::KeyEvent::new(
+    assert!(!should_exit(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Esc,
         crossterm::event::KeyModifiers::NONE
     )));
     assert!(should_exit(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('c'),
+        crossterm::event::KeyModifiers::CONTROL
+    )));
+    assert!(should_exit(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('d'),
         crossterm::event::KeyModifiers::CONTROL
     )));
     assert!(!should_exit(crossterm::event::KeyEvent::new(
