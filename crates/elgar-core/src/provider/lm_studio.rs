@@ -1,9 +1,12 @@
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    event::ProviderOutput,
+    event::{ProviderMetrics, ProviderOutput, ProviderTokenUsage},
     provider::{
         config::ProviderConfig,
         http::{post_json, post_json_streaming, HttpEndpoint},
@@ -38,7 +41,24 @@ pub fn format_chat_request(
     })
 }
 
+pub fn format_chat_request_body(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+) -> Result<(ChatRequest, String), ProviderError> {
+    let request = format_chat_request(config, messages)?;
+    let body = serde_json::to_string(&request)
+        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+    Ok((request, body))
+}
+
 pub fn parse_chat_response_json(payload: &str) -> Result<ProviderOutput, ProviderError> {
+    parse_chat_response_json_with_metrics(payload, None)
+}
+
+pub fn parse_chat_response_json_with_metrics(
+    payload: &str,
+    metrics: Option<ProviderMetrics>,
+) -> Result<ProviderOutput, ProviderError> {
     let response: ChatResponse = serde_json::from_str(payload)
         .map_err(|error| ProviderError::response_parse(error.to_string()))?;
 
@@ -49,12 +69,17 @@ pub fn parse_chat_response_json(payload: &str) -> Result<ProviderOutput, Provide
         .find(|message| !message.content.trim().is_empty())
         .ok_or_else(|| ProviderError::empty_response("provider response contained no text"))?;
 
-    let output = ProviderOutput::new(message.content.trim().to_string());
+    let mut output = ProviderOutput::new(message.content.trim().to_string());
 
-    Ok(match message.explicit_thinking() {
-        Some(thinking) => output.with_thinking(thinking),
-        None => output,
-    })
+    if let Some(thinking) = message.explicit_thinking() {
+        output = output.with_thinking(thinking);
+    }
+    if let Some(mut metrics) = metrics {
+        metrics.usage = response.usage.map(provider_usage_from_chat_usage);
+        output = output.with_metrics(metrics);
+    }
+
+    Ok(output)
 }
 
 pub fn parse_chat_stream_response(payload: &str) -> Result<ProviderOutput, ProviderError> {
@@ -155,18 +180,29 @@ pub fn chat_lm_studio(
     config: &ProviderConfig,
     messages: Vec<ChatMessage>,
 ) -> Result<ProviderOutput, ProviderError> {
-    let request = format_chat_request(config, messages)?;
-    let body = serde_json::to_string(&request)
-        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+    let request_id = next_lm_studio_request_id();
+    chat_lm_studio_with_request_id(config, messages, &request_id)
+}
+
+fn chat_lm_studio_with_request_id(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+    request_id: &str,
+) -> Result<ProviderOutput, ProviderError> {
+    let started = Instant::now();
+    let (request, body) = format_chat_request_body(config, messages)?;
+    let mut metrics = metrics_for_request(request_id, &request, body.len());
     let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
     let timeout = Duration::from_millis(config.timeout_millis);
     let response = post_json(&endpoint, &body, timeout)?;
 
     if response.status_code.is_success() {
+        metrics.total_duration_millis = Some(duration_millis(started.elapsed()));
         if request.stream {
-            parse_chat_stream_response(&response.body)
+            let output = parse_chat_stream_response(&response.body)?;
+            Ok(output.with_metrics(metrics))
         } else {
-            parse_chat_response_json(&response.body)
+            parse_chat_response_json_with_metrics(&response.body, Some(metrics))
         }
     } else {
         Err(parse_provider_error_json(
@@ -181,25 +217,47 @@ pub fn chat_lm_studio_streaming(
     messages: Vec<ChatMessage>,
     on_chunk: &mut dyn FnMut(ProviderStreamChunk),
 ) -> Result<ProviderOutput, ProviderError> {
+    let request_id = next_lm_studio_request_id();
+    chat_lm_studio_streaming_with_request_id(config, messages, &request_id, on_chunk)
+}
+
+fn chat_lm_studio_streaming_with_request_id(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+    request_id: &str,
+    on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+) -> Result<ProviderOutput, ProviderError> {
     if !config.stream {
-        let output = chat_lm_studio(config, messages)?;
+        let output = chat_lm_studio_with_request_id(config, messages, request_id)?;
         emit_output_chunks(&output, on_chunk);
         return Ok(output);
     }
 
-    let request = format_chat_request(config, messages)?;
-    let body = serde_json::to_string(&request)
-        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+    let started = Instant::now();
+    let (request, body) = format_chat_request_body(config, messages)?;
+    let mut metrics = metrics_for_request(request_id, &request, body.len());
     let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
     let timeout = Duration::from_millis(config.timeout_millis);
     let mut parts = StreamingOutputParts::default();
     let response = post_json_streaming(&endpoint, &body, timeout, &mut |body_chunk| {
-        parts.push_body_chunk(body_chunk, on_chunk)
+        parts.push_body_chunk(body_chunk, &mut |chunk| {
+            if metrics.first_chunk_latency_millis.is_none() {
+                metrics.first_chunk_latency_millis = Some(duration_millis(started.elapsed()));
+            }
+            on_chunk(chunk);
+        })
     })?;
 
     if response.status_code.is_success() {
-        parts.finish(on_chunk)?;
-        provider_output_from_stream_parts(parts.text, parts.thinking)
+        parts.finish(&mut |chunk| {
+            if metrics.first_chunk_latency_millis.is_none() {
+                metrics.first_chunk_latency_millis = Some(duration_millis(started.elapsed()));
+            }
+            on_chunk(chunk);
+        })?;
+        metrics.total_duration_millis = Some(duration_millis(started.elapsed()));
+        let output = provider_output_from_stream_parts(parts.text, parts.thinking)?;
+        Ok(output.with_metrics(metrics))
     } else {
         Err(parse_provider_error_json(
             Some(response.status_code.as_u16()),
@@ -213,6 +271,32 @@ fn emit_output_chunks(output: &ProviderOutput, on_chunk: &mut dyn FnMut(Provider
         on_chunk(ProviderStreamChunk::Reasoning(thinking.clone()));
     }
     on_chunk(ProviderStreamChunk::Text(output.text.clone()));
+}
+
+fn metrics_for_request(
+    request_id: &str,
+    request: &ChatRequest,
+    body_len: usize,
+) -> ProviderMetrics {
+    ProviderMetrics::new(
+        request_id,
+        Some(request.model.clone()),
+        request.stream,
+        request.messages.len(),
+        body_len,
+    )
+}
+
+fn provider_usage_from_chat_usage(usage: crate::provider::types::ChatUsage) -> ProviderTokenUsage {
+    ProviderTokenUsage {
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 #[derive(Debug, Default)]
@@ -305,12 +389,24 @@ impl ControllerProvider for LmStudioProvider {
         ProviderRequestMetadata::new(
             self.config.provider.clone(),
             self.config.model.clone(),
-            "lm-studio-request-1",
+            next_lm_studio_request_id(),
         )
     }
 
     fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError> {
         chat_lm_studio(&self.config, vec![ChatMessage::user(prompt)])
+    }
+
+    fn chat_with_metadata(
+        &self,
+        prompt: &str,
+        metadata: &ProviderRequestMetadata,
+    ) -> Result<ProviderOutput, ProviderError> {
+        chat_lm_studio_with_request_id(
+            &self.config,
+            vec![ChatMessage::user(prompt)],
+            &metadata.request_id,
+        )
     }
 
     fn chat_stream(
@@ -320,6 +416,27 @@ impl ControllerProvider for LmStudioProvider {
     ) -> Result<ProviderOutput, ProviderError> {
         chat_lm_studio_streaming(&self.config, vec![ChatMessage::user(prompt)], on_chunk)
     }
+
+    fn chat_stream_with_metadata(
+        &self,
+        prompt: &str,
+        metadata: &ProviderRequestMetadata,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> Result<ProviderOutput, ProviderError> {
+        chat_lm_studio_streaming_with_request_id(
+            &self.config,
+            vec![ChatMessage::user(prompt)],
+            &metadata.request_id,
+            on_chunk,
+        )
+    }
+}
+
+static LM_STUDIO_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_lm_studio_request_id() -> String {
+    let sequence = LM_STUDIO_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("lm-studio-request-{sequence}")
 }
 
 #[cfg(test)]
@@ -333,11 +450,15 @@ mod tests {
     };
 
     use super::{
-        chat_lm_studio_streaming, format_chat_request, parse_chat_response_json,
-        parse_chat_stream_chunks, parse_chat_stream_response, parse_provider_error_json,
-        ChatMessage, ProviderConfig,
+        chat_lm_studio_streaming, format_chat_request, format_chat_request_body,
+        parse_chat_response_json, parse_chat_response_json_with_metrics, parse_chat_stream_chunks,
+        parse_chat_stream_response, parse_provider_error_json, ChatMessage, LmStudioProvider,
+        ProviderConfig,
     };
-    use crate::provider::{http::parse_http_response, ProviderErrorKind, ProviderStreamChunk};
+    use crate::event::ProviderMetrics;
+    use crate::provider::{
+        http::parse_http_response, ControllerProvider, ProviderErrorKind, ProviderStreamChunk,
+    };
 
     #[test]
     fn formats_non_streaming_openai_compatible_chat_request() {
@@ -388,6 +509,83 @@ mod tests {
                 "stream": true
             })
         );
+    }
+
+    #[test]
+    fn serialized_request_byte_count_matches_request_body() {
+        let config = ProviderConfig {
+            stream: true,
+            ..ProviderConfig::lm_studio("loaded-model")
+        };
+        let (request, body) = format_chat_request_body(
+            &config,
+            vec![
+                ChatMessage::system("You suggest only."),
+                ChatMessage::user("hello"),
+            ],
+        )
+        .unwrap();
+        let metrics = super::metrics_for_request("request-1", &request, body.len());
+
+        assert_eq!(metrics.request_id, "request-1");
+        assert_eq!(metrics.model.as_deref(), Some("loaded-model"));
+        assert!(metrics.stream);
+        assert_eq!(metrics.message_count, 2);
+        assert_eq!(metrics.serialized_request_bytes, body.as_bytes().len());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["stream"],
+            true
+        );
+    }
+
+    #[test]
+    fn openai_compatible_usage_is_propagated_into_provider_metrics() {
+        let metrics = ProviderMetrics::new(
+            "request-usage",
+            Some("loaded-model".to_string()),
+            false,
+            1,
+            123,
+        );
+        let output = parse_chat_response_json_with_metrics(
+            r#"{
+                "id": "chatcmpl-local",
+                "model": "loaded-model",
+                "choices": [
+                    {
+                        "message": { "role": "assistant", "content": "Done." },
+                        "finish_reason": "stop"
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3,
+                    "total_tokens": 10
+                }
+            }"#,
+            Some(metrics),
+        )
+        .unwrap();
+
+        let metrics = output.metrics.unwrap();
+        let usage = metrics.usage.unwrap();
+        assert_eq!(output.text, "Done.");
+        assert_eq!(metrics.request_id, "request-usage");
+        assert_eq!(usage.prompt_tokens, Some(7));
+        assert_eq!(usage.completion_tokens, Some(3));
+        assert_eq!(usage.total_tokens, Some(10));
+    }
+
+    #[test]
+    fn lm_studio_request_metadata_ids_are_unique_across_turns() {
+        let provider = LmStudioProvider::new(ProviderConfig::lm_studio("loaded-model"));
+
+        let first = provider.request_metadata();
+        let second = provider.request_metadata();
+
+        assert_ne!(first.request_id, second.request_id);
+        assert!(first.request_id.starts_with("lm-studio-request-"));
+        assert!(second.request_id.starts_with("lm-studio-request-"));
     }
 
     #[test]

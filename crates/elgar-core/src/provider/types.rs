@@ -142,6 +142,14 @@ pub trait ControllerProvider {
 
     fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError>;
 
+    fn chat_with_metadata(
+        &self,
+        prompt: &str,
+        _metadata: &ProviderRequestMetadata,
+    ) -> Result<ProviderOutput, ProviderError> {
+        self.chat(prompt)
+    }
+
     fn chat_stream(
         &self,
         prompt: &str,
@@ -153,6 +161,15 @@ pub trait ControllerProvider {
         }
         on_chunk(ProviderStreamChunk::Text(output.text.clone()));
         Ok(output)
+    }
+
+    fn chat_stream_with_metadata(
+        &self,
+        prompt: &str,
+        _metadata: &ProviderRequestMetadata,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> Result<ProviderOutput, ProviderError> {
+        self.chat_stream(prompt, on_chunk)
     }
 }
 

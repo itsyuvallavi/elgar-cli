@@ -117,6 +117,8 @@ pub struct ProviderOutput {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<ProviderMetrics>,
 }
 
 impl ProviderOutput {
@@ -124,6 +126,7 @@ impl ProviderOutput {
         Self {
             text: text.into(),
             thinking: None,
+            metrics: None,
         }
     }
 
@@ -131,6 +134,56 @@ impl ProviderOutput {
         self.thinking = Some(thinking.into());
         self
     }
+
+    pub fn with_metrics(mut self, metrics: ProviderMetrics) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+}
+
+/// Provider-owned facts about one provider request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderMetrics {
+    pub request_id: String,
+    pub model: Option<String>,
+    pub stream: bool,
+    pub message_count: usize,
+    pub serialized_request_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ProviderTokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_chunk_latency_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_duration_millis: Option<u64>,
+}
+
+impl ProviderMetrics {
+    pub fn new(
+        request_id: impl Into<String>,
+        model: Option<String>,
+        stream: bool,
+        message_count: usize,
+        serialized_request_bytes: usize,
+    ) -> Self {
+        Self {
+            request_id: request_id.into(),
+            model,
+            stream,
+            message_count,
+            serialized_request_bytes,
+            usage: None,
+            first_chunk_latency_millis: None,
+            total_duration_millis: None,
+        }
+    }
+}
+
+/// Token usage reported by an OpenAI-compatible provider response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderTokenUsage {
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
 }
 
 /// A controller-owned lifecycle event for an action.

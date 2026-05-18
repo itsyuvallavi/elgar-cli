@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     action::{Action, ActionLifecycleState},
-    event::{Event, VerifiedActionResult},
+    event::{Event, ProviderMetrics, VerifiedActionResult},
 };
 
 /// Core-owned state for one controller session.
@@ -96,6 +96,8 @@ pub struct ProviderMetadata {
     pub provider: String,
     pub model: Option<String>,
     pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<ProviderMetrics>,
 }
 
 impl ProviderMetadata {
@@ -104,6 +106,7 @@ impl ProviderMetadata {
             provider: provider.into(),
             model: None,
             request_id: None,
+            metrics: None,
         }
     }
 }

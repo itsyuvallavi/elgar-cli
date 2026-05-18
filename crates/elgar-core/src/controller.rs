@@ -118,8 +118,18 @@ where
             request.request_id.clone(),
         )));
 
-        match self.provider.chat_stream(input, on_chunk) {
+        match self
+            .provider
+            .chat_stream_with_metadata(input, &request, on_chunk)
+        {
             Ok(output) => {
+                if let Some(metrics) = output.metrics.clone() {
+                    let mut metadata = ProviderMetadata::new(request.provider.clone());
+                    metadata.model = request.model.clone();
+                    metadata.request_id = Some(request.request_id.clone());
+                    metadata.metrics = Some(metrics);
+                    session.set_provider_metadata(metadata);
+                }
                 session.push_event(Event::ProviderFinished(ProviderFinished::new(
                     request.provider,
                     request.request_id,
@@ -379,7 +389,10 @@ mod tests {
 
     use crate::{
         action::ActionLifecycleState,
-        event::{AssistantMessageSource, Event, ProviderOutput, VerifiedActionResult},
+        event::{
+            AssistantMessageSource, Event, ProviderMetrics, ProviderOutput, ProviderTokenUsage,
+            VerifiedActionResult,
+        },
         provider::{ControllerProvider, ProviderConfig, ProviderError, ProviderStub},
         router::Route,
         session::Session,
@@ -858,6 +871,41 @@ mod tests {
             .events()
             .iter()
             .all(|event| !matches!(event, Event::ActionApproved(_) | Event::ActionApplied(_))));
+    }
+
+    #[test]
+    fn provider_metrics_are_recorded_in_output_and_session_metadata() {
+        let mut metrics = ProviderMetrics::new(
+            "fake-request-1",
+            Some("fake-model".to_string()),
+            false,
+            1,
+            42,
+        );
+        metrics.usage = Some(ProviderTokenUsage {
+            prompt_tokens: Some(5),
+            completion_tokens: Some(7),
+            total_tokens: Some(12),
+        });
+        metrics.total_duration_millis = Some(9);
+        let controller = Controller::new(FakeProvider::output(
+            ProviderOutput::new("measured response").with_metrics(metrics.clone()),
+        ));
+        let mut session = session();
+
+        let result = controller.turn(&mut session, "what does this code do?");
+
+        let output_metrics = result.events.iter().find_map(|event| match event {
+            Event::ProviderFinished(finished) => finished.output.metrics.as_ref(),
+            _ => None,
+        });
+        assert_eq!(output_metrics, Some(&metrics));
+        assert_eq!(
+            session
+                .provider_metadata()
+                .and_then(|metadata| metadata.metrics.as_ref()),
+            Some(&metrics)
+        );
     }
 
     #[test]
