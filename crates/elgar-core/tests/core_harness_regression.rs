@@ -6,7 +6,7 @@ use std::{
 use elgar_core::{
     action::ActionLifecycleState,
     controller::Controller,
-    event::{Event, VerifiedActionResult},
+    event::{AssistantMessageSource, Event, VerifiedActionResult},
     renderer::render_session,
     router::{route_input, Route},
     session::Session,
@@ -32,6 +32,30 @@ fn event_count(session: &Session, matches: impl Fn(&Event) -> bool) -> usize {
         .iter()
         .filter(|event| matches(event))
         .count()
+}
+
+fn provider_event_count(session: &Session) -> usize {
+    event_count(session, |event| {
+        matches!(
+            event,
+            Event::ProviderStarted(_) | Event::ProviderFinished(_)
+        )
+    })
+}
+
+fn controller_messages(session: &Session) -> Vec<&str> {
+    session
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller =>
+            {
+                Some(message.content.as_str())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -199,6 +223,220 @@ fn write_file_lifecycle_requires_user_approval_and_records_terminal_states() {
         .events()
         .iter()
         .any(|event| matches!(event, Event::ActionFailed(_))));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn second_write_file_proposal_is_blocked_while_one_action_is_pending() {
+    let controller = Controller::default();
+    let root = regression_root("single-pending-proposal");
+    let mut session = session_at(&root);
+
+    let first = controller.turn(&mut session, "create file first.py");
+    let second = controller.turn(&mut session, "create file second.py");
+
+    assert_eq!(first.route, Route::ProposeWriteFile);
+    assert_eq!(second.route, Route::ProposeWriteFile);
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionProposed(_))),
+        1
+    );
+    assert!(second
+        .events
+        .iter()
+        .all(|event| !matches!(event, Event::ActionProposed(_))));
+    assert!(controller_messages(&session).iter().any(|message| message
+        .contains("Approve or reject it before requesting another WriteFile action")));
+    assert_eq!(provider_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn approving_after_blocked_second_proposal_applies_only_original_action() {
+    let controller = Controller::default();
+    let root = regression_root("approve-original-after-blocked");
+    let mut session = session_at(&root);
+    let original = root.join("original.py");
+    let blocked = root.join("blocked.py");
+
+    controller.turn(&mut session, "create file original.py");
+    controller.turn(&mut session, "create file blocked.py");
+    controller.turn(&mut session, "approve");
+
+    assert!(original.exists());
+    assert!(!blocked.exists());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert_eq!(
+        session.actions()[0].verified_result,
+        Some(VerifiedActionResult::FileWritten {
+            path: original.display().to_string()
+        })
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionApplied(_))),
+        1
+    );
+    assert_eq!(provider_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn approve_and_reject_with_no_pending_action_are_safe() {
+    let controller = Controller::default();
+    let root = regression_root("no-pending-actions");
+    let mut session = session_at(&root);
+
+    controller.turn(&mut session, "approve");
+    controller.turn(&mut session, "reject");
+
+    assert!(session.actions().is_empty());
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_)
+                | Event::ActionRejected(_)
+                | Event::ActionApplied(_)
+                | Event::ActionFailed(_)
+        )),
+        0
+    );
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("No proposed action is waiting for approval.")));
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("No proposed action is waiting for rejection.")));
+    assert_eq!(provider_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn restored_session_with_multiple_proposed_actions_cannot_apply_hidden_actions() {
+    let controller = Controller::default();
+    let root = regression_root("ambiguous-restored-actions");
+    let first = root.join("first.py");
+    let second = root.join("second.py");
+    let third = root.join("third.py");
+    let root_string = root.display().to_string();
+    let mut session: Session = serde_json::from_value(serde_json::json!({
+        "id": "restored-session",
+        "project_root": root_string,
+        "cwd": root_string,
+        "events": [],
+        "actions": [
+            {
+                "action": {
+                    "id": "action-1",
+                    "request": {
+                        "WriteFile": {
+                            "target_path": "first.py",
+                            "contents": ""
+                        }
+                    },
+                    "state": "Proposed",
+                    "summary": "write first.py"
+                },
+                "verified_result": null,
+                "failure_reason": null
+            },
+            {
+                "action": {
+                    "id": "action-2",
+                    "request": {
+                        "WriteFile": {
+                            "target_path": "second.py",
+                            "contents": ""
+                        }
+                    },
+                    "state": "Proposed",
+                    "summary": "write second.py"
+                },
+                "verified_result": null,
+                "failure_reason": null
+            }
+        ],
+        "provider_metadata": null
+    }))
+    .unwrap();
+
+    controller.turn(&mut session, "approve");
+    controller.turn(&mut session, "reject");
+    controller.turn(&mut session, "create file third.py");
+
+    assert!(!first.exists());
+    assert!(!second.exists());
+    assert!(!third.exists());
+    assert_eq!(session.actions().len(), 2);
+    assert!(session
+        .actions()
+        .iter()
+        .all(|record| record.action.state == ActionLifecycleState::Proposed));
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_)
+                | Event::ActionApplied(_)
+                | Event::ActionRejected(_)
+                | Event::ActionFailed(_)
+        )),
+        0
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionProposed(_))),
+        0
+    );
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("Multiple proposed actions are waiting")));
+    assert_eq!(provider_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rejected_action_remains_terminal_after_followup_approval_or_rejection() {
+    let controller = Controller::default();
+    let root = regression_root("rejected-terminal");
+    let mut session = session_at(&root);
+    let target = root.join("terminal.py");
+
+    controller.turn(&mut session, "create file terminal.py");
+    controller.turn(&mut session, "reject");
+    controller.turn(&mut session, "approve");
+    controller.turn(&mut session, "reject");
+
+    assert!(!target.exists());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionRejected(_))),
+        1
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_) | Event::ActionApplied(_)
+        )),
+        0
+    );
+    assert_eq!(provider_event_count(&session), 0);
 
     let _ = fs::remove_dir_all(root);
 }

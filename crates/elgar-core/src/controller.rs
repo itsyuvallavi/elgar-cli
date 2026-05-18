@@ -140,6 +140,21 @@ where
     }
 
     fn handle_propose_write_file(&self, session: &mut Session, input: &str) {
+        match pending_action_state(session) {
+            PendingActionState::None => {}
+            PendingActionState::Single(_) => {
+                push_controller_message(
+                    session,
+                    "A proposed action is already waiting. Approve or reject it before requesting another WriteFile action.",
+                );
+                return;
+            }
+            PendingActionState::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
+        }
+
         let Some(target_path) = parse_write_file_target(input) else {
             push_controller_message(
                 session,
@@ -166,9 +181,16 @@ where
     }
 
     fn handle_reject_action(&self, session: &mut Session) {
-        let Some(index) = latest_proposed_action_index(session) else {
-            push_controller_message(session, "No proposed action is waiting for rejection.");
-            return;
+        let index = match pending_action_state(session) {
+            PendingActionState::Single(index) => index,
+            PendingActionState::None => {
+                push_controller_message(session, "No proposed action is waiting for rejection.");
+                return;
+            }
+            PendingActionState::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
         };
 
         let rejected = session.actions()[index].action.reject();
@@ -188,9 +210,16 @@ where
     }
 
     fn handle_approve_action(&self, session: &mut Session) {
-        let Some(index) = latest_proposed_action_index(session) else {
-            push_controller_message(session, "No proposed action is waiting for approval.");
-            return;
+        let index = match pending_action_state(session) {
+            PendingActionState::Single(index) => index,
+            PendingActionState::None => {
+                push_controller_message(session, "No proposed action is waiting for approval.");
+                return;
+            }
+            PendingActionState::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
         };
 
         let approved = session.actions()[index].action.approve();
@@ -260,6 +289,8 @@ const HELP_MESSAGE: &str =
     "Elgar core harness can classify help, model questions, write-file requests, approvals, and rejections.";
 const UNKNOWN_MESSAGE: &str =
     "Input was not recognized. No provider, file, action, or shell operation was run.";
+const AMBIGUOUS_PENDING_ACTION_MESSAGE: &str =
+    "Multiple proposed actions are waiting. Elgar will not approve, reject, or create another action until this session is repaired.";
 
 fn push_controller_message(session: &mut Session, message: &'static str) {
     session.push_event(Event::AssistantMessage(AssistantMessage::new(
@@ -268,15 +299,39 @@ fn push_controller_message(session: &mut Session, message: &'static str) {
     )));
 }
 
+fn push_ambiguous_pending_action_message(session: &mut Session) {
+    push_controller_message(session, AMBIGUOUS_PENDING_ACTION_MESSAGE);
+}
+
 fn next_action_id(session: &Session) -> String {
     format!("action-{}", session.actions().len() + 1)
 }
 
-fn latest_proposed_action_index(session: &Session) -> Option<usize> {
-    session
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingActionState {
+    None,
+    Single(usize),
+    Ambiguous,
+}
+
+fn pending_action_state(session: &Session) -> PendingActionState {
+    let mut proposed = session
         .actions()
         .iter()
-        .rposition(|record| record.action.state == crate::action::ActionLifecycleState::Proposed)
+        .enumerate()
+        .filter(|(_index, record)| {
+            record.action.state == crate::action::ActionLifecycleState::Proposed
+        });
+
+    let Some((index, _record)) = proposed.next() else {
+        return PendingActionState::None;
+    };
+
+    if proposed.next().is_some() {
+        PendingActionState::Ambiguous
+    } else {
+        PendingActionState::Single(index)
+    }
 }
 
 fn action_target_label(action: &Action) -> String {
