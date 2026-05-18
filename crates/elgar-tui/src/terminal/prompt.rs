@@ -7,7 +7,6 @@ use super::{TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
 
 pub(super) const LIVE_REASONING_PREVIEW_BYTES: usize = 1024;
 pub(super) const LIVE_RESPONSE_PREVIEW_BYTES: usize = 4096;
-const LIVE_RESPONSE_REVEAL_CHARS: usize = 48;
 
 pub(super) fn non_empty_lines(lines: Vec<String>) -> Vec<String> {
     if lines.is_empty() {
@@ -154,7 +153,6 @@ impl Drop for InlineWorkingRenderer {
 pub(super) struct LiveProviderOutput {
     reasoning: String,
     response: String,
-    response_visible_chars: usize,
 }
 
 impl LiveProviderOutput {
@@ -165,33 +163,12 @@ impl LiveProviderOutput {
             }
             ProviderStreamChunk::Text(value) => {
                 append_capped(&mut self.response, &value, LIVE_RESPONSE_PREVIEW_BYTES);
-                let total = self.response.chars().count();
-                self.response_visible_chars = self.response_visible_chars.min(total);
             }
-        }
-    }
-
-    pub(super) fn advance_response_reveal(&mut self) {
-        let total = self.response.chars().count();
-        if self.response_visible_chars < total {
-            self.response_visible_chars =
-                (self.response_visible_chars + LIVE_RESPONSE_REVEAL_CHARS).min(total);
         }
     }
 
     fn reasoning_summary(&self) -> Option<String> {
         compact_streaming_text(&self.reasoning)
-    }
-
-    fn response_preview(&self) -> Option<String> {
-        compact_streaming_text(&self.visible_response())
-    }
-
-    fn visible_response(&self) -> String {
-        self.response
-            .chars()
-            .take(self.response_visible_chars)
-            .collect()
     }
 
     #[cfg(test)]
@@ -256,10 +233,7 @@ pub(super) fn active_working_frame_lines(
         .reasoning_summary()
         .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
         .unwrap_or_default();
-    let response_lines = live_output
-        .response_preview()
-        .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
-        .unwrap_or_default();
+    let response_lines = Vec::new();
     let (top_lines, input_lines, bottom_lines, footer_lines) =
         inline_prompt_frame_lines(context, input, width);
     (

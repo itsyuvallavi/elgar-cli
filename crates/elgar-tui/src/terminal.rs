@@ -253,7 +253,6 @@ where
         match task.try_complete() {
             Ok(Some(ProviderTurnUpdate::Chunk(chunk))) => {
                 live_output.push_chunk(chunk);
-                live_output.advance_response_reveal();
                 if live_render_due(last_render, Instant::now()) {
                     working.render(
                         tick,
@@ -273,7 +272,6 @@ where
             }
             Ok(None) => {
                 if last_render.elapsed() >= IDLE_RENDER_INTERVAL {
-                    live_output.advance_response_reveal();
                     working.render(
                         tick,
                         started.elapsed().as_secs(),

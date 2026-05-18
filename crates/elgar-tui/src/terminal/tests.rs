@@ -94,25 +94,24 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
 }
 
 #[test]
-fn active_working_frame_shows_live_reasoning_and_response_separately() {
+fn active_working_frame_shows_live_reasoning_without_partial_response() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
     let mut live_output = LiveProviderOutput::default();
     live_output.push_chunk(ProviderStreamChunk::Reasoning("Need greet.".to_string()));
     live_output.push_chunk(ProviderStreamChunk::Text("Hello".to_string()));
-    live_output.advance_response_reveal();
 
     let (progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
     assert!(progress.is_empty());
     assert_eq!(reasoning, vec!["", "Need greet."]);
-    assert_eq!(response, vec!["", "Hello"]);
+    assert!(response.is_empty());
     assert!(!reasoning.join("\n").contains("thinking"));
 }
 
 #[test]
-fn active_working_frame_reveals_response_incrementally() {
+fn active_working_frame_holds_response_until_completion() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
     let mut live_output = LiveProviderOutput::default();
@@ -123,12 +122,6 @@ fn active_working_frame_reveals_response_incrementally() {
     let (_progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
     assert!(response.is_empty());
-
-    live_output.advance_response_reveal();
-    let (_progress, _reasoning, response, _top, _input, _bottom, _footer) =
-        active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
-
-    assert_eq!(response, vec!["", "Hello! How can I help you today?"]);
 }
 
 #[test]

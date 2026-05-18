@@ -17,6 +17,14 @@ use crate::{
     },
 };
 
+const ELGAR_CONTROLLER_SYSTEM_PROMPT: &str = concat!(
+    "You are Elgar's local assistant. Answer clearly and briefly. ",
+    "Prefer one short paragraph or up to five short bullets. ",
+    "Avoid markdown tables unless the user explicitly asks for a table. ",
+    "For coding and project work, give practical steps and keep text easy to scan in a terminal. ",
+    "You suggest; Elgar's controller handles approvals and file changes."
+);
+
 pub fn format_chat_request(
     config: &ProviderConfig,
     messages: Vec<ChatMessage>,
@@ -39,6 +47,13 @@ pub fn format_chat_request(
         stream: config.stream,
         temperature: None,
     })
+}
+
+fn elgar_controller_messages(prompt: &str) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::system(ELGAR_CONTROLLER_SYSTEM_PROMPT),
+        ChatMessage::user(prompt),
+    ]
 }
 
 pub fn format_chat_request_body(
@@ -394,7 +409,7 @@ impl ControllerProvider for LmStudioProvider {
     }
 
     fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError> {
-        chat_lm_studio(&self.config, vec![ChatMessage::user(prompt)])
+        chat_lm_studio(&self.config, elgar_controller_messages(prompt))
     }
 
     fn chat_with_metadata(
@@ -404,7 +419,7 @@ impl ControllerProvider for LmStudioProvider {
     ) -> Result<ProviderOutput, ProviderError> {
         chat_lm_studio_with_request_id(
             &self.config,
-            vec![ChatMessage::user(prompt)],
+            elgar_controller_messages(prompt),
             &metadata.request_id,
         )
     }
@@ -414,7 +429,7 @@ impl ControllerProvider for LmStudioProvider {
         prompt: &str,
         on_chunk: &mut dyn FnMut(ProviderStreamChunk),
     ) -> Result<ProviderOutput, ProviderError> {
-        chat_lm_studio_streaming(&self.config, vec![ChatMessage::user(prompt)], on_chunk)
+        chat_lm_studio_streaming(&self.config, elgar_controller_messages(prompt), on_chunk)
     }
 
     fn chat_stream_with_metadata(
@@ -425,7 +440,7 @@ impl ControllerProvider for LmStudioProvider {
     ) -> Result<ProviderOutput, ProviderError> {
         chat_lm_studio_streaming_with_request_id(
             &self.config,
-            vec![ChatMessage::user(prompt)],
+            elgar_controller_messages(prompt),
             &metadata.request_id,
             on_chunk,
         )
@@ -450,10 +465,10 @@ mod tests {
     };
 
     use super::{
-        chat_lm_studio_streaming, format_chat_request, format_chat_request_body,
-        parse_chat_response_json, parse_chat_response_json_with_metrics, parse_chat_stream_chunks,
-        parse_chat_stream_response, parse_provider_error_json, ChatMessage, LmStudioProvider,
-        ProviderConfig,
+        chat_lm_studio_streaming, elgar_controller_messages, format_chat_request,
+        format_chat_request_body, parse_chat_response_json, parse_chat_response_json_with_metrics,
+        parse_chat_stream_chunks, parse_chat_stream_response, parse_provider_error_json,
+        ChatMessage, LmStudioProvider, ProviderConfig,
     };
     use crate::event::ProviderMetrics;
     use crate::provider::{
@@ -509,6 +524,17 @@ mod tests {
                 "stream": true
             })
         );
+    }
+
+    #[test]
+    fn controller_provider_messages_keep_terminal_answers_short_and_readable() {
+        let messages = elgar_controller_messages("what can you do?");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, crate::provider::ChatRole::System);
+        assert!(messages[0].content.contains("Answer clearly and briefly"));
+        assert!(messages[0].content.contains("Avoid markdown tables"));
+        assert_eq!(messages[1], ChatMessage::user("what can you do?"));
     }
 
     #[test]
