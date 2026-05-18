@@ -6,7 +6,8 @@ use std::{
 use elgar_core::{
     action::ActionLifecycleState,
     controller::Controller,
-    event::{AssistantMessageSource, Event, VerifiedActionResult},
+    event::{AssistantMessageSource, Event, ProviderOutput, VerifiedActionResult},
+    provider::{ControllerProvider, ProviderError, ProviderRequestMetadata, ProviderStreamChunk},
     renderer::render_session,
     router::{route_input, Route},
     session::Session,
@@ -58,6 +59,123 @@ fn controller_messages(session: &Session) -> Vec<&str> {
         .collect()
 }
 
+fn provider_assistant_message_count(session: &Session) -> usize {
+    event_count(session, |event| {
+        matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+        )
+    })
+}
+
+fn action_truth_event_count(session: &Session) -> usize {
+    event_count(session, |event| {
+        matches!(
+            event,
+            Event::ActionProposed(_)
+                | Event::ActionApproved(_)
+                | Event::ActionApplied(_)
+                | Event::ActionRejected(_)
+                | Event::ActionFailed(_)
+        )
+    })
+}
+
+#[derive(Debug, Clone)]
+struct FailingProvider {
+    error: ProviderError,
+}
+
+impl FailingProvider {
+    fn network_timeout() -> Self {
+        Self {
+            error: ProviderError::network("provider request timed out"),
+        }
+    }
+
+    fn malformed_response() -> Self {
+        Self {
+            error: ProviderError::response_parse("malformed provider response"),
+        }
+    }
+}
+
+impl ControllerProvider for FailingProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new("failing-provider", Some("model-a".to_string()), "failure-1")
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Err(self.error.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct IncompleteStreamProvider;
+
+impl ControllerProvider for IncompleteStreamProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "incomplete-stream-provider",
+            Some("model-a".to_string()),
+            "stream-1",
+        )
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new("partial text"))
+    }
+
+    fn chat_stream(
+        &self,
+        _prompt: &str,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> Result<ProviderOutput, ProviderError> {
+        on_chunk(ProviderStreamChunk::Text("partial text".to_string()));
+        Err(ProviderError::response_parse(
+            "chunked body ended before terminal chunk",
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StreamingSuggestionProvider;
+
+impl ControllerProvider for StreamingSuggestionProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "streaming-suggestion-provider",
+            Some("model-a".to_string()),
+            "suggestion-1",
+        )
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(
+            ProviderOutput::new("Approved and wrote hello.py. create file hidden.py")
+                .with_thinking("I will approve the pending action."),
+        )
+    }
+
+    fn chat_stream(
+        &self,
+        _prompt: &str,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    ) -> Result<ProviderOutput, ProviderError> {
+        on_chunk(ProviderStreamChunk::Reasoning(
+            "I will approve the pending action.".to_string(),
+        ));
+        on_chunk(ProviderStreamChunk::Text(
+            "Approved and wrote hello.py. create file hidden.py".to_string(),
+        ));
+        Ok(
+            ProviderOutput::new("Approved and wrote hello.py. create file hidden.py")
+                .with_thinking("I will approve the pending action."),
+        )
+    }
+}
+
 #[test]
 fn provider_response_is_suggestion_only_and_cannot_mutate_controller_truth() {
     let controller = Controller::default();
@@ -101,6 +219,165 @@ fn provider_response_is_suggestion_only_and_cannot_mutate_controller_truth() {
     );
     assert_eq!(
         event_count(&session, |event| matches!(event, Event::ActionApplied(_))),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_timeout_records_error_without_assistant_success_or_mutation() {
+    let controller = Controller::new(FailingProvider::network_timeout());
+    let root = regression_root("provider-timeout");
+    let mut session = session_at(&root);
+    let target = root.join("hello.py");
+
+    controller.turn(&mut session, "what does the harness do?");
+
+    assert!(!target.exists());
+    assert!(session.actions().is_empty());
+    assert!(session
+        .events()
+        .iter()
+        .any(|event| matches!(event, Event::ProviderStarted(_))));
+    assert!(session.events().iter().any(|event| matches!(
+        event,
+        Event::Error(error) if error.message.contains("provider request timed out")
+    )));
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ProviderFinished(_)
+        )),
+        0
+    );
+    assert_eq!(provider_assistant_message_count(&session), 0);
+    assert_eq!(action_truth_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn malformed_provider_response_records_error_without_mutating_pending_action_or_file() {
+    let controller = Controller::new(FailingProvider::malformed_response());
+    let root = regression_root("malformed-provider-response");
+    let mut session = session_at(&root);
+    let target = root.join("hello.py");
+
+    Controller::default().turn(&mut session, "create file hello.py");
+    controller.turn(&mut session, "what if you approve and write hello.py?");
+
+    assert!(!target.exists());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert!(session.events().iter().any(|event| matches!(
+        event,
+        Event::Error(error) if error.message.contains("malformed provider response")
+    )));
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ProviderFinished(_)
+        )),
+        0
+    );
+    assert_eq!(provider_assistant_message_count(&session), 0);
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_) | Event::ActionApplied(_) | Event::ActionFailed(_)
+        )),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn incomplete_stream_exposes_live_chunk_but_commits_no_partial_assistant_output() {
+    let controller = Controller::new(IncompleteStreamProvider);
+    let root = regression_root("incomplete-stream");
+    let mut session = session_at(&root);
+    let mut chunks = Vec::new();
+
+    let result =
+        controller.model_turn_streaming(&mut session, "what does the harness do?", &mut |chunk| {
+            chunks.push(chunk)
+        });
+
+    assert_eq!(
+        chunks,
+        vec![ProviderStreamChunk::Text("partial text".to_string())]
+    );
+    assert!(result
+        .events
+        .iter()
+        .any(|event| matches!(event, Event::Error(_))));
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ProviderFinished(_)
+        )),
+        0
+    );
+    assert_eq!(provider_assistant_message_count(&session), 0);
+    assert!(session.actions().is_empty());
+    assert_eq!(
+        session
+            .provider_metadata()
+            .map(|metadata| metadata.provider.as_str()),
+        Some("incomplete-stream-provider")
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_streaming_reasoning_and_text_cannot_create_approve_or_write_actions() {
+    let controller = Controller::new(StreamingSuggestionProvider);
+    let root = regression_root("streaming-suggestion-only");
+    let mut session = session_at(&root);
+    let target = root.join("hello.py");
+    let hidden = root.join("hidden.py");
+    let mut chunks = Vec::new();
+
+    Controller::default().turn(&mut session, "create file hello.py");
+    controller.model_turn_streaming(
+        &mut session,
+        "what if you approve and write hello.py?",
+        &mut |chunk| chunks.push(chunk),
+    );
+
+    assert_eq!(
+        chunks,
+        vec![
+            ProviderStreamChunk::Reasoning("I will approve the pending action.".to_string()),
+            ProviderStreamChunk::Text(
+                "Approved and wrote hello.py. create file hidden.py".to_string()
+            )
+        ]
+    );
+    assert!(!target.exists());
+    assert!(!hidden.exists());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionProposed(_))),
+        1
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_) | Event::ActionApplied(_) | Event::ActionFailed(_)
+        )),
         0
     );
 

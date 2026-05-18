@@ -1,5 +1,8 @@
 use elgar_core::{
-    action::ActionLifecycleState, controller::Controller, provider::ProviderStreamChunk,
+    action::ActionLifecycleState,
+    controller::Controller,
+    event::ProviderOutput,
+    provider::{ControllerProvider, ProviderError, ProviderRequestMetadata, ProviderStreamChunk},
     session::Session,
 };
 use ratatui::{backend::TestBackend, Terminal};
@@ -565,6 +568,56 @@ fn terminal_loop_cancel_drops_pending_provider_turn_without_session_mutation() {
     assert!(!shell.status.provider_active());
     assert!(shell.render().contains("Provider request canceled."));
     assert!(!shell.render().contains("stub provider response"));
+}
+
+#[test]
+fn terminal_loop_cancel_drops_late_provider_completion_from_visible_and_session_path() {
+    #[derive(Clone)]
+    struct SlowProvider;
+
+    impl ControllerProvider for SlowProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new("slow-provider", None, "slow-request-1")
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            Ok(ProviderOutput::new("late stale response"))
+        }
+    }
+
+    let controller = Controller::new(SlowProvider);
+    let mut session = Session::new("session-1", "/repo", "/repo");
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "what does the harness do?",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+    assert!(!exited);
+    assert!(pending_turn.is_some());
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "/cancel",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+    std::thread::sleep(std::time::Duration::from_millis(60));
+
+    assert!(!exited);
+    assert!(pending_turn.is_none());
+    assert!(session.events().is_empty());
+    assert!(session.actions().is_empty());
+    assert_eq!(shell.status.render_body(), "canceled");
+    assert!(shell.render().contains("Provider request canceled."));
+    assert!(!shell.render().contains("late stale response"));
+    assert!(!shell.render().contains("slow-provider"));
 }
 
 #[test]
