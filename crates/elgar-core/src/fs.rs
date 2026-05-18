@@ -1,5 +1,6 @@
 use std::{
     fmt, fs,
+    io::Write,
     path::{Component, Path, PathBuf},
 };
 
@@ -27,19 +28,44 @@ impl Filesystem {
         };
         let target_path = resolve_allowed_target(&write_file.target_path, allowed_root.as_ref())?;
 
-        fs::write(&target_path, &write_file.contents).map_err(|source| {
-            FilesystemError::WriteFailed {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target_path)
+            .map_err(|source| {
+                if source.kind() == std::io::ErrorKind::AlreadyExists {
+                    FilesystemError::TargetAlreadyExists {
+                        path: target_path.clone(),
+                    }
+                } else {
+                    FilesystemError::WriteFailed {
+                        path: target_path.clone(),
+                        reason: source.to_string(),
+                    }
+                }
+            })?;
+        file.write_all(write_file.contents.as_bytes())
+            .map_err(|source| FilesystemError::WriteFailed {
                 path: target_path.clone(),
                 reason: source.to_string(),
-            }
-        })?;
+            })?;
+        drop(file);
 
-        if target_path.exists() {
+        let verified_contents =
+            fs::read_to_string(&target_path).map_err(|source| FilesystemError::WriteFailed {
+                path: target_path.clone(),
+                reason: source.to_string(),
+            })?;
+
+        if verified_contents == write_file.contents {
             Ok(VerifiedActionResult::FileWritten {
                 path: target_path.display().to_string(),
             })
         } else {
-            Err(FilesystemError::VerificationFailed { path: target_path })
+            Err(FilesystemError::VerificationFailed {
+                path: target_path,
+                reason: "written contents did not match expected contents".to_string(),
+            })
         }
     }
 }
@@ -120,8 +146,9 @@ pub enum FilesystemError {
     ActionNotApproved { state: ActionLifecycleState },
     UnsafeRoot { path: PathBuf, reason: String },
     UnsafeTarget { path: PathBuf, reason: String },
+    TargetAlreadyExists { path: PathBuf },
     WriteFailed { path: PathBuf, reason: String },
-    VerificationFailed { path: PathBuf },
+    VerificationFailed { path: PathBuf, reason: String },
 }
 
 impl fmt::Display for FilesystemError {
@@ -140,11 +167,18 @@ impl fmt::Display for FilesystemError {
                     path.display()
                 )
             }
+            FilesystemError::TargetAlreadyExists { path } => {
+                write!(formatter, "write target already exists: {}", path.display())
+            }
             FilesystemError::WriteFailed { path, reason } => {
                 write!(formatter, "failed to write {}: {reason}", path.display())
             }
-            FilesystemError::VerificationFailed { path } => {
-                write!(formatter, "write was not verified at {}", path.display())
+            FilesystemError::VerificationFailed { path, reason } => {
+                write!(
+                    formatter,
+                    "write was not verified at {}: {reason}",
+                    path.display()
+                )
             }
         }
     }
@@ -224,6 +258,26 @@ mod tests {
             })
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "contents");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_write_file_fails_when_target_already_exists_without_overwriting() {
+        let root = root("existing-target");
+        let path = root.join("existing.txt");
+        fs::write(&path, "original").unwrap();
+        let action =
+            Action::proposed_write_file("action-1", "existing.txt", "new contents", "write file")
+                .approve();
+
+        let result = Filesystem::apply_write_file(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::TargetAlreadyExists { path: path.clone() })
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original");
 
         let _ = fs::remove_dir_all(&root);
     }

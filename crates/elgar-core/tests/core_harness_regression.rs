@@ -441,6 +441,41 @@ fn rejected_action_remains_terminal_after_followup_approval_or_rejection() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn approving_write_file_existing_target_fails_without_overwriting() {
+    let controller = Controller::default();
+    let root = regression_root("existing-target");
+    let mut session = session_at(&root);
+    let target = root.join("existing.py");
+    fs::write(&target, "original").unwrap();
+
+    controller.turn(&mut session, "create file existing.py");
+    controller.turn(&mut session, "approve");
+
+    assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Failed
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert!(session.actions()[0]
+        .failure_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("write target already exists")));
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionFailed(_))),
+        1
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionApplied(_))),
+        0
+    );
+    assert_eq!(provider_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
 #[cfg(unix)]
 #[test]
 fn approved_write_file_symlink_escape_fails_without_verified_result() {

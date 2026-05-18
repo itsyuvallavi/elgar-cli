@@ -251,7 +251,7 @@ where
                 )));
                 push_controller_message(
                     session,
-                    "Applied approved WriteFile action and verified the target file exists.",
+                    "Applied approved WriteFile action and verified the expected file contents.",
                 );
             }
             Err(error) => {
