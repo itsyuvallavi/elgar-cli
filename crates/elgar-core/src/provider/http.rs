@@ -1,7 +1,7 @@
 use std::{
     io,
     io::{Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::{IpAddr, SocketAddr, TcpStream},
     time::Duration,
 };
 
@@ -35,15 +35,27 @@ impl HttpEndpoint {
     }
 
     fn socket_addr(&self) -> Result<SocketAddr, ProviderError> {
-        if self.host == "localhost" {
+        if self.host.eq_ignore_ascii_case("localhost") {
             return format!("127.0.0.1:{}", self.port)
                 .parse::<SocketAddr>()
                 .map_err(|_| ProviderError::configuration("provider URL port is invalid"));
         }
 
-        self.authority().parse::<SocketAddr>().map_err(|_| {
-            ProviderError::configuration("provider URL host must be an IP address or localhost")
-        })
+        let host = self
+            .host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(&self.host);
+        let ip = host.parse::<IpAddr>().map_err(|_| {
+            ProviderError::configuration("provider URL host must be localhost or a loopback IP")
+        })?;
+        if !ip.is_loopback() {
+            return Err(ProviderError::configuration(
+                "provider URL host must be localhost or a loopback IP",
+            ));
+        }
+
+        Ok(SocketAddr::new(ip, self.port))
     }
 }
 
@@ -461,6 +473,24 @@ mod tests {
     }
 
     #[test]
+    fn loopback_numeric_ips_are_allowed_before_connect() {
+        let endpoint = HttpEndpoint::parse("http://127.42.0.9:1234/v1/chat/completions").unwrap();
+
+        assert_eq!(
+            endpoint.socket_addr().unwrap().to_string(),
+            "127.42.0.9:1234"
+        );
+    }
+
+    #[test]
+    fn bracketed_ipv6_loopback_is_allowed_before_connect() {
+        let endpoint = HttpEndpoint::parse("http://[::1]:1234/v1/chat/completions").unwrap();
+
+        assert_eq!(endpoint.authority(), "[::1]:1234");
+        assert_eq!(endpoint.socket_addr().unwrap().to_string(), "[::1]:1234");
+    }
+
+    #[test]
     fn localhost_maps_to_loopback_before_connect_timeout() {
         let endpoint = HttpEndpoint::parse("http://localhost:1234/v1/chat/completions").unwrap();
 
@@ -471,12 +501,41 @@ mod tests {
     }
 
     #[test]
+    fn localhost_matching_is_case_insensitive_before_connect_timeout() {
+        let endpoint = HttpEndpoint::parse("http://LOCALHOST:1234/v1/chat/completions").unwrap();
+
+        assert_eq!(
+            endpoint.socket_addr().unwrap().to_string(),
+            "127.0.0.1:1234"
+        );
+    }
+
+    #[test]
+    fn non_loopback_numeric_ips_are_rejected_before_connect_timeout() {
+        let endpoint = HttpEndpoint::parse("http://192.168.1.10:1234/v1/chat/completions").unwrap();
+        let error = endpoint.socket_addr().unwrap_err();
+
+        assert_eq!(error.kind, ProviderErrorKind::Configuration);
+        assert!(error.message.contains("loopback IP"));
+    }
+
+    #[test]
+    fn bracketed_non_loopback_ipv6_is_rejected_before_connect_timeout() {
+        let endpoint =
+            HttpEndpoint::parse("http://[2001:db8::1]:1234/v1/chat/completions").unwrap();
+        let error = endpoint.socket_addr().unwrap_err();
+
+        assert_eq!(error.kind, ProviderErrorKind::Configuration);
+        assert!(error.message.contains("loopback IP"));
+    }
+
+    #[test]
     fn non_local_hostnames_are_rejected_before_connect_timeout() {
         let endpoint = HttpEndpoint::parse("http://example.test:1234/v1/chat/completions").unwrap();
         let error = endpoint.socket_addr().unwrap_err();
 
         assert_eq!(error.kind, ProviderErrorKind::Configuration);
-        assert!(error.message.contains("IP address or localhost"));
+        assert!(error.message.contains("localhost or a loopback IP"));
     }
 
     #[test]
