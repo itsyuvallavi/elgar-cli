@@ -82,6 +82,46 @@ fn action_truth_event_count(session: &Session) -> usize {
     })
 }
 
+fn assert_no_action_or_verified_truth(session: &Session) {
+    assert!(session.actions().is_empty());
+    assert_eq!(action_truth_event_count(session), 0);
+}
+
+fn write_broad_capability_fixture(root: &Path) {
+    fs::write(root.join("edit-me.txt"), "original edit").unwrap();
+    fs::write(root.join("overwrite-me.txt"), "original overwrite").unwrap();
+    fs::write(root.join("delete-me.txt"), "original delete").unwrap();
+    fs::write(root.join("move-me.txt"), "original move").unwrap();
+    fs::write(root.join("rename-me.txt"), "original rename").unwrap();
+}
+
+fn assert_broad_capability_fixture_unchanged(root: &Path) {
+    assert_eq!(
+        fs::read_to_string(root.join("edit-me.txt")).unwrap(),
+        "original edit"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("overwrite-me.txt")).unwrap(),
+        "original overwrite"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("delete-me.txt")).unwrap(),
+        "original delete"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("move-me.txt")).unwrap(),
+        "original move"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("rename-me.txt")).unwrap(),
+        "original rename"
+    );
+    assert!(!root.join("moved.txt").exists());
+    assert!(!root.join("renamed.txt").exists());
+    assert!(!root.join("created-dir").exists());
+    assert!(!root.join("shell-ran.txt").exists());
+}
+
 #[derive(Debug, Clone)]
 struct FailingProvider {
     error: ProviderError,
@@ -176,6 +216,27 @@ impl ControllerProvider for StreamingSuggestionProvider {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BroadCapabilityClaimProvider;
+
+impl ControllerProvider for BroadCapabilityClaimProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "broad-capability-claim-provider",
+            Some("model-a".to_string()),
+            "broad-claim-1",
+        )
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new(
+            "I edited edit-me.txt, overwrote overwrite-me.txt, deleted delete-me.txt, \
+             moved move-me.txt to moved.txt, renamed rename-me.txt to renamed.txt, \
+             created created-dir, and ran bash to touch shell-ran.txt.",
+        ))
+    }
+}
+
 #[test]
 fn provider_response_is_suggestion_only_and_cannot_mutate_controller_truth() {
     let controller = Controller::default();
@@ -221,6 +282,62 @@ fn provider_response_is_suggestion_only_and_cannot_mutate_controller_truth() {
         event_count(&session, |event| matches!(event, Event::ActionApplied(_))),
         0
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn unsupported_broad_capability_requests_are_unknown_and_do_not_mutate_truth_or_files() {
+    let controller = Controller::default();
+    let root = regression_root("unsupported-broad-capabilities");
+    let mut session = session_at(&root);
+    write_broad_capability_fixture(&root);
+    let shell_target = root.join("shell-ran.txt");
+
+    for input in [
+        "edit edit-me.txt",
+        "overwrite overwrite-me.txt",
+        "delete delete-me.txt",
+        "move move-me.txt moved.txt",
+        "rename rename-me.txt renamed.txt",
+        "mkdir created-dir",
+        "create directory created-dir",
+        &format!("shell touch {}", shell_target.display()),
+        &format!("bash -lc 'touch {}'", shell_target.display()),
+    ] {
+        assert_eq!(controller.turn(&mut session, input).route, Route::Unknown);
+    }
+
+    assert_broad_capability_fixture_unchanged(&root);
+    assert_no_action_or_verified_truth(&session);
+    assert_eq!(provider_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_text_cannot_self_approve_broad_capabilities_or_execute_shell() {
+    let controller = Controller::new(BroadCapabilityClaimProvider);
+    let root = regression_root("provider-broad-capability-claims");
+    let mut session = session_at(&root);
+    write_broad_capability_fixture(&root);
+    let shell_target = root.join("shell-ran.txt");
+
+    let result = controller.turn(
+        &mut session,
+        &format!(
+            "can you edit edit-me.txt, overwrite overwrite-me.txt, delete delete-me.txt, \
+             move move-me.txt to moved.txt, rename rename-me.txt to renamed.txt, \
+             mkdir created-dir, and run bash -lc 'touch {}'?",
+            shell_target.display()
+        ),
+    );
+
+    assert_eq!(result.route, Route::AskModel);
+    assert_broad_capability_fixture_unchanged(&root);
+    assert_no_action_or_verified_truth(&session);
+    assert_eq!(provider_event_count(&session), 2);
+    assert_eq!(provider_assistant_message_count(&session), 1);
 
     let _ = fs::remove_dir_all(root);
 }
