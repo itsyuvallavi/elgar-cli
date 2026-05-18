@@ -9,14 +9,16 @@ use ratatui::{backend::TestBackend, Terminal};
 
 use crate::{input::TerminalInput, panes::ConversationPane, TuiShell};
 
+use super::prompt::{LIVE_REASONING_PREVIEW_BYTES, LIVE_RESPONSE_PREVIEW_BYTES};
 use super::{
     active_working_frame_lines, copy_conversation_to_terminal_clipboard,
     copy_conversation_with_clipboards, default_shell_text, encode_base64, handle_scroll_key,
     handle_submitted_terminal_input_for_loop, handle_terminal_key,
     handle_terminal_key_while_provider_active, handle_terminal_key_with_copy_writer,
-    inline_prompt_frame_lines, osc52_clipboard_sequence, parse_terminal_command,
+    inline_prompt_frame_lines, live_render_due, osc52_clipboard_sequence, parse_terminal_command,
     render_terminal_help, render_tui_shell, should_exit, status_style, style_terminal_conversation,
     LiveProviderOutput, ProviderTurnUpdate, TerminalCommand, TerminalShellContext,
+    LIVE_RENDER_INTERVAL,
 };
 
 fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -125,6 +127,34 @@ fn active_working_frame_reveals_response_incrementally() {
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
     assert_eq!(response, vec!["Hello! H"]);
+}
+
+#[test]
+fn live_provider_output_caps_reasoning_and_response_preview_buffers() {
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning(
+        "r".repeat(LIVE_REASONING_PREVIEW_BYTES + 512),
+    ));
+    live_output.push_chunk(ProviderStreamChunk::Text(
+        "x".repeat(LIVE_RESPONSE_PREVIEW_BYTES + 512),
+    ));
+
+    assert!(live_output.reasoning_preview_bytes() <= LIVE_REASONING_PREVIEW_BYTES);
+    assert!(live_output.response_preview_bytes() <= LIVE_RESPONSE_PREVIEW_BYTES);
+}
+
+#[test]
+fn live_stream_redraws_are_throttled_to_ten_fps() {
+    let last_render = std::time::Instant::now();
+
+    assert!(!live_render_due(
+        last_render,
+        last_render + LIVE_RENDER_INTERVAL - std::time::Duration::from_millis(1)
+    ));
+    assert!(live_render_due(
+        last_render,
+        last_render + LIVE_RENDER_INTERVAL
+    ));
 }
 
 fn submit_text(
@@ -532,6 +562,51 @@ fn provider_turn_task_reports_streaming_chunks_before_completion() {
         ]
     );
     assert_eq!(completed.events.len(), 4);
+}
+
+#[test]
+fn completed_provider_turn_uses_final_output_not_capped_live_preview() {
+    #[derive(Clone)]
+    struct LargeStreamingProvider;
+
+    impl ControllerProvider for LargeStreamingProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "large-stream-provider",
+                Some("model-a".to_string()),
+                "large-stream-request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("unused"))
+        }
+
+        fn chat_stream(
+            &self,
+            _prompt: &str,
+            on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+        ) -> Result<ProviderOutput, ProviderError> {
+            let final_text = format!(
+                "UNCAPPED_PREFIX_{}UNCAPPED_SUFFIX",
+                "x".repeat(LIVE_RESPONSE_PREVIEW_BYTES + 512)
+            );
+            on_chunk(ProviderStreamChunk::Text(final_text.clone()));
+            Ok(ProviderOutput::new(final_text))
+        }
+    }
+
+    let controller = Controller::new(LargeStreamingProvider);
+    let session = Session::new("session-1", "/repo", "/repo");
+    let task = super::start_provider_turn(controller, session, "hello".to_string());
+    let completed = wait_for_completed_provider_turn(&task);
+    let mut shell = TuiShell::new();
+
+    shell.consume_events(&completed.events);
+
+    let rendered = shell.render();
+    assert!(rendered.contains("UNCAPPED_PREFIX_"));
+    assert!(rendered.contains("UNCAPPED_SUFFIX"));
 }
 
 #[test]

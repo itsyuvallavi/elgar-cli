@@ -5,6 +5,9 @@ use elgar_core::provider::ProviderStreamChunk;
 
 use super::{TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
 
+pub(super) const LIVE_REASONING_PREVIEW_BYTES: usize = 1024;
+pub(super) const LIVE_RESPONSE_PREVIEW_BYTES: usize = 4096;
+
 pub(super) fn non_empty_lines(lines: Vec<String>) -> Vec<String> {
     if lines.is_empty() {
         vec![String::new()]
@@ -156,8 +159,14 @@ pub(super) struct LiveProviderOutput {
 impl LiveProviderOutput {
     pub(super) fn push_chunk(&mut self, chunk: ProviderStreamChunk) {
         match chunk {
-            ProviderStreamChunk::Reasoning(value) => self.reasoning.push_str(&value),
-            ProviderStreamChunk::Text(value) => self.response.push_str(&value),
+            ProviderStreamChunk::Reasoning(value) => {
+                append_capped(&mut self.reasoning, &value, LIVE_REASONING_PREVIEW_BYTES);
+            }
+            ProviderStreamChunk::Text(value) => {
+                append_capped(&mut self.response, &value, LIVE_RESPONSE_PREVIEW_BYTES);
+                let total = self.response.chars().count();
+                self.response_visible_chars = self.response_visible_chars.min(total);
+            }
         }
     }
 
@@ -182,6 +191,29 @@ impl LiveProviderOutput {
             .take(self.response_visible_chars)
             .collect()
     }
+
+    #[cfg(test)]
+    pub(super) fn reasoning_preview_bytes(&self) -> usize {
+        self.reasoning.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn response_preview_bytes(&self) -> usize {
+        self.response.len()
+    }
+}
+
+fn append_capped(target: &mut String, value: &str, max_bytes: usize) {
+    target.push_str(value);
+    if target.len() <= max_bytes {
+        return;
+    }
+
+    let mut keep_from = target.len().saturating_sub(max_bytes);
+    while keep_from < target.len() && !target.is_char_boundary(keep_from) {
+        keep_from += 1;
+    }
+    target.drain(..keep_from);
 }
 
 pub(super) fn inline_prompt_frame_lines(

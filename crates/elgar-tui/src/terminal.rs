@@ -48,6 +48,9 @@ use prompt::{
 };
 use provider_task::{start_provider_turn, ProviderTurnTask, ProviderTurnUpdate};
 
+const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(100);
+const IDLE_RENDER_INTERVAL: Duration = Duration::from_millis(420);
+
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_CYAN: &str = "\x1b[38;2;143;207;198m";
@@ -244,19 +247,22 @@ where
     let mut live_output = LiveProviderOutput::default();
     let started = Instant::now();
     let mut tick = 0usize;
-    let mut last_render = Instant::now() - Duration::from_millis(420);
+    let mut last_render = Instant::now() - LIVE_RENDER_INTERVAL;
 
     let completed = loop {
         match task.try_complete() {
             Ok(Some(ProviderTurnUpdate::Chunk(chunk))) => {
                 live_output.push_chunk(chunk);
                 live_output.advance_response_reveal();
-                working.render(
-                    tick,
-                    started.elapsed().as_secs(),
-                    input.text(),
-                    &live_output,
-                )?;
+                if live_render_due(last_render, Instant::now()) {
+                    working.render(
+                        tick,
+                        started.elapsed().as_secs(),
+                        input.text(),
+                        &live_output,
+                    )?;
+                    last_render = Instant::now();
+                }
             }
             Ok(Some(ProviderTurnUpdate::Completed(completed))) => break completed,
             Ok(Some(ProviderTurnUpdate::Canceled)) => {
@@ -266,7 +272,7 @@ where
                 return Ok(());
             }
             Ok(None) => {
-                if last_render.elapsed() >= Duration::from_millis(420) {
+                if last_render.elapsed() >= IDLE_RENDER_INTERVAL {
                     live_output.advance_response_reveal();
                     working.render(
                         tick,
@@ -305,6 +311,10 @@ where
     shell.conversation.follow_latest();
     print_new_conversation_lines(shell, before, true)?;
     Ok(())
+}
+
+fn live_render_due(last_render: Instant, now: Instant) -> bool {
+    now.duration_since(last_render) >= LIVE_RENDER_INTERVAL
 }
 
 fn handle_active_provider_event(
