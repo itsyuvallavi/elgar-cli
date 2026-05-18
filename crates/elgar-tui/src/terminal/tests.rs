@@ -128,7 +128,7 @@ fn active_working_frame_reveals_response_incrementally() {
     let (_progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
-    assert_eq!(response, vec!["", "Hello! H"]);
+    assert_eq!(response, vec!["", "Hello! How can I help you today?"]);
 }
 
 #[test]

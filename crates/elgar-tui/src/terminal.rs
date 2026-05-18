@@ -49,7 +49,7 @@ use prompt::{
 use provider_task::{start_provider_turn, ProviderTurnTask, ProviderTurnUpdate};
 
 const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(100);
-const IDLE_RENDER_INTERVAL: Duration = Duration::from_millis(420);
+const IDLE_RENDER_INTERVAL: Duration = Duration::from_millis(140);
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";

@@ -7,6 +7,7 @@ use super::{TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
 
 pub(super) const LIVE_REASONING_PREVIEW_BYTES: usize = 1024;
 pub(super) const LIVE_RESPONSE_PREVIEW_BYTES: usize = 4096;
+const LIVE_RESPONSE_REVEAL_CHARS: usize = 48;
 
 pub(super) fn non_empty_lines(lines: Vec<String>) -> Vec<String> {
     if lines.is_empty() {
@@ -173,7 +174,8 @@ impl LiveProviderOutput {
     pub(super) fn advance_response_reveal(&mut self) {
         let total = self.response.chars().count();
         if self.response_visible_chars < total {
-            self.response_visible_chars = (self.response_visible_chars + 8).min(total);
+            self.response_visible_chars =
+                (self.response_visible_chars + LIVE_RESPONSE_REVEAL_CHARS).min(total);
         }
     }
 
