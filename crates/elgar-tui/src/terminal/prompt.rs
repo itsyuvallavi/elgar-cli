@@ -235,8 +235,8 @@ pub(super) fn inline_prompt_frame_lines(
 
 pub(super) fn active_working_frame_lines(
     context: &TerminalShellContext,
-    tick: usize,
-    elapsed_secs: u64,
+    _tick: usize,
+    _elapsed_secs: u64,
     input: &str,
     live_output: &LiveProviderOutput,
     width: usize,
@@ -249,9 +249,7 @@ pub(super) fn active_working_frame_lines(
     Vec<String>,
     Vec<String>,
 ) {
-    let marker = working_marker(tick);
-    let line = format!("{marker} thinking {elapsed_secs}s");
-    let thinking_lines = non_empty_lines(wrap_words(&line, drawable_width(width)));
+    let progress_lines = Vec::new();
     let reasoning_lines = live_output
         .reasoning_summary()
         .map(|line| non_empty_lines(wrap_words(&line, drawable_width(width))))
@@ -263,7 +261,7 @@ pub(super) fn active_working_frame_lines(
     let (top_lines, input_lines, bottom_lines, footer_lines) =
         inline_prompt_frame_lines(context, input, width);
     (
-        thinking_lines,
+        progress_lines,
         reasoning_lines,
         response_lines,
         top_lines,
@@ -271,11 +269,6 @@ pub(super) fn active_working_frame_lines(
         bottom_lines,
         footer_lines,
     )
-}
-
-fn working_marker(tick: usize) -> &'static str {
-    const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
-    FRAMES[tick % FRAMES.len()]
 }
 
 fn compact_streaming_text(text: &str) -> Option<String> {

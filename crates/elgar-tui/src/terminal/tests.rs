@@ -79,10 +79,10 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
         .with_provider("lm-studio", Some("model-a".to_string()));
 
     let live_output = LiveProviderOutput::default();
-    let (thinking, reasoning, response, top, input, bottom, footer) =
+    let (progress, reasoning, response, top, input, bottom, footer) =
         active_working_frame_lines(&context, 1, 7, "/cancel", &live_output, 80);
 
-    assert_eq!(thinking, vec!["◓ thinking 7s"]);
+    assert!(progress.is_empty());
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
     assert_eq!(top[0], "");
@@ -102,11 +102,13 @@ fn active_working_frame_shows_live_reasoning_and_response_separately() {
     live_output.push_chunk(ProviderStreamChunk::Text("Hello".to_string()));
     live_output.advance_response_reveal();
 
-    let (_thinking, reasoning, response, _top, _input, _bottom, _footer) =
+    let (progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
+    assert!(progress.is_empty());
     assert_eq!(reasoning, vec!["Need greet."]);
     assert_eq!(response, vec!["Hello"]);
+    assert!(!reasoning.join("\n").contains("thinking"));
 }
 
 #[test]
