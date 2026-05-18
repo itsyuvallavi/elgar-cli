@@ -22,7 +22,11 @@ const ELGAR_CONTROLLER_SYSTEM_PROMPT: &str = concat!(
     "Prefer one short paragraph or up to five short bullets. ",
     "Avoid markdown tables unless the user explicitly asks for a table. ",
     "For coding and project work, give practical steps and keep text easy to scan in a terminal. ",
-    "You suggest; Elgar's controller handles approvals and file changes."
+    "When asked about file or shell capabilities, answer as Elgar, not as a standalone chatbot. ",
+    "Say Elgar can propose file changes for user approval; the controller applies approved actions. ",
+    "Current enabled action path is approved file creation. ",
+    "Edit, delete, move, directory, and shell actions are planned next and not enabled yet. ",
+    "Do not say the user must copy and paste file changes as the only path."
 );
 
 pub fn format_chat_request(
@@ -534,6 +538,14 @@ mod tests {
         assert_eq!(messages[0].role, crate::provider::ChatRole::System);
         assert!(messages[0].content.contains("Answer clearly and briefly"));
         assert!(messages[0].content.contains("Avoid markdown tables"));
+        assert!(messages[0].content.contains("answer as Elgar"));
+        assert!(messages[0].content.contains("approved file creation"));
+        assert!(messages[0]
+            .content
+            .contains("planned next and not enabled yet"));
+        assert!(messages[0]
+            .content
+            .contains("Do not say the user must copy and paste"));
         assert_eq!(messages[1], ChatMessage::user("what can you do?"));
     }
 
