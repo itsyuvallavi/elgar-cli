@@ -29,13 +29,14 @@ impl ProviderStub {
     }
 
     pub fn ask(&self, prompt: &str) -> ProviderStubResponse {
+        let visible_prompt = visible_user_prompt(prompt);
         ProviderStubResponse {
             provider: self.provider.clone(),
             model: self.model.clone(),
             request_id: "stub-request-1".to_string(),
             output: ProviderOutput::new(format!(
                 "stub provider response (no-network) to: {}. No live provider call was made. For explicit LM Studio TUI smoke, set ELGAR_LM_STUDIO_MODEL and run `cargo run -p elgar-cli -- tui-controller-smoke \"Say hello in one sentence.\"`.",
-                prompt.trim()
+                visible_prompt
             )),
         }
     }
@@ -55,6 +56,13 @@ impl Default for ProviderStub {
     fn default() -> Self {
         Self::new("stub-provider")
     }
+}
+
+fn visible_user_prompt(prompt: &str) -> &str {
+    prompt
+        .rsplit_once("User request:\n")
+        .map(|(_context, request)| request.trim())
+        .unwrap_or_else(|| prompt.trim())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     action::Action,
-    context::ContextAccounting,
+    context::{ContextAccounting, ContextBundle},
     event::{
         ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
         ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage,
@@ -137,9 +137,10 @@ where
             request.request_id.clone(),
         )));
 
+        let provider_prompt = provider_prompt_with_context(session, input);
         match self
             .provider
-            .chat_stream_with_metadata(input, &request, on_chunk)
+            .chat_stream_with_metadata(&provider_prompt, &request, on_chunk)
         {
             Ok(output) => {
                 if let Some(metrics) = output.metrics.clone() {
@@ -198,7 +199,8 @@ where
         )));
 
         let prompt = markdown_plan_prompt(input, &target_path);
-        match self.provider.chat_with_metadata(&prompt, &request) {
+        let provider_prompt = provider_prompt_with_context(session, &prompt);
+        match self.provider.chat_with_metadata(&provider_prompt, &request) {
             Ok(output) => {
                 let contents = normalize_markdown_plan_contents(&output.text);
                 if contents.trim().is_empty() {
@@ -495,6 +497,17 @@ fn push_ambiguous_pending_action_message(session: &mut Session) {
     push_controller_message(session, AMBIGUOUS_PENDING_ACTION_MESSAGE);
 }
 
+fn provider_prompt_with_context(session: &mut Session, input: &str) -> String {
+    let max_window_tokens = session.context_accounting().max_window_tokens;
+    let bundle = ContextBundle::from_default_local_files(
+        &session.project_root,
+        &session.cwd,
+        max_window_tokens,
+    );
+    session.set_context_accounting(bundle.accounting.clone());
+    bundle.prompt_for(input)
+}
+
 fn next_action_id(session: &Session) -> String {
     format!("action-{}", session.actions().len() + 1)
 }
@@ -671,7 +684,10 @@ fn strip_ascii_case_prefix<'a>(input: &'a str, prefix: &str) -> Option<&'a str> 
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
     use crate::{
         action::{ActionLifecycleState, FileActionVerification},
@@ -1204,6 +1220,32 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    struct CapturingProvider {
+        prompts: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl CapturingProvider {
+        fn new(prompts: Arc<Mutex<Vec<String>>>) -> Self {
+            Self { prompts }
+        }
+    }
+
+    impl ControllerProvider for CapturingProvider {
+        fn request_metadata(&self) -> crate::provider::ProviderRequestMetadata {
+            crate::provider::ProviderRequestMetadata::new(
+                "capture-provider",
+                Some("capture-model".to_string()),
+                "capture-request-1",
+            )
+        }
+
+        fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            self.prompts.lock().unwrap().push(prompt.to_string());
+            Ok(ProviderOutput::new("captured"))
+        }
+    }
+
+    #[derive(Debug, Clone)]
     struct StreamingFakeProvider;
 
     impl ControllerProvider for StreamingFakeProvider {
@@ -1266,6 +1308,47 @@ mod tests {
             .events()
             .iter()
             .all(|event| !matches!(event, Event::ActionApproved(_) | Event::ActionApplied(_))));
+    }
+
+    #[test]
+    fn ask_model_provider_prompt_includes_bounded_controller_context() {
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let controller = Controller::new(CapturingProvider::new(Arc::clone(&prompts)));
+        let (mut session, root) = rooted_session("provider-context-bundle");
+        std::fs::write(root.join("AGENTS.md"), "Keep answers short.").unwrap();
+
+        controller.model_turn(&mut session, "what can you do?");
+
+        let captured = prompts.lock().unwrap().join("\n");
+        assert!(captured.contains("Local context selected by Elgar controller:"));
+        assert!(captured.contains("--- AGENTS.md ---\nKeep answers short."));
+        assert!(captured.contains("User request:\nwhat can you do?"));
+        assert_eq!(session.context_accounting().loaded_files.len(), 1);
+        assert_eq!(
+            session.context_accounting().loaded_files[0].display_path,
+            "AGENTS.md"
+        );
+        assert!(session.context_accounting().estimated_tokens.is_some());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn streaming_provider_prompt_uses_same_context_selection_path() {
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let controller = Controller::new(CapturingProvider::new(Arc::clone(&prompts)));
+        let (mut session, root) = rooted_session("provider-stream-context-bundle");
+        std::fs::write(root.join("AGENTS.md"), "Stream context.").unwrap();
+        let mut chunks = Vec::new();
+
+        controller.model_turn_streaming(&mut session, "hello", &mut |chunk| chunks.push(chunk));
+
+        let captured = prompts.lock().unwrap().join("\n");
+        assert!(captured.contains("--- AGENTS.md ---\nStream context."));
+        assert!(captured.contains("User request:\nhello"));
+        assert!(!chunks.is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -485,7 +485,9 @@ fn terminal_footer_formats_controller_context_accounting() {
                 display_path: "AGENTS.md".to_string(),
                 bytes: 1284,
                 estimated_tokens: 321,
+                truncated: false,
             }],
+            omitted_files: Vec::new(),
             estimated_tokens: Some(321),
             max_window_tokens: Some(128_000),
         });
@@ -502,6 +504,7 @@ fn terminal_footer_keeps_missing_usage_unknown_with_configured_window() {
     let context =
         TerminalShellContext::new("/repo", "/repo").with_context_accounting(ContextAccounting {
             loaded_files: Vec::new(),
+            omitted_files: Vec::new(),
             estimated_tokens: None,
             max_window_tokens: Some(128_000),
         });
