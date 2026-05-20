@@ -2,12 +2,15 @@ use std::{
     fmt, fs,
     io::Write,
     path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use crate::{
     action::{Action, ActionLifecycleState, ActionRequest, FileActionVerification},
     event::VerifiedActionResult,
 };
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Filesystem;
@@ -53,29 +56,7 @@ fn apply_create_file(
 ) -> Result<VerifiedActionResult, FilesystemError> {
     let target_path = resolve_allowed_target(&create_file.target_path, allowed_root)?;
 
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target_path)
-        .map_err(|source| {
-            if source.kind() == std::io::ErrorKind::AlreadyExists {
-                FilesystemError::TargetAlreadyExists {
-                    path: target_path.clone(),
-                }
-            } else {
-                FilesystemError::WriteFailed {
-                    path: target_path.clone(),
-                    reason: source.to_string(),
-                }
-            }
-        })?;
-    file.write_all(create_file.contents.as_bytes())
-        .map_err(|source| FilesystemError::WriteFailed {
-            path: target_path.clone(),
-            reason: source.to_string(),
-        })?;
-    drop(file);
-
+    create_new_synced_file(&target_path, &create_file.contents)?;
     verify_file_contents(&target_path, &create_file.contents)?;
 
     Ok(VerifiedActionResult::FileWritten {
@@ -108,7 +89,7 @@ fn apply_patch_file(
     }
 
     let expected = original.replacen(&patch_file.find, &patch_file.replace, 1);
-    write_existing_file(&target_path, &expected)?;
+    atomic_write_file(&target_path, &expected, AtomicWriteMode::ReplaceExisting)?;
     verify_file_contents(&target_path, &expected)?;
 
     Ok(VerifiedActionResult::File(
@@ -124,7 +105,11 @@ fn apply_overwrite_file(
 ) -> Result<VerifiedActionResult, FilesystemError> {
     let target_path = resolve_existing_target(&overwrite_file.target_path, allowed_root)?;
 
-    write_existing_file(&target_path, &overwrite_file.contents)?;
+    atomic_write_file(
+        &target_path,
+        &overwrite_file.contents,
+        AtomicWriteMode::ReplaceExisting,
+    )?;
     verify_file_contents(&target_path, &overwrite_file.contents)?;
 
     Ok(VerifiedActionResult::File(
@@ -147,21 +132,142 @@ fn resolve_existing_target(
     Ok(resolved_target)
 }
 
-fn write_existing_file(path: &Path, contents: &str) -> Result<(), FilesystemError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AtomicWriteMode {
+    ReplaceExisting,
+}
+
+fn atomic_write_file(
+    path: &Path,
+    contents: &str,
+    mode: AtomicWriteMode,
+) -> Result<(), FilesystemError> {
+    match mode {
+        AtomicWriteMode::ReplaceExisting if !target_exists(path)? => {
+            return Err(FilesystemError::TargetMissing {
+                path: path.to_path_buf(),
+            });
+        }
+        _ => {}
+    }
+
+    let parent = path.parent().ok_or_else(|| FilesystemError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: "target parent could not be determined".to_string(),
+    })?;
+    let permissions = match mode {
+        AtomicWriteMode::ReplaceExisting => Some(
+            fs::metadata(path)
+                .map_err(|source| FilesystemError::WriteFailed {
+                    path: path.to_path_buf(),
+                    reason: source.to_string(),
+                })?
+                .permissions(),
+        ),
+    };
+
+    let nonce = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    for attempt in 0..100 {
+        let temp_path = atomic_temp_path(parent, path, nonce, attempt);
+        match write_synced_temp_file(&temp_path, contents, permissions.clone()) {
+            Ok(()) => {
+                let result = rename_temp_file(&temp_path, path);
+
+                if result.is_err() {
+                    cleanup_temp_file(&temp_path);
+                }
+                return result;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                cleanup_temp_file(&temp_path);
+                return Err(FilesystemError::WriteFailed {
+                    path: path.to_path_buf(),
+                    reason: error.to_string(),
+                });
+            }
+        }
+    }
+
+    Err(FilesystemError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: "could not create atomic temporary file".to_string(),
+    })
+}
+
+fn create_new_synced_file(path: &Path, contents: &str) -> Result<(), FilesystemError> {
     let mut file = fs::OpenOptions::new()
         .write(true)
-        .truncate(true)
+        .create_new(true)
         .open(path)
-        .map_err(|source| FilesystemError::WriteFailed {
-            path: path.to_path_buf(),
-            reason: source.to_string(),
+        .map_err(|source| {
+            if source.kind() == std::io::ErrorKind::AlreadyExists {
+                FilesystemError::TargetAlreadyExists {
+                    path: path.to_path_buf(),
+                }
+            } else {
+                FilesystemError::WriteFailed {
+                    path: path.to_path_buf(),
+                    reason: source.to_string(),
+                }
+            }
         })?;
     file.write_all(contents.as_bytes())
         .map_err(|source| FilesystemError::WriteFailed {
             path: path.to_path_buf(),
             reason: source.to_string(),
         })?;
+    file.flush()
+        .map_err(|source| FilesystemError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: source.to_string(),
+        })?;
+    file.sync_all()
+        .map_err(|source| FilesystemError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: source.to_string(),
+        })
+}
+
+fn write_synced_temp_file(
+    temp_path: &Path,
+    contents: &str,
+    permissions: Option<fs::Permissions>,
+) -> Result<(), std::io::Error> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp_path)?;
+    if let Some(permissions) = permissions {
+        file.set_permissions(permissions)?;
+    }
+    file.write_all(contents.as_bytes())?;
+    file.flush()?;
+    file.sync_all()?;
     Ok(())
+}
+
+fn atomic_temp_path(parent: &Path, target_path: &Path, nonce: u64, attempt: u32) -> PathBuf {
+    let target_name = target_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("target");
+    parent.join(format!(
+        ".elgar-atomic-{}-{nonce}-{attempt}-{target_name}.tmp",
+        std::process::id()
+    ))
+}
+
+fn target_exists(path: &Path) -> Result<bool, FilesystemError> {
+    path.try_exists()
+        .map_err(|source| FilesystemError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: source.to_string(),
+        })
+}
+
+fn cleanup_temp_file(temp_path: &Path) {
+    let _ = fs::remove_file(temp_path);
 }
 
 fn verify_file_contents(path: &Path, expected: &str) -> Result<(), FilesystemError> {
@@ -179,6 +285,13 @@ fn verify_file_contents(path: &Path, expected: &str) -> Result<(), FilesystemErr
             reason: "file contents did not match expected contents".to_string(),
         })
     }
+}
+
+fn rename_temp_file(temp_path: &Path, path: &Path) -> Result<(), FilesystemError> {
+    fs::rename(temp_path, path).map_err(|source| FilesystemError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: source.to_string(),
+    })
 }
 
 fn resolve_allowed_target(
@@ -320,7 +433,10 @@ impl std::error::Error for FilesystemError {}
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use crate::{
         action::{Action, ActionLifecycleState, FileActionVerification},
@@ -334,6 +450,22 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn atomic_temp_files(root: &Path) -> Vec<PathBuf> {
+        fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".elgar-atomic-"))
+            })
+            .collect()
+    }
+
+    fn assert_no_atomic_temp_files(root: &Path) {
+        assert_eq!(atomic_temp_files(root), Vec::<PathBuf>::new());
     }
 
     #[test]
@@ -390,6 +522,7 @@ mod tests {
             })
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "contents");
+        assert_no_atomic_temp_files(&root);
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -410,6 +543,7 @@ mod tests {
             Err(FilesystemError::TargetAlreadyExists { path: path.clone() })
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+        assert_no_atomic_temp_files(&root);
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -455,6 +589,7 @@ mod tests {
             ))
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "new contents");
+        assert_no_atomic_temp_files(&root);
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -506,6 +641,32 @@ mod tests {
             ))
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "replacement");
+        assert_no_atomic_temp_files(&root);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_overwrite_file_cleans_up_temp_file_when_rename_fails() {
+        let root = root("overwrite-rename-failure-cleanup");
+        let path = root.join("directory-target");
+        fs::create_dir(&path).unwrap();
+        let action = Action::proposed_overwrite_file(
+            "action-1",
+            "directory-target",
+            "replacement",
+            "overwrite file",
+        )
+        .approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        match result {
+            Err(FilesystemError::WriteFailed { path: failed, .. }) => assert_eq!(failed, path),
+            other => panic!("expected write failure, got {other:?}"),
+        }
+        assert!(path.is_dir());
+        assert_no_atomic_temp_files(&root);
 
         let _ = fs::remove_dir_all(&root);
     }

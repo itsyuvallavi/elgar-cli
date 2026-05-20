@@ -59,6 +59,22 @@ fn controller_messages(session: &Session) -> Vec<&str> {
         .collect()
 }
 
+fn atomic_temp_files(root: &Path) -> Vec<PathBuf> {
+    fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".elgar-atomic-"))
+        })
+        .collect()
+}
+
+fn assert_no_atomic_temp_files(root: &Path) {
+    assert_eq!(atomic_temp_files(root), Vec::<PathBuf>::new());
+}
+
 fn provider_assistant_message_count(session: &Session) -> usize {
     event_count(session, |event| {
         matches!(
@@ -941,6 +957,41 @@ fn approving_write_file_existing_target_fails_without_overwriting() {
         0
     );
     assert_eq!(provider_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn failed_atomic_overwrite_records_no_verified_success_and_cleans_temp_file() {
+    let controller = Controller::default();
+    let root = regression_root("atomic-overwrite-failure");
+    let mut session = session_at(&root);
+    let target = root.join("directory-target");
+    fs::create_dir(&target).unwrap();
+
+    controller.turn(
+        &mut session,
+        "overwrite file directory-target with replacement",
+    );
+    controller.turn(&mut session, "approve");
+
+    assert!(target.is_dir());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Failed
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert!(session.actions()[0].failure_reason.is_some());
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionApplied(_))),
+        0
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionFailed(_))),
+        1
+    );
+    assert_no_atomic_temp_files(&root);
 
     let _ = fs::remove_dir_all(root);
 }
