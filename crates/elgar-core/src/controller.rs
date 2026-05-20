@@ -52,6 +52,9 @@ where
             Route::Unknown => push_controller_message(session, UNKNOWN_MESSAGE),
             Route::ApproveAction => self.handle_approve_action(session),
             Route::RejectAction => self.handle_reject_action(session),
+            Route::ProposeMarkdownPlanFile => {
+                self.handle_propose_markdown_plan_file(session, input)
+            }
             Route::ProposeWriteFile => self.handle_propose_write_file(session, input),
             Route::ProposePatchFile => self.handle_propose_patch_file(session, input),
             Route::ProposeOverwriteFile => self.handle_propose_overwrite_file(session, input),
@@ -141,6 +144,83 @@ where
                     output.text,
                     AssistantMessageSource::Provider,
                 )));
+            }
+            Err(error) => {
+                session.push_event(Event::Error(ErrorEvent::new(format!(
+                    "{} provider request {} failed: {error}",
+                    request.provider, request.request_id
+                ))));
+            }
+        }
+    }
+
+    fn handle_propose_markdown_plan_file(&self, session: &mut Session, input: &str) {
+        match session.pending_action_selection() {
+            PendingActionSelection::None => {}
+            PendingActionSelection::Single(_) => {
+                push_controller_message(
+                    session,
+                    "A proposed action is already waiting. Approve or reject it before requesting another Markdown plan file.",
+                );
+                return;
+            }
+            PendingActionSelection::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
+        }
+
+        let target_path = parse_markdown_plan_target(input);
+        let request = self.provider.request_metadata();
+
+        let mut metadata = ProviderMetadata::new(request.provider.clone());
+        metadata.model = request.model.clone();
+        metadata.request_id = Some(request.request_id.clone());
+        session.set_provider_metadata(metadata);
+
+        session.push_event(Event::ProviderStarted(ProviderStarted::new(
+            request.provider.clone(),
+            request.request_id.clone(),
+        )));
+
+        let prompt = markdown_plan_prompt(input, &target_path);
+        match self.provider.chat_with_metadata(&prompt, &request) {
+            Ok(output) => {
+                let contents = normalize_markdown_plan_contents(&output.text);
+                if contents.trim().is_empty() {
+                    session.push_event(Event::Error(ErrorEvent::new(format!(
+                        "{} provider request {} returned an empty Markdown plan",
+                        request.provider, request.request_id
+                    ))));
+                    return;
+                }
+
+                let provider_text = output.text.clone();
+                session.push_event(Event::ProviderFinished(ProviderFinished::new(
+                    request.provider,
+                    request.request_id,
+                    output,
+                )));
+                session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                    provider_text,
+                    AssistantMessageSource::Provider,
+                )));
+
+                let action = Action::proposed_create_file(
+                    next_action_id(session),
+                    target_path.clone(),
+                    contents,
+                    format!("create Markdown plan {}", target_path.display()),
+                );
+                session.push_event(Event::ActionProposed(
+                    ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+                        .with_target(target_path.display().to_string()),
+                ));
+                session.push_action(ActionRecord::new(action));
+                push_controller_message(
+                    session,
+                    "Proposed Markdown CreateFile action. Approve or reject before any file is written.",
+                );
             }
             Err(error) => {
                 session.push_event(Event::Error(ErrorEvent::new(format!(
@@ -411,6 +491,81 @@ fn action_target_label(action: &Action) -> String {
             create_file.target_path.display().to_string()
         }
         request => request.approval_target(),
+    }
+}
+
+fn markdown_plan_prompt(input: &str, target_path: &std::path::Path) -> String {
+    format!(
+        "Create concise Markdown content for `{}`. Return only Markdown content, no code fences, no approval claims, and no claim that a file was written.\n\nRequest: {}",
+        target_path.display(),
+        input.trim()
+    )
+}
+
+fn normalize_markdown_plan_contents(text: &str) -> String {
+    let text = strip_markdown_code_fence(text.trim()).trim();
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!("{text}\n")
+    }
+}
+
+fn strip_markdown_code_fence(text: &str) -> &str {
+    let Some(after_opening) = text.strip_prefix("```") else {
+        return text;
+    };
+    let after_opening = after_opening
+        .split_once('\n')
+        .map(|(_language, body)| body)
+        .unwrap_or(after_opening);
+    after_opening
+        .rsplit_once("```")
+        .map(|(body, _closing)| body)
+        .unwrap_or(after_opening)
+}
+
+fn parse_markdown_plan_target(input: &str) -> std::path::PathBuf {
+    if let Some(explicit_target) = explicit_markdown_target(input) {
+        return explicit_target.into();
+    }
+
+    std::path::PathBuf::from(format!("{}-plan.md", markdown_plan_slug(input)))
+}
+
+fn explicit_markdown_target(input: &str) -> Option<std::path::PathBuf> {
+    input.split_whitespace().find_map(|token| {
+        let token = token.trim_matches(|character: char| {
+            character.is_ascii_punctuation() && !matches!(character, '.' | '/' | '_' | '-')
+        });
+        token
+            .to_ascii_lowercase()
+            .ends_with(".md")
+            .then(|| std::path::PathBuf::from(token))
+    })
+}
+
+fn markdown_plan_slug(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let subject = [" for ", " about ", " to "]
+        .iter()
+        .find_map(|delimiter| lower.rsplit_once(delimiter).map(|(_head, tail)| tail))
+        .unwrap_or(&lower);
+    let ignored = [
+        "a", "an", "and", "build", "create", "draft", "file", "make", "markdown", "md", "plan",
+        "please", "the", "use", "using", "with", "write",
+    ];
+    let words: Vec<&str> = subject
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .filter(|word| !ignored.contains(word))
+        .take(4)
+        .collect();
+
+    if words.is_empty() {
+        "plan".to_string()
+    } else {
+        words.join("-")
     }
 }
 

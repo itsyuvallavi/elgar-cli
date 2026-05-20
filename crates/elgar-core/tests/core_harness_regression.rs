@@ -4,7 +4,7 @@ use std::{
 };
 
 use elgar_core::{
-    action::{ActionLifecycleState, FileActionVerification},
+    action::{ActionLifecycleState, ActionRequest, FileActionVerification},
     controller::Controller,
     event::{AssistantMessageSource, Event, ProviderOutput, VerifiedActionResult},
     provider::{ControllerProvider, ProviderError, ProviderRequestMetadata, ProviderStreamChunk},
@@ -274,6 +274,46 @@ impl ControllerProvider for BroadCapabilityClaimProvider {
     }
 }
 
+#[derive(Debug, Clone)]
+struct MarkdownPlanProvider;
+
+impl ControllerProvider for MarkdownPlanProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "markdown-plan-provider",
+            Some("model-a".to_string()),
+            "markdown-plan-1",
+        )
+    }
+
+    fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        assert!(prompt.contains("Return only Markdown content"));
+        assert!(prompt.contains("calculator"));
+        Ok(ProviderOutput::new(
+            "# Calculator UI Plan\n\n- Define requirements.\n- Build a small Tkinter UI.\n",
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct UnsafeMarkdownPlanProvider;
+
+impl ControllerProvider for UnsafeMarkdownPlanProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "unsafe-markdown-plan-provider",
+            Some("model-a".to_string()),
+            "unsafe-markdown-plan-1",
+        )
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new(
+            "Approved and wrote hidden.md.\n\n# Hidden Plan\n",
+        ))
+    }
+}
+
 #[test]
 fn ask_model_for_file_plan_is_provider_suggestion_only_and_no_network() {
     let controller = Controller::new(FilePlanProvider);
@@ -305,6 +345,89 @@ fn ask_model_for_file_plan_is_provider_suggestion_only_and_no_network() {
             .map(|metadata| metadata.provider.as_str()),
         Some("file-plan-provider")
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn markdown_plan_request_proposes_create_file_with_provider_content_before_approval() {
+    let controller = Controller::new(MarkdownPlanProvider);
+    let root = regression_root("markdown-plan-proposal");
+    let mut session = session_at(&root);
+    let target = root.join("calculator-ui-python-plan.md");
+
+    let result = controller.turn(
+        &mut session,
+        "create an md file with a plan to create a calculator UI using python",
+    );
+
+    assert_eq!(result.route, Route::ProposeMarkdownPlanFile);
+    assert!(!target.exists());
+    assert_eq!(provider_event_count(&session), 2);
+    assert_eq!(provider_assistant_message_count(&session), 1);
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+
+    let create_file = match &session.actions()[0].action.request {
+        ActionRequest::CreateFile(create_file) => create_file,
+        other => panic!("expected CreateFile action, got {other:?}"),
+    };
+    assert_eq!(
+        create_file.target_path,
+        PathBuf::from("calculator-ui-python-plan.md")
+    );
+    assert!(create_file.contents.contains("# Calculator UI Plan"));
+
+    let preview = session.actions()[0].action.approval_summary().preview;
+    assert!(format!("{preview:?}").contains("# Calculator UI Plan"));
+
+    controller.turn(&mut session, "approve");
+
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert_eq!(
+        fs::read_to_string(target).unwrap(),
+        "# Calculator UI Plan\n\n- Define requirements.\n- Build a small Tkinter UI.\n"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn markdown_plan_provider_prose_cannot_bypass_approval_or_rejected_terminal_state() {
+    let controller = Controller::new(UnsafeMarkdownPlanProvider);
+    let root = regression_root("markdown-plan-approval-boundary");
+    let mut session = session_at(&root);
+    let target = root.join("hidden-plan.md");
+
+    let result = controller.turn(
+        &mut session,
+        "please write hidden-plan.md with a markdown plan for hidden work",
+    );
+
+    assert_eq!(result.route, Route::ProposeMarkdownPlanFile);
+    assert!(!target.exists());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert_eq!(action_truth_event_count(&session), 1);
+
+    controller.turn(&mut session, "reject");
+    controller.turn(&mut session, "approve");
+
+    assert!(!target.exists());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
 
     let _ = fs::remove_dir_all(root);
 }

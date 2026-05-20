@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Route {
     AskModel,
+    ProposeMarkdownPlanFile,
     ProposeWriteFile,
     ProposePatchFile,
     ProposeOverwriteFile,
@@ -33,6 +34,10 @@ pub fn route_input(input: &str) -> Route {
             return Route::RejectAction;
         }
         _ => {}
+    }
+
+    if is_markdown_plan_file_request(&normalized) {
+        return Route::ProposeMarkdownPlanFile;
     }
 
     if is_patch_file_request(&normalized) {
@@ -81,6 +86,28 @@ fn is_write_file_request(input: &str) -> bool {
         || starts_with_file_target(input, "write ")
 }
 
+fn is_markdown_plan_file_request(input: &str) -> bool {
+    let asks_for_file = input.contains(" md file")
+        || input.contains(" markdown file")
+        || input.contains(" markdown document")
+        || input.contains(" markdown plan")
+        || input.contains(".md");
+    let asks_for_plan = input.contains(" plan ")
+        || input.contains(" plan to ")
+        || input.contains(" with a plan")
+        || input.contains(" markdown plan");
+    let asks_to_create = input.starts_with("create ")
+        || input.starts_with("write ")
+        || input.starts_with("make ")
+        || input.starts_with("draft ")
+        || input.starts_with("can you create ")
+        || input.starts_with("can you write ")
+        || input.starts_with("please create ")
+        || input.starts_with("please write ");
+
+    asks_to_create && asks_for_file && asks_for_plan
+}
+
 fn starts_with_file_target(input: &str, prefix: &str) -> bool {
     input
         .strip_prefix(prefix)
@@ -127,6 +154,19 @@ mod tests {
     fn classifies_write_file_requests() {
         assert_eq!(route_input("create hello.py"), Route::ProposeWriteFile);
         assert_eq!(route_input("write file notes.txt"), Route::ProposeWriteFile);
+    }
+
+    #[test]
+    fn classifies_markdown_plan_file_requests() {
+        assert_eq!(
+            route_input("create an md file with a plan to create a calculator UI using python"),
+            Route::ProposeMarkdownPlanFile
+        );
+        assert_eq!(
+            route_input("please write a markdown plan for a small CLI"),
+            Route::ProposeMarkdownPlanFile
+        );
+        assert_eq!(route_input("create file plan.md"), Route::ProposeWriteFile);
     }
 
     #[test]
