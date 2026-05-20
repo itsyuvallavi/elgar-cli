@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    action::{Action, ActionLifecycleState, ActionRequest},
+    action::{Action, ActionLifecycleState, ActionRequest, FileActionVerification},
     event::VerifiedActionResult,
 };
 
@@ -17,61 +17,167 @@ impl Filesystem {
         action: &Action,
         allowed_root: impl AsRef<Path>,
     ) -> Result<VerifiedActionResult, FilesystemError> {
+        Self::apply_file_action(action, allowed_root)
+    }
+
+    pub fn apply_file_action(
+        action: &Action,
+        allowed_root: impl AsRef<Path>,
+    ) -> Result<VerifiedActionResult, FilesystemError> {
         if action.state != ActionLifecycleState::Approved {
             return Err(FilesystemError::ActionNotApproved {
                 state: action.state,
             });
         }
 
-        let create_file = match &action.request {
-            ActionRequest::CreateFile(create_file) => create_file,
-            _ => {
-                return Err(FilesystemError::UnsupportedAction {
-                    kind: action.kind(),
-                });
+        match &action.request {
+            ActionRequest::CreateFile(create_file) => {
+                apply_create_file(create_file, allowed_root.as_ref())
             }
-        };
-        let target_path = resolve_allowed_target(&create_file.target_path, allowed_root.as_ref())?;
-
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&target_path)
-            .map_err(|source| {
-                if source.kind() == std::io::ErrorKind::AlreadyExists {
-                    FilesystemError::TargetAlreadyExists {
-                        path: target_path.clone(),
-                    }
-                } else {
-                    FilesystemError::WriteFailed {
-                        path: target_path.clone(),
-                        reason: source.to_string(),
-                    }
-                }
-            })?;
-        file.write_all(create_file.contents.as_bytes())
-            .map_err(|source| FilesystemError::WriteFailed {
-                path: target_path.clone(),
-                reason: source.to_string(),
-            })?;
-        drop(file);
-
-        let verified_contents =
-            fs::read_to_string(&target_path).map_err(|source| FilesystemError::WriteFailed {
-                path: target_path.clone(),
-                reason: source.to_string(),
-            })?;
-
-        if verified_contents == create_file.contents {
-            Ok(VerifiedActionResult::FileWritten {
-                path: target_path.display().to_string(),
-            })
-        } else {
-            Err(FilesystemError::VerificationFailed {
-                path: target_path,
-                reason: "written contents did not match expected contents".to_string(),
-            })
+            ActionRequest::PatchFile(patch_file) => {
+                apply_patch_file(patch_file, allowed_root.as_ref())
+            }
+            ActionRequest::OverwriteFile(overwrite_file) => {
+                apply_overwrite_file(overwrite_file, allowed_root.as_ref())
+            }
+            _ => Err(FilesystemError::UnsupportedAction {
+                kind: action.kind(),
+            }),
         }
+    }
+}
+
+fn apply_create_file(
+    create_file: &crate::action::CreateFileAction,
+    allowed_root: &Path,
+) -> Result<VerifiedActionResult, FilesystemError> {
+    let target_path = resolve_allowed_target(&create_file.target_path, allowed_root)?;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target_path)
+        .map_err(|source| {
+            if source.kind() == std::io::ErrorKind::AlreadyExists {
+                FilesystemError::TargetAlreadyExists {
+                    path: target_path.clone(),
+                }
+            } else {
+                FilesystemError::WriteFailed {
+                    path: target_path.clone(),
+                    reason: source.to_string(),
+                }
+            }
+        })?;
+    file.write_all(create_file.contents.as_bytes())
+        .map_err(|source| FilesystemError::WriteFailed {
+            path: target_path.clone(),
+            reason: source.to_string(),
+        })?;
+    drop(file);
+
+    verify_file_contents(&target_path, &create_file.contents)?;
+
+    Ok(VerifiedActionResult::FileWritten {
+        path: target_path.display().to_string(),
+    })
+}
+
+fn apply_patch_file(
+    patch_file: &crate::action::PatchFileAction,
+    allowed_root: &Path,
+) -> Result<VerifiedActionResult, FilesystemError> {
+    let target_path = resolve_existing_target(&patch_file.target_path, allowed_root)?;
+    if patch_file.find.is_empty() {
+        return Err(FilesystemError::PatchPatternMissing {
+            path: target_path,
+            pattern: patch_file.find.clone(),
+        });
+    }
+
+    let original =
+        fs::read_to_string(&target_path).map_err(|source| FilesystemError::WriteFailed {
+            path: target_path.clone(),
+            reason: source.to_string(),
+        })?;
+    if !original.contains(&patch_file.find) {
+        return Err(FilesystemError::PatchPatternMissing {
+            path: target_path,
+            pattern: patch_file.find.clone(),
+        });
+    }
+
+    let expected = original.replacen(&patch_file.find, &patch_file.replace, 1);
+    write_existing_file(&target_path, &expected)?;
+    verify_file_contents(&target_path, &expected)?;
+
+    Ok(VerifiedActionResult::File(
+        FileActionVerification::FilePatched {
+            path: target_path.display().to_string(),
+        },
+    ))
+}
+
+fn apply_overwrite_file(
+    overwrite_file: &crate::action::OverwriteFileAction,
+    allowed_root: &Path,
+) -> Result<VerifiedActionResult, FilesystemError> {
+    let target_path = resolve_existing_target(&overwrite_file.target_path, allowed_root)?;
+
+    write_existing_file(&target_path, &overwrite_file.contents)?;
+    verify_file_contents(&target_path, &overwrite_file.contents)?;
+
+    Ok(VerifiedActionResult::File(
+        FileActionVerification::FileOverwritten {
+            path: target_path.display().to_string(),
+        },
+    ))
+}
+
+fn resolve_existing_target(
+    target_path: &Path,
+    allowed_root: &Path,
+) -> Result<PathBuf, FilesystemError> {
+    let resolved_target = resolve_allowed_target(target_path, allowed_root)?;
+    if !resolved_target.exists() {
+        return Err(FilesystemError::TargetMissing {
+            path: resolved_target,
+        });
+    }
+    Ok(resolved_target)
+}
+
+fn write_existing_file(path: &Path, contents: &str) -> Result<(), FilesystemError> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|source| FilesystemError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: source.to_string(),
+        })?;
+    file.write_all(contents.as_bytes())
+        .map_err(|source| FilesystemError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: source.to_string(),
+        })?;
+    Ok(())
+}
+
+fn verify_file_contents(path: &Path, expected: &str) -> Result<(), FilesystemError> {
+    let verified_contents =
+        fs::read_to_string(path).map_err(|source| FilesystemError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: source.to_string(),
+        })?;
+
+    if verified_contents == expected {
+        Ok(())
+    } else {
+        Err(FilesystemError::VerificationFailed {
+            path: path.to_path_buf(),
+            reason: "file contents did not match expected contents".to_string(),
+        })
     }
 }
 
@@ -153,6 +259,8 @@ pub enum FilesystemError {
     UnsafeRoot { path: PathBuf, reason: String },
     UnsafeTarget { path: PathBuf, reason: String },
     TargetAlreadyExists { path: PathBuf },
+    TargetMissing { path: PathBuf },
+    PatchPatternMissing { path: PathBuf, pattern: String },
     WriteFailed { path: PathBuf, reason: String },
     VerificationFailed { path: PathBuf, reason: String },
 }
@@ -179,6 +287,21 @@ impl fmt::Display for FilesystemError {
             FilesystemError::TargetAlreadyExists { path } => {
                 write!(formatter, "write target already exists: {}", path.display())
             }
+            FilesystemError::TargetMissing { path } => {
+                write!(
+                    formatter,
+                    "file action target does not exist: {}",
+                    path.display()
+                )
+            }
+            FilesystemError::PatchPatternMissing { path, pattern } => {
+                write!(
+                    formatter,
+                    "patch pattern {:?} was not found in {}",
+                    pattern,
+                    path.display()
+                )
+            }
             FilesystemError::WriteFailed { path, reason } => {
                 write!(formatter, "failed to write {}: {reason}", path.display())
             }
@@ -200,7 +323,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use crate::{
-        action::{Action, ActionLifecycleState},
+        action::{Action, ActionLifecycleState, FileActionVerification},
         event::VerifiedActionResult,
     };
 
@@ -287,6 +410,125 @@ mod tests {
             Err(FilesystemError::TargetAlreadyExists { path: path.clone() })
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn proposed_patch_file_does_not_apply() {
+        let root = root("proposed-patch");
+        let path = root.join("notes.txt");
+        fs::write(&path, "old contents").unwrap();
+        let action =
+            Action::proposed_patch_file("action-1", "notes.txt", "old", "new", "edit file");
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::ActionNotApproved {
+                state: ActionLifecycleState::Proposed
+            })
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old contents");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_patch_file_updates_existing_file_and_verifies_contents() {
+        let root = root("approved-patch");
+        let path = root.join("notes.txt");
+        fs::write(&path, "old contents").unwrap();
+        let action =
+            Action::proposed_patch_file("action-1", "notes.txt", "old", "new", "edit file")
+                .approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Ok(VerifiedActionResult::File(
+                FileActionVerification::FilePatched {
+                    path: path.display().to_string()
+                }
+            ))
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new contents");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_patch_file_fails_when_pattern_is_missing() {
+        let root = root("missing-patch-pattern");
+        let path = root.join("notes.txt");
+        fs::write(&path, "original").unwrap();
+        let action =
+            Action::proposed_patch_file("action-1", "notes.txt", "missing", "new", "edit file")
+                .approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::PatchPatternMissing {
+                path: path.clone(),
+                pattern: "missing".to_string()
+            })
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_overwrite_file_replaces_existing_file_and_verifies_contents() {
+        let root = root("approved-overwrite");
+        let path = root.join("notes.txt");
+        fs::write(&path, "original").unwrap();
+        let action = Action::proposed_overwrite_file(
+            "action-1",
+            "notes.txt",
+            "replacement",
+            "overwrite file",
+        )
+        .approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Ok(VerifiedActionResult::File(
+                FileActionVerification::FileOverwritten {
+                    path: path.display().to_string()
+                }
+            ))
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "replacement");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_overwrite_file_fails_when_target_is_missing() {
+        let root = root("missing-overwrite-target");
+        let path = root.join("notes.txt");
+        let action = Action::proposed_overwrite_file(
+            "action-1",
+            "notes.txt",
+            "replacement",
+            "overwrite file",
+        )
+        .approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::TargetMissing { path: path.clone() })
+        );
+        assert!(!path.exists());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -401,6 +643,42 @@ mod tests {
                 .approve();
 
         let result = Filesystem::apply_write_file(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::UnsafeTarget {
+                path: PathBuf::from("linked.txt"),
+                reason: "target file symlinks are not allowed".to_string()
+            })
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "original");
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approved_overwrite_file_rejects_existing_symlink_target_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = root("overwrite-symlink-target-root");
+        let outside = root.parent().unwrap().join(format!(
+            "elgar-fs-{}-overwrite-symlink-target.txt",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&outside);
+        fs::write(&outside, "original").unwrap();
+        symlink(&outside, root.join("linked.txt")).unwrap();
+        let action = Action::proposed_overwrite_file(
+            "action-1",
+            "linked.txt",
+            "replacement",
+            "overwrite file",
+        )
+        .approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
 
         assert_eq!(
             result,

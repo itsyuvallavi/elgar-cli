@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub enum Route {
     AskModel,
     ProposeWriteFile,
+    ProposePatchFile,
+    ProposeOverwriteFile,
     ApproveAction,
     RejectAction,
     Help,
@@ -33,6 +35,14 @@ pub fn route_input(input: &str) -> Route {
         _ => {}
     }
 
+    if is_patch_file_request(&normalized) {
+        return Route::ProposePatchFile;
+    }
+
+    if is_overwrite_file_request(&normalized) {
+        return Route::ProposeOverwriteFile;
+    }
+
     if is_write_file_request(&normalized) {
         return Route::ProposeWriteFile;
     }
@@ -46,6 +56,20 @@ pub fn route_input(input: &str) -> Route {
     }
 
     Route::Unknown
+}
+
+fn is_patch_file_request(input: &str) -> bool {
+    (input.starts_with("edit file ")
+        || input.starts_with("edit ")
+        || input.starts_with("patch file ")
+        || input.starts_with("patch "))
+        && input.contains(" replace ")
+        && input.contains(" with ")
+}
+
+fn is_overwrite_file_request(input: &str) -> bool {
+    (input.starts_with("overwrite file ") || input.starts_with("overwrite "))
+        && input.contains(" with ")
 }
 
 fn is_write_file_request(input: &str) -> bool {
@@ -103,6 +127,22 @@ mod tests {
     fn classifies_write_file_requests() {
         assert_eq!(route_input("create hello.py"), Route::ProposeWriteFile);
         assert_eq!(route_input("write file notes.txt"), Route::ProposeWriteFile);
+    }
+
+    #[test]
+    fn classifies_patch_and_overwrite_file_requests() {
+        assert_eq!(
+            route_input("edit file notes.txt replace old with new"),
+            Route::ProposePatchFile
+        );
+        assert_eq!(
+            route_input("patch notes.txt replace old with new"),
+            Route::ProposePatchFile
+        );
+        assert_eq!(
+            route_input("overwrite file notes.txt with new contents"),
+            Route::ProposeOverwriteFile
+        );
     }
 
     #[test]

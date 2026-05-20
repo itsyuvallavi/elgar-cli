@@ -4,7 +4,7 @@ use std::{
 };
 
 use elgar_core::{
-    action::ActionLifecycleState,
+    action::{ActionLifecycleState, FileActionVerification},
     controller::Controller,
     event::{AssistantMessageSource, Event, ProviderOutput, VerifiedActionResult},
     provider::{ControllerProvider, ProviderError, ProviderRequestMetadata, ProviderStreamChunk},
@@ -617,6 +617,81 @@ fn write_file_lifecycle_requires_user_approval_and_records_terminal_states() {
         .events()
         .iter()
         .any(|event| matches!(event, Event::ActionFailed(_))));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn edit_and_overwrite_file_actions_require_approval_and_verified_results() {
+    let controller = Controller::default();
+    let root = regression_root("edit-overwrite-lifecycle");
+
+    let mut rejected_edit_session = session_at(&root);
+    let edit_target = root.join("edit.txt");
+    fs::write(&edit_target, "old contents").unwrap();
+    controller.turn(
+        &mut rejected_edit_session,
+        "edit file edit.txt replace old with new",
+    );
+    controller.turn(&mut rejected_edit_session, "reject");
+    controller.turn(&mut rejected_edit_session, "approve");
+
+    assert_eq!(fs::read_to_string(&edit_target).unwrap(), "old contents");
+    assert_eq!(
+        rejected_edit_session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(rejected_edit_session.actions()[0].verified_result, None);
+
+    let mut approved_edit_session = session_at(&root);
+    fs::write(&edit_target, "old contents").unwrap();
+    let edit = controller.turn(
+        &mut approved_edit_session,
+        "edit file edit.txt replace old with new",
+    );
+    controller.turn(&mut approved_edit_session, "approve");
+
+    assert_eq!(edit.route, Route::ProposePatchFile);
+    assert_eq!(fs::read_to_string(&edit_target).unwrap(), "new contents");
+    assert_eq!(
+        approved_edit_session.actions()[0].verified_result,
+        Some(VerifiedActionResult::File(
+            FileActionVerification::FilePatched {
+                path: edit_target.display().to_string()
+            }
+        ))
+    );
+
+    let mut approved_overwrite_session = session_at(&root);
+    let overwrite_target = root.join("overwrite.txt");
+    fs::write(&overwrite_target, "original").unwrap();
+    let overwrite = controller.turn(
+        &mut approved_overwrite_session,
+        "overwrite file overwrite.txt with replacement",
+    );
+    controller.turn(&mut approved_overwrite_session, "approve");
+
+    assert_eq!(overwrite.route, Route::ProposeOverwriteFile);
+    assert_eq!(
+        fs::read_to_string(&overwrite_target).unwrap(),
+        "replacement"
+    );
+    assert_eq!(
+        approved_overwrite_session.actions()[0].verified_result,
+        Some(VerifiedActionResult::File(
+            FileActionVerification::FileOverwritten {
+                path: overwrite_target.display().to_string()
+            }
+        ))
+    );
+    assert_eq!(
+        event_count(&approved_overwrite_session, |event| matches!(
+            event,
+            Event::ActionApproved(_) | Event::ActionApplied(_)
+        )),
+        2
+    );
+    assert_eq!(provider_event_count(&approved_overwrite_session), 0);
 
     let _ = fs::remove_dir_all(root);
 }

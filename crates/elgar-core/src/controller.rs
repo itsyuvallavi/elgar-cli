@@ -53,6 +53,8 @@ where
             Route::ApproveAction => self.handle_approve_action(session),
             Route::RejectAction => self.handle_reject_action(session),
             Route::ProposeWriteFile => self.handle_propose_write_file(session, input),
+            Route::ProposePatchFile => self.handle_propose_patch_file(session, input),
+            Route::ProposeOverwriteFile => self.handle_propose_overwrite_file(session, input),
         }
 
         TurnResult {
@@ -190,6 +192,89 @@ where
         );
     }
 
+    fn handle_propose_patch_file(&self, session: &mut Session, input: &str) {
+        match pending_action_state(session) {
+            PendingActionState::None => {}
+            PendingActionState::Single(_) => {
+                push_controller_message(
+                    session,
+                    "A proposed action is already waiting. Approve or reject it before requesting another PatchFile action.",
+                );
+                return;
+            }
+            PendingActionState::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
+        }
+
+        let Some((target_path, find, replace)) = parse_patch_file_request(input) else {
+            push_controller_message(
+                session,
+                "PatchFile request was recognized, but target/find/replace data could not be parsed.",
+            );
+            return;
+        };
+
+        let action = Action::proposed_patch_file(
+            next_action_id(session),
+            target_path.clone(),
+            find,
+            replace,
+            format!("edit {}", target_path.display()),
+        );
+        session.push_event(Event::ActionProposed(
+            ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+                .with_target(target_path.display().to_string()),
+        ));
+        session.push_action(ActionRecord::new(action));
+        push_controller_message(
+            session,
+            "Proposed PatchFile action. Approve or reject before any file is changed.",
+        );
+    }
+
+    fn handle_propose_overwrite_file(&self, session: &mut Session, input: &str) {
+        match pending_action_state(session) {
+            PendingActionState::None => {}
+            PendingActionState::Single(_) => {
+                push_controller_message(
+                    session,
+                    "A proposed action is already waiting. Approve or reject it before requesting another OverwriteFile action.",
+                );
+                return;
+            }
+            PendingActionState::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
+        }
+
+        let Some((target_path, contents)) = parse_overwrite_file_request(input) else {
+            push_controller_message(
+                session,
+                "OverwriteFile request was recognized, but target/content data could not be parsed.",
+            );
+            return;
+        };
+
+        let action = Action::proposed_overwrite_file(
+            next_action_id(session),
+            target_path.clone(),
+            contents,
+            format!("overwrite {}", target_path.display()),
+        );
+        session.push_event(Event::ActionProposed(
+            ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+                .with_target(target_path.display().to_string()),
+        ));
+        session.push_action(ActionRecord::new(action));
+        push_controller_message(
+            session,
+            "Proposed OverwriteFile action. Approve or reject before any file is changed.",
+        );
+    }
+
     fn handle_reject_action(&self, session: &mut Session) {
         let index = match pending_action_state(session) {
             PendingActionState::Single(index) => index,
@@ -246,7 +331,7 @@ where
             .with_target(action_target_label(&approved)),
         ));
 
-        match Filesystem::apply_write_file(&approved, &session.project_root) {
+        match Filesystem::apply_file_action(&approved, &session.project_root) {
             Ok(result) => {
                 let record = session
                     .action_mut(index)
@@ -261,7 +346,7 @@ where
                 )));
                 push_controller_message(
                     session,
-                    "Applied approved CreateFile action and verified the expected file contents.",
+                    "Applied approved file action and verified the expected file contents.",
                 );
             }
             Err(error) => {
@@ -277,7 +362,10 @@ where
                     approved.kind(),
                     reason,
                 )));
-                push_controller_message(session, "Approved CreateFile action failed. No verified file-created result was recorded.");
+                push_controller_message(
+                    session,
+                    "Approved file action failed. No verified filesystem result was recorded.",
+                );
             }
         }
     }
@@ -296,7 +384,7 @@ pub struct TurnResult {
 }
 
 const HELP_MESSAGE: &str =
-    "Elgar core harness can classify help, model questions, write-file requests, approvals, and rejections.";
+    "Elgar core harness can classify help, model questions, file-action requests, approvals, and rejections.";
 const UNKNOWN_MESSAGE: &str =
     "Input was not recognized. No provider, file, action, or shell operation was run.";
 const AMBIGUOUS_PENDING_ACTION_MESSAGE: &str =
@@ -375,6 +463,61 @@ fn parse_write_file_target(input: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+fn parse_patch_file_request(input: &str) -> Option<(std::path::PathBuf, String, String)> {
+    let trimmed = input.trim();
+    for prefix in ["edit file ", "patch file ", "edit ", "patch "] {
+        if let Some(rest) = strip_ascii_case_prefix(trimmed, prefix) {
+            let (target, edit) = split_first_token(rest)?;
+            let edit = edit.trim_start();
+            let edit = strip_ascii_case_prefix(edit, "replace ")?;
+            let (find, replace) = split_ascii_case_once(edit, " with ")?;
+            if find.is_empty() {
+                return None;
+            }
+            return Some((
+                std::path::PathBuf::from(target),
+                find.to_string(),
+                replace.to_string(),
+            ));
+        }
+    }
+
+    None
+}
+
+fn parse_overwrite_file_request(input: &str) -> Option<(std::path::PathBuf, String)> {
+    let trimmed = input.trim();
+    for prefix in ["overwrite file ", "overwrite "] {
+        if let Some(rest) = strip_ascii_case_prefix(trimmed, prefix) {
+            let (target, contents) = split_first_token(rest)?;
+            let contents = contents.trim_start();
+            let contents = strip_ascii_case_prefix(contents, "with ").unwrap_or(contents);
+            return Some((std::path::PathBuf::from(target), contents.to_string()));
+        }
+    }
+
+    None
+}
+
+fn split_first_token(input: &str) -> Option<(&str, &str)> {
+    let trimmed = input.trim_start();
+    let mut split = trimmed.splitn(2, char::is_whitespace);
+    let target = split.next()?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some((target, split.next().unwrap_or("")))
+}
+
+fn split_ascii_case_once<'a>(input: &'a str, delimiter: &str) -> Option<(&'a str, &'a str)> {
+    let delimiter = delimiter.as_bytes();
+    let index = input
+        .as_bytes()
+        .windows(delimiter.len())
+        .position(|window| window.eq_ignore_ascii_case(delimiter))?;
+    Some((&input[..index], &input[index + delimiter.len()..]))
+}
+
 fn strip_ascii_case_prefix<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
     let candidate = input.get(..prefix.len())?;
     if candidate.eq_ignore_ascii_case(prefix) {
@@ -389,7 +532,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::{
-        action::ActionLifecycleState,
+        action::{ActionLifecycleState, FileActionVerification},
         event::{
             AssistantMessageSource, Event, ProviderMetrics, ProviderOutput, ProviderTokenUsage,
             VerifiedActionResult,
@@ -752,6 +895,115 @@ mod tests {
             .events()
             .iter()
             .any(|event| matches!(event, Event::ActionFailed(_))));
+    }
+
+    #[test]
+    fn proposed_patch_file_turn_records_action_without_changing_file() {
+        let controller = Controller::default();
+        let (mut session, root) = rooted_session("proposed-patch");
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "old contents").unwrap();
+
+        let result = controller.turn(&mut session, "edit file notes.txt replace old with new");
+
+        assert_eq!(result.route, Route::ProposePatchFile);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old contents");
+        assert_eq!(session.actions().len(), 1);
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Proposed
+        );
+        assert_eq!(session.actions()[0].verified_result, None);
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionProposed(_))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_patch_file_turn_updates_target_and_records_verified_result() {
+        let controller = Controller::default();
+        let (mut session, root) = rooted_session("approved-patch");
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "old contents").unwrap();
+
+        controller.turn(&mut session, "edit file notes.txt replace old with new");
+        controller.turn(&mut session, "approve");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new contents");
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Applied
+        );
+        assert_eq!(
+            session.actions()[0].verified_result,
+            Some(VerifiedActionResult::File(
+                FileActionVerification::FilePatched {
+                    path: path.display().to_string()
+                }
+            ))
+        );
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejected_overwrite_file_turn_does_not_change_file() {
+        let controller = Controller::default();
+        let (mut session, root) = rooted_session("rejected-overwrite");
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "original").unwrap();
+
+        controller.turn(&mut session, "overwrite file notes.txt with replacement");
+        controller.turn(&mut session, "reject");
+        controller.turn(&mut session, "approve");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Rejected
+        );
+        assert_eq!(session.actions()[0].verified_result, None);
+        assert!(session
+            .events()
+            .iter()
+            .all(|event| !matches!(event, Event::ActionApplied(_))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_overwrite_file_turn_replaces_target_and_records_verified_result() {
+        let controller = Controller::default();
+        let (mut session, root) = rooted_session("approved-overwrite");
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "original").unwrap();
+
+        let proposed = controller.turn(&mut session, "overwrite file notes.txt with replacement");
+        controller.turn(&mut session, "approve");
+
+        assert_eq!(proposed.route, Route::ProposeOverwriteFile);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "replacement");
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Applied
+        );
+        assert_eq!(
+            session.actions()[0].verified_result,
+            Some(VerifiedActionResult::File(
+                FileActionVerification::FileOverwritten {
+                    path: path.display().to_string()
+                }
+            ))
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

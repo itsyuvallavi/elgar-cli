@@ -41,6 +41,40 @@ impl Action {
         Self::proposed_create_file(id, target_path, contents, summary)
     }
 
+    pub fn proposed_patch_file(
+        id: impl Into<String>,
+        target_path: impl Into<PathBuf>,
+        find: impl Into<String>,
+        replace: impl Into<String>,
+        summary: impl Into<String>,
+    ) -> Self {
+        Self::proposed(
+            id,
+            ActionRequest::PatchFile(PatchFileAction {
+                target_path: target_path.into(),
+                find: find.into(),
+                replace: replace.into(),
+            }),
+            summary,
+        )
+    }
+
+    pub fn proposed_overwrite_file(
+        id: impl Into<String>,
+        target_path: impl Into<PathBuf>,
+        contents: impl Into<String>,
+        summary: impl Into<String>,
+    ) -> Self {
+        Self::proposed(
+            id,
+            ActionRequest::OverwriteFile(OverwriteFileAction {
+                target_path: target_path.into(),
+                contents: contents.into(),
+            }),
+            summary,
+        )
+    }
+
     pub fn proposed(
         id: impl Into<String>,
         request: ActionRequest,
@@ -157,7 +191,7 @@ impl ActionRequest {
             },
             ActionRequest::PatchFile(action) => ApprovalPreview::Patch {
                 path: action.target_path.display().to_string(),
-                patch: action.patch.clone(),
+                patch: format!("replace {:?} with {:?}", action.find, action.replace),
             },
             ActionRequest::OverwriteFile(action) => ApprovalPreview::FileContents {
                 path: action.target_path.display().to_string(),
@@ -208,7 +242,8 @@ pub type WriteFileAction = CreateFileAction;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PatchFileAction {
     pub target_path: PathBuf,
-    pub patch: String,
+    pub find: String,
+    pub replace: String,
 }
 
 /// A proposed full replacement of an existing file.
@@ -393,6 +428,25 @@ mod tests {
     }
 
     #[test]
+    fn proposed_patch_and_overwrite_actions_are_typed_data() {
+        let patch =
+            Action::proposed_patch_file("action-1", "notes.txt", "old", "new", "edit notes.txt");
+        let overwrite = Action::proposed_overwrite_file(
+            "action-2",
+            "notes.txt",
+            "replacement",
+            "overwrite notes.txt",
+        );
+
+        assert_eq!(patch.kind(), ActionKind::PatchFile);
+        assert_eq!(overwrite.kind(), ActionKind::OverwriteFile);
+        assert_eq!(patch.state, ActionLifecycleState::Proposed);
+        assert_eq!(overwrite.state, ActionLifecycleState::Proposed);
+        assert!(matches!(patch.request, ActionRequest::PatchFile(_)));
+        assert!(matches!(overwrite.request, ActionRequest::OverwriteFile(_)));
+    }
+
+    #[test]
     fn old_write_file_action_json_deserializes_as_create_file() {
         let action = serde_json::from_str::<Action>(
             r#"{
@@ -453,7 +507,8 @@ mod tests {
         let requests = [
             ActionRequest::PatchFile(PatchFileAction {
                 target_path: PathBuf::from("src/lib.rs"),
-                patch: "@@ patch".to_string(),
+                find: "old".to_string(),
+                replace: "new".to_string(),
             }),
             ActionRequest::OverwriteFile(OverwriteFileAction {
                 target_path: PathBuf::from("README.md"),
