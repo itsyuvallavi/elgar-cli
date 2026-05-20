@@ -139,6 +139,25 @@ fn assert_broad_capability_fixture_unchanged(root: &Path) {
 }
 
 #[derive(Debug, Clone)]
+struct FilePlanProvider;
+
+impl ControllerProvider for FilePlanProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "file-plan-provider",
+            Some("model-a".to_string()),
+            "file-plan-1",
+        )
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new(
+            "Plan: create file planned.py, approve it, and report that planned.py was written.",
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
 struct FailingProvider {
     error: ProviderError,
 }
@@ -180,7 +199,7 @@ impl ControllerProvider for IncompleteStreamProvider {
     }
 
     fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
-        Ok(ProviderOutput::new("partial text"))
+        Ok(ProviderOutput::new("Approved and wrote streamed.py."))
     }
 
     fn chat_stream(
@@ -188,7 +207,9 @@ impl ControllerProvider for IncompleteStreamProvider {
         _prompt: &str,
         on_chunk: &mut dyn FnMut(ProviderStreamChunk),
     ) -> Result<ProviderOutput, ProviderError> {
-        on_chunk(ProviderStreamChunk::Text("partial text".to_string()));
+        on_chunk(ProviderStreamChunk::Text(
+            "Approved and wrote streamed.py.".to_string(),
+        ));
         Err(ProviderError::response_parse(
             "chunked body ended before terminal chunk",
         ))
@@ -251,6 +272,41 @@ impl ControllerProvider for BroadCapabilityClaimProvider {
              created created-dir, and ran bash to touch shell-ran.txt.",
         ))
     }
+}
+
+#[test]
+fn ask_model_for_file_plan_is_provider_suggestion_only_and_no_network() {
+    let controller = Controller::new(FilePlanProvider);
+    let root = regression_root("file-plan-suggestion-only");
+    let mut session = session_at(&root);
+    let target = root.join("planned.py");
+
+    let result = controller.turn(
+        &mut session,
+        "what file plan would create planned.py, then approve it?",
+    );
+
+    assert_eq!(result.route, Route::AskModel);
+    assert!(!target.exists());
+    assert!(session.actions().is_empty());
+    assert_eq!(action_truth_event_count(&session), 0);
+    assert_eq!(provider_event_count(&session), 2);
+    assert_eq!(provider_assistant_message_count(&session), 1);
+    assert!(session.events().iter().any(|event| matches!(
+        event,
+        Event::ProviderFinished(finished)
+            if finished.provider == "file-plan-provider"
+                && finished.request_id == "file-plan-1"
+                && finished.output.text.contains("planned.py was written")
+    )));
+    assert_eq!(
+        session
+            .provider_metadata()
+            .map(|metadata| metadata.provider.as_str()),
+        Some("file-plan-provider")
+    );
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -435,8 +491,10 @@ fn incomplete_stream_exposes_live_chunk_but_commits_no_partial_assistant_output(
     let controller = Controller::new(IncompleteStreamProvider);
     let root = regression_root("incomplete-stream");
     let mut session = session_at(&root);
+    let target = root.join("streamed.py");
     let mut chunks = Vec::new();
 
+    Controller::default().turn(&mut session, "create file streamed.py");
     let result =
         controller.model_turn_streaming(&mut session, "what does the harness do?", &mut |chunk| {
             chunks.push(chunk)
@@ -444,8 +502,11 @@ fn incomplete_stream_exposes_live_chunk_but_commits_no_partial_assistant_output(
 
     assert_eq!(
         chunks,
-        vec![ProviderStreamChunk::Text("partial text".to_string())]
+        vec![ProviderStreamChunk::Text(
+            "Approved and wrote streamed.py.".to_string()
+        )]
     );
+    assert!(!target.exists());
     assert!(result
         .events
         .iter()
@@ -458,7 +519,19 @@ fn incomplete_stream_exposes_live_chunk_but_commits_no_partial_assistant_output(
         0
     );
     assert_eq!(provider_assistant_message_count(&session), 0);
-    assert!(session.actions().is_empty());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_) | Event::ActionApplied(_) | Event::ActionFailed(_)
+        )),
+        0
+    );
     assert_eq!(
         session
             .provider_metadata()
@@ -513,6 +586,63 @@ fn provider_streaming_reasoning_and_text_cannot_create_approve_or_write_actions(
         )),
         0
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn write_file_dogfood_reject_then_propose_again_and_approve() {
+    let controller = Controller::default();
+    let root = regression_root("dogfood-reject-then-approve");
+    let mut session = session_at(&root);
+    let rejected_target = root.join("dogfood-rejected.py");
+    let approved_target = root.join("dogfood-approved.py");
+
+    controller.turn(&mut session, "create file dogfood-rejected.py");
+    controller.turn(&mut session, "reject");
+
+    assert!(!rejected_target.exists());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionRejected(_))),
+        1
+    );
+
+    controller.turn(&mut session, "create file dogfood-approved.py");
+    controller.turn(&mut session, "approve");
+
+    assert!(!rejected_target.exists());
+    assert!(approved_target.exists());
+    assert_eq!(fs::read_to_string(&approved_target).unwrap(), "");
+    assert_eq!(session.actions().len(), 2);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(
+        session.actions()[1].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert_eq!(
+        session.actions()[1].verified_result,
+        Some(VerifiedActionResult::FileWritten {
+            path: approved_target.display().to_string()
+        })
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionProposed(_))),
+        2
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionApplied(_))),
+        1
+    );
+    assert_eq!(provider_event_count(&session), 0);
 
     let _ = fs::remove_dir_all(root);
 }
