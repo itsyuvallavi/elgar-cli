@@ -272,6 +272,36 @@ fn wait_for_completed_provider_turn(
         .expect("stub provider turn should complete")
 }
 
+fn finish_provider_turn(
+    task: super::ProviderTurnTask,
+    session: &mut Session,
+    shell: &mut TuiShell,
+) -> Vec<ProviderStreamChunk> {
+    let mut chunks = Vec::new();
+    let completed = (0..20)
+        .find_map(|_| {
+            let result = task.try_complete().unwrap();
+            match result {
+                Some(ProviderTurnUpdate::Chunk(chunk)) => {
+                    chunks.push(chunk);
+                    None
+                }
+                Some(ProviderTurnUpdate::Completed(completed)) => Some(completed),
+                Some(ProviderTurnUpdate::Canceled) => panic!("provider turn should complete"),
+                None => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    None
+                }
+            }
+        })
+        .expect("provider turn should complete");
+
+    *session = completed.session;
+    shell.conversation.discard_pending_provider_turn();
+    shell.consume_events(&completed.events);
+    chunks
+}
+
 #[test]
 fn default_terminal_shell_is_empty_and_no_network() {
     let text = default_shell_text();
@@ -624,6 +654,215 @@ fn provider_turn_task_reports_streaming_chunks_before_completion() {
         ]
     );
     assert_eq!(completed.events.len(), 4);
+}
+
+#[test]
+fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_safe() {
+    #[derive(Clone)]
+    struct DogfoodProvider;
+
+    impl ControllerProvider for DogfoodProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "dogfood-provider",
+                Some("model-a".to_string()),
+                "dogfood-request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("Provider suggests creating hidden.py"))
+        }
+
+        fn chat_stream(
+            &self,
+            _prompt: &str,
+            on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+        ) -> Result<ProviderOutput, ProviderError> {
+            on_chunk(ProviderStreamChunk::Reasoning(
+                "Need answer without mutating files.".to_string(),
+            ));
+            on_chunk(ProviderStreamChunk::Text(
+                "Provider suggests creating hidden.py".to_string(),
+            ));
+            Ok(ProviderOutput::new("Provider suggests creating hidden.py")
+                .with_thinking("Need answer without mutating files."))
+        }
+    }
+
+    let controller = Controller::new(DogfoodProvider);
+    let root = temp_root("terminal-live-dogfood-flow");
+    let hidden_target = root.join("hidden.py");
+    let rejected_target = root.join("rejected.py");
+    let approved_target = root.join("approved.py");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "what should we create?",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_some());
+    assert!(shell.render().contains("◐ working"));
+
+    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+
+    assert_eq!(
+        chunks,
+        vec![
+            ProviderStreamChunk::Reasoning("Need answer without mutating files.".to_string()),
+            ProviderStreamChunk::Text("Provider suggests creating hidden.py".to_string())
+        ]
+    );
+    assert!(shell
+        .render()
+        .contains("Provider suggests creating hidden.py"));
+    assert!(session.actions().is_empty());
+    assert!(!hidden_target.exists());
+
+    let mut input = TerminalInput::default();
+    let mut output = Vec::new();
+    for character in "/copy".chars() {
+        let exited = handle_terminal_key_with_copy_writer(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(character),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
+            &controller,
+            &mut session,
+            &mut shell,
+            &mut output,
+        );
+        assert!(!exited);
+    }
+    let exited = handle_terminal_key_with_copy_writer(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        &mut input,
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut output,
+    );
+    assert!(!exited);
+    assert!(shell.copy.render_hint().starts_with("copied conversation"));
+    assert!(!output.is_empty());
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/clear",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    assert!(shell.conversation.lines.is_empty());
+    assert!(session.actions().is_empty());
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "create file rejected.py",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    assert!(!rejected_target.exists());
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/reject",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    assert!(!rejected_target.exists());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "create file approved.py",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    assert!(!approved_target.exists());
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/approve",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    assert!(approved_target.exists());
+    assert_eq!(
+        session.actions()[1].action.state,
+        ActionLifecycleState::Applied
+    );
+
+    assert!(handle_submitted_terminal_input_for_loop(
+        "/q",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_live_provider_dogfood_error_does_not_mutate_actions_or_files() {
+    #[derive(Clone)]
+    struct TimeoutProvider;
+
+    impl ControllerProvider for TimeoutProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "timeout-provider",
+                Some("model-a".to_string()),
+                "timeout-request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Err(ProviderError::network("provider request timed out"))
+        }
+    }
+
+    let controller = Controller::new(TimeoutProvider);
+    let root = temp_root("terminal-live-dogfood-error");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "hello",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+
+    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    let rendered = shell.render();
+
+    assert!(chunks.is_empty());
+    assert!(rendered.contains("Provider error from timeout-provider"));
+    assert!(rendered.contains("provider request timed out"));
+    assert!(session.actions().is_empty());
+    assert!(std::fs::read_dir(&root).unwrap().next().is_none());
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

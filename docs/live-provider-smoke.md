@@ -122,6 +122,24 @@ ELGAR_LM_STUDIO_BASE_URL="http://127.0.0.1:1234/v1" \
 cargo run -p elgar-cli -- tui-controller-smoke "Say hello in one sentence."
 ```
 
+## Manual Terminal TUI Dogfood
+
+This is optional and live. It is not part of `./bin/check-local`.
+
+```sh
+cargo run -p elgar-cli -- tui-terminal
+```
+
+Use this short checklist:
+
+- Ask `hello` and confirm LM Studio answers.
+- Ask `what can you do?` and confirm the reply stays concise.
+- Run `/copy` and confirm the copied-message hint appears.
+- Run `/clear` and confirm only the visible conversation clears.
+- Ask `create file manual-dogfood.md`, then run `/reject` and confirm no file is written.
+- Ask `create file manual-dogfood.md` again, then run `/approve` and confirm the file is written.
+- Run `/q` and confirm the terminal exits cleanly.
+
 ## LM Studio Latency And Prompt Cache Notes
 
 The latest local trace for a short `what can you do?` answer showed LM Studio
