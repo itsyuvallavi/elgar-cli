@@ -105,6 +105,8 @@ struct RuntimeProviderConfigFile {
     request_timeout_millis: Option<u64>,
     #[serde(default)]
     stream: bool,
+    #[serde(default)]
+    context_window_tokens: Option<u64>,
 }
 
 pub fn render_cli_turn(
@@ -237,6 +239,7 @@ fn runtime_provider_from_file(
     config.write_timeout_millis = file.write_timeout_millis;
     config.request_timeout_millis = file.request_timeout_millis;
     config.stream = file.stream;
+    config.context_window_tokens = file.context_window_tokens;
 
     Ok(Some(RuntimeProvider {
         config,
@@ -613,6 +616,7 @@ mod tests {
               "read_timeout_millis": 120000,
               "write_timeout_millis": 2000,
               "request_timeout_millis": 180000,
+              "context_window_tokens": 128000,
               "stream": true
             }"#,
         )
@@ -627,6 +631,7 @@ mod tests {
         assert_eq!(runtime.config.read_timeout_millis(), 120000);
         assert_eq!(runtime.config.write_timeout_millis(), 2000);
         assert_eq!(runtime.config.request_timeout_millis(), 180000);
+        assert_eq!(runtime.config.context_window_tokens, Some(128_000));
         assert!(runtime.config.stream);
 
         let _ = fs::remove_dir_all(root);

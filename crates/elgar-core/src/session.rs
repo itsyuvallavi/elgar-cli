@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     action::{Action, ActionLifecycleState},
+    context::ContextAccounting,
     event::{Event, ProviderMetrics, VerifiedActionResult},
 };
 
@@ -20,6 +21,8 @@ pub struct Session {
     events: Vec<Event>,
     actions: Vec<ActionRecord>,
     provider_metadata: Option<ProviderMetadata>,
+    #[serde(default)]
+    context_accounting: ContextAccounting,
 }
 
 impl Session {
@@ -35,6 +38,7 @@ impl Session {
             events: Vec::new(),
             actions: Vec::new(),
             provider_metadata: None,
+            context_accounting: ContextAccounting::unknown(),
         }
     }
 
@@ -76,6 +80,11 @@ impl Session {
         self.provider_metadata.as_ref()
     }
 
+    /// Controller-recorded context accounting for UI display and provider budgeting.
+    pub fn context_accounting(&self) -> &ContextAccounting {
+        &self.context_accounting
+    }
+
     pub(crate) fn push_event(&mut self, event: Event) {
         self.events.push(event);
     }
@@ -90,6 +99,10 @@ impl Session {
 
     pub(crate) fn set_provider_metadata(&mut self, metadata: ProviderMetadata) {
         self.provider_metadata = Some(metadata);
+    }
+
+    pub(crate) fn set_context_accounting(&mut self, context_accounting: ContextAccounting) {
+        self.context_accounting = context_accounting;
     }
 }
 

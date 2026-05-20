@@ -1,6 +1,7 @@
+#[cfg(test)]
 use std::path::Path;
 
-pub const CONTEXT_FILES: [&str; 2] = ["AGENTS.md", "elgar-provider.json"];
+use elgar_core::context::ContextAccounting;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupBlock {
@@ -10,16 +11,30 @@ pub struct StartupBlock {
 }
 
 impl StartupBlock {
+    #[cfg(test)]
     pub fn new(
         project_root: impl AsRef<Path>,
         cwd: impl AsRef<Path>,
         provider: Option<String>,
         model: Option<String>,
     ) -> Self {
+        let context = ContextAccounting::from_default_local_files(project_root, cwd, None);
+        Self::from_context_accounting(provider, model, &context)
+    }
+
+    pub fn from_context_accounting(
+        provider: Option<String>,
+        model: Option<String>,
+        context: &ContextAccounting,
+    ) -> Self {
         Self {
             provider,
             model,
-            context_files: available_context_files(project_root.as_ref(), cwd.as_ref()),
+            context_files: context
+                .loaded_files
+                .iter()
+                .map(|file| file.display_path.clone())
+                .collect(),
         }
     }
 
@@ -43,18 +58,6 @@ impl StartupBlock {
                 .join("\n")
         }
     }
-}
-
-fn available_context_files(project_root: &Path, cwd: &Path) -> Vec<String> {
-    CONTEXT_FILES
-        .iter()
-        .filter(|file_name| file_exists(project_root, file_name) || file_exists(cwd, file_name))
-        .map(|file_name| (*file_name).to_string())
-        .collect()
-}
-
-fn file_exists(root: &Path, file_name: &str) -> bool {
-    root.join(file_name).is_file()
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 use elgar_core::{
+    context::ContextAccounting,
     provider::{ControllerProvider, ProviderConfig},
     router::{route_input, Route},
     session::Session,
@@ -67,31 +68,40 @@ pub fn run_terminal_shell() -> io::Result<()> {
 
 pub fn run_terminal_shell_with_lm_studio_provider(config: ProviderConfig) -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    run_terminal_shell_with_controller(&cwd, &cwd, Controller::with_lm_studio_provider(config))
+    let context_window_tokens = config.context_window_tokens;
+    run_terminal_shell_with_controller(
+        &cwd,
+        &cwd,
+        Controller::with_lm_studio_provider(config),
+        context_window_tokens,
+    )
 }
 
 pub fn run_terminal_shell_at(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> io::Result<()> {
-    run_terminal_shell_with_controller(project_root, cwd, Controller::default())
+    run_terminal_shell_with_controller(project_root, cwd, Controller::default(), None)
 }
 
 fn run_terminal_shell_with_controller<P>(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
     controller: Controller<P>,
+    context_window_tokens: Option<u64>,
 ) -> io::Result<()>
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
     let mut session = Session::new("terminal-tui-session", project_root.as_ref(), cwd.as_ref());
+    controller.refresh_context_accounting(&mut session, context_window_tokens);
     let mut shell = TuiShell::new();
 
     let mut context = terminal_context(&session, &controller);
     print_inline_startup(&context)?;
 
     loop {
+        controller.refresh_context_accounting(&mut session, context_window_tokens);
         context = terminal_context(&session, &controller);
         let Some(input) = read_inline_prompt(&context)? else {
             break;
@@ -504,6 +514,7 @@ pub struct TerminalShellContext {
     pub cwd: PathBuf,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub context_accounting: ContextAccounting,
 }
 
 impl TerminalShellContext {
@@ -513,6 +524,7 @@ impl TerminalShellContext {
             cwd: cwd.as_ref().to_path_buf(),
             provider: None,
             model: None,
+            context_accounting: ContextAccounting::unknown(),
         }
     }
 
@@ -528,7 +540,13 @@ impl TerminalShellContext {
             context.provider = Some(metadata.provider.clone());
             context.model = metadata.model.clone();
         }
+        context.context_accounting = session.context_accounting().clone();
         context
+    }
+
+    pub fn with_context_accounting(mut self, context_accounting: ContextAccounting) -> Self {
+        self.context_accounting = context_accounting;
+        self
     }
 
     fn footer_body(&self, _status: &str, _copy_hint: &str) -> String {
@@ -548,7 +566,10 @@ impl TerminalShellContext {
             align_footer_line(&left, right, width)
         };
 
-        format!("{first_line}\ncontext: TBD")
+        format!(
+            "{first_line}\n{}",
+            footer_context_label(&self.context_accounting)
+        )
     }
 }
 
@@ -558,11 +579,10 @@ fn render_terminal_conversation(shell: &TuiShell, context: &TerminalShellContext
 }
 
 fn render_terminal_startup(context: &TerminalShellContext) -> String {
-    let startup = StartupBlock::new(
-        &context.project_root,
-        &context.cwd,
+    let startup = StartupBlock::from_context_accounting(
         context.provider.clone(),
         context.model.clone(),
+        &context.context_accounting,
     );
     startup.render()
 }
@@ -634,6 +654,31 @@ fn align_footer_line(left: &str, right: &str, width: usize) -> String {
         )
     } else {
         format!("{left}  {right}")
+    }
+}
+
+fn footer_context_label(context: &ContextAccounting) -> String {
+    match (context.estimated_tokens, context.max_window_tokens) {
+        (Some(used), Some(max)) => {
+            format!(
+                "context: ~{}/{}",
+                compact_token_count(used),
+                compact_token_count(max)
+            )
+        }
+        (Some(used), None) => format!("context: ~{} tokens", compact_token_count(used)),
+        (None, Some(max)) => format!("context: unknown/{}", compact_token_count(max)),
+        (None, None) => "context: unknown".to_string(),
+    }
+}
+
+fn compact_token_count(tokens: u64) -> String {
+    if tokens >= 1_000 && tokens % 1_000 == 0 {
+        format!("{}k", tokens / 1_000)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
     }
 }
 

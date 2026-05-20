@@ -28,6 +28,8 @@ pub struct ProviderConfig {
     pub request_timeout_millis: Option<u64>,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default)]
+    pub context_window_tokens: Option<u64>,
 }
 
 impl ProviderConfig {
@@ -71,6 +73,7 @@ impl Default for ProviderConfig {
             write_timeout_millis: None,
             request_timeout_millis: None,
             stream: false,
+            context_window_tokens: None,
         }
     }
 }
@@ -121,6 +124,7 @@ mod tests {
             LM_STUDIO_DEFAULT_TIMEOUT_MILLIS
         );
         assert!(!config.stream);
+        assert_eq!(config.context_window_tokens, None);
         assert_eq!(
             config.chat_completions_url(),
             "http://127.0.0.1:1234/v1/chat/completions"
@@ -167,11 +171,13 @@ mod tests {
     fn provider_config_deserializes_opt_in_streaming() {
         let config: ProviderConfig = serde_json::from_value(json!({
             "model": "local-model",
-            "stream": true
+            "stream": true,
+            "context_window_tokens": 128000
         }))
         .unwrap();
 
         assert!(config.stream);
+        assert_eq!(config.context_window_tokens, Some(128_000));
     }
 
     #[test]

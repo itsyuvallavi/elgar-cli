@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     action::Action,
+    context::ContextAccounting,
     event::{
         ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
         ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage,
@@ -28,6 +29,19 @@ pub struct Controller<P = ProviderStub> {
 impl<P> Controller<P> {
     pub fn new(provider: P) -> Self {
         Self { provider }
+    }
+
+    pub fn refresh_context_accounting(
+        &self,
+        session: &mut Session,
+        max_window_tokens: Option<u64>,
+    ) {
+        let context_accounting = ContextAccounting::from_default_local_files(
+            &session.project_root,
+            &session.cwd,
+            max_window_tokens,
+        );
+        session.set_context_accounting(context_accounting);
     }
 }
 

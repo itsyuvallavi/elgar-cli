@@ -1,5 +1,6 @@
 use elgar_core::{
     action::ActionLifecycleState,
+    context::{ContextAccounting, LoadedContextFile},
     controller::Controller,
     event::ProviderOutput,
     provider::{ControllerProvider, ProviderError, ProviderRequestMetadata, ProviderStreamChunk},
@@ -68,7 +69,7 @@ fn inline_prompt_frame_matches_old_elgar_runtime_shape() {
     assert_eq!(bottom, vec![top[1].clone()]);
     assert_eq!(footer.len(), 2);
     assert!(footer[0].contains("openai/gpt-oss-20b"));
-    assert_eq!(footer[1], "context: TBD");
+    assert_eq!(footer[1], "context: unknown");
     assert!(!footer.join("\n").contains("select visible"));
     assert!(!footer.join("\n").contains("PgUp"));
 }
@@ -90,7 +91,7 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     assert_eq!(input, vec!["▸ /cancel"]);
     assert_eq!(bottom, vec![top[1].clone()]);
     assert!(footer[0].contains("model-a"));
-    assert_eq!(footer[1], "context: TBD");
+    assert_eq!(footer[1], "context: unknown");
 }
 
 #[test]
@@ -314,7 +315,7 @@ fn default_terminal_shell_is_empty_and_no_network() {
     assert!(text.contains("[Provider]\n  stub-provider · none"));
     assert!(text.contains("(empty conversation)"));
     assert!(text.contains("> "));
-    assert!(text.contains("context: TBD"));
+    assert!(text.contains("context: unknown"));
     let footer = TerminalShellContext::new(".", ".")
         .with_provider("stub-provider", None)
         .footer_body(
@@ -348,7 +349,10 @@ fn terminal_startup_block_lists_real_context_files_and_configured_provider() {
     std::fs::write(root.join("elgar-provider.json"), "{}").unwrap();
     let shell = TuiShell::new();
     let context = TerminalShellContext::new(&root, &root)
-        .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()));
+        .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()))
+        .with_context_accounting(ContextAccounting::from_default_local_files(
+            &root, &root, None,
+        ));
 
     let text = draw_to_text(&shell, &context);
 
@@ -379,7 +383,7 @@ fn terminal_layout_renders_default_shell_regions() {
     assert!(text.contains("(empty conversation)"));
     assert!(text.contains("> "));
     assert!(text.contains("repo crates"));
-    assert!(text.contains("context: TBD"));
+    assert!(text.contains("context: unknown"));
     assert!(!text.contains("br:"));
     assert!(!text.contains("select visible text"));
     assert!(!text.contains("provider:"));
@@ -428,7 +432,7 @@ fn terminal_footer_uses_provider_model_metadata_when_available() {
 
     assert!(text.contains("model-a"));
     assert!(footer.contains("model-a"));
-    assert!(footer.contains("context: TBD"));
+    assert!(footer.contains("context: unknown"));
     assert!(!footer.contains("reply ready"));
     assert!(!footer.contains("select visible text"));
     assert!(!footer.contains("provider:"));
@@ -458,7 +462,7 @@ fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
     assert!(footer.contains("crates/elgar-tui"));
     assert!(footer.contains("(feature/footer)"));
     assert!(footer.contains("openai/gpt-oss-20b"));
-    assert!(footer.contains("context: TBD"));
+    assert!(footer.contains("context: unknown"));
     assert!(!footer.contains("repo:"));
     assert!(!footer.contains("cwd:"));
     assert!(!footer.contains("branch:"));
@@ -470,6 +474,42 @@ fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
     assert!(!footer.contains("tokens"));
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_footer_formats_controller_context_accounting() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()))
+        .with_context_accounting(ContextAccounting {
+            loaded_files: vec![LoadedContextFile {
+                display_path: "AGENTS.md".to_string(),
+                bytes: 1284,
+                estimated_tokens: 321,
+            }],
+            estimated_tokens: Some(321),
+            max_window_tokens: Some(128_000),
+        });
+
+    let footer = context.footer_body("ready", "copy");
+
+    assert!(footer.contains("context: ~321/128k"));
+    assert!(!footer.contains('%'));
+    assert!(!footer.contains("TBD"));
+}
+
+#[test]
+fn terminal_footer_keeps_missing_usage_unknown_with_configured_window() {
+    let context =
+        TerminalShellContext::new("/repo", "/repo").with_context_accounting(ContextAccounting {
+            loaded_files: Vec::new(),
+            estimated_tokens: None,
+            max_window_tokens: Some(128_000),
+        });
+
+    let footer = context.footer_body("ready", "copy");
+
+    assert!(footer.contains("context: unknown/128k"));
+    assert!(!footer.contains('%'));
 }
 
 #[test]
@@ -1027,7 +1067,7 @@ fn terminal_footer_shows_lm_studio_provider_and_model_without_usage_claims() {
     let footer = context.footer_body("ready", "select visible text");
 
     assert!(footer.contains("openai/gpt-oss-20b"));
-    assert!(footer.contains("context: TBD"));
+    assert!(footer.contains("context: unknown"));
     assert!(!footer.contains("provider:"));
     assert!(!footer.contains("model:"));
     assert!(!footer.contains("select visible text"));
