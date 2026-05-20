@@ -48,6 +48,29 @@ impl Session {
         &self.actions
     }
 
+    /// Select the one action still waiting on user approval/rejection.
+    ///
+    /// Only `Proposed` actions are pending. `Approved`, `Applied`, `Rejected`,
+    /// and `Failed` records are non-pending for selection, including when a
+    /// session is restored with those states already present.
+    pub fn pending_action_selection(&self) -> PendingActionSelection {
+        let mut proposed = self
+            .actions
+            .iter()
+            .enumerate()
+            .filter(|(_index, record)| record.action.state == ActionLifecycleState::Proposed);
+
+        let Some((index, _record)) = proposed.next() else {
+            return PendingActionSelection::None;
+        };
+
+        if proposed.next().is_some() {
+            PendingActionSelection::Ambiguous
+        } else {
+            PendingActionSelection::Single(index)
+        }
+    }
+
     /// Provider request metadata recorded by the controller for inspection only.
     pub fn provider_metadata(&self) -> Option<&ProviderMetadata> {
         self.provider_metadata.as_ref()
@@ -90,6 +113,17 @@ impl ActionRecord {
 
 pub type ActionState = ActionLifecycleState;
 
+/// Deterministic result of selecting a pending action from a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PendingActionSelection {
+    /// No `Proposed` action exists.
+    None,
+    /// Exactly one `Proposed` action exists, addressed by session action index.
+    Single(usize),
+    /// More than one `Proposed` action exists, so no action is selected.
+    Ambiguous,
+}
+
 /// Provider configuration/request metadata recorded for inspection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderMetadata {
@@ -121,7 +155,7 @@ mod tests {
         ProviderOutput, VerifiedActionResult,
     };
 
-    use super::{ActionRecord, ProviderMetadata, Session};
+    use super::{ActionRecord, PendingActionSelection, ProviderMetadata, Session};
 
     #[test]
     fn new_session_stores_identity_paths_and_empty_state() {
@@ -231,5 +265,84 @@ mod tests {
             ActionLifecycleState::Proposed
         );
         assert_eq!(session.actions[0].verified_result, None);
+    }
+
+    #[test]
+    fn pending_action_selection_is_explicit_for_zero_one_and_multiple_proposed_actions() {
+        let mut session = Session::new("session-5", "/repo", "/repo");
+
+        assert_eq!(
+            session.pending_action_selection(),
+            PendingActionSelection::None
+        );
+
+        session
+            .actions
+            .push(ActionRecord::new(Action::proposed_write_file(
+                "action-1",
+                "first.py",
+                "",
+                "write first.py",
+            )));
+
+        assert_eq!(
+            session.pending_action_selection(),
+            PendingActionSelection::Single(0)
+        );
+
+        session
+            .actions
+            .push(ActionRecord::new(Action::proposed_write_file(
+                "action-2",
+                "second.py",
+                "",
+                "write second.py",
+            )));
+
+        assert_eq!(
+            session.pending_action_selection(),
+            PendingActionSelection::Ambiguous
+        );
+    }
+
+    #[test]
+    fn pending_action_selection_ignores_non_proposed_terminal_states() {
+        let mut session = Session::new("session-6", "/repo", "/repo");
+        session.actions.push(ActionRecord::new(
+            Action::proposed_write_file("action-1", "approved.py", "", "write approved.py")
+                .approve(),
+        ));
+        session.actions.push(ActionRecord::new(
+            Action::proposed_write_file("action-2", "applied.py", "", "write applied.py")
+                .approve()
+                .mark_applied(),
+        ));
+        session.actions.push(ActionRecord::new(
+            Action::proposed_write_file("action-3", "rejected.py", "", "write rejected.py")
+                .reject(),
+        ));
+        session.actions.push(ActionRecord::new(
+            Action::proposed_write_file("action-4", "failed.py", "", "write failed.py")
+                .mark_failed(),
+        ));
+
+        assert_eq!(
+            session.pending_action_selection(),
+            PendingActionSelection::None
+        );
+
+        session
+            .actions
+            .push(ActionRecord::new(Action::proposed_write_file(
+                "action-5",
+                "pending.py",
+                "",
+                "write pending.py",
+            )));
+
+        assert_eq!(
+            session.pending_action_selection(),
+            PendingActionSelection::Single(4)
+        );
     }
 }

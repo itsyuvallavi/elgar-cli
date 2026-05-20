@@ -892,6 +892,142 @@ fn restored_session_with_multiple_proposed_actions_cannot_apply_hidden_actions()
 }
 
 #[test]
+fn restored_terminal_actions_are_not_selected_or_allowed_to_block_new_proposals() {
+    let controller = Controller::default();
+    let root = regression_root("terminal-restored-actions");
+    let approved = root.join("approved.py");
+    let applied = root.join("applied.py");
+    let rejected = root.join("rejected.py");
+    let failed = root.join("failed.py");
+    let fresh = root.join("fresh.py");
+    let root_string = root.display().to_string();
+    let mut session: Session = serde_json::from_value(serde_json::json!({
+        "id": "restored-session",
+        "project_root": root_string,
+        "cwd": root_string,
+        "events": [],
+        "actions": [
+            {
+                "action": {
+                    "id": "action-1",
+                    "request": {
+                        "CreateFile": {
+                            "target_path": "approved.py",
+                            "contents": ""
+                        }
+                    },
+                    "state": "Approved",
+                    "summary": "write approved.py"
+                },
+                "verified_result": null,
+                "failure_reason": null
+            },
+            {
+                "action": {
+                    "id": "action-2",
+                    "request": {
+                        "CreateFile": {
+                            "target_path": "applied.py",
+                            "contents": ""
+                        }
+                    },
+                    "state": "Applied",
+                    "summary": "write applied.py"
+                },
+                "verified_result": null,
+                "failure_reason": null
+            },
+            {
+                "action": {
+                    "id": "action-3",
+                    "request": {
+                        "CreateFile": {
+                            "target_path": "rejected.py",
+                            "contents": ""
+                        }
+                    },
+                    "state": "Rejected",
+                    "summary": "write rejected.py"
+                },
+                "verified_result": null,
+                "failure_reason": null
+            },
+            {
+                "action": {
+                    "id": "action-4",
+                    "request": {
+                        "CreateFile": {
+                            "target_path": "failed.py",
+                            "contents": ""
+                        }
+                    },
+                    "state": "Failed",
+                    "summary": "write failed.py"
+                },
+                "verified_result": null,
+                "failure_reason": "restored failure"
+            }
+        ],
+        "provider_metadata": null
+    }))
+    .unwrap();
+
+    controller.turn(&mut session, "approve");
+    controller.turn(&mut session, "reject");
+    controller.turn(&mut session, "create file fresh.py");
+
+    assert!(!approved.exists());
+    assert!(!applied.exists());
+    assert!(!rejected.exists());
+    assert!(!failed.exists());
+    assert!(!fresh.exists());
+    assert_eq!(session.actions().len(), 5);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Approved
+    );
+    assert_eq!(
+        session.actions()[1].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert_eq!(
+        session.actions()[2].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(
+        session.actions()[3].action.state,
+        ActionLifecycleState::Failed
+    );
+    assert_eq!(
+        session.actions()[4].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_)
+                | Event::ActionApplied(_)
+                | Event::ActionRejected(_)
+                | Event::ActionFailed(_)
+        )),
+        0
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionProposed(_))),
+        1
+    );
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("No proposed action is waiting for approval.")));
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("No proposed action is waiting for rejection.")));
+    assert_eq!(provider_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn rejected_action_remains_terminal_after_followup_approval_or_rejection() {
     let controller = Controller::default();
     let root = regression_root("rejected-terminal");

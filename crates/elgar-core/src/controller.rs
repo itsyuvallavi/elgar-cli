@@ -11,7 +11,7 @@ use crate::{
         ControllerProvider, LmStudioProvider, ProviderConfig, ProviderStreamChunk, ProviderStub,
     },
     router::{route_input, Route},
-    session::{ActionRecord, ProviderMetadata, Session},
+    session::{ActionRecord, PendingActionSelection, ProviderMetadata, Session},
 };
 
 /// Controller turn flow over an explicit provider backend.
@@ -152,16 +152,16 @@ where
     }
 
     fn handle_propose_write_file(&self, session: &mut Session, input: &str) {
-        match pending_action_state(session) {
-            PendingActionState::None => {}
-            PendingActionState::Single(_) => {
+        match session.pending_action_selection() {
+            PendingActionSelection::None => {}
+            PendingActionSelection::Single(_) => {
                 push_controller_message(
                     session,
                     "A proposed action is already waiting. Approve or reject it before requesting another CreateFile action.",
                 );
                 return;
             }
-            PendingActionState::Ambiguous => {
+            PendingActionSelection::Ambiguous => {
                 push_ambiguous_pending_action_message(session);
                 return;
             }
@@ -193,16 +193,16 @@ where
     }
 
     fn handle_propose_patch_file(&self, session: &mut Session, input: &str) {
-        match pending_action_state(session) {
-            PendingActionState::None => {}
-            PendingActionState::Single(_) => {
+        match session.pending_action_selection() {
+            PendingActionSelection::None => {}
+            PendingActionSelection::Single(_) => {
                 push_controller_message(
                     session,
                     "A proposed action is already waiting. Approve or reject it before requesting another PatchFile action.",
                 );
                 return;
             }
-            PendingActionState::Ambiguous => {
+            PendingActionSelection::Ambiguous => {
                 push_ambiguous_pending_action_message(session);
                 return;
             }
@@ -235,16 +235,16 @@ where
     }
 
     fn handle_propose_overwrite_file(&self, session: &mut Session, input: &str) {
-        match pending_action_state(session) {
-            PendingActionState::None => {}
-            PendingActionState::Single(_) => {
+        match session.pending_action_selection() {
+            PendingActionSelection::None => {}
+            PendingActionSelection::Single(_) => {
                 push_controller_message(
                     session,
                     "A proposed action is already waiting. Approve or reject it before requesting another OverwriteFile action.",
                 );
                 return;
             }
-            PendingActionState::Ambiguous => {
+            PendingActionSelection::Ambiguous => {
                 push_ambiguous_pending_action_message(session);
                 return;
             }
@@ -276,13 +276,13 @@ where
     }
 
     fn handle_reject_action(&self, session: &mut Session) {
-        let index = match pending_action_state(session) {
-            PendingActionState::Single(index) => index,
-            PendingActionState::None => {
+        let index = match session.pending_action_selection() {
+            PendingActionSelection::Single(index) => index,
+            PendingActionSelection::None => {
                 push_controller_message(session, "No proposed action is waiting for rejection.");
                 return;
             }
-            PendingActionState::Ambiguous => {
+            PendingActionSelection::Ambiguous => {
                 push_ambiguous_pending_action_message(session);
                 return;
             }
@@ -305,13 +305,13 @@ where
     }
 
     fn handle_approve_action(&self, session: &mut Session) {
-        let index = match pending_action_state(session) {
-            PendingActionState::Single(index) => index,
-            PendingActionState::None => {
+        let index = match session.pending_action_selection() {
+            PendingActionSelection::Single(index) => index,
+            PendingActionSelection::None => {
                 push_controller_message(session, "No proposed action is waiting for approval.");
                 return;
             }
-            PendingActionState::Ambiguous => {
+            PendingActionSelection::Ambiguous => {
                 push_ambiguous_pending_action_message(session);
                 return;
             }
@@ -403,33 +403,6 @@ fn push_ambiguous_pending_action_message(session: &mut Session) {
 
 fn next_action_id(session: &Session) -> String {
     format!("action-{}", session.actions().len() + 1)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingActionState {
-    None,
-    Single(usize),
-    Ambiguous,
-}
-
-fn pending_action_state(session: &Session) -> PendingActionState {
-    let mut proposed = session
-        .actions()
-        .iter()
-        .enumerate()
-        .filter(|(_index, record)| {
-            record.action.state == crate::action::ActionLifecycleState::Proposed
-        });
-
-    let Some((index, _record)) = proposed.next() else {
-        return PendingActionState::None;
-    };
-
-    if proposed.next().is_some() {
-        PendingActionState::Ambiguous
-    } else {
-        PendingActionState::Single(index)
-    }
 }
 
 fn action_target_label(action: &Action) -> String {
