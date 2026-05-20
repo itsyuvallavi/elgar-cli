@@ -283,7 +283,7 @@ mod tests {
         ));
 
         let rendered = shell.render();
-        assert!(rendered.contains("Action: action-1 WriteFile"));
+        assert!(rendered.contains("Action: action-1 CreateFile"));
         assert!(rendered.contains("Target: hello.py"));
         assert!(rendered.contains("State: applied and verified"));
         assert!(rendered.contains("Result: file written:"));

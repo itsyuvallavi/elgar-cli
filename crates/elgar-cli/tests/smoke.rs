@@ -40,9 +40,9 @@ fn cli_reports_controller_proposal_without_mutating_files() {
     let rendered = render("create file hello.py", &root);
 
     assert!(rendered.contains("user: create file hello.py"));
-    assert!(rendered.contains("action proposed: action-1 WriteFile write hello.py"));
+    assert!(rendered.contains("action proposed: action-1 CreateFile write hello.py"));
     assert!(rendered.contains(
-        "assistant Controller: Proposed WriteFile action. Approve or reject before any file is written."
+        "assistant Controller: Proposed CreateFile action. Approve or reject before any file is written."
     ));
     assert!(!target.exists());
 
@@ -396,7 +396,7 @@ fn tui_command_line_loop_preserves_controller_backed_action_lifecycle() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("> create file rejected.py"));
-    assert!(stdout.contains("Action: action-1 WriteFile"));
+    assert!(stdout.contains("Action: action-1 CreateFile"));
     assert!(stdout.contains("Target: rejected.py"));
     assert!(stdout.contains("State: waiting for approval"));
     assert!(stdout.contains("State: rejected"));
@@ -404,7 +404,7 @@ fn tui_command_line_loop_preserves_controller_backed_action_lifecycle() {
     assert!(stdout.contains("Rejected actions are final"));
     assert!(stdout.contains("No proposed action is waiting for approval."));
     assert!(stdout.contains("> create file approved.py"));
-    assert!(stdout.contains("Action: action-2 WriteFile"));
+    assert!(stdout.contains("Action: action-2 CreateFile"));
     assert!(stdout.contains("Target: approved.py"));
     assert!(stdout.contains("State: applied and verified"));
     assert!(stdout.contains("Result: file written:"));

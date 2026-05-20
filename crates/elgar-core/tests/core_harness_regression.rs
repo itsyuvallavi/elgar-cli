@@ -646,7 +646,7 @@ fn second_write_file_proposal_is_blocked_while_one_action_is_pending() {
         .iter()
         .all(|event| !matches!(event, Event::ActionProposed(_))));
     assert!(controller_messages(&session).iter().any(|message| message
-        .contains("Approve or reject it before requesting another WriteFile action")));
+        .contains("Approve or reject it before requesting another CreateFile action")));
     assert_eq!(provider_event_count(&session), 0);
 
     let _ = fs::remove_dir_all(root);
@@ -735,7 +735,7 @@ fn restored_session_with_multiple_proposed_actions_cannot_apply_hidden_actions()
                 "action": {
                     "id": "action-1",
                     "request": {
-                        "WriteFile": {
+                        "CreateFile": {
                             "target_path": "first.py",
                             "contents": ""
                         }
@@ -750,7 +750,7 @@ fn restored_session_with_multiple_proposed_actions_cannot_apply_hidden_actions()
                 "action": {
                     "id": "action-2",
                     "request": {
-                        "WriteFile": {
+                        "CreateFile": {
                             "target_path": "second.py",
                             "contents": ""
                         }
@@ -932,8 +932,8 @@ fn controller_events_and_renderer_report_inspectable_action_states() {
         .any(|event| matches!(event, Event::ActionRejected(_))));
 
     let rejected_rendered = render_session(&rejected_session);
-    assert!(rejected_rendered.contains("action proposed: action-1 WriteFile write rejected.py"));
-    assert!(rejected_rendered.contains("action rejected: action-1 WriteFile write rejected.py"));
+    assert!(rejected_rendered.contains("action proposed: action-1 CreateFile write rejected.py"));
+    assert!(rejected_rendered.contains("action rejected: action-1 CreateFile write rejected.py"));
 
     let mut applied_session = session_at(&root);
     let applied_target = root.join("applied.py");
@@ -951,10 +951,10 @@ fn controller_events_and_renderer_report_inspectable_action_states() {
         .any(|event| matches!(event, Event::ActionApplied(_))));
 
     let applied_rendered = render_session(&applied_session);
-    assert!(applied_rendered.contains("action proposed: action-1 WriteFile write applied.py"));
-    assert!(applied_rendered.contains("action approved: action-1 WriteFile write applied.py"));
+    assert!(applied_rendered.contains("action proposed: action-1 CreateFile write applied.py"));
+    assert!(applied_rendered.contains("action approved: action-1 CreateFile write applied.py"));
     assert!(applied_rendered.contains(&format!(
-        "action applied: action-1 WriteFile file written: {}",
+        "action applied: action-1 CreateFile file written: {}",
         applied_target.display()
     )));
 

@@ -73,6 +73,10 @@ pub fn render_event(event: &Event) -> String {
 fn render_verified_result(result: &VerifiedActionResult) -> String {
     match result {
         VerifiedActionResult::FileWritten { path } => format!("file written: {path}"),
+        VerifiedActionResult::File(file) => format!("file result: {file:?}"),
+        VerifiedActionResult::Shell(shell) => {
+            format!("shell result: exit code {:?}", shell.exit_code)
+        }
     }
 }
 
@@ -111,8 +115,8 @@ mod tests {
 
         let rendered = render_session(&session);
 
-        assert!(rendered.contains("action proposed: action-1 WriteFile write hello.py"));
-        assert!(rendered.contains("action rejected: action-1 WriteFile write hello.py"));
-        assert!(rendered.contains("action applied: action-1 WriteFile file written: hello.py"));
+        assert!(rendered.contains("action proposed: action-1 CreateFile write hello.py"));
+        assert!(rendered.contains("action rejected: action-1 CreateFile write hello.py"));
+        assert!(rendered.contains("action applied: action-1 CreateFile file written: hello.py"));
     }
 }

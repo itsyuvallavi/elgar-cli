@@ -1,4 +1,6 @@
-use elgar_core::event::{AssistantMessageSource, Event, VerifiedActionResult};
+use elgar_core::event::{
+    AssistantMessageSource, Event, FileActionVerification, VerifiedActionResult,
+};
 
 use crate::markdown::render_assistant_markdown;
 
@@ -484,6 +486,31 @@ fn compact_thinking_summary(thinking: &str) -> String {
 fn render_verified_result(result: &VerifiedActionResult) -> String {
     match result {
         VerifiedActionResult::FileWritten { path } => format!("{path} was written"),
+        VerifiedActionResult::File(file) => render_file_verification(file),
+        VerifiedActionResult::Shell(shell) => {
+            format!(
+                "shell command finished with exit code {:?}",
+                shell.exit_code
+            )
+        }
+    }
+}
+
+fn render_file_verification(result: &FileActionVerification) -> String {
+    match result {
+        FileActionVerification::FileCreated { path } => format!("{path} was created"),
+        FileActionVerification::FilePatched { path } => format!("{path} was patched"),
+        FileActionVerification::FileOverwritten { path } => {
+            format!("{path} was overwritten")
+        }
+        FileActionVerification::FileDeleted { path } => format!("{path} was deleted"),
+        FileActionVerification::FileMoved {
+            source_path,
+            target_path,
+        } => format!("{source_path} was moved to {target_path}"),
+        FileActionVerification::DirectoryCreated { path } => {
+            format!("{path} was created")
+        }
     }
 }
 
@@ -536,29 +563,29 @@ mod tests {
             )),
             Event::ActionProposed(ActionEvent::new(
                 "action-1",
-                elgar_core::event::ActionKind::WriteFile,
+                elgar_core::event::ActionKind::CreateFile,
                 "write hello.py",
             )),
             Event::ActionApproved(ActionEvent::new(
                 "action-1",
-                elgar_core::event::ActionKind::WriteFile,
+                elgar_core::event::ActionKind::CreateFile,
                 "write hello.py",
             )),
             Event::ActionApplied(ActionApplied::new(
                 "action-1",
-                elgar_core::event::ActionKind::WriteFile,
+                elgar_core::event::ActionKind::CreateFile,
                 VerifiedActionResult::FileWritten {
                     path: "hello.py".to_string(),
                 },
             )),
             Event::ActionRejected(ActionEvent::new(
                 "action-2",
-                elgar_core::event::ActionKind::WriteFile,
+                elgar_core::event::ActionKind::CreateFile,
                 "write rejected.py",
             )),
             Event::ActionFailed(ActionFailed::new(
                 "action-3",
-                elgar_core::event::ActionKind::WriteFile,
+                elgar_core::event::ActionKind::CreateFile,
                 "permission denied",
             )),
             Event::Error(ErrorEvent::new("boom")),
@@ -575,12 +602,12 @@ mod tests {
         assert!(!rendered.contains("thinking"));
         assert!(!rendered.contains("request-1"));
         assert!(!rendered.contains("Provider text is suggestion only."));
-        assert!(rendered.contains("Review needed: action-1 WriteFile write hello.py"));
-        assert!(rendered.contains("Approved: action-1 WriteFile write hello.py"));
-        assert!(rendered.contains("Applied and verified: action-1 WriteFile hello.py was written"));
+        assert!(rendered.contains("Review needed: action-1 CreateFile write hello.py"));
+        assert!(rendered.contains("Approved: action-1 CreateFile write hello.py"));
+        assert!(rendered.contains("Applied and verified: action-1 CreateFile hello.py was written"));
         assert!(rendered
-            .contains("Rejected: action-2 WriteFile write rejected.py. No file was changed."));
-        assert!(rendered.contains("Action failed: action-3 WriteFile permission denied"));
+            .contains("Rejected: action-2 CreateFile write rejected.py. No file was changed."));
+        assert!(rendered.contains("Action failed: action-3 CreateFile permission denied"));
         assert!(rendered.contains("Error: boom"));
     }
 

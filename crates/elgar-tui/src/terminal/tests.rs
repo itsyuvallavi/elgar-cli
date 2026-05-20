@@ -372,9 +372,9 @@ fn terminal_layout_renders_pending_action_only_when_present() {
 
     let text = draw_to_text(&shell, &TerminalShellContext::from_session(&session));
 
-    assert!(text.contains("Review needed: action-1 WriteFile write hello.py"));
+    assert!(text.contains("Review needed: action-1 CreateFile write hello.py"));
     assert!(text.contains("review action"));
-    assert!(text.contains("Action: action-1 WriteFile"));
+    assert!(text.contains("Action: action-1 CreateFile"));
     assert!(text.contains("State: waiting for approval"));
     assert!(text.contains("No file has been changed yet"));
     assert!(text.contains("Use /approve or /reject"));
@@ -810,9 +810,9 @@ fn terminal_conversation_scrollback_keeps_input_status_and_pending_visible() {
     let text = draw_to_text(&shell, &TerminalShellContext::from_session(&session));
 
     assert!(text.contains("elgar v0.2"));
-    assert!(!text.contains("Review needed: action-1 WriteFile write hello.py"));
+    assert!(!text.contains("Review needed: action-1 CreateFile write hello.py"));
     assert!(text.contains("review action"));
-    assert!(text.contains("Action: action-1 WriteFile"));
+    assert!(text.contains("Action: action-1 CreateFile"));
     assert!(text.contains("> "));
     assert!(text.contains("repo"));
 }

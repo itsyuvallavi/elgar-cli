@@ -155,7 +155,7 @@ where
             PendingActionState::Single(_) => {
                 push_controller_message(
                     session,
-                    "A proposed action is already waiting. Approve or reject it before requesting another WriteFile action.",
+                    "A proposed action is already waiting. Approve or reject it before requesting another CreateFile action.",
                 );
                 return;
             }
@@ -168,7 +168,7 @@ where
         let Some(target_path) = parse_write_file_target(input) else {
             push_controller_message(
                 session,
-                "WriteFile request was recognized, but no target path could be parsed.",
+                "CreateFile request was recognized, but no target path could be parsed.",
             );
             return;
         };
@@ -186,7 +186,7 @@ where
         session.push_action(ActionRecord::new(action));
         push_controller_message(
             session,
-            "Proposed WriteFile action. Approve or reject before any file is written.",
+            "Proposed CreateFile action. Approve or reject before any file is written.",
         );
     }
 
@@ -261,7 +261,7 @@ where
                 )));
                 push_controller_message(
                     session,
-                    "Applied approved WriteFile action and verified the expected file contents.",
+                    "Applied approved CreateFile action and verified the expected file contents.",
                 );
             }
             Err(error) => {
@@ -277,7 +277,7 @@ where
                     approved.kind(),
                     reason,
                 )));
-                push_controller_message(session, "Approved WriteFile action failed. No verified file-written result was recorded.");
+                push_controller_message(session, "Approved CreateFile action failed. No verified file-created result was recorded.");
             }
         }
     }
@@ -346,9 +346,10 @@ fn pending_action_state(session: &Session) -> PendingActionState {
 
 fn action_target_label(action: &Action) -> String {
     match &action.request {
-        crate::action::ActionRequest::WriteFile(write_file) => {
-            write_file.target_path.display().to_string()
+        crate::action::ActionRequest::CreateFile(create_file) => {
+            create_file.target_path.display().to_string()
         }
+        request => request.approval_target(),
     }
 }
 

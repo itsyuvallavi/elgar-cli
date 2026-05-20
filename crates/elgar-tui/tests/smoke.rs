@@ -333,7 +333,7 @@ fn displays_proposed_write_file_action_without_writing() {
     );
 
     let rendered = shell.render();
-    assert!(rendered.contains("Pending Action\nAction: action-1 WriteFile"));
+    assert!(rendered.contains("Pending Action\nAction: action-1 CreateFile"));
     assert!(rendered.contains("Target: hello.py"));
     assert!(rendered.contains("Summary: write hello.py"));
     assert!(rendered.contains("State: waiting for approval"));

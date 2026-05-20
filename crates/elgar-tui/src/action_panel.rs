@@ -1,4 +1,4 @@
-use elgar_core::event::{ActionEvent, Event, VerifiedActionResult};
+use elgar_core::event::{ActionEvent, Event, FileActionVerification, VerifiedActionResult};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PendingActionArea {
@@ -160,6 +160,28 @@ fn render_verified_result(result: &VerifiedActionResult) -> String {
         VerifiedActionResult::FileWritten { path } => {
             format!("file written: {path}")
         }
+        VerifiedActionResult::File(file) => render_file_verification(file),
+        VerifiedActionResult::Shell(shell) => {
+            format!("shell command finished: exit code {:?}", shell.exit_code)
+        }
+    }
+}
+
+fn render_file_verification(result: &FileActionVerification) -> String {
+    match result {
+        FileActionVerification::FileCreated { path } => format!("file created: {path}"),
+        FileActionVerification::FilePatched { path } => format!("file patched: {path}"),
+        FileActionVerification::FileOverwritten { path } => {
+            format!("file overwritten: {path}")
+        }
+        FileActionVerification::FileDeleted { path } => format!("file deleted: {path}"),
+        FileActionVerification::FileMoved {
+            source_path,
+            target_path,
+        } => format!("file moved: {source_path} -> {target_path}"),
+        FileActionVerification::DirectoryCreated { path } => {
+            format!("directory created: {path}")
+        }
     }
 }
 
@@ -176,7 +198,7 @@ mod tests {
         pending_action.observe_event(&Event::ActionProposed(
             ActionEvent::new(
                 "action-1",
-                elgar_core::event::ActionKind::WriteFile,
+                elgar_core::event::ActionKind::CreateFile,
                 "write hello.py",
             )
             .with_target("hello.py"),
@@ -184,13 +206,13 @@ mod tests {
 
         let panel = pending_action.panel.as_ref().unwrap();
         assert_eq!(panel.action_id, "action-1");
-        assert_eq!(panel.action_type, "WriteFile");
+        assert_eq!(panel.action_type, "CreateFile");
         assert_eq!(panel.target.as_deref(), Some("hello.py"));
         assert_eq!(panel.summary, "write hello.py");
         assert_eq!(panel.state, ActionPanelState::Proposed);
 
         let rendered = pending_action.render_body();
-        assert!(rendered.contains("Action: action-1 WriteFile"));
+        assert!(rendered.contains("Action: action-1 CreateFile"));
         assert!(rendered.contains("Target: hello.py"));
         assert!(rendered.contains("Summary: write hello.py"));
         assert!(rendered.contains("State: waiting for approval"));
@@ -204,7 +226,7 @@ mod tests {
         pending_action.observe_event(&Event::ActionProposed(
             ActionEvent::new(
                 "action-1",
-                elgar_core::event::ActionKind::WriteFile,
+                elgar_core::event::ActionKind::CreateFile,
                 "write hello.py",
             )
             .with_target("hello.py"),
@@ -212,7 +234,7 @@ mod tests {
         pending_action.observe_event(&Event::ActionRejected(
             ActionEvent::new(
                 "action-1",
-                elgar_core::event::ActionKind::WriteFile,
+                elgar_core::event::ActionKind::CreateFile,
                 "write hello.py",
             )
             .with_target("hello.py"),
@@ -232,7 +254,7 @@ mod tests {
 
         pending_action.observe_event(&Event::ActionApplied(ActionApplied::new(
             "action-1",
-            elgar_core::event::ActionKind::WriteFile,
+            elgar_core::event::ActionKind::CreateFile,
             VerifiedActionResult::FileWritten {
                 path: "hello.py".to_string(),
             },

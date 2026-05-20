@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub use crate::action::ActionKind;
+pub use crate::action::{ActionKind, FileActionVerification, ShellActionVerification};
 
 /// A controller-recorded fact that can be rendered by CLI, TUI, or tests.
 ///
@@ -242,6 +242,10 @@ impl ActionApplied {
 pub enum VerifiedActionResult {
     /// The filesystem confirmed that a file was written at this path.
     FileWritten { path: String },
+    /// The filesystem confirmed a typed file action result.
+    File(FileActionVerification),
+    /// The shell confirmed a typed command result.
+    Shell(ShellActionVerification),
 }
 
 /// A failed action recorded by the controller.

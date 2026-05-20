@@ -23,10 +23,15 @@ impl Filesystem {
             });
         }
 
-        let write_file = match &action.request {
-            ActionRequest::WriteFile(write_file) => write_file,
+        let create_file = match &action.request {
+            ActionRequest::CreateFile(create_file) => create_file,
+            _ => {
+                return Err(FilesystemError::UnsupportedAction {
+                    kind: action.kind(),
+                });
+            }
         };
-        let target_path = resolve_allowed_target(&write_file.target_path, allowed_root.as_ref())?;
+        let target_path = resolve_allowed_target(&create_file.target_path, allowed_root.as_ref())?;
 
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -44,7 +49,7 @@ impl Filesystem {
                     }
                 }
             })?;
-        file.write_all(write_file.contents.as_bytes())
+        file.write_all(create_file.contents.as_bytes())
             .map_err(|source| FilesystemError::WriteFailed {
                 path: target_path.clone(),
                 reason: source.to_string(),
@@ -57,7 +62,7 @@ impl Filesystem {
                 reason: source.to_string(),
             })?;
 
-        if verified_contents == write_file.contents {
+        if verified_contents == create_file.contents {
             Ok(VerifiedActionResult::FileWritten {
                 path: target_path.display().to_string(),
             })
@@ -144,6 +149,7 @@ fn resolve_allowed_target(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilesystemError {
     ActionNotApproved { state: ActionLifecycleState },
+    UnsupportedAction { kind: crate::action::ActionKind },
     UnsafeRoot { path: PathBuf, reason: String },
     UnsafeTarget { path: PathBuf, reason: String },
     TargetAlreadyExists { path: PathBuf },
@@ -156,6 +162,9 @@ impl fmt::Display for FilesystemError {
         match self {
             FilesystemError::ActionNotApproved { state } => {
                 write!(formatter, "action is not approved: {state:?}")
+            }
+            FilesystemError::UnsupportedAction { kind } => {
+                write!(formatter, "unsupported filesystem action: {kind:?}")
             }
             FilesystemError::UnsafeRoot { path, reason } => {
                 write!(formatter, "unsafe write root {}: {reason}", path.display())

@@ -841,10 +841,10 @@ mod tests {
 
         assert!(target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("Review needed: action-1 WriteFile write hello.py"));
+        assert!(rendered.contains("Review needed: action-1 CreateFile write hello.py"));
         assert!(rendered.contains("> approve"));
-        assert!(rendered.contains("Approved: action-1 WriteFile write hello.py"));
-        assert!(rendered.contains("Applied and verified: action-1 WriteFile"));
+        assert!(rendered.contains("Approved: action-1 CreateFile write hello.py"));
+        assert!(rendered.contains("Applied and verified: action-1 CreateFile"));
         assert!(rendered.contains("hello.py was written"));
         assert!(!rendered.contains("lm-studio"));
 
@@ -877,10 +877,10 @@ mod tests {
 
         assert!(!target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("Review needed: action-1 WriteFile write hello.py"));
+        assert!(rendered.contains("Review needed: action-1 CreateFile write hello.py"));
         assert!(rendered.contains("> reject"));
         assert!(
-            rendered.contains("Rejected: action-1 WriteFile write hello.py. No file was changed.")
+            rendered.contains("Rejected: action-1 CreateFile write hello.py. No file was changed.")
         );
         assert!(!rendered.contains("lm-studio"));
 
@@ -943,7 +943,7 @@ mod tests {
         assert!(target.exists());
         assert!(rendered.contains("> create file hello.py"));
         assert!(rendered.contains("> approve"));
-        assert!(rendered.contains("Applied and verified: action-1 WriteFile"));
+        assert!(rendered.contains("Applied and verified: action-1 CreateFile"));
         assert!(rendered.contains("hello.py was written"));
         assert!(rendered.contains("Exiting Elgar TUI."));
         assert!(!rendered.contains("lm-studio"));

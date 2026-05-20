@@ -170,7 +170,7 @@ mod tests {
             session.actions[0].action.state,
             ActionLifecycleState::Applied
         );
-        assert_eq!(session.actions[0].action.kind(), ActionKind::WriteFile);
+        assert_eq!(session.actions[0].action.kind(), ActionKind::CreateFile);
         assert_eq!(
             session.actions[0].verified_result,
             Some(VerifiedActionResult::FileWritten {
