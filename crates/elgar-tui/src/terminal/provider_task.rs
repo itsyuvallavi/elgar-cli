@@ -19,6 +19,10 @@ pub(super) struct ProviderTurnTask {
 }
 
 impl ProviderTurnTask {
+    /// Cancel at the UI/session boundary.
+    ///
+    /// This suppresses later chunks and final session updates. It does not
+    /// currently abort an already-running provider socket in the worker thread.
     pub(super) fn cancel(&self) {
         self.canceled.store(true, Ordering::SeqCst);
     }

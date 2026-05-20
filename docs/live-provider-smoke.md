@@ -26,11 +26,18 @@ Current local config:
   "provider": "lm-studio",
   "base_url": "http://127.0.0.1:1234/v1",
   "default_model": "openai/gpt-oss-20b",
-  "mode": "live"
+  "mode": "live",
+  "connect_timeout_millis": 2000,
+  "read_timeout_millis": 120000,
+  "write_timeout_millis": 5000,
+  "request_timeout_millis": 180000,
+  "stream": true
 }
 ```
 
 The model name must match the loaded model name shown in LM Studio.
+The timeout fields are explicit: connect is short because LM Studio is local,
+while read/request are longer so slower local generations do not fail at 30s.
 
 When `mode` is `live`, normal CLI text and `tui-terminal` use the configured LM
 Studio model. The line-oriented `tui` command remains a stub/no-network harness
@@ -128,3 +135,15 @@ metrics such as serialized request bytes, token usage when returned by the
 OpenAI-compatible response, first chunk latency for streaming calls, and total
 duration. These metrics can identify slow local provider turns, but they do not
 prove why LM Studio did or did not reuse its prompt cache.
+
+## Timeout And Cancel Semantics
+
+`timeout_millis` remains the legacy fallback. The preferred fields are:
+
+- `connect_timeout_millis`: opening the local socket.
+- `write_timeout_millis`: sending the JSON request.
+- `read_timeout_millis`: waiting between response reads.
+- `request_timeout_millis`: total request budget.
+
+`/cancel` drops visible/session updates from the active provider turn. It does
+not yet abort an already-running provider socket immediately.

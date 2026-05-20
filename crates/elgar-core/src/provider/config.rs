@@ -19,6 +19,14 @@ pub struct ProviderConfig {
     #[serde(default = "default_timeout_millis")]
     pub timeout_millis: u64,
     #[serde(default)]
+    pub connect_timeout_millis: Option<u64>,
+    #[serde(default)]
+    pub read_timeout_millis: Option<u64>,
+    #[serde(default)]
+    pub write_timeout_millis: Option<u64>,
+    #[serde(default)]
+    pub request_timeout_millis: Option<u64>,
+    #[serde(default)]
     pub stream: bool,
 }
 
@@ -33,6 +41,22 @@ impl ProviderConfig {
     pub fn chat_completions_url(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
     }
+
+    pub fn connect_timeout_millis(&self) -> u64 {
+        self.connect_timeout_millis.unwrap_or(self.timeout_millis)
+    }
+
+    pub fn read_timeout_millis(&self) -> u64 {
+        self.read_timeout_millis.unwrap_or(self.timeout_millis)
+    }
+
+    pub fn write_timeout_millis(&self) -> u64 {
+        self.write_timeout_millis.unwrap_or(self.timeout_millis)
+    }
+
+    pub fn request_timeout_millis(&self) -> u64 {
+        self.request_timeout_millis.unwrap_or(self.timeout_millis)
+    }
 }
 
 impl Default for ProviderConfig {
@@ -42,6 +66,10 @@ impl Default for ProviderConfig {
             base_url: default_base_url(),
             model: None,
             timeout_millis: default_timeout_millis(),
+            connect_timeout_millis: None,
+            read_timeout_millis: None,
+            write_timeout_millis: None,
+            request_timeout_millis: None,
             stream: false,
         }
     }
@@ -76,6 +104,22 @@ mod tests {
         assert_eq!(config.base_url, LM_STUDIO_DEFAULT_BASE_URL);
         assert_eq!(config.model, None);
         assert_eq!(config.timeout_millis, LM_STUDIO_DEFAULT_TIMEOUT_MILLIS);
+        assert_eq!(
+            config.connect_timeout_millis(),
+            LM_STUDIO_DEFAULT_TIMEOUT_MILLIS
+        );
+        assert_eq!(
+            config.read_timeout_millis(),
+            LM_STUDIO_DEFAULT_TIMEOUT_MILLIS
+        );
+        assert_eq!(
+            config.write_timeout_millis(),
+            LM_STUDIO_DEFAULT_TIMEOUT_MILLIS
+        );
+        assert_eq!(
+            config.request_timeout_millis(),
+            LM_STUDIO_DEFAULT_TIMEOUT_MILLIS
+        );
         assert!(!config.stream);
         assert_eq!(
             config.chat_completions_url(),
@@ -94,7 +138,29 @@ mod tests {
         assert_eq!(config.base_url, LM_STUDIO_DEFAULT_BASE_URL);
         assert_eq!(config.model.as_deref(), Some("local-model"));
         assert_eq!(config.timeout_millis, LM_STUDIO_DEFAULT_TIMEOUT_MILLIS);
+        assert_eq!(config.connect_timeout_millis, None);
+        assert_eq!(config.read_timeout_millis, None);
+        assert_eq!(config.write_timeout_millis, None);
+        assert_eq!(config.request_timeout_millis, None);
         assert!(!config.stream);
+    }
+
+    #[test]
+    fn provider_config_deserializes_phase_timeouts() {
+        let config: ProviderConfig = serde_json::from_value(json!({
+            "model": "local-model",
+            "timeout_millis": 30_000,
+            "connect_timeout_millis": 1_000,
+            "read_timeout_millis": 120_000,
+            "write_timeout_millis": 2_000,
+            "request_timeout_millis": 180_000
+        }))
+        .unwrap();
+
+        assert_eq!(config.connect_timeout_millis(), 1_000);
+        assert_eq!(config.read_timeout_millis(), 120_000);
+        assert_eq!(config.write_timeout_millis(), 2_000);
+        assert_eq!(config.request_timeout_millis(), 180_000);
     }
 
     #[test]

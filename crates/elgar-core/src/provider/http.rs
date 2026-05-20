@@ -2,7 +2,7 @@ use std::{
     io,
     io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::provider::types::ProviderError;
@@ -78,6 +78,54 @@ pub(super) struct HttpResponse {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HttpTimeouts {
+    connect: Duration,
+    read: Duration,
+    write: Duration,
+    request: Duration,
+}
+
+impl HttpTimeouts {
+    pub(super) fn from_millis(
+        connect_millis: u64,
+        read_millis: u64,
+        write_millis: u64,
+        request_millis: u64,
+    ) -> Self {
+        Self {
+            connect: duration_from_millis(connect_millis),
+            read: duration_from_millis(read_millis),
+            write: duration_from_millis(write_millis),
+            request: duration_from_millis(request_millis),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RequestDeadline {
+    started: Instant,
+    timeout: Duration,
+}
+
+impl RequestDeadline {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            started: Instant::now(),
+            timeout,
+        }
+    }
+
+    fn remaining(self, phase: &str) -> Result<Duration, ProviderError> {
+        let elapsed = self.started.elapsed();
+        if elapsed >= self.timeout {
+            return Err(request_timeout_error(phase, self.timeout));
+        }
+
+        Ok(self.timeout - elapsed)
+    }
+}
+
 fn parse_authority(authority: &str) -> Result<(String, u16), ProviderError> {
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port)) => {
@@ -101,33 +149,41 @@ fn parse_authority(authority: &str) -> Result<(String, u16), ProviderError> {
 pub(super) fn post_json(
     endpoint: &HttpEndpoint,
     body: &str,
-    timeout: Duration,
+    timeouts: HttpTimeouts,
 ) -> Result<HttpResponse, ProviderError> {
-    let mut stream = connect_with_timeout(endpoint, timeout)?;
+    let deadline = RequestDeadline::new(timeouts.request);
+    let mut stream = connect_with_timeout(
+        endpoint,
+        timeouts.connect.min(deadline.remaining("connect")?),
+    )?;
     stream
-        .set_read_timeout(Some(timeout))
+        .set_read_timeout(Some(timeouts.read.min(deadline.remaining("read")?)))
         .map_err(|error| ProviderError::network(error.to_string()))?;
     stream
-        .set_write_timeout(Some(timeout))
+        .set_write_timeout(Some(timeouts.write.min(deadline.remaining("write")?)))
         .map_err(|error| ProviderError::network(error.to_string()))?;
 
     write_json_request(&mut stream, endpoint, body, "application/json")?;
 
-    read_http_response(stream)
+    read_http_response(stream, timeouts, deadline)
 }
 
 pub(super) fn post_json_streaming(
     endpoint: &HttpEndpoint,
     body: &str,
-    timeout: Duration,
+    timeouts: HttpTimeouts,
     on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
 ) -> Result<HttpResponse, ProviderError> {
-    let mut stream = connect_with_timeout(endpoint, timeout)?;
+    let deadline = RequestDeadline::new(timeouts.request);
+    let mut stream = connect_with_timeout(
+        endpoint,
+        timeouts.connect.min(deadline.remaining("connect")?),
+    )?;
     stream
-        .set_read_timeout(Some(timeout))
+        .set_read_timeout(Some(timeouts.read.min(deadline.remaining("read")?)))
         .map_err(|error| ProviderError::network(error.to_string()))?;
     stream
-        .set_write_timeout(Some(timeout))
+        .set_write_timeout(Some(timeouts.write.min(deadline.remaining("write")?)))
         .map_err(|error| ProviderError::network(error.to_string()))?;
 
     write_json_request(
@@ -137,7 +193,7 @@ pub(super) fn post_json_streaming(
         "text/event-stream, application/json",
     )?;
 
-    read_streaming_http_response(stream, on_body_chunk)
+    read_streaming_http_response(stream, timeouts, deadline, on_body_chunk)
 }
 
 fn write_json_request(
@@ -163,20 +219,39 @@ fn connect_with_timeout(
     endpoint: &HttpEndpoint,
     timeout: Duration,
 ) -> Result<TcpStream, ProviderError> {
-    TcpStream::connect_timeout(&endpoint.socket_addr()?, timeout)
-        .map_err(|error| ProviderError::network(error.to_string()))
+    TcpStream::connect_timeout(&endpoint.socket_addr()?, timeout).map_err(|error| {
+        match error.kind() {
+            io::ErrorKind::TimedOut => ProviderError::network(format!(
+                "provider connect timed out after {}ms",
+                timeout.as_millis()
+            )),
+            _ => ProviderError::network(error.to_string()),
+        }
+    })
 }
 
-fn read_http_response(mut stream: TcpStream) -> Result<HttpResponse, ProviderError> {
+fn read_http_response(
+    mut stream: TcpStream,
+    timeouts: HttpTimeouts,
+    deadline: RequestDeadline,
+) -> Result<HttpResponse, ProviderError> {
     let mut bytes = Vec::new();
-    stream
-        .read_to_end(&mut bytes)
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
-                ProviderError::network("provider request timed out")
-            }
-            _ => ProviderError::network(error.to_string()),
-        })?;
+    let mut read_buffer = [0_u8; 4096];
+
+    loop {
+        deadline.remaining("read")?;
+        stream
+            .set_read_timeout(Some(timeouts.read.min(deadline.remaining("read")?)))
+            .map_err(|error| ProviderError::network(error.to_string()))?;
+        let read = stream
+            .read(&mut read_buffer)
+            .map_err(|error| read_error(error, "read", timeouts.read))?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&read_buffer[..read]);
+    }
+
     let raw = String::from_utf8(bytes)
         .map_err(|error| ProviderError::response_parse(error.to_string()))?;
     parse_http_response(&raw)
@@ -184,6 +259,8 @@ fn read_http_response(mut stream: TcpStream) -> Result<HttpResponse, ProviderErr
 
 fn read_streaming_http_response(
     mut stream: TcpStream,
+    timeouts: HttpTimeouts,
+    deadline: RequestDeadline,
     on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
 ) -> Result<HttpResponse, ProviderError> {
     let mut bytes = Vec::new();
@@ -194,14 +271,13 @@ fn read_streaming_http_response(
     let mut chunked_complete = false;
 
     loop {
+        deadline.remaining("stream read")?;
+        stream
+            .set_read_timeout(Some(timeouts.read.min(deadline.remaining("stream read")?)))
+            .map_err(|error| ProviderError::network(error.to_string()))?;
         let read = stream
             .read(&mut read_buffer)
-            .map_err(|error| match error.kind() {
-                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
-                    ProviderError::network("provider request timed out")
-                }
-                _ => ProviderError::network(error.to_string()),
-            })?;
+            .map_err(|error| read_error(error, "stream read", timeouts.read))?;
         if read == 0 {
             break;
         }
@@ -256,6 +332,27 @@ fn read_streaming_http_response(
         status_code: header.status_code,
         body,
     })
+}
+
+fn read_error(error: io::Error, phase: &str, timeout: Duration) -> ProviderError {
+    match error.kind() {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ProviderError::network(format!(
+            "provider {phase} timed out after {}ms",
+            timeout.as_millis()
+        )),
+        _ => ProviderError::network(error.to_string()),
+    }
+}
+
+fn request_timeout_error(phase: &str, timeout: Duration) -> ProviderError {
+    ProviderError::network(format!(
+        "provider request timed out during {phase} after {}ms",
+        timeout.as_millis()
+    ))
+}
+
+fn duration_from_millis(millis: u64) -> Duration {
+    Duration::from_millis(millis.max(1))
 }
 
 #[derive(Debug, Clone, Copy)]

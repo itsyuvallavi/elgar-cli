@@ -9,7 +9,7 @@ use crate::{
     event::{ProviderMetrics, ProviderOutput, ProviderTokenUsage},
     provider::{
         config::ProviderConfig,
-        http::{post_json, post_json_streaming, HttpEndpoint},
+        http::{post_json, post_json_streaming, HttpEndpoint, HttpTimeouts},
         types::{
             ChatMessage, ChatRequest, ChatResponse, ControllerProvider, ProviderError,
             ProviderErrorResponse, ProviderRequestMetadata, ProviderStreamChunk,
@@ -211,8 +211,7 @@ fn chat_lm_studio_with_request_id(
     let (request, body) = format_chat_request_body(config, messages)?;
     let mut metrics = metrics_for_request(request_id, &request, body.len());
     let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
-    let timeout = Duration::from_millis(config.timeout_millis);
-    let response = post_json(&endpoint, &body, timeout)?;
+    let response = post_json(&endpoint, &body, http_timeouts(config))?;
 
     if response.status_code.is_success() {
         metrics.total_duration_millis = Some(duration_millis(started.elapsed()));
@@ -255,16 +254,16 @@ fn chat_lm_studio_streaming_with_request_id(
     let (request, body) = format_chat_request_body(config, messages)?;
     let mut metrics = metrics_for_request(request_id, &request, body.len());
     let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
-    let timeout = Duration::from_millis(config.timeout_millis);
     let mut parts = StreamingOutputParts::default();
-    let response = post_json_streaming(&endpoint, &body, timeout, &mut |body_chunk| {
-        parts.push_body_chunk(body_chunk, &mut |chunk| {
-            if metrics.first_chunk_latency_millis.is_none() {
-                metrics.first_chunk_latency_millis = Some(duration_millis(started.elapsed()));
-            }
-            on_chunk(chunk);
-        })
-    })?;
+    let response =
+        post_json_streaming(&endpoint, &body, http_timeouts(config), &mut |body_chunk| {
+            parts.push_body_chunk(body_chunk, &mut |chunk| {
+                if metrics.first_chunk_latency_millis.is_none() {
+                    metrics.first_chunk_latency_millis = Some(duration_millis(started.elapsed()));
+                }
+                on_chunk(chunk);
+            })
+        })?;
 
     if response.status_code.is_success() {
         parts.finish(&mut |chunk| {
@@ -289,6 +288,15 @@ fn emit_output_chunks(output: &ProviderOutput, on_chunk: &mut dyn FnMut(Provider
         on_chunk(ProviderStreamChunk::Reasoning(thinking.clone()));
     }
     on_chunk(ProviderStreamChunk::Text(output.text.clone()));
+}
+
+fn http_timeouts(config: &ProviderConfig) -> HttpTimeouts {
+    HttpTimeouts::from_millis(
+        config.connect_timeout_millis(),
+        config.read_timeout_millis(),
+        config.write_timeout_millis(),
+        config.request_timeout_millis(),
+    )
 }
 
 fn metrics_for_request(
@@ -468,7 +476,7 @@ mod tests {
     };
 
     use super::{
-        chat_lm_studio_streaming, elgar_controller_messages, format_chat_request,
+        chat_lm_studio, chat_lm_studio_streaming, elgar_controller_messages, format_chat_request,
         format_chat_request_body, parse_chat_response_json, parse_chat_response_json_with_metrics,
         parse_chat_stream_chunks, parse_chat_stream_response, parse_provider_error_json,
         ChatMessage, LmStudioProvider, ProviderConfig,
@@ -933,6 +941,77 @@ data: [DONE]
         server.join().unwrap();
         assert_eq!(error.kind, ProviderErrorKind::ResponseParse);
         assert!(error.message.contains("terminal chunk"));
+        assert_eq!(
+            chunks,
+            vec![ProviderStreamChunk::Text("Partial".to_string())]
+        );
+    }
+
+    #[test]
+    fn live_chat_reports_read_timeout_with_phase_without_external_network() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            thread::sleep(Duration::from_millis(40));
+        });
+
+        let config = ProviderConfig {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            connect_timeout_millis: Some(1_000),
+            read_timeout_millis: Some(10),
+            request_timeout_millis: Some(1_000),
+            ..ProviderConfig::lm_studio("loaded-model")
+        };
+        let error = chat_lm_studio(&config, vec![ChatMessage::user("hello")]).unwrap_err();
+
+        server.join().unwrap();
+        assert_eq!(error.kind, ProviderErrorKind::Network);
+        assert!(error.message.contains("provider read timed out"));
+    }
+
+    #[test]
+    fn live_streaming_timeout_after_partial_chunk_returns_no_finished_output() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            write_chunk(
+                &mut stream,
+                r#"data: {"choices":[{"delta":{"content":"Partial"}}]}
+
+"#,
+            );
+            thread::sleep(Duration::from_millis(40));
+        });
+
+        let config = ProviderConfig {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            stream: true,
+            connect_timeout_millis: Some(1_000),
+            read_timeout_millis: Some(10),
+            request_timeout_millis: Some(1_000),
+            ..ProviderConfig::lm_studio("loaded-model")
+        };
+        let mut chunks = Vec::new();
+        let error =
+            chat_lm_studio_streaming(&config, vec![ChatMessage::user("hello")], &mut |chunk| {
+                chunks.push(chunk);
+            })
+            .unwrap_err();
+
+        server.join().unwrap();
+        assert_eq!(error.kind, ProviderErrorKind::Network);
+        assert!(error.message.contains("provider stream read timed out"));
         assert_eq!(
             chunks,
             vec![ProviderStreamChunk::Text("Partial".to_string())]
