@@ -7,6 +7,7 @@ use super::{TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
 
 pub(super) const LIVE_REASONING_PREVIEW_BYTES: usize = 1024;
 pub(super) const LIVE_RESPONSE_PREVIEW_BYTES: usize = 4096;
+const LIVE_REASONING_SUMMARY_CHARS: usize = 160;
 
 pub(super) fn non_empty_lines(lines: Vec<String>) -> Vec<String> {
     if lines.is_empty() {
@@ -169,6 +170,7 @@ impl LiveProviderOutput {
 
     fn reasoning_summary(&self) -> Option<String> {
         compact_streaming_text(&self.reasoning)
+            .and_then(|text| format_live_reasoning_summary(&text))
     }
 
     #[cfg(test)]
@@ -259,8 +261,98 @@ fn compact_streaming_text(text: &str) -> Option<String> {
     if text.is_empty() {
         None
     } else {
-        Some(text.chars().take(240).collect())
+        Some(text)
     }
+}
+
+fn format_live_reasoning_summary(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    let formatted = if let Some(rest) = strip_prefix_case_insensitive(text, "we need to ") {
+        progress_note_from_need(rest)
+    } else if let Some(rest) = strip_prefix_case_insensitive(text, "need to ") {
+        progress_note_from_need(rest)
+    } else if let Some(rest) = strip_prefix_case_insensitive(text, "need ") {
+        progress_note_from_need(rest)
+    } else {
+        normalize_sentence(text)
+    };
+
+    let formatted = truncate_chars(&formatted, LIVE_REASONING_SUMMARY_CHARS);
+    if formatted.is_empty() {
+        None
+    } else {
+        Some(formatted)
+    }
+}
+
+fn strip_prefix_case_insensitive<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    text.get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        .then(|| text[prefix.len()..].trim())
+}
+
+fn progress_note_from_need(text: &str) -> String {
+    let text = normalize_sentence(text);
+    if text.is_empty() {
+        return text;
+    }
+
+    let mut words = text.splitn(2, ' ');
+    let first = words.next().unwrap_or_default();
+    let rest = words.next().unwrap_or_default();
+    let first = first
+        .trim_end_matches(|character: char| !character.is_alphanumeric())
+        .to_ascii_lowercase();
+    let verb = match first.as_str() {
+        "answer" => "Answering",
+        "respond" => "Responding",
+        "reply" => "Replying",
+        "explain" => "Explaining",
+        "summarize" => "Summarizing",
+        "check" => "Checking",
+        "inspect" => "Inspecting",
+        "review" => "Reviewing",
+        "read" => "Reading",
+        "test" => "Testing",
+        "verify" => "Verifying",
+        "use" => "Using",
+        _ => return text,
+    };
+
+    if rest.is_empty() {
+        format!("{verb}.")
+    } else {
+        format!("{verb} {rest}")
+    }
+}
+
+fn normalize_sentence(text: &str) -> String {
+    let mut text = text.trim().to_string();
+    if text.is_empty() {
+        return text;
+    }
+
+    if let Some(first) = text.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    text
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let mut truncated = text
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 fn prompt_input_lines(input: &str, width: usize) -> Vec<String> {

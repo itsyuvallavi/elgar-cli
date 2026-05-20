@@ -114,3 +114,17 @@ ELGAR_LM_STUDIO_MODEL="actual-loaded-model-name" \
 ELGAR_LM_STUDIO_BASE_URL="http://127.0.0.1:1234/v1" \
 cargo run -p elgar-cli -- tui-controller-smoke "Say hello in one sentence."
 ```
+
+## LM Studio Latency And Prompt Cache Notes
+
+The latest local trace for a short `what can you do?` answer showed LM Studio
+reporting prompt cache reuse as `0/214` tokens and taking about five seconds.
+Treat that as provider-side behavior: `0/N` means LM Studio did not reuse a
+prompt prefix for that request, even though Elgar keeps the fixed controller
+system prompt compact.
+
+Elgar records no-network-safe request metadata and, on live calls, provider
+metrics such as serialized request bytes, token usage when returned by the
+OpenAI-compatible response, first chunk latency for streaming calls, and total
+duration. These metrics can identify slow local provider turns, but they do not
+prove why LM Studio did or did not reuse its prompt cache.

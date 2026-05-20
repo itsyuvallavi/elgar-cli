@@ -105,9 +105,76 @@ fn active_working_frame_shows_live_reasoning_without_partial_response() {
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
     assert!(progress.is_empty());
-    assert_eq!(reasoning, vec!["", "Need greet."]);
+    assert_eq!(reasoning, vec!["", "Greet."]);
     assert!(response.is_empty());
     assert!(!reasoning.join("\n").contains("thinking"));
+}
+
+#[test]
+fn active_working_frame_polishes_common_live_reasoning_prefixes() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning(
+        "Need to answer briefly.".to_string(),
+    ));
+
+    let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "status", &live_output, 80);
+
+    assert_eq!(reasoning, vec!["", "Answering briefly."]);
+    assert!(response.is_empty());
+}
+
+#[test]
+fn active_working_frame_polishes_we_need_live_reasoning_prefix() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning(
+        "We need to inspect the prompt renderer tests.".to_string(),
+    ));
+
+    let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "status", &live_output, 80);
+
+    assert_eq!(reasoning, vec!["", "Inspecting the prompt renderer tests."]);
+    assert!(response.is_empty());
+}
+
+#[test]
+fn active_working_frame_does_not_turn_action_reasoning_into_action_claims() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning(
+        "Need to write hello.py.".to_string(),
+    ));
+
+    let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "status", &live_output, 80);
+
+    assert_eq!(reasoning, vec!["", "Write hello.py."]);
+    assert!(!reasoning.join("\n").contains("Writing hello.py"));
+    assert!(response.is_empty());
+}
+
+#[test]
+fn active_working_frame_keeps_live_reasoning_summary_short() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning(format!(
+        "Need to answer {}",
+        "briefly ".repeat(40)
+    )));
+
+    let (_progress, reasoning, _response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "status", &live_output, 240);
+
+    assert_eq!(reasoning.len(), 2);
+    assert!(reasoning[1].chars().count() <= 160);
+    assert!(reasoning[1].ends_with('…'));
 }
 
 #[test]

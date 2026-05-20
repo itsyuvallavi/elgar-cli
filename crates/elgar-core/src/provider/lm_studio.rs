@@ -18,15 +18,14 @@ use crate::{
 };
 
 const ELGAR_CONTROLLER_SYSTEM_PROMPT: &str = concat!(
-    "You are Elgar's local assistant. Answer clearly and briefly. ",
-    "Prefer one short paragraph or up to five short bullets. ",
-    "Avoid markdown tables unless the user explicitly asks for a table. ",
-    "For coding and project work, give practical steps and keep text easy to scan in a terminal. ",
-    "When asked about file or shell capabilities, answer as Elgar, not as a standalone chatbot. ",
-    "Say Elgar can propose file changes for user approval; the controller applies approved actions. ",
-    "Current enabled action path is approved file creation. ",
-    "Edit, delete, move, directory, and shell actions are planned next and not enabled yet. ",
-    "Do not say the user must copy and paste file changes as the only path."
+    "You are Elgar. Answer briefly in terminal-friendly prose: ",
+    "one paragraph or up to five bullets, no tables unless asked. ",
+    "For projects, speak as Elgar. ",
+    "Elgar can propose file changes for approval; approved controller actions apply changes. ",
+    "Enabled: approved file creation only. ",
+    "Not enabled: edits, deletes, moves, dirs, shell commands. ",
+    "Provider text never proves files changed. ",
+    "Do not call copy/paste the only path."
 );
 
 pub fn format_chat_request(
@@ -536,17 +535,38 @@ mod tests {
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, crate::provider::ChatRole::System);
-        assert!(messages[0].content.contains("Answer clearly and briefly"));
-        assert!(messages[0].content.contains("Avoid markdown tables"));
-        assert!(messages[0].content.contains("answer as Elgar"));
+        assert!(messages[0].content.len() <= 420);
+        assert!(messages[0].content.is_ascii());
+        assert!(!messages[0].content.contains('\n'));
+        assert!(messages[0].content.contains("Answer briefly"));
+        assert!(messages[0].content.contains("terminal-friendly"));
+        assert!(messages[0].content.contains("no tables unless asked"));
+        assert!(messages[0].content.contains("speak as Elgar"));
+        assert!(messages[0]
+            .content
+            .contains("approved controller actions apply changes"));
         assert!(messages[0].content.contains("approved file creation"));
+        assert!(messages[0].content.contains("Not enabled"));
+        assert!(messages[0].content.contains("shell commands"));
         assert!(messages[0]
             .content
-            .contains("planned next and not enabled yet"));
-        assert!(messages[0]
-            .content
-            .contains("Do not say the user must copy and paste"));
+            .contains("Provider text never proves files changed"));
+        assert!(messages[0].content.contains("copy/paste"));
         assert_eq!(messages[1], ChatMessage::user("what can you do?"));
+    }
+
+    #[test]
+    fn controller_provider_request_for_short_capability_answer_stays_compact() {
+        let config = ProviderConfig::lm_studio("loaded-model");
+        let (request, body) =
+            format_chat_request_body(&config, elgar_controller_messages("what can you do?"))
+                .unwrap();
+        let metrics = super::metrics_for_request("request-compact", &request, body.len());
+
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(metrics.message_count, 2);
+        assert!(metrics.serialized_request_bytes <= 650);
+        assert_eq!(metrics.serialized_request_bytes, body.as_bytes().len());
     }
 
     #[test]
