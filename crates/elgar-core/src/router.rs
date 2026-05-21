@@ -114,9 +114,23 @@ fn is_move_file_request(input: &str) -> bool {
 
 fn is_create_directory_request(input: &str) -> bool {
     input.starts_with("create directory ")
+        || input.starts_with("create a directory ")
         || input.starts_with("create dir ")
+        || input.starts_with("create folder ")
+        || input.starts_with("create a folder ")
         || input.starts_with("make directory ")
+        || input.starts_with("make a directory ")
         || input.starts_with("make dir ")
+        || input.starts_with("make folder ")
+        || input.starts_with("make a folder ")
+        || input.starts_with("can you create a directory ")
+        || input.starts_with("can you create a folder ")
+        || input.starts_with("can you make a directory ")
+        || input.starts_with("can you make a folder ")
+        || input.starts_with("please create a directory ")
+        || input.starts_with("please create a folder ")
+        || input.starts_with("please make a directory ")
+        || input.starts_with("please make a folder ")
         || input.starts_with("mkdir ")
 }
 
@@ -248,6 +262,22 @@ mod tests {
         );
         assert_eq!(route_input("shell command pwd"), Route::ProposeShellCommand);
         assert_eq!(route_input("run ls"), Route::ProposeShellCommand);
+    }
+
+    #[test]
+    fn classifies_natural_folder_requests_as_directory_actions() {
+        assert_eq!(
+            route_input("create a folder called hello-world"),
+            Route::ProposeCreateDirectory
+        );
+        assert_eq!(
+            route_input("can you create a folder called hello-world in the desktop?"),
+            Route::ProposeCreateDirectory
+        );
+        assert_eq!(
+            route_input("create a folder at /tmp/elgar-demo"),
+            Route::ProposeCreateDirectory
+        );
     }
 
     #[test]

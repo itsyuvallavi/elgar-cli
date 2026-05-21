@@ -7,8 +7,11 @@ Visual target: `docs/pi-like-terminal-tui-visual-spec.md`.
 Run:
 
 ```sh
-cargo run -p elgar-cli -- tui-terminal
+elgar
 ```
+
+If `elgar` is not installed on PATH, run `./bin/install-local` first.
+`cargo run -p elgar-cli -- tui-terminal` remains a compatibility fallback.
 
 Review these states:
 
@@ -24,7 +27,7 @@ Review these states:
 Before commit:
 
 - Capture or review screenshots for the changed states.
-- Confirm `tui-terminal` behaves as an inline terminal transcript, not a fixed full-screen panel.
+- Confirm `elgar` behaves as an inline terminal transcript, not a fixed full-screen panel.
 - Confirm startup has breathing room, one clear sentence, real context files, and `provider · model`.
 - Confirm the active prompt marker is on the input row and no cursor/block appears below the footer.
 - Confirm the prompt frame has matching separators above and below the input row.

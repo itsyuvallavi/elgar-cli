@@ -64,6 +64,18 @@ fn provider_smoke_command_requires_model_env_without_network() {
 }
 
 #[test]
+fn zero_arg_elgar_non_interactive_keeps_placeholder_without_hanging() {
+    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .env_remove("ELGAR_PROVIDER_CONFIG")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Elgar v0.2 is ready"));
+}
+
+#[test]
 fn controller_smoke_command_requires_model_env_without_network() {
     let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("controller-smoke")

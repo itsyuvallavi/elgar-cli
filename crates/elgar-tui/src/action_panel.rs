@@ -162,10 +162,14 @@ fn render_verified_result(result: &VerifiedActionResult) -> String {
         }
         VerifiedActionResult::File(file) => render_file_verification(file),
         VerifiedActionResult::Shell(shell) => {
-            format!(
+            let mut rendered = format!(
                 "shell command finished: exit code {:?}, timed out: {}",
                 shell.exit_code, shell.timed_out
-            )
+            );
+            if let Some(effect) = &shell.verified_effect {
+                rendered.push_str(&format!("; {effect}"));
+            }
+            rendered
         }
     }
 }

@@ -5,8 +5,8 @@ mod stub;
 mod types;
 
 pub use config::{
-    ProviderConfig, LM_STUDIO_DEFAULT_BASE_URL, LM_STUDIO_DEFAULT_TIMEOUT_MILLIS,
-    LM_STUDIO_PROVIDER_NAME,
+    OutputTokenLimitField, ProviderCompatibility, ProviderConfig, ReasoningCompatibility,
+    LM_STUDIO_DEFAULT_BASE_URL, LM_STUDIO_DEFAULT_TIMEOUT_MILLIS, LM_STUDIO_PROVIDER_NAME,
 };
 pub use lm_studio::{
     chat_lm_studio, chat_lm_studio_streaming, format_chat_request, format_chat_request_body,

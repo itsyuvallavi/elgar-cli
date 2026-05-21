@@ -7,7 +7,8 @@ use std::{
 use elgar_core::{
     controller::Controller,
     provider::{
-        chat_lm_studio, ChatMessage, ProviderConfig, ProviderError, LM_STUDIO_DEFAULT_BASE_URL,
+        chat_lm_studio, ChatMessage, ProviderCompatibility, ProviderConfig, ProviderError,
+        LM_STUDIO_DEFAULT_BASE_URL,
     },
     renderer::render_session,
     router::{route_input, Route},
@@ -28,6 +29,13 @@ pub const LM_STUDIO_MODEL_ENV: &str = "ELGAR_LM_STUDIO_MODEL";
 pub const LM_STUDIO_BASE_URL_ENV: &str = "ELGAR_LM_STUDIO_BASE_URL";
 pub const PROVIDER_CONFIG_ENV: &str = "ELGAR_PROVIDER_CONFIG";
 pub const PROVIDER_CONFIG_FILE: &str = "elgar-provider.json";
+
+pub fn should_launch_terminal_tui_by_default(
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+) -> bool {
+    stdin_is_terminal && stdout_is_terminal
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeProvider {
@@ -110,6 +118,8 @@ struct RuntimeProviderConfigFile {
     stream: bool,
     #[serde(default)]
     context_window_tokens: Option<u64>,
+    #[serde(default)]
+    compatibility: ProviderCompatibility,
 }
 
 pub fn render_cli_turn(
@@ -243,6 +253,7 @@ fn runtime_provider_from_file(
     config.request_timeout_millis = file.request_timeout_millis;
     config.stream = file.stream;
     config.context_window_tokens = file.context_window_tokens;
+    config.compatibility = file.compatibility;
 
     Ok(Some(RuntimeProvider {
         config,
@@ -543,8 +554,9 @@ mod tests {
         is_tui_help_command, is_tui_rejection_command, load_runtime_provider,
         provider_smoke_config, provider_smoke_prompt, render_cli_turn_from_runtime_config,
         render_controller_smoke, render_tui_controller_smoke, render_tui_help, render_tui_script,
-        run_tui_loop, ProviderSmokeConfig, ProviderSmokeError, RuntimeProviderConfigError,
-        PROVIDER_CONFIG_FILE, PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
+        run_tui_loop, should_launch_terminal_tui_by_default, ProviderSmokeConfig,
+        ProviderSmokeError, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
+        PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
     fn temp_root(name: &str) -> PathBuf {
@@ -570,6 +582,14 @@ mod tests {
             provider_smoke_prompt(&["Say".to_string(), "hello.".to_string()]),
             "Say hello."
         );
+    }
+
+    #[test]
+    fn default_terminal_launch_requires_interactive_stdio() {
+        assert!(should_launch_terminal_tui_by_default(true, true));
+        assert!(!should_launch_terminal_tui_by_default(false, true));
+        assert!(!should_launch_terminal_tui_by_default(true, false));
+        assert!(!should_launch_terminal_tui_by_default(false, false));
     }
 
     #[test]
@@ -635,7 +655,56 @@ mod tests {
         assert_eq!(runtime.config.write_timeout_millis(), 2000);
         assert_eq!(runtime.config.request_timeout_millis(), 180000);
         assert_eq!(runtime.config.context_window_tokens, Some(128_000));
+        assert_eq!(
+            runtime.config.configured_context_window_tokens(),
+            Some(128_000)
+        );
         assert!(runtime.config.stream);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_provider_config_loads_compatibility_metadata() {
+        let root = temp_root("runtime-provider-compatibility");
+        fs::write(
+            root.join(PROVIDER_CONFIG_FILE),
+            r#"{
+              "provider": "lm-studio",
+              "base_url": "http://127.0.0.1:1234/v1",
+              "default_model": "openai/gpt-oss-20b",
+              "mode": "live",
+              "context_window_tokens": 32000,
+              "compatibility": {
+                "context_window_tokens": 128000,
+                "output_token_limit_field": "max_tokens",
+                "reasoning": {
+                  "response_fields": ["reasoning_content"],
+                  "stream_fields": ["reasoning_content", "thinking"]
+                },
+                "supports_streaming_usage": false,
+                "supports_developer_role": true
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let runtime = load_runtime_provider(&root).unwrap().unwrap();
+
+        assert_eq!(runtime.config.context_window_tokens, Some(32_000));
+        assert_eq!(
+            runtime.config.configured_context_window_tokens(),
+            Some(128_000)
+        );
+        assert!(runtime.config.supports_developer_role());
+        assert_eq!(
+            runtime.config.compatibility.supports_streaming_usage,
+            Some(false)
+        );
+        assert_eq!(
+            runtime.config.compatibility.reasoning.stream_fields,
+            vec!["reasoning_content", "thinking"]
+        );
 
         let _ = fs::remove_dir_all(root);
     }

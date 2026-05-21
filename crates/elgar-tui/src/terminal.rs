@@ -62,6 +62,10 @@ const ANSI_USER_BLOCK: &str = "\x1b[1m\x1b[38;2;143;207;198m\x1b[48;2;8;32;32m";
 const ANSI_CURSOR_HIDE: &str = "\x1b[?25l";
 const ANSI_CURSOR_SHOW: &str = "\x1b[?25h";
 
+fn transcript_output_ansi() -> &'static str {
+    ANSI_TEXT
+}
+
 pub fn run_terminal_shell() -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     run_terminal_shell_at(&cwd, &cwd)
@@ -69,7 +73,7 @@ pub fn run_terminal_shell() -> io::Result<()> {
 
 pub fn run_terminal_shell_with_lm_studio_provider(config: ProviderConfig) -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let context_window_tokens = config.context_window_tokens;
+    let context_window_tokens = config.configured_context_window_tokens();
     run_terminal_shell_with_controller(
         &cwd,
         &cwd,
@@ -258,7 +262,14 @@ where
     let mut live_output = LiveProviderOutput::default();
     let started = Instant::now();
     let mut tick = 0usize;
-    let mut last_render = Instant::now() - LIVE_RENDER_INTERVAL;
+    working.render(
+        tick,
+        started.elapsed().as_secs(),
+        input.text(),
+        &live_output,
+    )?;
+    tick = tick.wrapping_add(1);
+    let mut last_render = Instant::now();
 
     let completed = loop {
         match task.try_complete() {
@@ -315,6 +326,7 @@ where
 
     working.clear()?;
     drop(guard);
+    let completed = *completed;
     *session = completed.session;
     shell.consume_events(&completed.events);
     shell.conversation.follow_latest();
@@ -419,10 +431,51 @@ fn print_user_block(input: &str) -> io::Result<()> {
 
 fn print_plain_block(text: &str) -> io::Result<()> {
     let width = drawable_width(terminal_width());
-    for line in non_empty_lines(wrap_words(text, width)) {
-        writeln!(io::stdout(), "{ANSI_TEXT}{line}{ANSI_RESET}")?;
+    for line in plain_block_lines(text, width) {
+        writeln!(
+            io::stdout(),
+            "{}{line}{ANSI_RESET}",
+            transcript_output_ansi()
+        )?;
     }
     io::stdout().flush()
+}
+
+fn plain_block_lines(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for raw_line in text.split('\n') {
+        if preserves_leading_spacing(raw_line) {
+            lines.extend(wrap_preserving_spacing(raw_line, width));
+        } else {
+            lines.extend(wrap_words(raw_line, width));
+        }
+    }
+    non_empty_lines(lines)
+}
+
+fn preserves_leading_spacing(line: &str) -> bool {
+    line.starts_with(' ') || line.starts_with('\t')
+}
+
+fn wrap_preserving_spacing(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for character in line.chars() {
+        if current.chars().count() == width {
+            lines.push(std::mem::take(&mut current));
+        }
+        current.push(character);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 pub fn render_default_terminal_shell(frame: &mut Frame<'_>) {
@@ -621,7 +674,7 @@ fn style_terminal_conversation(
             }
             ConversationLineStyle::Loading => Line::styled(line, theme::thinking()),
             ConversationLineStyle::Thinking => Line::styled(line, theme::thinking()),
-            ConversationLineStyle::Plain => Line::raw(line),
+            ConversationLineStyle::Plain => Line::styled(line, theme::model_output()),
         },
     ));
 

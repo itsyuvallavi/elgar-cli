@@ -4,7 +4,7 @@ use crate::{
 };
 
 pub fn placeholder_message() -> &'static str {
-    "Elgar v0.2 core harness skeleton: no provider, file action, shell, TUI, MCP, skills, API, or autonomous behavior is implemented yet."
+    "Elgar v0.2 is ready. Run `elgar` from an interactive terminal for the TUI, or pass a prompt/subcommand."
 }
 
 pub fn render_session(session: &Session) -> String {
@@ -75,10 +75,14 @@ fn render_verified_result(result: &VerifiedActionResult) -> String {
         VerifiedActionResult::FileWritten { path } => format!("file written: {path}"),
         VerifiedActionResult::File(file) => format!("file result: {file:?}"),
         VerifiedActionResult::Shell(shell) => {
-            format!(
+            let mut rendered = format!(
                 "shell result: exit code {:?}, timed_out={}, stdout_truncated={}, stderr_truncated={}",
                 shell.exit_code, shell.timed_out, shell.stdout_truncated, shell.stderr_truncated
-            )
+            );
+            if let Some(effect) = &shell.verified_effect {
+                rendered.push_str(&format!(", {effect}"));
+            }
+            rendered
         }
     }
 }

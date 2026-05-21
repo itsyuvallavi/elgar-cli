@@ -112,20 +112,43 @@ impl ContextBundle {
     }
 
     pub fn prompt_for(&self, input: &str) -> String {
-        if self.sections.is_empty() {
+        self.prompt_for_with_recent_conversation(None, input)
+    }
+
+    pub fn prompt_for_with_recent_conversation(
+        &self,
+        recent_conversation: Option<&str>,
+        input: &str,
+    ) -> String {
+        let recent_conversation = recent_conversation
+            .map(str::trim)
+            .filter(|conversation| !conversation.is_empty());
+
+        if self.sections.is_empty() && recent_conversation.is_none() {
             return input.to_string();
         }
 
-        let sections = self
-            .sections
-            .iter()
-            .map(ContextSection::render)
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        format!(
-            "Local context selected by Elgar controller:\n{sections}\n\nUser request:\n{}",
-            input.trim()
-        )
+        let mut blocks = Vec::new();
+        if !self.sections.is_empty() {
+            let sections = self
+                .sections
+                .iter()
+                .map(ContextSection::render)
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            blocks.push(format!(
+                "Local context selected by Elgar controller:\n{sections}"
+            ));
+        }
+
+        if let Some(recent_conversation) = recent_conversation {
+            blocks.push(format!(
+                "Recent conversation selected by Elgar controller:\n{recent_conversation}"
+            ));
+        }
+
+        blocks.push(format!("User request:\n{}", input.trim()));
+        blocks.join("\n\n")
     }
 }
 

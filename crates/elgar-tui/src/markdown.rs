@@ -3,33 +3,39 @@ pub(crate) fn render_assistant_markdown(markdown: &str) -> String {
     let lines: Vec<&str> = normalized.lines().collect();
     let mut rendered = Vec::new();
     let mut index = 0;
-    let mut in_code_block = false;
+    let mut code_block: Option<CodeBlock> = None;
+    let mut skip_blank_after_code_block = false;
 
     while index < lines.len() {
         let line = lines[index];
         let trimmed = line.trim();
 
-        if let Some(language) = trimmed.strip_prefix("```") {
-            if in_code_block {
-                in_code_block = false;
+        if let Some(block) = code_block.as_mut() {
+            if trimmed.starts_with("```") {
+                let block = code_block
+                    .take()
+                    .expect("code block exists while rendering code line");
+                trim_trailing_blank_lines(&mut rendered);
+                render_code_block(&mut rendered, block);
+                skip_blank_after_code_block = true;
             } else {
-                in_code_block = true;
-                let label = language.trim();
-                if label.is_empty() {
-                    rendered.push("code:".to_string());
-                } else {
-                    rendered.push(format!("code ({label}):"));
-                }
+                block.lines.push(line.to_string());
             }
             index += 1;
             continue;
         }
 
-        if in_code_block {
-            rendered.push(format!("    {line}"));
+        if let Some(language) = trimmed.strip_prefix("```") {
+            code_block = Some(CodeBlock::new(language.trim()));
             index += 1;
             continue;
         }
+
+        if skip_blank_after_code_block && trimmed.is_empty() {
+            index += 1;
+            continue;
+        }
+        skip_blank_after_code_block = false;
 
         if is_table_start(&lines, index) {
             let (table, next_index) = render_table(&lines, index);
@@ -49,7 +55,55 @@ pub(crate) fn render_assistant_markdown(markdown: &str) -> String {
         index += 1;
     }
 
+    if let Some(block) = code_block {
+        trim_trailing_blank_lines(&mut rendered);
+        render_code_block(&mut rendered, block);
+    }
+
     rendered.join("\n")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodeBlock {
+    language: String,
+    lines: Vec<String>,
+}
+
+impl CodeBlock {
+    fn new(language: &str) -> Self {
+        Self {
+            language: language.to_string(),
+            lines: Vec::new(),
+        }
+    }
+}
+
+fn render_code_block(rendered: &mut Vec<String>, block: CodeBlock) {
+    if block.language.is_empty() {
+        rendered.push("code:".to_string());
+    } else {
+        rendered.push(format!("code ({}):", block.language));
+    }
+
+    let Some(start) = block.lines.iter().position(|line| !line.trim().is_empty()) else {
+        return;
+    };
+    let end = block
+        .lines
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .map(|index| index + 1)
+        .unwrap_or(start);
+
+    for line in &block.lines[start..end] {
+        rendered.push(format!("    {line}"));
+    }
+}
+
+fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
 }
 
 fn render_list_line(line: &str) -> Option<String> {
@@ -193,6 +247,14 @@ mod tests {
 
         assert_eq!(rendered, "Use this:\ncode (rust):\n    fn main() {}");
         assert!(!rendered.contains("```"));
+    }
+
+    #[test]
+    fn renders_code_blocks_with_compact_fence_spacing() {
+        let rendered =
+            render_assistant_markdown("Use this:\n\n```rust\n\nfn main() {}\n\n```\n\nDone.");
+
+        assert_eq!(rendered, "Use this:\ncode (rust):\n    fn main() {}\nDone.");
     }
 
     #[test]

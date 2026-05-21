@@ -30,6 +30,8 @@ pub struct ProviderConfig {
     pub stream: bool,
     #[serde(default)]
     pub context_window_tokens: Option<u64>,
+    #[serde(default)]
+    pub compatibility: ProviderCompatibility,
 }
 
 impl ProviderConfig {
@@ -59,6 +61,16 @@ impl ProviderConfig {
     pub fn request_timeout_millis(&self) -> u64 {
         self.request_timeout_millis.unwrap_or(self.timeout_millis)
     }
+
+    pub fn configured_context_window_tokens(&self) -> Option<u64> {
+        self.compatibility
+            .context_window_tokens
+            .or(self.context_window_tokens)
+    }
+
+    pub fn supports_developer_role(&self) -> bool {
+        self.compatibility.supports_developer_role.unwrap_or(false)
+    }
 }
 
 impl Default for ProviderConfig {
@@ -74,8 +86,43 @@ impl Default for ProviderConfig {
             request_timeout_millis: None,
             stream: false,
             context_window_tokens: None,
+            compatibility: ProviderCompatibility::default(),
         }
     }
+}
+
+/// Optional model/provider behavior metadata.
+///
+/// Values here are assertions from local configuration, not registry defaults.
+/// Elgar only consumes fields that are explicitly present.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCompatibility {
+    #[serde(default)]
+    pub context_window_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_token_limit_field: Option<OutputTokenLimitField>,
+    #[serde(default)]
+    pub reasoning: ReasoningCompatibility,
+    #[serde(default)]
+    pub supports_streaming_usage: Option<bool>,
+    #[serde(default)]
+    pub supports_developer_role: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputTokenLimitField {
+    MaxTokens,
+    MaxCompletionTokens,
+    MaxOutputTokens,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningCompatibility {
+    #[serde(default)]
+    pub response_fields: Vec<String>,
+    #[serde(default)]
+    pub stream_fields: Vec<String>,
 }
 
 fn default_provider_name() -> String {
@@ -125,6 +172,9 @@ mod tests {
         );
         assert!(!config.stream);
         assert_eq!(config.context_window_tokens, None);
+        assert_eq!(config.compatibility, Default::default());
+        assert_eq!(config.configured_context_window_tokens(), None);
+        assert!(!config.supports_developer_role());
         assert_eq!(
             config.chat_completions_url(),
             "http://127.0.0.1:1234/v1/chat/completions"
@@ -147,6 +197,7 @@ mod tests {
         assert_eq!(config.write_timeout_millis, None);
         assert_eq!(config.request_timeout_millis, None);
         assert!(!config.stream);
+        assert_eq!(config.compatibility, Default::default());
     }
 
     #[test]
@@ -178,6 +229,43 @@ mod tests {
 
         assert!(config.stream);
         assert_eq!(config.context_window_tokens, Some(128_000));
+        assert_eq!(config.configured_context_window_tokens(), Some(128_000));
+    }
+
+    #[test]
+    fn provider_config_deserializes_optional_compatibility_metadata() {
+        let config: ProviderConfig = serde_json::from_value(json!({
+            "model": "local-model",
+            "context_window_tokens": 32_000,
+            "compatibility": {
+                "context_window_tokens": 128_000,
+                "output_token_limit_field": "max_completion_tokens",
+                "reasoning": {
+                    "response_fields": ["reasoning_content"],
+                    "stream_fields": ["reasoning_content", "thinking"]
+                },
+                "supports_streaming_usage": true,
+                "supports_developer_role": true
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(config.context_window_tokens, Some(32_000));
+        assert_eq!(config.configured_context_window_tokens(), Some(128_000));
+        assert_eq!(
+            config.compatibility.output_token_limit_field,
+            Some(super::OutputTokenLimitField::MaxCompletionTokens)
+        );
+        assert_eq!(
+            config.compatibility.reasoning.response_fields,
+            vec!["reasoning_content"]
+        );
+        assert_eq!(
+            config.compatibility.reasoning.stream_fields,
+            vec!["reasoning_content", "thinking"]
+        );
+        assert_eq!(config.compatibility.supports_streaming_usage, Some(true));
+        assert!(config.supports_developer_role());
     }
 
     #[test]

@@ -3,7 +3,9 @@ use std::io::{self, Write};
 use crossterm::terminal::size as terminal_size;
 use elgar_core::provider::ProviderStreamChunk;
 
-use super::{TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
+use crate::reasoning::format_provider_reasoning_summary;
+
+use super::{transcript_output_ansi, TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
 
 pub(super) const LIVE_REASONING_PREVIEW_BYTES: usize = 1024;
 pub(super) const LIVE_RESPONSE_PREVIEW_BYTES: usize = 4096;
@@ -110,7 +112,11 @@ impl InlineWorkingRenderer {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
         }
         for line in &response_lines {
-            write!(io::stdout(), "{ANSI_CYAN}{line}{ANSI_RESET}\r\n")?;
+            write!(
+                io::stdout(),
+                "{}{line}{ANSI_RESET}\r\n",
+                live_response_ansi()
+            )?;
         }
         for line in &top_lines {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
@@ -150,6 +156,10 @@ impl Drop for InlineWorkingRenderer {
     }
 }
 
+pub(super) fn live_response_ansi() -> &'static str {
+    transcript_output_ansi()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct LiveProviderOutput {
     reasoning: String,
@@ -170,7 +180,7 @@ impl LiveProviderOutput {
 
     fn reasoning_summary(&self) -> Option<String> {
         compact_streaming_text(&self.reasoning)
-            .and_then(|text| format_live_reasoning_summary(&text))
+            .and_then(|text| format_provider_reasoning_summary(&text, LIVE_REASONING_SUMMARY_CHARS))
     }
 
     fn response_preview(&self) -> Option<String> {
@@ -218,23 +228,24 @@ pub(super) fn inline_prompt_frame_lines(
     )
 }
 
+type ActiveWorkingFrameLineGroups = (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+);
+
 pub(super) fn active_working_frame_lines(
     context: &TerminalShellContext,
-    _tick: usize,
+    tick: usize,
     _elapsed_secs: u64,
     input: &str,
     live_output: &LiveProviderOutput,
     width: usize,
-) -> (
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-) {
-    let progress_lines = Vec::new();
+) -> ActiveWorkingFrameLineGroups {
     let reasoning_lines = live_output
         .reasoning_summary()
         .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
@@ -243,6 +254,11 @@ pub(super) fn active_working_frame_lines(
         .response_preview()
         .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
         .unwrap_or_default();
+    let progress_lines = if reasoning_lines.is_empty() && response_lines.is_empty() {
+        with_leading_spacer(vec![provider_progress_line(tick).to_string()])
+    } else {
+        Vec::new()
+    };
     let (top_lines, input_lines, bottom_lines, footer_lines) =
         inline_prompt_frame_lines(context, input, width);
     (
@@ -254,6 +270,15 @@ pub(super) fn active_working_frame_lines(
         bottom_lines,
         footer_lines,
     )
+}
+
+fn provider_progress_line(tick: usize) -> &'static str {
+    match tick % 4 {
+        0 => "Working with local model",
+        1 => "Working with local model.",
+        2 => "Working with local model..",
+        _ => "Working with local model...",
+    }
 }
 
 fn with_leading_spacer(mut lines: Vec<String>) -> Vec<String> {
@@ -272,102 +297,20 @@ fn compact_streaming_text(text: &str) -> Option<String> {
     }
 }
 
-fn format_live_reasoning_summary(text: &str) -> Option<String> {
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-
-    let formatted = if let Some(rest) = strip_prefix_case_insensitive(text, "we need to ") {
-        progress_note_from_need(rest)
-    } else if let Some(rest) = strip_prefix_case_insensitive(text, "need to ") {
-        progress_note_from_need(rest)
-    } else if let Some(rest) = strip_prefix_case_insensitive(text, "need ") {
-        progress_note_from_need(rest)
-    } else {
-        normalize_sentence(text)
-    };
-
-    let formatted = truncate_chars(&formatted, LIVE_REASONING_SUMMARY_CHARS);
-    if formatted.is_empty() {
-        None
-    } else {
-        Some(formatted)
-    }
-}
-
-fn strip_prefix_case_insensitive<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
-    text.get(..prefix.len())
-        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-        .then(|| text[prefix.len()..].trim())
-}
-
-fn progress_note_from_need(text: &str) -> String {
-    let text = normalize_sentence(text);
-    if text.is_empty() {
-        return text;
-    }
-
-    let mut words = text.splitn(2, ' ');
-    let first = words.next().unwrap_or_default();
-    let rest = words.next().unwrap_or_default();
-    let first = first
-        .trim_end_matches(|character: char| !character.is_alphanumeric())
-        .to_ascii_lowercase();
-    let verb = match first.as_str() {
-        "answer" => "Answering",
-        "respond" => "Responding",
-        "reply" => "Replying",
-        "explain" => "Explaining",
-        "summarize" => "Summarizing",
-        "check" => "Checking",
-        "inspect" => "Inspecting",
-        "review" => "Reviewing",
-        "read" => "Reading",
-        "test" => "Testing",
-        "verify" => "Verifying",
-        "use" => "Using",
-        _ => return text,
-    };
-
-    if rest.is_empty() {
-        format!("{verb}.")
-    } else {
-        format!("{verb} {rest}")
-    }
-}
-
-fn normalize_sentence(text: &str) -> String {
-    let mut text = text.trim().to_string();
-    if text.is_empty() {
-        return text;
-    }
-
-    if let Some(first) = text.get_mut(0..1) {
-        first.make_ascii_uppercase();
-    }
-    text
-}
-
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-
-    let mut truncated = text
-        .chars()
-        .take(max_chars.saturating_sub(1))
-        .collect::<String>();
-    truncated.push('…');
-    truncated
-}
-
 fn prompt_input_lines(input: &str, width: usize) -> Vec<String> {
     let width = drawable_width(width);
     let prefix = "▸ ";
     let continuation = "  ";
-    let first_width = width.saturating_sub(prefix.chars().count()).max(1);
-    let continuation_width = width.saturating_sub(continuation.chars().count()).max(1);
+    let cursor = "▌";
+    let cursor_width = cursor.chars().count();
+    let first_width = width
+        .saturating_sub(prefix.chars().count())
+        .saturating_sub(cursor_width)
+        .max(1);
+    let continuation_width = width
+        .saturating_sub(continuation.chars().count())
+        .saturating_sub(cursor_width)
+        .max(1);
     let wrapped = non_empty_lines(wrap_words(input, first_width));
     let mut lines = Vec::new();
     for (index, line) in wrapped.into_iter().enumerate() {
@@ -378,6 +321,9 @@ fn prompt_input_lines(input: &str, width: usize) -> Vec<String> {
                 lines.push(format!("{continuation}{continuation_line}"));
             }
         }
+    }
+    if let Some(last) = lines.last_mut() {
+        last.push_str(cursor);
     }
     lines
 }

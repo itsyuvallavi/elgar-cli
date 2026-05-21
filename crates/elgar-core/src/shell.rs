@@ -95,6 +95,7 @@ pub fn execute_shell_command(
         exit_code: if timed_out { None } else { status.code() },
         elapsed_millis: millis_since(started),
         timed_out,
+        verified_effect: None,
     })
 }
 

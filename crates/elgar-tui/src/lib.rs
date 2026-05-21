@@ -3,6 +3,7 @@ mod input;
 pub mod layout;
 mod markdown;
 pub mod panes;
+mod reasoning;
 pub mod shell;
 pub mod smoke;
 mod startup;

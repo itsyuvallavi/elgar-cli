@@ -19,10 +19,10 @@ use crate::{
 
 const ELGAR_CONTROLLER_SYSTEM_PROMPT: &str = concat!(
     "You are Elgar. Answer briefly in terminal-friendly prose: ",
-    "one paragraph or up to five bullets, no tables unless asked. ",
-    "For projects, speak as Elgar. ",
-    "Elgar can propose actions for approval; approved controller actions apply changes. ",
-    "Enabled: approved file actions and shell commands. ",
+    "one paragraph or 5 bullets, no tables unless asked. ",
+    "Always speak as Elgar. ",
+    "Suggest text and propose file or shell actions; controller applies only after /approve and verification. ",
+    "Never claim you created, edited, managed, executed, or ran anything unless verified. ",
     "Provider text never proves files changed or commands ran. ",
     "Do not call copy/paste the only path."
 );
@@ -51,9 +51,20 @@ pub fn format_chat_request(
     })
 }
 
+#[cfg(test)]
 fn elgar_controller_messages(prompt: &str) -> Vec<ChatMessage> {
+    elgar_controller_messages_for_config(&ProviderConfig::default(), prompt)
+}
+
+fn elgar_controller_messages_for_config(config: &ProviderConfig, prompt: &str) -> Vec<ChatMessage> {
+    let controller_role = if config.supports_developer_role() {
+        crate::provider::ChatRole::Developer
+    } else {
+        crate::provider::ChatRole::System
+    };
+
     vec![
-        ChatMessage::system(ELGAR_CONTROLLER_SYSTEM_PROMPT),
+        ChatMessage::new(controller_role, ELGAR_CONTROLLER_SYSTEM_PROMPT),
         ChatMessage::user(prompt),
     ]
 }
@@ -419,7 +430,10 @@ impl ControllerProvider for LmStudioProvider {
     }
 
     fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError> {
-        chat_lm_studio(&self.config, elgar_controller_messages(prompt))
+        chat_lm_studio(
+            &self.config,
+            elgar_controller_messages_for_config(&self.config, prompt),
+        )
     }
 
     fn chat_with_metadata(
@@ -429,7 +443,7 @@ impl ControllerProvider for LmStudioProvider {
     ) -> Result<ProviderOutput, ProviderError> {
         chat_lm_studio_with_request_id(
             &self.config,
-            elgar_controller_messages(prompt),
+            elgar_controller_messages_for_config(&self.config, prompt),
             &metadata.request_id,
         )
     }
@@ -439,7 +453,11 @@ impl ControllerProvider for LmStudioProvider {
         prompt: &str,
         on_chunk: &mut dyn FnMut(ProviderStreamChunk),
     ) -> Result<ProviderOutput, ProviderError> {
-        chat_lm_studio_streaming(&self.config, elgar_controller_messages(prompt), on_chunk)
+        chat_lm_studio_streaming(
+            &self.config,
+            elgar_controller_messages_for_config(&self.config, prompt),
+            on_chunk,
+        )
     }
 
     fn chat_stream_with_metadata(
@@ -450,7 +468,7 @@ impl ControllerProvider for LmStudioProvider {
     ) -> Result<ProviderOutput, ProviderError> {
         chat_lm_studio_streaming_with_request_id(
             &self.config,
-            elgar_controller_messages(prompt),
+            elgar_controller_messages_for_config(&self.config, prompt),
             &metadata.request_id,
             on_chunk,
         )
@@ -475,10 +493,11 @@ mod tests {
     };
 
     use super::{
-        chat_lm_studio, chat_lm_studio_streaming, elgar_controller_messages, format_chat_request,
-        format_chat_request_body, parse_chat_response_json, parse_chat_response_json_with_metrics,
-        parse_chat_stream_chunks, parse_chat_stream_response, parse_provider_error_json,
-        ChatMessage, LmStudioProvider, ProviderConfig,
+        chat_lm_studio, chat_lm_studio_streaming, elgar_controller_messages,
+        elgar_controller_messages_for_config, format_chat_request, format_chat_request_body,
+        parse_chat_response_json, parse_chat_response_json_with_metrics, parse_chat_stream_chunks,
+        parse_chat_stream_response, parse_provider_error_json, ChatMessage, LmStudioProvider,
+        ProviderConfig,
     };
     use crate::event::ProviderMetrics;
     use crate::provider::{
@@ -551,14 +570,40 @@ mod tests {
         assert!(messages[0].content.contains("speak as Elgar"));
         assert!(messages[0]
             .content
-            .contains("approved controller actions apply changes"));
-        assert!(messages[0].content.contains("approved file actions"));
-        assert!(messages[0].content.contains("shell commands"));
+            .contains("Suggest text and propose file or shell actions"));
+        assert!(messages[0]
+            .content
+            .contains("controller applies only after /approve and verification"));
+        assert!(messages[0]
+            .content
+            .contains("Never claim you created, edited, managed, executed, or ran anything"));
         assert!(messages[0]
             .content
             .contains("Provider text never proves files changed or commands ran"));
         assert!(messages[0].content.contains("copy/paste"));
         assert_eq!(messages[1], ChatMessage::user("what can you do?"));
+    }
+
+    #[test]
+    fn controller_provider_messages_use_configured_developer_role() {
+        let config = ProviderConfig {
+            compatibility: crate::provider::ProviderCompatibility {
+                supports_developer_role: Some(true),
+                ..Default::default()
+            },
+            ..ProviderConfig::lm_studio("loaded-model")
+        };
+        let messages = elgar_controller_messages_for_config(&config, "what can you do?");
+        let request = format_chat_request(&config, messages).unwrap();
+
+        assert_eq!(
+            request.messages[0].role,
+            crate::provider::ChatRole::Developer
+        );
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["messages"][0]["role"],
+            "developer"
+        );
     }
 
     #[test]
@@ -572,7 +617,7 @@ mod tests {
         assert_eq!(request.messages.len(), 2);
         assert_eq!(metrics.message_count, 2);
         assert!(metrics.serialized_request_bytes <= 650);
-        assert_eq!(metrics.serialized_request_bytes, body.as_bytes().len());
+        assert_eq!(metrics.serialized_request_bytes, body.len());
     }
 
     #[test]
@@ -595,7 +640,7 @@ mod tests {
         assert_eq!(metrics.model.as_deref(), Some("loaded-model"));
         assert!(metrics.stream);
         assert_eq!(metrics.message_count, 2);
-        assert_eq!(metrics.serialized_request_bytes, body.as_bytes().len());
+        assert_eq!(metrics.serialized_request_bytes, body.len());
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&body).unwrap()["stream"],
             true

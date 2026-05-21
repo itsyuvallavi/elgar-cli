@@ -1,5 +1,22 @@
+use std::io::IsTerminal;
+
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.is_empty() {
+        if elgar_cli::should_launch_terminal_tui_by_default(
+            std::io::stdin().is_terminal(),
+            std::io::stdout().is_terminal(),
+        ) {
+            if let Err(error) = elgar_cli::run_tui_terminal() {
+                eprintln!("TUI terminal failed: {error}");
+                std::process::exit(1);
+            }
+        } else {
+            println!("{}", elgar_core::renderer::placeholder_message());
+        }
+        return;
+    }
+
     if args
         .first()
         .is_some_and(|arg| arg == elgar_cli::PROVIDER_SMOKE_COMMAND)
@@ -77,11 +94,6 @@ fn main() {
     }
 
     let input = args.join(" ");
-    if input.is_empty() {
-        println!("{}", elgar_core::renderer::placeholder_message());
-        return;
-    }
-
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     match elgar_cli::render_cli_turn_from_runtime_config(&input, &cwd, &cwd) {
         Ok(rendered) => println!("{rendered}"),

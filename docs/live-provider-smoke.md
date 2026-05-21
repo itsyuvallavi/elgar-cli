@@ -38,15 +38,30 @@ Current local config:
 The model name must match the loaded model name shown in LM Studio.
 The timeout fields are explicit: connect is short because LM Studio is local,
 while read/request are longer so slower local generations do not fail at 30s.
+Optional provider/model compatibility metadata is documented in
+`docs/provider-compatibility.md`. Only add values that are known for the loaded
+local model; Elgar does not infer model limits from the model name.
 
-When `mode` is `live`, normal CLI text and `tui-terminal` use the configured LM
-Studio model. The line-oriented `tui` command remains a stub/no-network harness
-path for now.
+When `mode` is `live`, normal CLI text and the terminal TUI use the configured
+LM Studio model. The installed command is:
+
+```sh
+elgar
+```
+
+If the command is not installed yet, run:
+
+```sh
+./bin/install-local
+```
+
+`elgar tui-terminal` remains a compatibility alias. The line-oriented
+`elgar tui` command remains a stub/no-network harness path for now.
 
 To temporarily disable this file without editing it:
 
 ```sh
-ELGAR_PROVIDER_CONFIG=off cargo run -p elgar-cli -- tui-terminal
+ELGAR_PROVIDER_CONFIG=off elgar
 ```
 
 Smoke commands still support environment variables:
@@ -127,7 +142,7 @@ cargo run -p elgar-cli -- tui-controller-smoke "Say hello in one sentence."
 This is optional and live. It is not part of `./bin/check-local`.
 
 ```sh
-cargo run -p elgar-cli -- tui-terminal
+elgar
 ```
 
 Use this short checklist:

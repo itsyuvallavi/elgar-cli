@@ -2,7 +2,10 @@ use elgar_core::{
     action::ActionLifecycleState,
     context::{ContextAccounting, LoadedContextFile},
     controller::Controller,
-    event::{ProviderMetrics, ProviderOutput, ProviderTokenUsage},
+    event::{
+        AssistantMessage, AssistantMessageSource, Event, ProviderMetrics, ProviderOutput,
+        ProviderTokenUsage,
+    },
     provider::{ControllerProvider, ProviderError, ProviderRequestMetadata, ProviderStreamChunk},
     session::Session,
 };
@@ -10,16 +13,18 @@ use ratatui::{backend::TestBackend, Terminal};
 
 use crate::{input::TerminalInput, panes::ConversationPane, TuiShell};
 
-use super::prompt::{LIVE_REASONING_PREVIEW_BYTES, LIVE_RESPONSE_PREVIEW_BYTES};
+use super::prompt::{
+    live_response_ansi, LIVE_REASONING_PREVIEW_BYTES, LIVE_RESPONSE_PREVIEW_BYTES,
+};
 use super::{
     active_working_frame_lines, copy_conversation_to_terminal_clipboard,
     copy_conversation_with_clipboards, default_shell_text, encode_base64, handle_scroll_key,
     handle_submitted_terminal_input_for_loop, handle_terminal_key,
     handle_terminal_key_while_provider_active, handle_terminal_key_with_copy_writer,
     inline_prompt_frame_lines, live_render_due, osc52_clipboard_sequence, parse_terminal_command,
-    render_terminal_help, render_tui_shell, should_exit, status_style, style_terminal_conversation,
-    LiveProviderOutput, ProviderTurnUpdate, TerminalCommand, TerminalShellContext,
-    LIVE_RENDER_INTERVAL,
+    plain_block_lines, render_terminal_help, render_tui_shell, should_exit, status_style,
+    style_terminal_conversation, transcript_output_ansi, LiveProviderOutput, ProviderTurnUpdate,
+    TerminalCommand, TerminalShellContext, LIVE_RENDER_INTERVAL,
 };
 
 fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
@@ -56,6 +61,41 @@ fn terminal_user_message_renders_as_padded_block_without_prompt_marker() {
 }
 
 #[test]
+fn live_and_completed_provider_transcript_styles_match() {
+    assert_eq!(live_response_ansi(), transcript_output_ansi());
+
+    let mut conversation = ConversationPane::default();
+    conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+        "completed response",
+        AssistantMessageSource::Provider,
+    )));
+    let styled = style_terminal_conversation("startup", &conversation, 32);
+    let completed_line = styled
+        .lines
+        .iter()
+        .find(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.content.as_ref() == "completed response")
+        })
+        .unwrap();
+
+    assert_eq!(completed_line.style, crate::theme::model_output());
+}
+
+#[test]
+fn terminal_markdown_code_blocks_print_with_compact_spacing() {
+    let rendered = crate::markdown::render_assistant_markdown(
+        "Use:\n\n```rust\n\nfn main() {}\n\n```\n\nDone.",
+    );
+
+    assert_eq!(
+        plain_block_lines(&rendered, 80),
+        vec!["Use:", "code (rust):", "    fn main() {}", "Done."]
+    );
+}
+
+#[test]
 fn inline_prompt_frame_matches_old_elgar_runtime_shape() {
     let context = TerminalShellContext::new("/Users/yuval/__git/elgar", "/Users/yuval/__git/elgar")
         .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()));
@@ -65,7 +105,7 @@ fn inline_prompt_frame_matches_old_elgar_runtime_shape() {
     assert_eq!(top.len(), 2);
     assert_eq!(top[0], "");
     assert!(top[1].starts_with("────"));
-    assert_eq!(input, vec!["▸ hello"]);
+    assert_eq!(input, vec!["▸ hello▌"]);
     assert_eq!(bottom, vec![top[1].clone()]);
     assert_eq!(footer.len(), 2);
     assert!(footer[0].contains("openai/gpt-oss-20b"));
@@ -83,15 +123,38 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     let (progress, reasoning, response, top, input, bottom, footer) =
         active_working_frame_lines(&context, 1, 7, "/cancel", &live_output, 80);
 
-    assert!(progress.is_empty());
+    assert_eq!(progress, vec!["", "Working with local model."]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
     assert_eq!(top[0], "");
     assert!(top[1].starts_with("────"));
-    assert_eq!(input, vec!["▸ /cancel"]);
+    assert_eq!(input, vec!["▸ /cancel▌"]);
     assert_eq!(bottom, vec![top[1].clone()]);
     assert!(footer[0].contains("model-a"));
     assert_eq!(footer[1], "context: unknown");
+}
+
+#[test]
+fn inline_prompt_frame_shows_cursor_for_empty_input() {
+    let context = TerminalShellContext::new("/repo", "/repo");
+
+    let (_top, input, _bottom, _footer) = inline_prompt_frame_lines(&context, "", 80);
+
+    assert_eq!(input, vec!["▸ ▌"]);
+}
+
+#[test]
+fn active_working_frame_shows_initial_progress_before_provider_chunks() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let live_output = LiveProviderOutput::default();
+
+    let (progress, reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 0, "hello", &live_output, 80);
+
+    assert_eq!(progress, vec!["", "Working with local model"]);
+    assert!(reasoning.is_empty());
+    assert!(response.is_empty());
 }
 
 #[test]
@@ -106,7 +169,7 @@ fn active_working_frame_shows_live_reasoning_and_partial_response() {
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
     assert!(progress.is_empty());
-    assert_eq!(reasoning, vec!["", "Greet."]);
+    assert_eq!(reasoning, vec!["", "Greeting."]);
     assert_eq!(response, vec!["", "Hello"]);
     assert!(!reasoning.join("\n").contains("thinking"));
 }
@@ -123,7 +186,69 @@ fn active_working_frame_polishes_common_live_reasoning_prefixes() {
     let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "status", &live_output, 80);
 
-    assert_eq!(reasoning, vec!["", "Answering briefly."]);
+    assert_eq!(reasoning, vec!["", "Answering."]);
+    assert!(response.is_empty());
+}
+
+#[test]
+fn active_working_frame_removes_instruction_filler_from_reasoning() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning(
+        "Need to respond as Elgar, short.".to_string(),
+    ));
+
+    let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
+
+    assert_eq!(reasoning, vec!["", "Responding."]);
+    assert!(!reasoning.join("\n").contains("short"));
+    assert!(!reasoning.join("\n").contains("Elgar"));
+    assert!(response.is_empty());
+}
+
+#[test]
+fn active_working_frame_hides_incomplete_need_prefix() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning("Need".to_string()));
+
+    let (progress, reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 2, 1, "hello", &live_output, 80);
+
+    assert_eq!(progress, vec!["", "Working with local model.."]);
+    assert!(reasoning.is_empty());
+    assert!(response.is_empty());
+}
+
+#[test]
+fn active_working_frame_hides_incomplete_we_prefix() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning("We".to_string()));
+
+    let (progress, reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 3, 1, "hello", &live_output, 80);
+
+    assert_eq!(progress, vec!["", "Working with local model..."]);
+    assert!(reasoning.is_empty());
+    assert!(response.is_empty());
+}
+
+#[test]
+fn active_working_frame_polishes_we_just_reasoning() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Reasoning("We just greet.".to_string()));
+
+    let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
+
+    assert_eq!(reasoning, vec!["", "Greeting."]);
     assert!(response.is_empty());
 }
 
@@ -166,8 +291,8 @@ fn active_working_frame_keeps_live_reasoning_summary_short() {
         .with_provider("lm-studio", Some("model-a".to_string()));
     let mut live_output = LiveProviderOutput::default();
     live_output.push_chunk(ProviderStreamChunk::Reasoning(format!(
-        "Need to answer {}",
-        "briefly ".repeat(40)
+        "Need to explain {}",
+        "local provider chunk handling ".repeat(20)
     )));
 
     let (_progress, reasoning, _response, _top, _input, _bottom, _footer) =
@@ -260,7 +385,7 @@ fn wait_for_completed_provider_turn(
         .find_map(|_| {
             let result = task.try_complete().unwrap();
             match result {
-                Some(ProviderTurnUpdate::Completed(completed)) => Some(completed),
+                Some(ProviderTurnUpdate::Completed(completed)) => Some(*completed),
                 Some(ProviderTurnUpdate::Chunk(_)) | None => {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     None
@@ -458,7 +583,7 @@ fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
 
     let footer = context.footer_body("ready", "select visible text");
 
-    assert!(footer.contains(&format!("{}", root.file_name().unwrap().to_str().unwrap())));
+    assert!(footer.contains(root.file_name().unwrap().to_str().unwrap()));
     assert!(footer.contains("crates/elgar-tui"));
     assert!(footer.contains("(feature/footer)"));
     assert!(footer.contains("openai/gpt-oss-20b"));
@@ -1757,12 +1882,11 @@ fn terminal_function_keys_and_ctrl_y_are_not_command_actions() {
     let root = temp_root("terminal-no-key-commands");
     let target = root.join("approved.py");
     let mut session = Session::new("session-1", root.clone(), root.clone());
-    let before_session;
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
     shell.submit_input(&controller, &mut session, "create file approved.py");
-    before_session = session.clone();
+    let before_session = session.clone();
 
     for key in [
         crossterm::event::KeyEvent::new(

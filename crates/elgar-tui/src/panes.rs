@@ -2,7 +2,7 @@ use elgar_core::event::{
     AssistantMessageSource, Event, FileActionVerification, VerifiedActionResult,
 };
 
-use crate::markdown::render_assistant_markdown;
+use crate::{markdown::render_assistant_markdown, reasoning::format_provider_reasoning_summary};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationPane {
@@ -441,7 +441,7 @@ fn render_provider_thinking(thinking: Option<&str>) -> Option<String> {
         return None;
     }
 
-    Some(ThinkingBlock::collapsed(thinking).render_collapsed())
+    ThinkingBlock::collapsed(thinking).map(|block| block.render_collapsed())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,12 +452,12 @@ struct ThinkingBlock {
 }
 
 impl ThinkingBlock {
-    fn collapsed(detail: &str) -> Self {
-        Self {
-            summary: compact_thinking_summary(detail),
+    fn collapsed(detail: &str) -> Option<Self> {
+        Some(Self {
+            summary: compact_thinking_summary(detail)?,
             detail: render_assistant_markdown(detail),
             expanded: false,
-        }
+        })
     }
 
     fn render_collapsed(&self) -> String {
@@ -470,17 +470,11 @@ impl ThinkingBlock {
     }
 }
 
-fn compact_thinking_summary(thinking: &str) -> String {
+fn compact_thinking_summary(thinking: &str) -> Option<String> {
     let rendered = render_assistant_markdown(thinking);
     let summary = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
     const MAX_CHARS: usize = 96;
-    if summary.chars().count() <= MAX_CHARS {
-        return summary;
-    }
-
-    let mut compact = summary.chars().take(MAX_CHARS - 1).collect::<String>();
-    compact.push('…');
-    compact
+    format_provider_reasoning_summary(&summary, MAX_CHARS)
 }
 
 fn render_verified_result(result: &VerifiedActionResult) -> String {
@@ -488,10 +482,14 @@ fn render_verified_result(result: &VerifiedActionResult) -> String {
         VerifiedActionResult::FileWritten { path } => format!("{path} was written"),
         VerifiedActionResult::File(file) => render_file_verification(file),
         VerifiedActionResult::Shell(shell) => {
-            format!(
+            let mut rendered = format!(
                 "shell command finished with exit code {:?}, timed out: {}",
                 shell.exit_code, shell.timed_out
-            )
+            );
+            if let Some(effect) = &shell.verified_effect {
+                rendered.push_str(&format!("; {effect}"));
+            }
+            rendered
         }
     }
 }
@@ -746,7 +744,7 @@ mod tests {
             "stub-provider",
             "request-1",
             ProviderOutput::new("final answer")
-                .with_thinking("Read the prompt.\nReturn concise text."),
+                .with_thinking("Need to respond as Elgar, short.\nSimple greeting."),
         )));
         conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
             "final answer",
@@ -754,13 +752,14 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        let thinking_index = rendered.find("Read the prompt.").unwrap();
+        let thinking_index = rendered.find("Responding. Simple greeting.").unwrap();
         let model_index = rendered.find("final answer").unwrap();
 
         assert!(!rendered.contains("Thinking\n"));
         assert!(!rendered.contains("thinking:"));
         assert!(thinking_index < model_index);
-        assert!(rendered.contains("Return concise text."));
+        assert!(!rendered.contains("short"));
+        assert!(!rendered.contains("Need to"));
         assert!(!rendered.contains("request-1"));
     }
 

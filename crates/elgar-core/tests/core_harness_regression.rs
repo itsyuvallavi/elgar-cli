@@ -1297,6 +1297,157 @@ fn delete_move_and_directory_actions_can_be_proposed_without_mutating_files() {
 }
 
 #[test]
+fn natural_folder_requests_route_to_directory_or_shell_action() {
+    let controller = Controller::default();
+    let root = regression_root("natural-folder-routing");
+
+    let mut relative_session = session_at(&root);
+    let relative_target = root.join("hello-world-local");
+    let relative_result = controller.turn(
+        &mut relative_session,
+        "create a folder called hello-world-local",
+    );
+
+    assert_eq!(relative_result.route, Route::ProposeCreateDirectory);
+    assert!(!relative_target.exists());
+    assert_eq!(relative_session.actions().len(), 1);
+    match &relative_session.actions()[0].action.request {
+        ActionRequest::CreateDirectory(action) => {
+            assert_eq!(action.target_path, PathBuf::from("hello-world-local"));
+        }
+        other => panic!("expected CreateDirectory action, got {other:?}"),
+    }
+    controller.turn(&mut relative_session, "approve");
+    assert!(relative_target.is_dir());
+    assert_eq!(provider_event_count(&relative_session), 0);
+
+    let mut desktop_session = session_at(&root);
+    let desktop_result = controller.turn(
+        &mut desktop_session,
+        "can you create a folder called hello-world in the desktop?",
+    );
+    let expected_desktop_target = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap()
+        .join("Desktop")
+        .join("hello-world");
+
+    assert_eq!(desktop_result.route, Route::ProposeCreateDirectory);
+    assert_eq!(desktop_session.actions().len(), 1);
+    assert_eq!(provider_event_count(&desktop_session), 0);
+    match &desktop_session.actions()[0].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert!(action.command.starts_with("mkdir -p "));
+            assert!(action.command.contains("hello-world"));
+            assert_eq!(action.cwd, root);
+            assert_eq!(
+                action.expected_directory.as_ref(),
+                Some(&expected_desktop_target)
+            );
+            assert!(action
+                .expected_effect
+                .contains(&expected_desktop_target.display().to_string()));
+        }
+        other => panic!("expected ShellCommand action, got {other:?}"),
+    }
+    controller.turn(&mut desktop_session, "reject");
+    assert!(!root.join("hello-world").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn natural_absolute_folder_request_runs_as_verified_shell_action_after_approval() {
+    let controller = Controller::default();
+    let root = regression_root("natural-folder-shell-absolute");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let parent = root.join("outside");
+    let target = parent.join("hello-world");
+    let mut session = session_at(&project);
+
+    let result = controller.turn(
+        &mut session,
+        &format!("create a folder called hello-world at {}", parent.display()),
+    );
+
+    assert_eq!(result.route, Route::ProposeCreateDirectory);
+    assert!(!target.exists());
+    assert_eq!(session.actions().len(), 1);
+    match &session.actions()[0].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert!(action.command.starts_with("mkdir -p "));
+            assert!(action.command.contains(&target.display().to_string()));
+            assert_eq!(action.cwd, project);
+            assert_eq!(action.expected_directory.as_ref(), Some(&target));
+        }
+        other => panic!("expected ShellCommand action, got {other:?}"),
+    }
+
+    controller.turn(&mut session, "approve");
+
+    assert!(target.is_dir());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    match session.actions()[0].verified_result.as_ref() {
+        Some(VerifiedActionResult::Shell(shell)) => {
+            assert_eq!(shell.exit_code, Some(0));
+            assert!(!shell.timed_out);
+            let expected_effect = format!("verified directory exists: {}", target.display());
+            assert_eq!(
+                shell.verified_effect.as_deref(),
+                Some(expected_effect.as_str())
+            );
+        }
+        other => panic!("expected verified shell result, got {other:?}"),
+    }
+    assert_eq!(provider_event_count(&session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn natural_quoted_absolute_folder_request_handles_shell_path_quoting() {
+    let controller = Controller::default();
+    let root = regression_root("natural-folder-shell-quoted");
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let target = root.join("outside dir").join("kid's folder");
+    let mut session = session_at(&project);
+
+    let result = controller.turn(
+        &mut session,
+        &format!("create a folder at \"{}\"", target.display()),
+    );
+
+    assert_eq!(result.route, Route::ProposeCreateDirectory);
+    assert_eq!(session.actions().len(), 1);
+    match &session.actions()[0].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert!(action.command.starts_with("mkdir -p "));
+            assert!(action.command.contains("'\\''"));
+            assert_eq!(action.expected_directory.as_ref(), Some(&target));
+        }
+        other => panic!("expected ShellCommand action, got {other:?}"),
+    }
+
+    controller.turn(&mut session, "approve");
+
+    assert!(target.is_dir());
+    match session.actions()[0].verified_result.as_ref() {
+        Some(VerifiedActionResult::Shell(shell)) => {
+            assert_eq!(shell.exit_code, Some(0));
+            assert!(shell.verified_effect.is_some());
+        }
+        other => panic!("expected verified shell result, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn rejected_delete_move_and_directory_actions_do_not_mutate_files() {
     let controller = Controller::default();
     let root = regression_root("new-file-actions-rejected");

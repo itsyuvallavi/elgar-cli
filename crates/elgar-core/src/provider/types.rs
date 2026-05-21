@@ -7,6 +7,7 @@ use crate::event::ProviderOutput;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatRole {
+    Developer,
     System,
     User,
     Assistant,

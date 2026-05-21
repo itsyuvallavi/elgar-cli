@@ -53,7 +53,7 @@ impl ProviderTurnTask {
 
 pub(super) enum ProviderTurnUpdate {
     Chunk(ProviderStreamChunk),
-    Completed(CompletedProviderTurn),
+    Completed(Box<CompletedProviderTurn>),
     Canceled,
 }
 
@@ -83,12 +83,12 @@ where
         if worker_canceled.load(Ordering::SeqCst) {
             return;
         }
-        let _ = sender.send(ProviderTurnWorkerMessage::Complete(Ok(
+        let _ = sender.send(ProviderTurnWorkerMessage::Complete(Ok(Box::new(
             CompletedProviderTurn {
                 session,
                 events: result.events,
             },
-        )));
+        ))));
     });
 
     ProviderTurnTask { receiver, canceled }
@@ -96,5 +96,5 @@ where
 
 enum ProviderTurnWorkerMessage {
     Chunk(ProviderStreamChunk),
-    Complete(Result<CompletedProviderTurn, String>),
+    Complete(Result<Box<CompletedProviderTurn>, String>),
 }

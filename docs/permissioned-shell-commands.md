@@ -23,13 +23,20 @@ Default policy:
 
 ## Routing
 
-Only explicit shell command prefixes create a proposed shell action:
+Explicit shell command prefixes create a proposed shell action:
 
 - `run ...`
 - `run command ...`
 - `run shell ...`
 - `run shell command ...`
 - `shell command ...`
+
+Natural filesystem requests may also create a shell proposal when the requested
+target is outside the project-relative filesystem action boundary. For example,
+`create a folder at /tmp/demo` or `create a folder called demo in the desktop`
+becomes a controller-owned `mkdir -p ...` proposal. Approval is still required
+before execution, and the controller verifies the expected directory exists
+after the shell command finishes.
 
 Questions such as `can you run ...?` still go to the provider as model text.
 Bare shell syntax such as `bash -lc ...` is not a command proposal by itself.
@@ -51,5 +58,6 @@ Successful executor completion records `VerifiedActionResult::Shell` with:
 - exit code when available
 - elapsed milliseconds
 - timeout status
+- expected filesystem effect when a shell-backed filesystem task can be verified
 
 Nonzero exit and timeout are shell-owned results, not provider truth.

@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -8,7 +10,7 @@ use crate::{
     context::{ContextAccounting, ContextBundle},
     event::{
         ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
-        ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage,
+        ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage, VerifiedActionResult,
     },
     fs::Filesystem,
     provider::{
@@ -483,19 +485,54 @@ where
             }
         }
 
-        let Some(target_path) = parse_create_directory_target(input) else {
+        let Some(target) = parse_create_directory_target(input) else {
             push_controller_message(
                 session,
                 "CreateDirectory request was recognized, but no target path could be parsed.",
             );
             return;
         };
+        match target {
+            ParsedCreateDirectoryTarget::ProjectRelative(target_path) => {
+                let action = Action::proposed(
+                    next_action_id(session),
+                    ActionRequest::CreateDirectory(CreateDirectoryAction {
+                        target_path: target_path.clone(),
+                    }),
+                    format!("create directory {}", target_path.display()),
+                );
+                session.push_event(Event::ActionProposed(
+                    ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+                        .with_target(target_path.display().to_string()),
+                ));
+                session.push_action(ActionRecord::new(action));
+                push_controller_message(
+                    session,
+                    "Proposed CreateDirectory action. Approve or reject before any directory is created.",
+                );
+            }
+            ParsedCreateDirectoryTarget::ShellDirectory(target_path) => {
+                self.propose_shell_create_directory(session, target_path);
+            }
+        }
+    }
+
+    fn propose_shell_create_directory(&self, session: &mut Session, target_path: PathBuf) {
+        let command = format!("mkdir -p {}", shell_quote_path(&target_path));
+        let mut shell_command = ShellCommandAction::new(command.clone(), session.cwd.clone());
+        shell_command.timeout_seconds = SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS;
+        shell_command.expected_effect = format!(
+            "Create directory {} and verify it exists.",
+            target_path.display()
+        );
+        shell_command.expected_directory = Some(target_path.clone());
+        shell_command.risk_notes =
+            "Creates a local directory through the approved shell command; filesystem confirmation is required after execution."
+                .to_string();
 
         let action = Action::proposed(
             next_action_id(session),
-            ActionRequest::CreateDirectory(CreateDirectoryAction {
-                target_path: target_path.clone(),
-            }),
+            ActionRequest::ShellCommand(shell_command),
             format!("create directory {}", target_path.display()),
         );
         session.push_event(Event::ActionProposed(
@@ -505,7 +542,7 @@ where
         session.push_action(ActionRecord::new(action));
         push_controller_message(
             session,
-            "Proposed CreateDirectory action. Approve or reject before any directory is created.",
+            "Proposed ShellCommand action to create the requested directory. Approve or reject before any command is run.",
         );
     }
 
@@ -609,23 +646,42 @@ where
 
         if let ActionRequest::ShellCommand(shell_command) = &approved.request {
             match ShellExecutor::execute(shell_command) {
-                Ok(result) => {
-                    let record = session
-                        .action_mut(index)
-                        .expect("approved action index must reference an action record");
-                    record.verified_result = Some(result.clone());
-                    record.failure_reason = None;
-                    record.action = approved.mark_applied();
-                    session.push_event(Event::ActionApplied(ActionApplied::new(
-                        approved.id.clone(),
-                        approved.kind(),
-                        result,
-                    )));
-                    push_controller_message(
-                        session,
-                        "Executed approved shell command and recorded the shell-owned result.",
-                    );
-                }
+                Ok(result) => match verify_expected_shell_effect(shell_command, result) {
+                    Ok(result) => {
+                        let record = session
+                            .action_mut(index)
+                            .expect("approved action index must reference an action record");
+                        record.verified_result = Some(result.clone());
+                        record.failure_reason = None;
+                        record.action = approved.mark_applied();
+                        session.push_event(Event::ActionApplied(ActionApplied::new(
+                            approved.id.clone(),
+                            approved.kind(),
+                            result,
+                        )));
+                        push_controller_message(
+                            session,
+                            "Executed approved shell command and recorded the shell-owned result.",
+                        );
+                    }
+                    Err(reason) => {
+                        let record = session
+                            .action_mut(index)
+                            .expect("approved action index must reference an action record");
+                        record.verified_result = None;
+                        record.failure_reason = Some(reason.clone());
+                        record.action = approved.mark_failed();
+                        session.push_event(Event::ActionFailed(ActionFailed::new(
+                            approved.id.clone(),
+                            approved.kind(),
+                            reason,
+                        )));
+                        push_controller_message(
+                            session,
+                            "Approved shell command ran, but expected filesystem verification failed.",
+                        );
+                    }
+                },
                 Err(error) => {
                     let reason = error.to_string();
                     let record = session
@@ -663,7 +719,7 @@ where
                 )));
                 push_controller_message(
                     session,
-                    "Applied approved file action and verified the expected file contents.",
+                    "Applied approved file action and verified the filesystem result.",
                 );
             }
             Err(error) => {
@@ -718,6 +774,35 @@ fn push_ambiguous_pending_action_message(session: &mut Session) {
     push_controller_message(session, AMBIGUOUS_PENDING_ACTION_MESSAGE);
 }
 
+fn verify_expected_shell_effect(
+    action: &ShellCommandAction,
+    mut result: VerifiedActionResult,
+) -> Result<VerifiedActionResult, String> {
+    let Some(expected_directory) = action.expected_directory.as_ref() else {
+        return Ok(result);
+    };
+
+    if !expected_directory.is_dir() {
+        return Err(format!(
+            "expected directory was not created: {}",
+            expected_directory.display()
+        ));
+    }
+
+    if let VerifiedActionResult::Shell(shell) = &mut result {
+        shell.verified_effect = Some(format!(
+            "verified directory exists: {}",
+            expected_directory.display()
+        ));
+    }
+
+    Ok(result)
+}
+
+const RECENT_CONVERSATION_LINE_LIMIT: usize = 8;
+const RECENT_CONVERSATION_BYTE_LIMIT: usize = 1_600;
+const RECENT_CONVERSATION_LINE_BYTE_LIMIT: usize = 360;
+
 fn provider_prompt_with_context(session: &mut Session, input: &str) -> String {
     let max_window_tokens = session.context_accounting().max_window_tokens;
     let bundle = ContextBundle::from_default_local_files(
@@ -726,7 +811,110 @@ fn provider_prompt_with_context(session: &mut Session, input: &str) -> String {
         max_window_tokens,
     );
     session.set_context_accounting(bundle.accounting.clone());
-    bundle.prompt_for(input)
+    let recent_conversation = recent_conversation_prompt(session);
+    bundle.prompt_for_with_recent_conversation(recent_conversation.as_deref(), input)
+}
+
+fn recent_conversation_prompt(session: &Session) -> Option<String> {
+    let events = session.events();
+    let events = match events.last() {
+        Some(Event::UserMessage(_)) => &events[..events.len().saturating_sub(1)],
+        _ => events,
+    };
+
+    let mut lines = events
+        .iter()
+        .filter_map(recent_conversation_line)
+        .map(|line| truncate_line(&line, RECENT_CONVERSATION_LINE_BYTE_LIMIT))
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    if lines.len() > RECENT_CONVERSATION_LINE_LIMIT {
+        lines = lines[lines.len() - RECENT_CONVERSATION_LINE_LIMIT..].to_vec();
+    }
+
+    while conversation_bytes(&lines) > RECENT_CONVERSATION_BYTE_LIMIT && lines.len() > 1 {
+        lines.remove(0);
+    }
+
+    if conversation_bytes(&lines) > RECENT_CONVERSATION_BYTE_LIMIT {
+        lines[0] = truncate_line(&lines[0], RECENT_CONVERSATION_BYTE_LIMIT);
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn recent_conversation_line(event: &Event) -> Option<String> {
+    match event {
+        Event::UserMessage(user) => Some(format!("user: {}", compact_prompt_text(&user.content))),
+        Event::AssistantMessage(message) => Some(format!(
+            "assistant({}): {}",
+            assistant_source_label(message.source),
+            compact_prompt_text(&message.content)
+        )),
+        Event::ActionProposed(action) => Some(format!(
+            "controller action proposed: {:?} {} - {}",
+            action.action_kind,
+            action.target.as_deref().unwrap_or("(no target)"),
+            compact_prompt_text(&action.summary)
+        )),
+        Event::ActionApproved(action) => Some(format!(
+            "controller action approved: {:?} {}",
+            action.action_kind,
+            action.target.as_deref().unwrap_or("(no target)")
+        )),
+        Event::ActionRejected(action) => Some(format!(
+            "controller action rejected: {:?} {}",
+            action.action_kind,
+            action.target.as_deref().unwrap_or("(no target)")
+        )),
+        Event::ActionApplied(action) => Some(format!(
+            "controller verified action applied: {:?} {:?}",
+            action.action_kind, action.result
+        )),
+        Event::ActionFailed(action) => Some(format!(
+            "controller action failed: {:?} - {}",
+            action.action_kind,
+            compact_prompt_text(&action.reason)
+        )),
+        Event::Error(error) => Some(format!(
+            "controller error: {}",
+            compact_prompt_text(&error.message)
+        )),
+        Event::ProviderStarted(_) | Event::ProviderFinished(_) => None,
+    }
+}
+
+fn assistant_source_label(source: AssistantMessageSource) -> &'static str {
+    match source {
+        AssistantMessageSource::Controller => "controller",
+        AssistantMessageSource::Provider => "provider",
+    }
+}
+
+fn compact_prompt_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn conversation_bytes(lines: &[String]) -> usize {
+    lines.iter().map(|line| line.len() + 1).sum()
+}
+
+fn truncate_line(line: &str, max_bytes: usize) -> String {
+    if line.len() <= max_bytes {
+        return line.to_string();
+    }
+
+    let suffix = "...";
+    let max_content = max_bytes.saturating_sub(suffix.len());
+    let mut end = max_content.min(line.len());
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &line[..end], suffix)
 }
 
 fn set_provider_metrics_metadata(
@@ -787,7 +975,7 @@ fn strip_markdown_code_fence(text: &str) -> &str {
 
 fn parse_markdown_plan_target(input: &str) -> std::path::PathBuf {
     if let Some(explicit_target) = explicit_markdown_target(input) {
-        return explicit_target.into();
+        return explicit_target;
     }
 
     std::path::PathBuf::from(format!("{}-plan.md", markdown_plan_slug(input)))
@@ -919,25 +1107,218 @@ fn parse_move_file_request(input: &str) -> Option<(std::path::PathBuf, std::path
     None
 }
 
-fn parse_create_directory_target(input: &str) -> Option<std::path::PathBuf> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedCreateDirectoryTarget {
+    ProjectRelative(PathBuf),
+    ShellDirectory(PathBuf),
+}
+
+fn parse_create_directory_target(input: &str) -> Option<ParsedCreateDirectoryTarget> {
     let trimmed = input.trim();
     for prefix in [
         "create directory ",
+        "create a directory ",
         "create dir ",
+        "create folder ",
+        "create a folder ",
         "make directory ",
+        "make a directory ",
         "make dir ",
+        "make folder ",
+        "make a folder ",
+        "can you create a directory ",
+        "can you create a folder ",
+        "can you make a directory ",
+        "can you make a folder ",
+        "please create a directory ",
+        "please create a folder ",
+        "please make a directory ",
+        "please make a folder ",
         "mkdir ",
     ] {
         if let Some(rest) = strip_ascii_case_prefix(trimmed, prefix) {
-            return rest
-                .split_whitespace()
-                .next()
-                .filter(|target| !target.is_empty())
-                .map(std::path::PathBuf::from);
+            return parse_create_directory_target_rest(rest);
         }
     }
 
     None
+}
+
+fn parse_create_directory_target_rest(rest: &str) -> Option<ParsedCreateDirectoryTarget> {
+    let rest = trim_request_punctuation(rest);
+    let (rest, targets_desktop) = split_create_directory_desktop_location(rest);
+    let rest = trim_directory_name_marker(rest);
+
+    if let Some((name, location)) = split_create_directory_external_location(rest) {
+        let name = directory_target_token(trim_directory_name_marker(name))?;
+        let location = directory_target_token(trim_directory_location_marker(location))?;
+        if let Some(location_path) = parse_external_directory_target(&location) {
+            return Some(ParsedCreateDirectoryTarget::ShellDirectory(
+                location_path.join(name),
+            ));
+        }
+    }
+
+    let target = trim_directory_location_marker(rest);
+    let target = trim_request_punctuation(target);
+    let target = directory_target_token(target)?;
+
+    if targets_desktop {
+        return Some(ParsedCreateDirectoryTarget::ShellDirectory(
+            desktop_directory_target(&target)?,
+        ));
+    }
+
+    if let Some(path) = parse_external_directory_target(&target) {
+        return Some(ParsedCreateDirectoryTarget::ShellDirectory(path));
+    }
+
+    Some(ParsedCreateDirectoryTarget::ProjectRelative(PathBuf::from(
+        target,
+    )))
+}
+
+fn split_create_directory_desktop_location(rest: &str) -> (&str, bool) {
+    for delimiter in [
+        " in the desktop",
+        " on the desktop",
+        " in desktop",
+        " on desktop",
+        " in my desktop",
+        " on my desktop",
+    ] {
+        if let Some((target, _location)) = split_ascii_case_once(rest, delimiter) {
+            return (target, true);
+        }
+    }
+
+    (rest, false)
+}
+
+fn trim_directory_name_marker(input: &str) -> &str {
+    let input = input.trim();
+    for prefix in ["called ", "named "] {
+        if let Some(rest) = strip_ascii_case_prefix(input, prefix) {
+            return rest.trim();
+        }
+    }
+    input
+}
+
+fn trim_directory_location_marker(input: &str) -> &str {
+    let input = input.trim();
+    for prefix in ["at ", "in ", "inside ", "under "] {
+        if let Some(rest) = strip_ascii_case_prefix(input, prefix) {
+            return rest.trim();
+        }
+    }
+    input
+}
+
+fn split_create_directory_external_location(rest: &str) -> Option<(&str, &str)> {
+    for delimiter in [" at ", " in ", " inside ", " under "] {
+        if let Some((name, location)) = split_ascii_case_once(rest, delimiter) {
+            if !name.trim().is_empty()
+                && parse_external_directory_target(&directory_target_token(location)?).is_some()
+            {
+                return Some((name, location));
+            }
+        }
+    }
+
+    None
+}
+
+fn directory_target_token(input: &str) -> Option<String> {
+    let input = trim_request_punctuation(input);
+    let target = if let Some(rest) = input.strip_prefix('"') {
+        let end = rest.find('"')?;
+        &rest[..end]
+    } else if let Some(rest) = input.strip_prefix('\'') {
+        let end = rest.find('\'')?;
+        &rest[..end]
+    } else {
+        input.split_whitespace().next()?
+    };
+    let target = trim_request_punctuation(target);
+    (!target.is_empty()).then(|| target.to_string())
+}
+
+fn trim_request_punctuation(input: &str) -> &str {
+    input
+        .trim()
+        .trim_matches(|character: char| matches!(character, '.' | ',' | ';' | ':' | '?' | '!'))
+}
+
+fn parse_external_directory_target(target: &str) -> Option<PathBuf> {
+    let target = trim_request_punctuation(target);
+    if target.is_empty() {
+        return None;
+    }
+
+    if is_desktop_path(target) {
+        return desktop_path_from_target(target);
+    }
+
+    if target == "~" {
+        return home_dir();
+    }
+
+    if let Some(rest) = target.strip_prefix("~/") {
+        return home_dir().map(|home| home.join(rest));
+    }
+
+    if target.eq_ignore_ascii_case("$HOME") {
+        return home_dir();
+    }
+
+    if let Some(rest) = strip_ascii_case_prefix(target, "$HOME/") {
+        return home_dir().map(|home| home.join(rest));
+    }
+
+    let path = PathBuf::from(target);
+    path.is_absolute().then_some(path)
+}
+
+fn desktop_directory_target(target: &str) -> Option<PathBuf> {
+    let target = trim_request_punctuation(target);
+    if target.is_empty() {
+        return None;
+    }
+
+    Some(home_dir()?.join("Desktop").join(target))
+}
+
+fn desktop_path_from_target(target: &str) -> Option<PathBuf> {
+    let target = trim_request_punctuation(target);
+    if target.eq_ignore_ascii_case("desktop") {
+        return home_dir().map(|home| home.join("Desktop"));
+    }
+
+    for prefix in ["desktop/", "~/desktop/", "$home/desktop/"] {
+        if let Some(rest) = strip_ascii_case_prefix(target, prefix) {
+            return home_dir().map(|home| home.join("Desktop").join(rest));
+        }
+    }
+
+    None
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    let path = path.as_os_str().to_string_lossy();
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+fn is_desktop_path(target: &str) -> bool {
+    let normalized = target.trim().to_ascii_lowercase();
+    normalized == "desktop"
+        || normalized.starts_with("desktop/")
+        || normalized.starts_with("~/desktop/")
+        || normalized.starts_with("$home/desktop/")
 }
 
 fn parse_shell_command_request(input: &str) -> Option<String> {
@@ -1635,6 +2016,35 @@ mod tests {
             "AGENTS.md"
         );
         assert!(session.context_accounting().estimated_tokens.is_some());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ask_model_provider_prompt_includes_recent_visible_conversation() {
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let controller = Controller::new(CapturingProvider::new(Arc::clone(&prompts)));
+        let (mut session, root) = rooted_session("provider-recent-conversation");
+
+        controller.turn(
+            &mut session,
+            "can you create a folder called hello-world in the desktop?",
+        );
+        controller.model_turn(&mut session, "i dont see the folder");
+
+        let captured = prompts.lock().unwrap().join("\n");
+        assert!(captured.contains("Recent conversation selected by Elgar controller:"));
+        assert!(
+            captured.contains("user: can you create a folder called hello-world in the desktop?")
+        );
+        assert!(captured.contains("controller action proposed: ShellCommand"));
+        assert!(captured.contains(
+            "assistant(controller): Proposed ShellCommand action to create the requested directory"
+        ));
+        assert!(captured.contains("User request:\ni dont see the folder"));
+        assert!(!captured.contains("thinking:"));
+        assert_eq!(session.actions().len(), 1);
+        assert!(!root.join("hello-world").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }

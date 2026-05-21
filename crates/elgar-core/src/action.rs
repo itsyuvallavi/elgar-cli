@@ -288,6 +288,8 @@ pub struct ShellCommandAction {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub expected_effect: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_directory: Option<PathBuf>,
     #[serde(default)]
     pub risk_notes: String,
     #[serde(default)]
@@ -306,6 +308,7 @@ impl ShellCommandAction {
             command,
             cwd: cwd.into(),
             timeout_seconds: SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS,
+            expected_directory: None,
             output_caps: ShellCommandOutputCaps::default(),
             environment: ShellCommandEnvironmentPolicy::InheritControllerEnvironment,
         }
@@ -440,6 +443,8 @@ pub struct ShellActionVerification {
     pub exit_code: Option<i32>,
     pub elapsed_millis: u64,
     pub timed_out: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_effect: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -719,6 +724,7 @@ mod tests {
             exit_code: Some(0),
             elapsed_millis: 12,
             timed_out: false,
+            verified_effect: None,
         });
 
         assert_eq!(
@@ -739,7 +745,8 @@ mod tests {
                 stderr_truncated: false,
                 exit_code: Some(0),
                 elapsed_millis: 12,
-                timed_out: false
+                timed_out: false,
+                verified_effect: None
             })
         );
     }
