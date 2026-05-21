@@ -489,8 +489,8 @@ fn render_verified_result(result: &VerifiedActionResult) -> String {
         VerifiedActionResult::File(file) => render_file_verification(file),
         VerifiedActionResult::Shell(shell) => {
             format!(
-                "shell command finished with exit code {:?}",
-                shell.exit_code
+                "shell command finished with exit code {:?}, timed out: {}",
+                shell.exit_code, shell.timed_out
             )
         }
     }

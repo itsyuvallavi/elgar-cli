@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+cargo run -p elgar-cli -- perf-baseline
+
+echo
+echo "Harness/check runtime"
+start_ms="$(python3 -c 'import time; print(time.monotonic_ns() // 1000000)')"
+set +e
+./bin/check-local
+status="$?"
+set -e
+end_ms="$(python3 -c 'import time; print(time.monotonic_ns() // 1000000)')"
+echo "  command=./bin/check-local status=${status} wall_ms=$((end_ms - start_ms))"
+exit "${status}"

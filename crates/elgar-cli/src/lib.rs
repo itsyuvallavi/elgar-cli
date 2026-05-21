@@ -15,11 +15,14 @@ use elgar_core::{
 };
 use serde::Deserialize;
 
+pub mod perf;
+
 pub const PROVIDER_SMOKE_COMMAND: &str = "provider-smoke";
 pub const CONTROLLER_SMOKE_COMMAND: &str = "controller-smoke";
 pub const TUI_CONTROLLER_SMOKE_COMMAND: &str = "tui-controller-smoke";
 pub const TUI_COMMAND: &str = "tui";
 pub const TUI_TERMINAL_COMMAND: &str = "tui-terminal";
+pub const PERF_BASELINE_COMMAND: &str = "perf-baseline";
 pub const PROVIDER_SMOKE_DEFAULT_PROMPT: &str = "Say hello in one sentence.";
 pub const LM_STUDIO_MODEL_ENV: &str = "ELGAR_LM_STUDIO_MODEL";
 pub const LM_STUDIO_BASE_URL_ENV: &str = "ELGAR_LM_STUDIO_BASE_URL";
@@ -683,8 +686,9 @@ mod tests {
         );
 
         assert!(rendered.contains("user: Say hello in one sentence."));
-        assert!(rendered.contains("provider started: lm-studio request lm-studio-request-1"));
-        assert!(rendered.contains("error: lm-studio provider request lm-studio-request-1 failed"));
+        assert!(rendered.contains("provider started: lm-studio request lm-studio-request-"));
+        assert!(rendered.contains("error: lm-studio provider request lm-studio-request-"));
+        assert!(rendered.contains("failed"));
         assert!(rendered.contains("only http:// provider URLs are supported"));
         assert!(!rendered.contains("action proposed"));
         assert!(!rendered.contains("action applied"));

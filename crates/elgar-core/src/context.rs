@@ -6,6 +6,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CONTEXT_FILES: [&str; 2] = ["AGENTS.md", "elgar-provider.json"];
+pub const LOCAL_MEMORY_DIR: &str = ".elgar/memory";
+pub const LOCAL_MEMORY_FILE_LIMIT: usize = 8;
 pub const DEFAULT_CONTEXT_BUDGET_TOKENS: u64 = 768;
 const MIN_TRIMMED_CONTEXT_TOKENS: u64 = 16;
 
@@ -21,13 +23,26 @@ impl ContextBundle {
         cwd: impl AsRef<Path>,
         max_window_tokens: Option<u64>,
     ) -> Self {
-        Self::from_local_files_with_budget(
+        Self::from_default_local_files_with_budget(
             project_root,
             cwd,
-            DEFAULT_CONTEXT_FILES,
             max_window_tokens,
             context_budget_tokens(max_window_tokens),
         )
+    }
+
+    pub fn from_default_local_files_with_budget(
+        project_root: impl AsRef<Path>,
+        cwd: impl AsRef<Path>,
+        max_window_tokens: Option<u64>,
+        budget_tokens: u64,
+    ) -> Self {
+        let project_root = project_root.as_ref();
+        let cwd = cwd.as_ref();
+        let mut candidates =
+            load_named_context_candidates(project_root, cwd, DEFAULT_CONTEXT_FILES);
+        candidates.extend(load_local_memory_candidates(project_root));
+        Self::from_candidates_with_budget(candidates, max_window_tokens, budget_tokens)
     }
 
     pub fn from_local_files_with_budget<const N: usize>(
@@ -39,15 +54,21 @@ impl ContextBundle {
     ) -> Self {
         let project_root = project_root.as_ref();
         let cwd = cwd.as_ref();
+        let candidates = load_named_context_candidates(project_root, cwd, file_names);
+        Self::from_candidates_with_budget(candidates, max_window_tokens, budget_tokens)
+    }
+
+    fn from_candidates_with_budget(
+        candidates: Vec<ContextCandidate>,
+        max_window_tokens: Option<u64>,
+        budget_tokens: u64,
+    ) -> Self {
         let mut used_tokens = 0;
         let mut loaded_files = Vec::new();
         let mut omitted_files = Vec::new();
         let mut sections = Vec::new();
 
-        for file_name in file_names {
-            let Some(candidate) = load_context_candidate(project_root, cwd, file_name) else {
-                continue;
-            };
+        for candidate in candidates {
             let remaining_tokens = budget_tokens.saturating_sub(used_tokens);
 
             if candidate.estimated_tokens <= remaining_tokens {
@@ -108,6 +129,17 @@ impl ContextBundle {
     }
 }
 
+fn load_named_context_candidates<const N: usize>(
+    project_root: &Path,
+    cwd: &Path,
+    file_names: [&str; N],
+) -> Vec<ContextCandidate> {
+    file_names
+        .into_iter()
+        .filter_map(|file_name| load_context_candidate(project_root, cwd, file_name))
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContextSection {
     display_path: String,
@@ -150,7 +182,7 @@ impl ContextAccounting {
         cwd: impl AsRef<Path>,
         max_window_tokens: Option<u64>,
     ) -> Self {
-        Self::from_local_files(project_root, cwd, DEFAULT_CONTEXT_FILES, max_window_tokens)
+        ContextBundle::from_default_local_files(project_root, cwd, max_window_tokens).accounting
     }
 
     pub fn from_local_files<const N: usize>(
@@ -238,10 +270,60 @@ fn load_context_candidate(
     })
 }
 
+fn load_local_memory_candidates(project_root: &Path) -> Vec<ContextCandidate> {
+    let memory_dir = project_root.join(LOCAL_MEMORY_DIR);
+    if !is_real_directory(&memory_dir) {
+        return Vec::new();
+    }
+
+    let Ok(entries) = fs::read_dir(memory_dir) else {
+        return Vec::new();
+    };
+
+    let mut files = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+        })
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "md")
+        })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|entry| entry.file_name());
+
+    files
+        .into_iter()
+        .take(LOCAL_MEMORY_FILE_LIMIT)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let content = fs::read_to_string(&path).ok()?;
+            let bytes = content.len() as u64;
+            Some(ContextCandidate {
+                display_path: format!("{LOCAL_MEMORY_DIR}/{}", entry.file_name().to_string_lossy()),
+                bytes,
+                estimated_tokens: estimate_tokens_from_bytes(bytes),
+                content,
+            })
+        })
+        .collect()
+}
+
 fn existing_file(project_root: &Path, cwd: &Path, file_name: &str) -> Option<PathBuf> {
     [project_root.join(file_name), cwd.join(file_name)]
         .into_iter()
         .find(|path| path.is_file())
+}
+
+fn is_real_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_dir())
+        .unwrap_or(false)
 }
 
 fn estimate_tokens_from_bytes(bytes: u64) -> u64 {

@@ -2,7 +2,7 @@ use elgar_core::{
     action::ActionLifecycleState,
     context::{ContextAccounting, LoadedContextFile},
     controller::Controller,
-    event::ProviderOutput,
+    event::{ProviderMetrics, ProviderOutput, ProviderTokenUsage},
     provider::{ControllerProvider, ProviderError, ProviderRequestMetadata, ProviderStreamChunk},
     session::Session,
 };
@@ -95,7 +95,7 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
 }
 
 #[test]
-fn active_working_frame_shows_live_reasoning_without_partial_response() {
+fn active_working_frame_shows_live_reasoning_and_partial_response() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
     let mut live_output = LiveProviderOutput::default();
@@ -107,7 +107,7 @@ fn active_working_frame_shows_live_reasoning_without_partial_response() {
 
     assert!(progress.is_empty());
     assert_eq!(reasoning, vec!["", "Greet."]);
-    assert!(response.is_empty());
+    assert_eq!(response, vec!["", "Hello"]);
     assert!(!reasoning.join("\n").contains("thinking"));
 }
 
@@ -179,7 +179,7 @@ fn active_working_frame_keeps_live_reasoning_summary_short() {
 }
 
 #[test]
-fn active_working_frame_holds_response_until_completion() {
+fn active_working_frame_reveals_response_before_completion() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
     let mut live_output = LiveProviderOutput::default();
@@ -189,7 +189,7 @@ fn active_working_frame_holds_response_until_completion() {
 
     let (_progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
-    assert!(response.is_empty());
+    assert_eq!(response, vec!["", "Hello! How can I help you today?"]);
 }
 
 #[test]
@@ -410,7 +410,7 @@ fn terminal_layout_renders_pending_action_only_when_present() {
     assert!(text.contains("review action"));
     assert!(text.contains("Action: action-1 CreateFile"));
     assert!(text.contains("State: waiting for approval"));
-    assert!(text.contains("No file has been changed yet"));
+    assert!(text.contains("No action has been applied yet"));
     assert!(text.contains("Use /approve or /reject"));
     assert!(text.contains("> "));
     assert!(text.contains("review action"));
@@ -497,6 +497,101 @@ fn terminal_footer_formats_controller_context_accounting() {
     assert!(footer.contains("context: ~321/128k"));
     assert!(!footer.contains('%'));
     assert!(!footer.contains("TBD"));
+}
+
+#[test]
+fn terminal_footer_prefers_real_provider_usage_when_present() {
+    let mut metrics = ProviderMetrics::new(
+        "request-usage",
+        Some("openai/gpt-oss-20b".to_string()),
+        false,
+        1,
+        128,
+    );
+    metrics.usage = Some(ProviderTokenUsage {
+        prompt_tokens: Some(7),
+        completion_tokens: Some(3),
+        total_tokens: Some(10),
+    });
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()))
+        .with_context_accounting(ContextAccounting {
+            loaded_files: Vec::new(),
+            omitted_files: Vec::new(),
+            estimated_tokens: Some(321),
+            max_window_tokens: Some(128_000),
+        })
+        .with_provider_metrics(metrics);
+
+    let footer = context.footer_body("ready", "copy");
+
+    assert!(footer.contains("context: 10/128k"));
+    assert!(!footer.contains("~321"));
+    assert!(!footer.contains('%'));
+}
+
+#[test]
+fn terminal_context_from_session_carries_provider_usage_to_footer() {
+    #[derive(Clone)]
+    struct UsageProvider;
+
+    impl ControllerProvider for UsageProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "usage-provider",
+                Some("model-a".to_string()),
+                "usage-request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            let mut metrics =
+                ProviderMetrics::new("usage-request-1", Some("model-a".to_string()), false, 1, 64);
+            metrics.usage = Some(ProviderTokenUsage {
+                prompt_tokens: Some(11),
+                completion_tokens: Some(5),
+                total_tokens: Some(16),
+            });
+            Ok(ProviderOutput::new("measured").with_metrics(metrics))
+        }
+    }
+
+    let controller = Controller::new(UsageProvider);
+    let mut session = Session::new("session-1", "/repo", "/repo");
+
+    controller.turn(&mut session, "hello");
+
+    let context = TerminalShellContext::from_session(&session);
+    let footer = context.footer_body("ready", "copy");
+
+    assert!(footer.contains("context: 16 tokens"));
+    assert!(footer.contains("model-a"));
+    assert!(!footer.contains('%'));
+}
+
+#[test]
+fn terminal_footer_keeps_context_unknown_when_provider_usage_is_absent() {
+    let metrics = ProviderMetrics::new(
+        "request-no-usage",
+        Some("openai/gpt-oss-20b".to_string()),
+        false,
+        1,
+        128,
+    );
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_context_accounting(ContextAccounting {
+            loaded_files: Vec::new(),
+            omitted_files: Vec::new(),
+            estimated_tokens: None,
+            max_window_tokens: None,
+        })
+        .with_provider_metrics(metrics);
+
+    let footer = context.footer_body("ready", "copy");
+
+    assert!(footer.contains("context: unknown"));
+    assert!(!footer.contains("TBD"));
+    assert!(!footer.contains('%'));
 }
 
 #[test]

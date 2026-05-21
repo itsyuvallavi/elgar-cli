@@ -358,6 +358,99 @@ fn tui_command_approves_pending_action_with_slash_command_without_network() {
 }
 
 #[test]
+fn tui_command_approves_shell_action_with_slash_command_without_network() {
+    let root = smoke_root("slash-approve-shell");
+    let target = root.join("shell-approved.txt");
+    let input = format!(
+        "run command printf ok > {}\n/approve\n/exit\n",
+        target.display()
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .arg("tui")
+        .current_dir(&root)
+        .env(
+            "ELGAR_LM_STUDIO_MODEL",
+            "loaded-model-that-must-not-be-used",
+        )
+        .env("ELGAR_LM_STUDIO_BASE_URL", "https://127.0.0.1:1234/v1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "ok");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("State: applied and verified"));
+    assert!(stdout.contains("Result: shell command finished"));
+    assert!(stdout.contains("timed out: false"));
+    assert!(stdout.contains("Exiting Elgar TUI."));
+    assert!(!stdout.contains("Input was not recognized"));
+    assert!(!stdout.contains("lm-studio"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn tui_command_rejects_shell_action_with_slash_command_without_execution() {
+    let root = smoke_root("slash-reject-shell");
+    let target = root.join("shell-rejected.txt");
+    let input = format!(
+        "run command printf no > {}\n/reject\n/exit\n",
+        target.display()
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .arg("tui")
+        .current_dir(&root)
+        .env(
+            "ELGAR_LM_STUDIO_MODEL",
+            "loaded-model-that-must-not-be-used",
+        )
+        .env("ELGAR_LM_STUDIO_BASE_URL", "https://127.0.0.1:1234/v1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+    assert!(!target.exists());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("State: rejected"));
+    assert!(stdout.contains("Rejected actions are final"));
+    assert!(stdout.contains("Exiting Elgar TUI."));
+    assert!(!stdout.contains("Input was not recognized"));
+    assert!(!stdout.contains("lm-studio"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn tui_command_line_loop_preserves_controller_backed_action_lifecycle() {
     let root = smoke_root("line-loop-lifecycle");
     let rejected_target = root.join("rejected.py");

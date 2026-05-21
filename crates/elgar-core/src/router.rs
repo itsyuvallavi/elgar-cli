@@ -11,6 +11,10 @@ pub enum Route {
     ProposeWriteFile,
     ProposePatchFile,
     ProposeOverwriteFile,
+    ProposeDeleteFile,
+    ProposeMoveFile,
+    ProposeCreateDirectory,
+    ProposeShellCommand,
     ApproveAction,
     RejectAction,
     Help,
@@ -48,6 +52,22 @@ pub fn route_input(input: &str) -> Route {
         return Route::ProposeOverwriteFile;
     }
 
+    if is_delete_file_request(&normalized) {
+        return Route::ProposeDeleteFile;
+    }
+
+    if is_move_file_request(&normalized) {
+        return Route::ProposeMoveFile;
+    }
+
+    if is_create_directory_request(&normalized) {
+        return Route::ProposeCreateDirectory;
+    }
+
+    if is_shell_command_request(&normalized) {
+        return Route::ProposeShellCommand;
+    }
+
     if is_write_file_request(&normalized) {
         return Route::ProposeWriteFile;
     }
@@ -75,6 +95,37 @@ fn is_patch_file_request(input: &str) -> bool {
 fn is_overwrite_file_request(input: &str) -> bool {
     (input.starts_with("overwrite file ") || input.starts_with("overwrite "))
         && input.contains(" with ")
+}
+
+fn is_delete_file_request(input: &str) -> bool {
+    input.starts_with("delete file ")
+        || input.starts_with("delete ")
+        || input.starts_with("remove file ")
+        || input.starts_with("remove ")
+}
+
+fn is_move_file_request(input: &str) -> bool {
+    (input.starts_with("move file ")
+        || input.starts_with("move ")
+        || input.starts_with("rename file ")
+        || input.starts_with("rename "))
+        && input.contains(" to ")
+}
+
+fn is_create_directory_request(input: &str) -> bool {
+    input.starts_with("create directory ")
+        || input.starts_with("create dir ")
+        || input.starts_with("make directory ")
+        || input.starts_with("make dir ")
+        || input.starts_with("mkdir ")
+}
+
+fn is_shell_command_request(input: &str) -> bool {
+    input.starts_with("run ")
+        || input.starts_with("run command ")
+        || input.starts_with("run shell command ")
+        || input.starts_with("run shell ")
+        || input.starts_with("shell command ")
 }
 
 fn is_write_file_request(input: &str) -> bool {
@@ -186,6 +237,20 @@ mod tests {
     }
 
     #[test]
+    fn classifies_shell_command_requests() {
+        assert_eq!(
+            route_input("run command cargo test -p elgar-core"),
+            Route::ProposeShellCommand
+        );
+        assert_eq!(
+            route_input("run shell echo hello"),
+            Route::ProposeShellCommand
+        );
+        assert_eq!(route_input("shell command pwd"), Route::ProposeShellCommand);
+        assert_eq!(route_input("run ls"), Route::ProposeShellCommand);
+    }
+
+    #[test]
     fn classifies_approval_input() {
         assert_eq!(route_input("approve"), Route::ApproveAction);
         assert_eq!(route_input("yes"), Route::ApproveAction);
@@ -215,6 +280,6 @@ mod tests {
         assert_eq!(route_input(""), Route::Unknown);
         assert_eq!(route_input("   "), Route::Unknown);
         assert_eq!(route_input("create a plan"), Route::Unknown);
-        assert_eq!(route_input("run ls"), Route::Unknown);
+        assert_eq!(route_input("bash -lc ls"), Route::Unknown);
     }
 }

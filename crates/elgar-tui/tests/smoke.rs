@@ -337,7 +337,7 @@ fn displays_proposed_write_file_action_without_writing() {
     assert!(rendered.contains("Target: hello.py"));
     assert!(rendered.contains("Summary: write hello.py"));
     assert!(rendered.contains("State: waiting for approval"));
-    assert!(rendered.contains("No file has been changed yet. Use /approve or /reject."));
+    assert!(rendered.contains("No action has been applied yet. Use /approve or /reject."));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -396,6 +396,113 @@ fn rejects_write_file_through_controller_without_writing() {
     assert!(rendered.contains("State: rejected"));
     assert!(rendered.contains("Result: Rejected. No file was changed."));
     assert!(rendered.contains("Rejected actions are final"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn approves_shell_command_through_controller_and_renders_shell_result() {
+    let controller = Controller::default();
+    let root = smoke_root("approve-shell-command");
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::new();
+    let target = root.join("shell-ran.txt");
+
+    shell.submit_input(
+        &controller,
+        &mut session,
+        &format!("run command printf ok > {}", target.display()),
+    );
+    let result = shell.submit_approval(&controller, &mut session);
+
+    assert_eq!(result.route, Route::ApproveAction);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "ok");
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert!(matches!(
+        session.actions()[0].verified_result,
+        Some(VerifiedActionResult::Shell(_))
+    ));
+
+    let rendered = shell.render();
+    assert!(rendered.contains("State: applied and verified"));
+    assert!(rendered.contains("Result: shell command finished"));
+    assert!(rendered.contains("timed out: false"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rejects_shell_command_through_controller_without_execution() {
+    let controller = Controller::default();
+    let root = smoke_root("reject-shell-command");
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::new();
+    let target = root.join("shell-ran.txt");
+
+    shell.submit_input(
+        &controller,
+        &mut session,
+        &format!("run command printf no > {}", target.display()),
+    );
+    let result = shell.submit_rejection(&controller, &mut session);
+
+    assert_eq!(result.route, Route::RejectAction);
+    assert!(!target.exists());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+
+    let rendered = shell.render();
+    assert!(rendered.contains("State: rejected"));
+    assert!(rendered.contains("Rejected actions are final"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn renders_delete_move_directory_actions_without_mutating_on_render() {
+    let controller = Controller::default();
+    let root = smoke_root("render-expanded-actions");
+    let delete_target = root.join("delete-me.txt");
+    fs::write(&delete_target, "keep").unwrap();
+
+    let mut delete_session = session_at(&root);
+    let mut delete_shell = TuiShell::new();
+    let result = controller.turn(&mut delete_session, "delete file delete-me.txt");
+    delete_shell.consume_events(&result.events);
+    let before_render = delete_session.clone();
+    let rendered = delete_shell.render();
+
+    assert!(rendered.contains("Pending Action"));
+    assert!(rendered.contains("DeleteFile"));
+    assert_eq!(delete_session, before_render);
+    assert_eq!(fs::read_to_string(&delete_target).unwrap(), "keep");
+
+    let mut move_session = session_at(&root);
+    let mut move_shell = TuiShell::new();
+    let source = root.join("old-name.txt");
+    let target = root.join("new-name.txt");
+    fs::write(&source, "move me").unwrap();
+    let result = controller.turn(&mut move_session, "move file old-name.txt to new-name.txt");
+    move_shell.consume_events(&result.events);
+    let _ = move_shell.render();
+
+    assert_eq!(fs::read_to_string(&source).unwrap(), "move me");
+    assert!(!target.exists());
+
+    let mut directory_session = session_at(&root);
+    let mut directory_shell = TuiShell::new();
+    let directory = root.join("generated");
+    let result = controller.turn(&mut directory_session, "create directory generated");
+    directory_shell.consume_events(&result.events);
+    let _ = directory_shell.render();
+
+    assert!(!directory.exists());
 
     let _ = fs::remove_dir_all(root);
 }

@@ -43,6 +43,13 @@ impl Filesystem {
             ActionRequest::OverwriteFile(overwrite_file) => {
                 apply_overwrite_file(overwrite_file, allowed_root.as_ref())
             }
+            ActionRequest::DeleteFile(delete_file) => {
+                apply_delete_file(delete_file, allowed_root.as_ref())
+            }
+            ActionRequest::MoveFile(move_file) => apply_move_file(move_file, allowed_root.as_ref()),
+            ActionRequest::CreateDirectory(create_directory) => {
+                apply_create_directory(create_directory, allowed_root.as_ref())
+            }
             _ => Err(FilesystemError::UnsupportedAction {
                 kind: action.kind(),
             }),
@@ -114,6 +121,73 @@ fn apply_overwrite_file(
 
     Ok(VerifiedActionResult::File(
         FileActionVerification::FileOverwritten {
+            path: target_path.display().to_string(),
+        },
+    ))
+}
+
+fn apply_delete_file(
+    delete_file: &crate::action::DeleteFileAction,
+    allowed_root: &Path,
+) -> Result<VerifiedActionResult, FilesystemError> {
+    let target_path = resolve_existing_target(&delete_file.target_path, allowed_root)?;
+
+    fs::remove_file(&target_path).map_err(|source| FilesystemError::WriteFailed {
+        path: target_path.clone(),
+        reason: source.to_string(),
+    })?;
+    verify_path_missing(&target_path)?;
+
+    Ok(VerifiedActionResult::File(
+        FileActionVerification::FileDeleted {
+            path: target_path.display().to_string(),
+        },
+    ))
+}
+
+fn apply_move_file(
+    move_file: &crate::action::MoveFileAction,
+    allowed_root: &Path,
+) -> Result<VerifiedActionResult, FilesystemError> {
+    let source_path = resolve_existing_target(&move_file.source_path, allowed_root)?;
+    let target_path = resolve_allowed_target(&move_file.target_path, allowed_root)?;
+    if target_exists(&target_path)? {
+        return Err(FilesystemError::TargetAlreadyExists { path: target_path });
+    }
+    verify_regular_file_exists(&source_path)?;
+
+    fs::rename(&source_path, &target_path).map_err(|source| FilesystemError::WriteFailed {
+        path: target_path.clone(),
+        reason: source.to_string(),
+    })?;
+    verify_path_missing(&source_path)?;
+    verify_regular_file_exists(&target_path)?;
+
+    Ok(VerifiedActionResult::File(
+        FileActionVerification::FileMoved {
+            source_path: source_path.display().to_string(),
+            target_path: target_path.display().to_string(),
+        },
+    ))
+}
+
+fn apply_create_directory(
+    create_directory: &crate::action::CreateDirectoryAction,
+    allowed_root: &Path,
+) -> Result<VerifiedActionResult, FilesystemError> {
+    let target_path = resolve_allowed_target(&create_directory.target_path, allowed_root)?;
+    if target_exists(&target_path)? {
+        return Err(FilesystemError::TargetAlreadyExists { path: target_path });
+    }
+
+    fs::create_dir(&target_path).map_err(|source| FilesystemError::WriteFailed {
+        path: target_path.clone(),
+        reason: source.to_string(),
+    })?;
+    verify_directory_exists(&target_path)?;
+
+    Ok(VerifiedActionResult::File(
+        FileActionVerification::DirectoryCreated {
             path: target_path.display().to_string(),
         },
     ))
@@ -287,6 +361,56 @@ fn verify_file_contents(path: &Path, expected: &str) -> Result<(), FilesystemErr
     }
 }
 
+fn verify_regular_file_exists(path: &Path) -> Result<(), FilesystemError> {
+    let metadata =
+        path.symlink_metadata()
+            .map_err(|source| FilesystemError::VerificationFailed {
+                path: path.to_path_buf(),
+                reason: source.to_string(),
+            })?;
+
+    if metadata.file_type().is_file() {
+        Ok(())
+    } else {
+        Err(FilesystemError::VerificationFailed {
+            path: path.to_path_buf(),
+            reason: "path is not a regular file".to_string(),
+        })
+    }
+}
+
+fn verify_directory_exists(path: &Path) -> Result<(), FilesystemError> {
+    let metadata =
+        path.symlink_metadata()
+            .map_err(|source| FilesystemError::VerificationFailed {
+                path: path.to_path_buf(),
+                reason: source.to_string(),
+            })?;
+
+    if metadata.file_type().is_dir() {
+        Ok(())
+    } else {
+        Err(FilesystemError::VerificationFailed {
+            path: path.to_path_buf(),
+            reason: "path is not a directory".to_string(),
+        })
+    }
+}
+
+fn verify_path_missing(path: &Path) -> Result<(), FilesystemError> {
+    match path.symlink_metadata() {
+        Ok(_) => Err(FilesystemError::VerificationFailed {
+            path: path.to_path_buf(),
+            reason: "path still exists".to_string(),
+        }),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(FilesystemError::VerificationFailed {
+            path: path.to_path_buf(),
+            reason: source.to_string(),
+        }),
+    }
+}
+
 fn rename_temp_file(temp_path: &Path, path: &Path) -> Result<(), FilesystemError> {
     fs::rename(temp_path, path).map_err(|source| FilesystemError::WriteFailed {
         path: path.to_path_buf(),
@@ -439,7 +563,10 @@ mod tests {
     };
 
     use crate::{
-        action::{Action, ActionLifecycleState, FileActionVerification},
+        action::{
+            Action, ActionLifecycleState, ActionRequest, CreateDirectoryAction, DeleteFileAction,
+            FileActionVerification, MoveFileAction,
+        },
         event::VerifiedActionResult,
     };
 
@@ -466,6 +593,40 @@ mod tests {
 
     fn assert_no_atomic_temp_files(root: &Path) {
         assert_eq!(atomic_temp_files(root), Vec::<PathBuf>::new());
+    }
+
+    fn proposed_delete_file(target_path: impl Into<PathBuf>) -> Action {
+        Action::proposed(
+            "action-1",
+            ActionRequest::DeleteFile(DeleteFileAction {
+                target_path: target_path.into(),
+            }),
+            "delete file",
+        )
+    }
+
+    fn proposed_move_file(
+        source_path: impl Into<PathBuf>,
+        target_path: impl Into<PathBuf>,
+    ) -> Action {
+        Action::proposed(
+            "action-1",
+            ActionRequest::MoveFile(MoveFileAction {
+                source_path: source_path.into(),
+                target_path: target_path.into(),
+            }),
+            "move file",
+        )
+    }
+
+    fn proposed_create_directory(target_path: impl Into<PathBuf>) -> Action {
+        Action::proposed(
+            "action-1",
+            ActionRequest::CreateDirectory(CreateDirectoryAction {
+                target_path: target_path.into(),
+            }),
+            "create directory",
+        )
     }
 
     #[test]
@@ -692,6 +853,301 @@ mod tests {
         assert!(!path.exists());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn proposed_delete_file_does_not_apply() {
+        let root = root("proposed-delete");
+        let path = root.join("notes.txt");
+        fs::write(&path, "contents").unwrap();
+        let action = proposed_delete_file("notes.txt");
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::ActionNotApproved {
+                state: ActionLifecycleState::Proposed
+            })
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "contents");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_delete_file_removes_existing_file_and_verifies_absence() {
+        let root = root("approved-delete");
+        let path = root.join("notes.txt");
+        fs::write(&path, "contents").unwrap();
+        let action = proposed_delete_file("notes.txt").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Ok(VerifiedActionResult::File(
+                FileActionVerification::FileDeleted {
+                    path: path.display().to_string()
+                }
+            ))
+        );
+        assert!(!path.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_delete_file_fails_when_target_is_missing() {
+        let root = root("missing-delete-target");
+        let path = root.join("notes.txt");
+        let action = proposed_delete_file("notes.txt").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::TargetMissing { path: path.clone() })
+        );
+        assert!(!path.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn proposed_move_file_does_not_apply() {
+        let root = root("proposed-move");
+        let source = root.join("source.txt");
+        let target = root.join("target.txt");
+        fs::write(&source, "contents").unwrap();
+        let action = proposed_move_file("source.txt", "target.txt");
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::ActionNotApproved {
+                state: ActionLifecycleState::Proposed
+            })
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), "contents");
+        assert!(!target.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_move_file_moves_existing_file_and_verifies_both_paths() {
+        let root = root("approved-move");
+        let source = root.join("source.txt");
+        let target = root.join("target.txt");
+        fs::write(&source, "contents").unwrap();
+        let action = proposed_move_file("source.txt", "target.txt").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Ok(VerifiedActionResult::File(
+                FileActionVerification::FileMoved {
+                    source_path: source.display().to_string(),
+                    target_path: target.display().to_string()
+                }
+            ))
+        );
+        assert!(!source.exists());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "contents");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_move_file_fails_when_target_already_exists_without_overwriting() {
+        let root = root("move-existing-target");
+        let source = root.join("source.txt");
+        let target = root.join("target.txt");
+        fs::write(&source, "source").unwrap();
+        fs::write(&target, "target").unwrap();
+        let action = proposed_move_file("source.txt", "target.txt").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::TargetAlreadyExists {
+                path: target.clone()
+            })
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), "source");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "target");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn proposed_create_directory_does_not_apply() {
+        let root = root("proposed-create-directory");
+        let path = root.join("new-dir");
+        let action = proposed_create_directory("new-dir");
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::ActionNotApproved {
+                state: ActionLifecycleState::Proposed
+            })
+        );
+        assert!(!path.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_create_directory_creates_directory_and_verifies_it() {
+        let root = root("approved-create-directory");
+        let path = root.join("new-dir");
+        let action = proposed_create_directory("new-dir").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Ok(VerifiedActionResult::File(
+                FileActionVerification::DirectoryCreated {
+                    path: path.display().to_string()
+                }
+            ))
+        );
+        assert!(path.is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_create_directory_rejects_parent_traversal() {
+        let root = root("create-directory-traversal");
+        let outside = root
+            .parent()
+            .unwrap()
+            .join(format!("elgar-fs-{}-outside-directory", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        let action = proposed_create_directory(format!(
+            "../{}",
+            outside.file_name().unwrap().to_string_lossy()
+        ))
+        .approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::UnsafeTarget {
+                path: PathBuf::from(format!(
+                    "../{}",
+                    outside.file_name().unwrap().to_string_lossy()
+                )),
+                reason: "parent directory traversal is not allowed".to_string()
+            })
+        );
+        assert!(!outside.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approved_delete_file_rejects_existing_symlink_target_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = root("delete-symlink-target-root");
+        let outside = root.parent().unwrap().join(format!(
+            "elgar-fs-{}-delete-symlink-target.txt",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&outside);
+        fs::write(&outside, "original").unwrap();
+        symlink(&outside, root.join("linked.txt")).unwrap();
+        let action = proposed_delete_file("linked.txt").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::UnsafeTarget {
+                path: PathBuf::from("linked.txt"),
+                reason: "target file symlinks are not allowed".to_string()
+            })
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "original");
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approved_move_file_rejects_symlinked_target_parent_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = root("move-symlink-parent-root");
+        let source = root.join("source.txt");
+        fs::write(&source, "contents").unwrap();
+        let outside = root.parent().unwrap().join(format!(
+            "elgar-fs-{}-move-symlink-outside",
+            std::process::id()
+        ));
+        let outside_target = outside.join("moved.txt");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+        let action = proposed_move_file("source.txt", "link/moved.txt").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::UnsafeTarget {
+                path: PathBuf::from("link/moved.txt"),
+                reason: "target parent resolves outside the allowed root".to_string()
+            })
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), "contents");
+        assert!(!outside_target.exists());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approved_create_directory_rejects_symlinked_parent_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = root("create-directory-symlink-parent-root");
+        let outside = root.parent().unwrap().join(format!(
+            "elgar-fs-{}-create-directory-symlink-outside",
+            std::process::id()
+        ));
+        let outside_target = outside.join("escaped-dir");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+        let action = proposed_create_directory("link/escaped-dir").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Err(FilesystemError::UnsafeTarget {
+                path: PathBuf::from("link/escaped-dir"),
+                reason: "target parent resolves outside the allowed root".to_string()
+            })
+        );
+        assert!(!outside_target.exists());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
     }
 
     #[test]

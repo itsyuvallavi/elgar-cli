@@ -10,6 +10,7 @@ use crossterm::{
 };
 use elgar_core::{
     context::ContextAccounting,
+    event::{ProviderMetrics, ProviderTokenUsage},
     provider::{ControllerProvider, ProviderConfig},
     router::{route_input, Route},
     session::Session,
@@ -514,6 +515,7 @@ pub struct TerminalShellContext {
     pub cwd: PathBuf,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub provider_metrics: Option<ProviderMetrics>,
     pub context_accounting: ContextAccounting,
 }
 
@@ -524,6 +526,7 @@ impl TerminalShellContext {
             cwd: cwd.as_ref().to_path_buf(),
             provider: None,
             model: None,
+            provider_metrics: None,
             context_accounting: ContextAccounting::unknown(),
         }
     }
@@ -539,6 +542,7 @@ impl TerminalShellContext {
         if let Some(metadata) = session.provider_metadata() {
             context.provider = Some(metadata.provider.clone());
             context.model = metadata.model.clone();
+            context.provider_metrics = metadata.metrics.clone();
         }
         context.context_accounting = session.context_accounting().clone();
         context
@@ -546,6 +550,12 @@ impl TerminalShellContext {
 
     pub fn with_context_accounting(mut self, context_accounting: ContextAccounting) -> Self {
         self.context_accounting = context_accounting;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_provider_metrics(mut self, provider_metrics: ProviderMetrics) -> Self {
+        self.provider_metrics = Some(provider_metrics);
         self
     }
 
@@ -568,7 +578,7 @@ impl TerminalShellContext {
 
         format!(
             "{first_line}\n{}",
-            footer_context_label(&self.context_accounting)
+            footer_context_label(&self.context_accounting, self.provider_metrics.as_ref())
         )
     }
 }
@@ -657,7 +667,26 @@ fn align_footer_line(left: &str, right: &str, width: usize) -> String {
     }
 }
 
-fn footer_context_label(context: &ContextAccounting) -> String {
+fn footer_context_label(
+    context: &ContextAccounting,
+    provider_metrics: Option<&ProviderMetrics>,
+) -> String {
+    if let Some(tokens) = provider_metrics
+        .and_then(|metrics| metrics.usage.as_ref())
+        .and_then(provider_context_tokens)
+    {
+        return match context.max_window_tokens {
+            Some(max) => {
+                format!(
+                    "context: {}/{}",
+                    compact_token_count(tokens),
+                    compact_token_count(max)
+                )
+            }
+            None => format!("context: {} tokens", compact_token_count(tokens)),
+        };
+    }
+
     match (context.estimated_tokens, context.max_window_tokens) {
         (Some(used), Some(max)) => {
             format!(
@@ -670,6 +699,17 @@ fn footer_context_label(context: &ContextAccounting) -> String {
         (None, Some(max)) => format!("context: unknown/{}", compact_token_count(max)),
         (None, None) => "context: unknown".to_string(),
     }
+}
+
+fn provider_context_tokens(usage: &ProviderTokenUsage) -> Option<u64> {
+    usage
+        .total_tokens
+        .or_else(|| match (usage.prompt_tokens, usage.completion_tokens) {
+            (Some(prompt), Some(completion)) => Some(prompt.saturating_add(completion)),
+            (Some(prompt), None) => Some(prompt),
+            (None, Some(completion)) => Some(completion),
+            (None, None) => None,
+        })
 }
 
 fn compact_token_count(tokens: u64) -> String {

@@ -1,6 +1,8 @@
 use std::fs;
 
-use elgar_core::context::{ContextAccounting, ContextBundle};
+use elgar_core::context::{
+    ContextAccounting, ContextBundle, LOCAL_MEMORY_DIR, LOCAL_MEMORY_FILE_LIMIT,
+};
 
 #[test]
 fn unknown_context_has_no_fake_counts_or_window() {
@@ -104,6 +106,106 @@ fn context_bundle_omits_when_remaining_budget_is_too_small() {
         bundle.accounting.omitted_files[0].reason,
         "context budget exceeded"
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn default_local_context_includes_bounded_memory_notes() {
+    let root = temp_root("context-memory");
+    let memory = root.join(LOCAL_MEMORY_DIR);
+    fs::create_dir_all(&memory).unwrap();
+    fs::write(root.join("AGENTS.md"), "Root instructions.").unwrap();
+    fs::write(memory.join("b.md"), "Second memory note.").unwrap();
+    fs::write(memory.join("a.md"), "First memory note.").unwrap();
+    fs::write(memory.join("skip.txt"), "not markdown").unwrap();
+
+    let bundle = ContextBundle::from_default_local_files(&root, &root, None);
+    let prompt = bundle.prompt_for("use memory");
+
+    assert!(prompt.contains("--- AGENTS.md ---\nRoot instructions."));
+    assert!(prompt.contains("--- .elgar/memory/a.md ---\nFirst memory note."));
+    assert!(prompt.contains("--- .elgar/memory/b.md ---\nSecond memory note."));
+    assert!(!prompt.contains("not markdown"));
+    assert_eq!(
+        bundle
+            .accounting
+            .loaded_files
+            .iter()
+            .map(|file| file.display_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["AGENTS.md", ".elgar/memory/a.md", ".elgar/memory/b.md"]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn missing_memory_directory_is_a_noop() {
+    let root = temp_root("context-memory-missing");
+    fs::write(root.join("AGENTS.md"), "Root instructions.").unwrap();
+
+    let bundle = ContextBundle::from_default_local_files(&root, &root, None);
+
+    assert_eq!(bundle.accounting.loaded_files.len(), 1);
+    assert_eq!(bundle.accounting.loaded_files[0].display_path, "AGENTS.md");
+    assert!(bundle.accounting.omitted_files.is_empty());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn default_local_context_caps_memory_file_count() {
+    let root = temp_root("context-memory-limit");
+    let memory = root.join(LOCAL_MEMORY_DIR);
+    fs::create_dir_all(&memory).unwrap();
+    for index in 0..(LOCAL_MEMORY_FILE_LIMIT + 2) {
+        fs::write(
+            memory.join(format!("{index:02}.md")),
+            format!("note {index}"),
+        )
+        .unwrap();
+    }
+
+    let bundle = ContextBundle::from_default_local_files(&root, &root, None);
+
+    assert_eq!(
+        bundle.accounting.loaded_files.len(),
+        LOCAL_MEMORY_FILE_LIMIT
+    );
+    assert_eq!(
+        bundle.accounting.loaded_files[0].display_path,
+        ".elgar/memory/00.md"
+    );
+    assert_eq!(
+        bundle.accounting.loaded_files[LOCAL_MEMORY_FILE_LIMIT - 1].display_path,
+        format!(".elgar/memory/{:02}.md", LOCAL_MEMORY_FILE_LIMIT - 1)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn memory_notes_use_existing_context_budget() {
+    let root = temp_root("context-memory-budget");
+    let memory = root.join(LOCAL_MEMORY_DIR);
+    fs::create_dir_all(&memory).unwrap();
+    fs::write(root.join("AGENTS.md"), "12345678").unwrap();
+    fs::write(memory.join("note.md"), "a".repeat(128)).unwrap();
+
+    let bundle = ContextBundle::from_default_local_files_with_budget(&root, &root, None, 18);
+
+    assert_eq!(bundle.accounting.loaded_files.len(), 2);
+    assert_eq!(bundle.accounting.loaded_files[0].display_path, "AGENTS.md");
+    assert_eq!(
+        bundle.accounting.loaded_files[1].display_path,
+        ".elgar/memory/note.md"
+    );
+    assert_eq!(bundle.accounting.loaded_files[1].bytes, 64);
+    assert!(bundle.accounting.loaded_files[1].truncated);
+    assert!(bundle
+        .prompt_for("go")
+        .contains(".elgar/memory/note.md (truncated)"));
 
     let _ = fs::remove_dir_all(root);
 }

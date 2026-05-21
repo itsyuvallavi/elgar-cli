@@ -146,7 +146,7 @@ impl ActionPanelState {
 
     fn instructions(self) -> &'static str {
         match self {
-            Self::Proposed => "No file has been changed yet. Use /approve or /reject.",
+            Self::Proposed => "No action has been applied yet. Use /approve or /reject.",
             Self::Approved => "Approval recorded. Applying through the controller.",
             Self::Applied => "Verified by the controller.",
             Self::Rejected => "Rejected actions are final. Start a new proposal to reconsider.",
@@ -162,7 +162,10 @@ fn render_verified_result(result: &VerifiedActionResult) -> String {
         }
         VerifiedActionResult::File(file) => render_file_verification(file),
         VerifiedActionResult::Shell(shell) => {
-            format!("shell command finished: exit code {:?}", shell.exit_code)
+            format!(
+                "shell command finished: exit code {:?}, timed out: {}",
+                shell.exit_code, shell.timed_out
+            )
         }
     }
 }
@@ -216,7 +219,7 @@ mod tests {
         assert!(rendered.contains("Target: hello.py"));
         assert!(rendered.contains("Summary: write hello.py"));
         assert!(rendered.contains("State: waiting for approval"));
-        assert!(rendered.contains("No file has been changed yet. Use /approve or /reject."));
+        assert!(rendered.contains("No action has been applied yet. Use /approve or /reject."));
     }
 
     #[test]

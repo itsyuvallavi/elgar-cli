@@ -67,6 +67,14 @@ fn main() {
         }
         return;
     }
+    if args
+        .first()
+        .is_some_and(|arg| arg == elgar_cli::PERF_BASELINE_COMMAND)
+    {
+        let report = elgar_cli::perf::run_perf_baseline();
+        println!("{}", elgar_cli::perf::render_perf_baseline(&report));
+        return;
+    }
 
     let input = args.join(" ");
     if input.is_empty() {

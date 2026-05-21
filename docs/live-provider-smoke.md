@@ -154,6 +154,15 @@ OpenAI-compatible response, first chunk latency for streaming calls, and total
 duration. These metrics can identify slow local provider turns, but they do not
 prove why LM Studio did or did not reuse its prompt cache.
 
+For no-network local baseline comparisons, use:
+
+```sh
+./bin/perf-baseline
+```
+
+That command intentionally uses the stub provider for phase timing and treats
+live LM Studio latency as a separate manual follow-up.
+
 ## Timeout And Cancel Semantics
 
 `timeout_millis` remains the legacy fallback. The preferred fields are:

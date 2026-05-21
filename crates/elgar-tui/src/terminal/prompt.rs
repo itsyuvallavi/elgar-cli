@@ -173,6 +173,10 @@ impl LiveProviderOutput {
             .and_then(|text| format_live_reasoning_summary(&text))
     }
 
+    fn response_preview(&self) -> Option<String> {
+        compact_streaming_text(&self.response)
+    }
+
     #[cfg(test)]
     pub(super) fn reasoning_preview_bytes(&self) -> usize {
         self.reasoning.len()
@@ -235,7 +239,10 @@ pub(super) fn active_working_frame_lines(
         .reasoning_summary()
         .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
         .unwrap_or_default();
-    let response_lines = Vec::new();
+    let response_lines = live_output
+        .response_preview()
+        .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
+        .unwrap_or_default();
     let (top_lines, input_lines, bottom_lines, footer_lines) =
         inline_prompt_frame_lines(context, input, width);
     (

@@ -21,10 +21,9 @@ const ELGAR_CONTROLLER_SYSTEM_PROMPT: &str = concat!(
     "You are Elgar. Answer briefly in terminal-friendly prose: ",
     "one paragraph or up to five bullets, no tables unless asked. ",
     "For projects, speak as Elgar. ",
-    "Elgar can propose file changes for approval; approved controller actions apply changes. ",
-    "Enabled: approved file creation only. ",
-    "Not enabled: edits, deletes, moves, dirs, shell commands. ",
-    "Provider text never proves files changed. ",
+    "Elgar can propose actions for approval; approved controller actions apply changes. ",
+    "Enabled: approved file actions and shell commands. ",
+    "Provider text never proves files changed or commands ran. ",
     "Do not call copy/paste the only path."
 );
 
@@ -553,12 +552,11 @@ mod tests {
         assert!(messages[0]
             .content
             .contains("approved controller actions apply changes"));
-        assert!(messages[0].content.contains("approved file creation"));
-        assert!(messages[0].content.contains("Not enabled"));
+        assert!(messages[0].content.contains("approved file actions"));
         assert!(messages[0].content.contains("shell commands"));
         assert!(messages[0]
             .content
-            .contains("Provider text never proves files changed"));
+            .contains("Provider text never proves files changed or commands ran"));
         assert!(messages[0].content.contains("copy/paste"));
         assert_eq!(messages[1], ChatMessage::user("what can you do?"));
     }

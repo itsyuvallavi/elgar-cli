@@ -75,7 +75,10 @@ fn render_verified_result(result: &VerifiedActionResult) -> String {
         VerifiedActionResult::FileWritten { path } => format!("file written: {path}"),
         VerifiedActionResult::File(file) => format!("file result: {file:?}"),
         VerifiedActionResult::Shell(shell) => {
-            format!("shell result: exit code {:?}", shell.exit_code)
+            format!(
+                "shell result: exit code {:?}, timed_out={}, stdout_truncated={}, stderr_truncated={}",
+                shell.exit_code, shell.timed_out, shell.stdout_truncated, shell.stderr_truncated
+            )
         }
     }
 }

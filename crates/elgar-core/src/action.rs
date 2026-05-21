@@ -2,6 +2,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub const SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+pub const SHELL_COMMAND_STDOUT_CAP_BYTES: usize = 16 * 1024;
+pub const SHELL_COMMAND_STDERR_CAP_BYTES: usize = 16 * 1024;
+
 /// A permissioned action owned by the controller.
 ///
 /// An action describes what may happen later. Constructing or transitioning an
@@ -211,6 +215,10 @@ impl ActionRequest {
                 command: action.command.clone(),
                 cwd: action.cwd.display().to_string(),
                 timeout_seconds: action.timeout_seconds,
+                expected_effect: action.expected_effect.clone(),
+                risk_notes: action.risk_notes.clone(),
+                output_caps: action.output_caps.clone(),
+                environment: action.environment,
             },
         }
     }
@@ -278,6 +286,74 @@ pub struct ShellCommandAction {
     pub command: String,
     pub cwd: PathBuf,
     pub timeout_seconds: u64,
+    #[serde(default)]
+    pub expected_effect: String,
+    #[serde(default)]
+    pub risk_notes: String,
+    #[serde(default)]
+    pub output_caps: ShellCommandOutputCaps,
+    #[serde(default)]
+    pub environment: ShellCommandEnvironmentPolicy,
+}
+
+impl ShellCommandAction {
+    pub fn new(command: impl Into<String>, cwd: impl Into<PathBuf>) -> Self {
+        let command = command.into();
+        Self {
+            expected_effect: format!("Run `{command}` only after explicit approval."),
+            risk_notes: "Shell commands are high risk and may inspect or mutate local state."
+                .to_string(),
+            command,
+            cwd: cwd.into(),
+            timeout_seconds: SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS,
+            output_caps: ShellCommandOutputCaps::default(),
+            environment: ShellCommandEnvironmentPolicy::InheritControllerEnvironment,
+        }
+    }
+}
+
+/// Execution policy for future approved shell command execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellCommandPolicy {
+    pub default_timeout_seconds: u64,
+    pub output_caps: ShellCommandOutputCaps,
+    pub environment: ShellCommandEnvironmentPolicy,
+}
+
+impl Default for ShellCommandPolicy {
+    fn default() -> Self {
+        Self {
+            default_timeout_seconds: SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS,
+            output_caps: ShellCommandOutputCaps::default(),
+            environment: ShellCommandEnvironmentPolicy::InheritControllerEnvironment,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellCommandOutputCaps {
+    pub stdout_bytes: usize,
+    pub stderr_bytes: usize,
+}
+
+impl Default for ShellCommandOutputCaps {
+    fn default() -> Self {
+        Self {
+            stdout_bytes: SHELL_COMMAND_STDOUT_CAP_BYTES,
+            stderr_bytes: SHELL_COMMAND_STDERR_CAP_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShellCommandEnvironmentPolicy {
+    InheritControllerEnvironment,
+}
+
+impl Default for ShellCommandEnvironmentPolicy {
+    fn default() -> Self {
+        Self::InheritControllerEnvironment
+    }
 }
 
 /// Display data needed before user approval.
@@ -319,6 +395,10 @@ pub enum ApprovalPreview {
         command: String,
         cwd: String,
         timeout_seconds: u64,
+        expected_effect: String,
+        risk_notes: String,
+        output_caps: ShellCommandOutputCaps,
+        environment: ShellCommandEnvironmentPolicy,
     },
 }
 
@@ -353,6 +433,10 @@ pub struct ShellActionVerification {
     pub cwd: String,
     pub stdout: String,
     pub stderr: String,
+    #[serde(default)]
+    pub stdout_truncated: bool,
+    #[serde(default)]
+    pub stderr_truncated: bool,
     pub exit_code: Option<i32>,
     pub elapsed_millis: u64,
     pub timed_out: bool,
@@ -394,7 +478,7 @@ mod tests {
     use super::{
         Action, ActionKind, ActionLifecycleState, ActionRequest, ActionRiskLevel, ApprovalPreview,
         CreateDirectoryAction, DeleteFileAction, MoveFileAction, OverwriteFileAction,
-        PatchFileAction, ShellCommandAction,
+        PatchFileAction, ShellCommandAction, ShellCommandEnvironmentPolicy, ShellCommandPolicy,
     };
 
     #[test]
@@ -525,9 +609,8 @@ mod tests {
                 target_path: PathBuf::from("src/new"),
             }),
             ActionRequest::ShellCommand(ShellCommandAction {
-                command: "cargo test".to_string(),
-                cwd: PathBuf::from("."),
                 timeout_seconds: 60,
+                ..ShellCommandAction::new("cargo test", ".")
             }),
         ];
 
@@ -555,9 +638,10 @@ mod tests {
         let action = Action::proposed(
             "action-1",
             ActionRequest::ShellCommand(ShellCommandAction {
-                command: "cargo test -p elgar-core".to_string(),
-                cwd: PathBuf::from("."),
                 timeout_seconds: 120,
+                expected_effect: "Run core tests after approval.".to_string(),
+                risk_notes: "Runs local test binaries.".to_string(),
+                ..ShellCommandAction::new("cargo test -p elgar-core", ".")
             }),
             "run core tests",
         );
@@ -574,7 +658,11 @@ mod tests {
             ApprovalPreview::ShellCommand {
                 command: "cargo test -p elgar-core".to_string(),
                 cwd: ".".to_string(),
-                timeout_seconds: 120
+                timeout_seconds: 120,
+                expected_effect: "Run core tests after approval.".to_string(),
+                risk_notes: "Runs local test binaries.".to_string(),
+                output_caps: Default::default(),
+                environment: ShellCommandEnvironmentPolicy::InheritControllerEnvironment,
             }
         );
     }
@@ -603,9 +691,7 @@ mod tests {
         let action = Action::proposed(
             "action-1",
             ActionRequest::ShellCommand(ShellCommandAction {
-                command: format!("touch {}", target.display()),
-                cwd: PathBuf::from("."),
-                timeout_seconds: 30,
+                ..ShellCommandAction::new(format!("touch {}", target.display()), ".")
             }),
             "touch marker",
         );
@@ -628,6 +714,8 @@ mod tests {
             cwd: ".".to_string(),
             stdout: "ok".to_string(),
             stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
             exit_code: Some(0),
             elapsed_millis: 12,
             timed_out: false,
@@ -647,10 +735,25 @@ mod tests {
                 cwd: ".".to_string(),
                 stdout: "ok".to_string(),
                 stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
                 exit_code: Some(0),
                 elapsed_millis: 12,
                 timed_out: false
             })
+        );
+    }
+
+    #[test]
+    fn shell_command_policy_defines_timeout_output_caps_and_environment() {
+        let policy = ShellCommandPolicy::default();
+
+        assert_eq!(policy.default_timeout_seconds, 30);
+        assert_eq!(policy.output_caps.stdout_bytes, 16 * 1024);
+        assert_eq!(policy.output_caps.stderr_bytes, 16 * 1024);
+        assert_eq!(
+            policy.environment,
+            ShellCommandEnvironmentPolicy::InheritControllerEnvironment
         );
     }
 

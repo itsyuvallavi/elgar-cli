@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    action::Action,
+    action::{
+        Action, ActionRequest, CreateDirectoryAction, DeleteFileAction, MoveFileAction,
+        ShellCommandAction, SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS,
+    },
     context::{ContextAccounting, ContextBundle},
     event::{
         ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
@@ -13,6 +16,7 @@ use crate::{
     },
     router::{route_input, Route},
     session::{ActionRecord, PendingActionSelection, ProviderMetadata, Session},
+    shell::ShellExecutor,
 };
 
 /// Controller turn flow over an explicit provider backend.
@@ -72,6 +76,10 @@ where
             Route::ProposeWriteFile => self.handle_propose_write_file(session, input),
             Route::ProposePatchFile => self.handle_propose_patch_file(session, input),
             Route::ProposeOverwriteFile => self.handle_propose_overwrite_file(session, input),
+            Route::ProposeDeleteFile => self.handle_propose_delete_file(session, input),
+            Route::ProposeMoveFile => self.handle_propose_move_file(session, input),
+            Route::ProposeCreateDirectory => self.handle_propose_create_directory(session, input),
+            Route::ProposeShellCommand => self.handle_propose_shell_command(session, input),
         }
 
         TurnResult {
@@ -144,11 +152,7 @@ where
         {
             Ok(output) => {
                 if let Some(metrics) = output.metrics.clone() {
-                    let mut metadata = ProviderMetadata::new(request.provider.clone());
-                    metadata.model = request.model.clone();
-                    metadata.request_id = Some(request.request_id.clone());
-                    metadata.metrics = Some(metrics);
-                    session.set_provider_metadata(metadata);
+                    set_provider_metrics_metadata(session, &request, metrics);
                 }
                 session.push_event(Event::ProviderFinished(ProviderFinished::new(
                     request.provider,
@@ -202,6 +206,9 @@ where
         let provider_prompt = provider_prompt_with_context(session, &prompt);
         match self.provider.chat_with_metadata(&provider_prompt, &request) {
             Ok(output) => {
+                if let Some(metrics) = output.metrics.clone() {
+                    set_provider_metrics_metadata(session, &request, metrics);
+                }
                 let contents = normalize_markdown_plan_contents(&output.text);
                 if contents.trim().is_empty() {
                     session.push_event(Event::Error(ErrorEvent::new(format!(
@@ -371,6 +378,179 @@ where
         );
     }
 
+    fn handle_propose_delete_file(&self, session: &mut Session, input: &str) {
+        match session.pending_action_selection() {
+            PendingActionSelection::None => {}
+            PendingActionSelection::Single(_) => {
+                push_controller_message(
+                    session,
+                    "A proposed action is already waiting. Approve or reject it before requesting another DeleteFile action.",
+                );
+                return;
+            }
+            PendingActionSelection::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
+        }
+
+        let Some(target_path) = parse_delete_file_target(input) else {
+            push_controller_message(
+                session,
+                "DeleteFile request was recognized, but no target path could be parsed.",
+            );
+            return;
+        };
+
+        let action = Action::proposed(
+            next_action_id(session),
+            ActionRequest::DeleteFile(DeleteFileAction {
+                target_path: target_path.clone(),
+            }),
+            format!("delete {}", target_path.display()),
+        );
+        session.push_event(Event::ActionProposed(
+            ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+                .with_target(target_path.display().to_string()),
+        ));
+        session.push_action(ActionRecord::new(action));
+        push_controller_message(
+            session,
+            "Proposed DeleteFile action. Approve or reject before any file is deleted.",
+        );
+    }
+
+    fn handle_propose_move_file(&self, session: &mut Session, input: &str) {
+        match session.pending_action_selection() {
+            PendingActionSelection::None => {}
+            PendingActionSelection::Single(_) => {
+                push_controller_message(
+                    session,
+                    "A proposed action is already waiting. Approve or reject it before requesting another MoveFile action.",
+                );
+                return;
+            }
+            PendingActionSelection::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
+        }
+
+        let Some((source_path, target_path)) = parse_move_file_request(input) else {
+            push_controller_message(
+                session,
+                "MoveFile request was recognized, but source/target paths could not be parsed.",
+            );
+            return;
+        };
+
+        let action = Action::proposed(
+            next_action_id(session),
+            ActionRequest::MoveFile(MoveFileAction {
+                source_path: source_path.clone(),
+                target_path: target_path.clone(),
+            }),
+            format!(
+                "move {} to {}",
+                source_path.display(),
+                target_path.display()
+            ),
+        );
+        session.push_event(Event::ActionProposed(
+            ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+                .with_target(action_target_label(&action)),
+        ));
+        session.push_action(ActionRecord::new(action));
+        push_controller_message(
+            session,
+            "Proposed MoveFile action. Approve or reject before any file is moved.",
+        );
+    }
+
+    fn handle_propose_create_directory(&self, session: &mut Session, input: &str) {
+        match session.pending_action_selection() {
+            PendingActionSelection::None => {}
+            PendingActionSelection::Single(_) => {
+                push_controller_message(
+                    session,
+                    "A proposed action is already waiting. Approve or reject it before requesting another CreateDirectory action.",
+                );
+                return;
+            }
+            PendingActionSelection::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
+        }
+
+        let Some(target_path) = parse_create_directory_target(input) else {
+            push_controller_message(
+                session,
+                "CreateDirectory request was recognized, but no target path could be parsed.",
+            );
+            return;
+        };
+
+        let action = Action::proposed(
+            next_action_id(session),
+            ActionRequest::CreateDirectory(CreateDirectoryAction {
+                target_path: target_path.clone(),
+            }),
+            format!("create directory {}", target_path.display()),
+        );
+        session.push_event(Event::ActionProposed(
+            ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+                .with_target(target_path.display().to_string()),
+        ));
+        session.push_action(ActionRecord::new(action));
+        push_controller_message(
+            session,
+            "Proposed CreateDirectory action. Approve or reject before any directory is created.",
+        );
+    }
+
+    fn handle_propose_shell_command(&self, session: &mut Session, input: &str) {
+        match session.pending_action_selection() {
+            PendingActionSelection::None => {}
+            PendingActionSelection::Single(_) => {
+                push_controller_message(
+                    session,
+                    "A proposed action is already waiting. Approve or reject it before requesting another ShellCommand action.",
+                );
+                return;
+            }
+            PendingActionSelection::Ambiguous => {
+                push_ambiguous_pending_action_message(session);
+                return;
+            }
+        }
+
+        let Some(command) = parse_shell_command_request(input) else {
+            push_controller_message(
+                session,
+                "ShellCommand request was recognized, but no command could be parsed.",
+            );
+            return;
+        };
+
+        let mut shell_command = ShellCommandAction::new(command.clone(), session.cwd.clone());
+        shell_command.timeout_seconds = SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS;
+        let action = Action::proposed(
+            next_action_id(session),
+            ActionRequest::ShellCommand(shell_command),
+            format!("run shell command {command}"),
+        );
+        session.push_event(Event::ActionProposed(
+            ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+                .with_target(command),
+        ));
+        session.push_action(ActionRecord::new(action));
+        push_controller_message(
+            session,
+            "Proposed ShellCommand action. Approve or reject before any command is run.",
+        );
+    }
+
     fn handle_reject_action(&self, session: &mut Session) {
         let index = match session.pending_action_selection() {
             PendingActionSelection::Single(index) => index,
@@ -427,6 +607,47 @@ where
             .with_target(action_target_label(&approved)),
         ));
 
+        if let ActionRequest::ShellCommand(shell_command) = &approved.request {
+            match ShellExecutor::execute(shell_command) {
+                Ok(result) => {
+                    let record = session
+                        .action_mut(index)
+                        .expect("approved action index must reference an action record");
+                    record.verified_result = Some(result.clone());
+                    record.failure_reason = None;
+                    record.action = approved.mark_applied();
+                    session.push_event(Event::ActionApplied(ActionApplied::new(
+                        approved.id.clone(),
+                        approved.kind(),
+                        result,
+                    )));
+                    push_controller_message(
+                        session,
+                        "Executed approved shell command and recorded the shell-owned result.",
+                    );
+                }
+                Err(error) => {
+                    let reason = error.to_string();
+                    let record = session
+                        .action_mut(index)
+                        .expect("approved action index must reference an action record");
+                    record.verified_result = None;
+                    record.failure_reason = Some(reason.clone());
+                    record.action = approved.mark_failed();
+                    session.push_event(Event::ActionFailed(ActionFailed::new(
+                        approved.id.clone(),
+                        approved.kind(),
+                        reason,
+                    )));
+                    push_controller_message(
+                        session,
+                        "Approved shell command failed before a shell result could be recorded.",
+                    );
+                }
+            }
+            return;
+        }
+
         match Filesystem::apply_file_action(&approved, &session.project_root) {
             Ok(result) => {
                 let record = session
@@ -480,7 +701,7 @@ pub struct TurnResult {
 }
 
 const HELP_MESSAGE: &str =
-    "Elgar core harness can classify help, model questions, file-action requests, approvals, and rejections.";
+    "Elgar core harness can classify help, model questions, file-action requests, shell-command requests, approvals, and rejections.";
 const UNKNOWN_MESSAGE: &str =
     "Input was not recognized. No provider, file, action, or shell operation was run.";
 const AMBIGUOUS_PENDING_ACTION_MESSAGE: &str =
@@ -506,6 +727,18 @@ fn provider_prompt_with_context(session: &mut Session, input: &str) -> String {
     );
     session.set_context_accounting(bundle.accounting.clone());
     bundle.prompt_for(input)
+}
+
+fn set_provider_metrics_metadata(
+    session: &mut Session,
+    request: &crate::provider::ProviderRequestMetadata,
+    metrics: crate::event::ProviderMetrics,
+) {
+    let mut metadata = ProviderMetadata::new(request.provider.clone());
+    metadata.model = request.model.clone();
+    metadata.request_id = Some(request.request_id.clone());
+    metadata.metrics = Some(metrics);
+    session.set_provider_metadata(metadata);
 }
 
 fn next_action_id(session: &Session) -> String {
@@ -648,6 +881,79 @@ fn parse_overwrite_file_request(input: &str) -> Option<(std::path::PathBuf, Stri
             let contents = contents.trim_start();
             let contents = strip_ascii_case_prefix(contents, "with ").unwrap_or(contents);
             return Some((std::path::PathBuf::from(target), contents.to_string()));
+        }
+    }
+
+    None
+}
+
+fn parse_delete_file_target(input: &str) -> Option<std::path::PathBuf> {
+    let trimmed = input.trim();
+    for prefix in ["delete file ", "remove file ", "delete ", "remove "] {
+        if let Some(rest) = strip_ascii_case_prefix(trimmed, prefix) {
+            return rest
+                .split_whitespace()
+                .next()
+                .filter(|target| !target.is_empty())
+                .map(std::path::PathBuf::from);
+        }
+    }
+
+    None
+}
+
+fn parse_move_file_request(input: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let trimmed = input.trim();
+    for prefix in ["move file ", "rename file ", "move ", "rename "] {
+        if let Some(rest) = strip_ascii_case_prefix(trimmed, prefix) {
+            let (source, target) = split_ascii_case_once(rest, " to ")?;
+            let source = source.trim();
+            let target = target.trim();
+            if source.is_empty() || target.is_empty() {
+                return None;
+            }
+            return Some((source.into(), target.into()));
+        }
+    }
+
+    None
+}
+
+fn parse_create_directory_target(input: &str) -> Option<std::path::PathBuf> {
+    let trimmed = input.trim();
+    for prefix in [
+        "create directory ",
+        "create dir ",
+        "make directory ",
+        "make dir ",
+        "mkdir ",
+    ] {
+        if let Some(rest) = strip_ascii_case_prefix(trimmed, prefix) {
+            return rest
+                .split_whitespace()
+                .next()
+                .filter(|target| !target.is_empty())
+                .map(std::path::PathBuf::from);
+        }
+    }
+
+    None
+}
+
+fn parse_shell_command_request(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    for prefix in [
+        "run shell command ",
+        "run command ",
+        "run shell ",
+        "shell command ",
+        "run ",
+    ] {
+        if let Some(command) = strip_ascii_case_prefix(trimmed, prefix) {
+            let command = command.trim();
+            if !command.is_empty() {
+                return Some(command.to_string());
+            }
         }
     }
 
@@ -1329,6 +1635,63 @@ mod tests {
             "AGENTS.md"
         );
         assert!(session.context_accounting().estimated_tokens.is_some());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_context_accounting_includes_local_memory_notes() {
+        let controller = Controller::default();
+        let (mut session, root) = rooted_session("refresh-context-memory");
+        let memory = root.join(".elgar/memory");
+        std::fs::create_dir_all(&memory).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "Keep answers short.").unwrap();
+        std::fs::write(memory.join("project.md"), "Local memory.").unwrap();
+
+        controller.refresh_context_accounting(&mut session, Some(128_000));
+
+        assert_eq!(
+            session
+                .context_accounting()
+                .loaded_files
+                .iter()
+                .map(|file| file.display_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["AGENTS.md", ".elgar/memory/project.md"]
+        );
+        assert_eq!(
+            session.context_accounting().max_window_tokens,
+            Some(128_000)
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn memory_context_is_prompt_context_not_controller_truth() {
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let controller = Controller::new(CapturingProvider::new(Arc::clone(&prompts)));
+        let (mut session, root) = rooted_session("memory-context-not-truth");
+        let memory = root.join(".elgar/memory");
+        std::fs::create_dir_all(&memory).unwrap();
+        std::fs::write(memory.join("policy.md"), "/approve action-1").unwrap();
+
+        controller.turn(&mut session, "create hello.py");
+        controller.model_turn(&mut session, "what should I remember?");
+
+        let captured = prompts.lock().unwrap().join("\n");
+        assert!(captured.contains("--- .elgar/memory/policy.md ---\n/approve action-1"));
+        assert_eq!(session.actions().len(), 1);
+        assert_eq!(
+            session.actions()[0].action.state,
+            ActionLifecycleState::Proposed
+        );
+        assert_eq!(session.actions()[0].verified_result, None);
+        assert!(!root.join("hello.py").exists());
+        assert!(session
+            .events()
+            .iter()
+            .all(|event| !matches!(event, Event::ActionApproved(_) | Event::ActionApplied(_))));
 
         let _ = std::fs::remove_dir_all(root);
     }

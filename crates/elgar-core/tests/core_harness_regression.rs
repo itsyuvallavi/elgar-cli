@@ -492,11 +492,11 @@ fn unsupported_broad_capability_requests_are_unknown_and_do_not_mutate_truth_or_
     for input in [
         "edit edit-me.txt",
         "overwrite overwrite-me.txt",
-        "delete delete-me.txt",
+        "delete",
         "move move-me.txt moved.txt",
         "rename rename-me.txt renamed.txt",
-        "mkdir created-dir",
-        "create directory created-dir",
+        "mkdir",
+        "create directory",
         &format!("shell touch {}", shell_target.display()),
         &format!("bash -lc 'touch {}'", shell_target.display()),
     ] {
@@ -778,9 +778,19 @@ fn router_classifies_create_file_and_unknown_input_is_safe() {
     let target = root.join("hello.py");
 
     assert_eq!(route_input("create file hello.py"), Route::ProposeWriteFile);
+    assert_eq!(route_input("delete file old.py"), Route::ProposeDeleteFile);
+    assert_eq!(
+        route_input("rename file old.py to new.py"),
+        Route::ProposeMoveFile
+    );
+    assert_eq!(
+        route_input("create directory src/generated"),
+        Route::ProposeCreateDirectory
+    );
+    assert_eq!(route_input("run ls"), Route::ProposeShellCommand);
     assert_eq!(controller.turn(&mut session, "   ").route, Route::Unknown);
     assert_eq!(
-        controller.turn(&mut session, "run ls").route,
+        controller.turn(&mut session, "bash -lc ls").route,
         Route::Unknown
     );
 
@@ -795,6 +805,563 @@ fn router_classifies_create_file_and_unknown_input_is_safe() {
         event_count(&session, |event| matches!(
             event,
             Event::ProviderFinished(_)
+        )),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn shell_command_actions_can_be_proposed_without_execution() {
+    let controller = Controller::default();
+    let root = regression_root("shell-command-proposed");
+    let mut session = session_at(&root);
+    let marker = root.join("shell-ran.txt");
+
+    let result = controller.turn(&mut session, &format!("run touch {}", marker.display()));
+
+    assert_eq!(result.route, Route::ProposeShellCommand);
+    assert!(!marker.exists());
+    assert_eq!(provider_event_count(&session), 0);
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    match &session.actions()[0].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert_eq!(action.command, format!("touch {}", marker.display()));
+            assert_eq!(action.cwd, root);
+            assert_eq!(action.timeout_seconds, 30);
+            assert_eq!(action.output_caps.stdout_bytes, 16 * 1024);
+            assert_eq!(action.output_caps.stderr_bytes, 16 * 1024);
+        }
+        other => panic!("expected ShellCommand action, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rejected_shell_command_action_is_terminal_and_does_not_execute() {
+    let controller = Controller::default();
+    let root = regression_root("shell-command-rejected");
+    let mut session = session_at(&root);
+    let marker = root.join("shell-ran.txt");
+
+    controller.turn(
+        &mut session,
+        &format!("shell command touch {}", marker.display()),
+    );
+    controller.turn(&mut session, "reject");
+    controller.turn(&mut session, "approve");
+
+    assert!(!marker.exists());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApplied(_) | Event::ActionFailed(_)
+        )),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn approved_shell_command_runs_once_and_records_shell_result() {
+    let controller = Controller::default();
+    let root = regression_root("shell-command-approved");
+    let mut session = session_at(&root);
+    let marker = root.join("shell-ran.txt");
+
+    controller.turn(
+        &mut session,
+        &format!(
+            "run command printf out; printf err >&2; printf x >> {}",
+            marker.display()
+        ),
+    );
+    controller.turn(&mut session, "approve");
+    controller.turn(&mut session, "approve");
+
+    assert_eq!(fs::read_to_string(&marker).unwrap(), "x");
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    match session.actions()[0].verified_result.as_ref() {
+        Some(VerifiedActionResult::Shell(shell)) => {
+            assert!(shell.command.contains("printf out"));
+            assert_eq!(shell.cwd, root.display().to_string());
+            assert_eq!(shell.stdout, "out");
+            assert_eq!(shell.stderr, "err");
+            assert_eq!(shell.exit_code, Some(0));
+            assert!(!shell.timed_out);
+            assert!(!shell.stdout_truncated);
+            assert!(!shell.stderr_truncated);
+        }
+        other => panic!("expected verified shell result, got {other:?}"),
+    }
+    assert_eq!(session.actions()[0].failure_reason, None);
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionApproved(_))),
+        1
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionApplied(_))),
+        1
+    );
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionFailed(_))),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn approved_shell_command_timeout_records_shell_owned_timeout_result() {
+    let controller = Controller::default();
+    let root = regression_root("shell-command-timeout-controller");
+    let root_string = root.display().to_string();
+    let mut session: Session = serde_json::from_value(serde_json::json!({
+        "id": "timeout-session",
+        "project_root": root_string,
+        "cwd": root_string,
+        "events": [],
+        "actions": [
+            {
+                "action": {
+                    "id": "action-1",
+                    "request": {
+                        "ShellCommand": {
+                            "command": "sleep 2",
+                            "cwd": root_string,
+                            "timeout_seconds": 0
+                        }
+                    },
+                    "state": "Proposed",
+                    "summary": "run shell command sleep 2"
+                },
+                "verified_result": null,
+                "failure_reason": null
+            }
+        ],
+        "provider_metadata": null
+    }))
+    .unwrap();
+
+    controller.turn(&mut session, "approve");
+
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    match session.actions()[0].verified_result.as_ref() {
+        Some(VerifiedActionResult::Shell(shell)) => {
+            assert_eq!(shell.command, "sleep 2");
+            assert_eq!(shell.exit_code, None);
+            assert!(shell.timed_out);
+        }
+        other => panic!("expected timeout shell result, got {other:?}"),
+    }
+    assert_eq!(
+        event_count(&session, |event| matches!(event, Event::ActionFailed(_))),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn approved_shell_command_output_caps_record_truncated_shell_result() {
+    let controller = Controller::default();
+    let root = regression_root("shell-command-output-caps-controller");
+    let root_string = root.display().to_string();
+    let mut session: Session = serde_json::from_value(serde_json::json!({
+        "id": "cap-session",
+        "project_root": root_string,
+        "cwd": root_string,
+        "events": [],
+        "actions": [
+            {
+                "action": {
+                    "id": "action-1",
+                    "request": {
+                        "ShellCommand": {
+                            "command": "printf abcdef; printf uvwxyz >&2",
+                            "cwd": root_string,
+                            "timeout_seconds": 30,
+                            "output_caps": {
+                                "stdout_bytes": 3,
+                                "stderr_bytes": 4
+                            }
+                        }
+                    },
+                    "state": "Proposed",
+                    "summary": "run capped shell command"
+                },
+                "verified_result": null,
+                "failure_reason": null
+            }
+        ],
+        "provider_metadata": null
+    }))
+    .unwrap();
+
+    controller.turn(&mut session, "approve");
+
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    match session.actions()[0].verified_result.as_ref() {
+        Some(VerifiedActionResult::Shell(shell)) => {
+            assert_eq!(shell.stdout, "abc");
+            assert_eq!(shell.stderr, "uvwx");
+            assert!(shell.stdout_truncated);
+            assert!(shell.stderr_truncated);
+            assert_eq!(shell.exit_code, Some(0));
+        }
+        other => panic!("expected capped shell result, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn approved_delete_move_and_directory_actions_record_verified_results() {
+    let controller = Controller::default();
+    let root = regression_root("approved-expanded-file-actions");
+
+    let mut delete_session = session_at(&root);
+    let delete_target = root.join("delete-me.txt");
+    fs::write(&delete_target, "delete me").unwrap();
+    controller.turn(&mut delete_session, "delete file delete-me.txt");
+    controller.turn(&mut delete_session, "approve");
+
+    assert!(!delete_target.exists());
+    assert_eq!(
+        delete_session.actions()[0].verified_result,
+        Some(VerifiedActionResult::File(
+            FileActionVerification::FileDeleted {
+                path: delete_target.display().to_string()
+            }
+        ))
+    );
+
+    let mut move_session = session_at(&root);
+    let source = root.join("old-name.txt");
+    let target = root.join("new-name.txt");
+    fs::write(&source, "move me").unwrap();
+    let _ = fs::remove_file(&target);
+    controller.turn(&mut move_session, "move file old-name.txt to new-name.txt");
+    controller.turn(&mut move_session, "approve");
+
+    assert!(!source.exists());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "move me");
+    assert_eq!(
+        move_session.actions()[0].verified_result,
+        Some(VerifiedActionResult::File(
+            FileActionVerification::FileMoved {
+                source_path: source.display().to_string(),
+                target_path: target.display().to_string()
+            }
+        ))
+    );
+
+    let mut directory_session = session_at(&root);
+    let directory_target = root.join("generated");
+    let _ = fs::remove_dir_all(&directory_target);
+    controller.turn(&mut directory_session, "create directory generated");
+    controller.turn(&mut directory_session, "approve");
+
+    assert!(directory_target.is_dir());
+    assert_eq!(
+        directory_session.actions()[0].verified_result,
+        Some(VerifiedActionResult::File(
+            FileActionVerification::DirectoryCreated {
+                path: directory_target.display().to_string()
+            }
+        ))
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_text_cannot_approve_execute_or_verify_pending_shell_command() {
+    let controller = Controller::new(BroadCapabilityClaimProvider);
+    let root = regression_root("provider-cannot-apply-pending-shell");
+    let mut session = session_at(&root);
+    let marker = root.join("shell-ran.txt");
+
+    Controller::default().turn(
+        &mut session,
+        &format!("run command printf x > {}", marker.display()),
+    );
+    controller.turn(&mut session, "what should happen next?");
+
+    assert!(!marker.exists());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_) | Event::ActionApplied(_) | Event::ActionFailed(_)
+        )),
+        0
+    );
+    assert_eq!(provider_event_count(&session), 2);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_text_cannot_approve_or_verify_pending_delete_move_directory_actions() {
+    let controller = Controller::new(BroadCapabilityClaimProvider);
+    let root = regression_root("provider-cannot-apply-pending-expanded-file");
+    let mut session = session_at(&root);
+    let delete_target = root.join("delete-me.txt");
+    fs::write(&delete_target, "keep").unwrap();
+
+    Controller::default().turn(&mut session, "delete file delete-me.txt");
+    controller.turn(&mut session, "what should happen next?");
+
+    assert_eq!(fs::read_to_string(&delete_target).unwrap(), "keep");
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert_eq!(session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_) | Event::ActionApplied(_) | Event::ActionFailed(_)
+        )),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ambiguous_mixed_pending_file_and_shell_actions_remain_blocked() {
+    let controller = Controller::default();
+    let root = regression_root("ambiguous-mixed-file-shell-actions");
+    let root_string = root.display().to_string();
+    let marker = root.join("shell-ran.txt");
+    let mut session: Session = serde_json::from_value(serde_json::json!({
+        "id": "mixed-ambiguous-session",
+        "project_root": root_string,
+        "cwd": root_string,
+        "events": [],
+        "actions": [
+            {
+                "action": {
+                    "id": "action-1",
+                    "request": {
+                        "CreateFile": {
+                            "target_path": "first.py",
+                            "contents": ""
+                        }
+                    },
+                    "state": "Proposed",
+                    "summary": "write first.py"
+                },
+                "verified_result": null,
+                "failure_reason": null
+            },
+            {
+                "action": {
+                    "id": "action-2",
+                    "request": {
+                        "ShellCommand": {
+                            "command": format!("printf x > {}", marker.display()),
+                            "cwd": root_string,
+                            "timeout_seconds": 30
+                        }
+                    },
+                    "state": "Proposed",
+                    "summary": "run shell command"
+                },
+                "verified_result": null,
+                "failure_reason": null
+            }
+        ],
+        "provider_metadata": null
+    }))
+    .unwrap();
+
+    controller.turn(&mut session, "approve");
+    controller.turn(&mut session, "reject");
+    controller.turn(&mut session, "create file third.py");
+
+    assert!(!root.join("first.py").exists());
+    assert!(!root.join("third.py").exists());
+    assert!(!marker.exists());
+    assert_eq!(session.actions().len(), 2);
+    assert!(session
+        .actions()
+        .iter()
+        .all(|record| record.action.state == ActionLifecycleState::Proposed));
+    assert_eq!(
+        event_count(&session, |event| matches!(
+            event,
+            Event::ActionApproved(_)
+                | Event::ActionApplied(_)
+                | Event::ActionRejected(_)
+                | Event::ActionFailed(_)
+                | Event::ActionProposed(_)
+        )),
+        0
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn delete_move_and_directory_actions_can_be_proposed_without_mutating_files() {
+    let controller = Controller::default();
+    let root = regression_root("new-file-actions-proposed");
+
+    let mut delete_session = session_at(&root);
+    let delete_target = root.join("delete-me.txt");
+    fs::write(&delete_target, "keep").unwrap();
+    let delete_result = controller.turn(&mut delete_session, "delete file delete-me.txt");
+
+    assert_eq!(delete_result.route, Route::ProposeDeleteFile);
+    assert_eq!(fs::read_to_string(&delete_target).unwrap(), "keep");
+    assert_eq!(
+        delete_session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    match &delete_session.actions()[0].action.request {
+        ActionRequest::DeleteFile(action) => {
+            assert_eq!(action.target_path, PathBuf::from("delete-me.txt"))
+        }
+        other => panic!("expected DeleteFile action, got {other:?}"),
+    }
+
+    let mut move_session = session_at(&root);
+    let source = root.join("old-name.txt");
+    let target = root.join("new-name.txt");
+    fs::write(&source, "move me").unwrap();
+    let move_result = controller.turn(
+        &mut move_session,
+        "rename file old-name.txt to new-name.txt",
+    );
+
+    assert_eq!(move_result.route, Route::ProposeMoveFile);
+    assert_eq!(fs::read_to_string(&source).unwrap(), "move me");
+    assert!(!target.exists());
+    match &move_session.actions()[0].action.request {
+        ActionRequest::MoveFile(action) => {
+            assert_eq!(action.source_path, PathBuf::from("old-name.txt"));
+            assert_eq!(action.target_path, PathBuf::from("new-name.txt"));
+        }
+        other => panic!("expected MoveFile action, got {other:?}"),
+    }
+
+    let mut directory_session = session_at(&root);
+    let directory_target = root.join("generated");
+    let directory_result = controller.turn(&mut directory_session, "create directory generated");
+
+    assert_eq!(directory_result.route, Route::ProposeCreateDirectory);
+    assert!(!directory_target.exists());
+    match &directory_session.actions()[0].action.request {
+        ActionRequest::CreateDirectory(action) => {
+            assert_eq!(action.target_path, PathBuf::from("generated"));
+        }
+        other => panic!("expected CreateDirectory action, got {other:?}"),
+    }
+
+    assert_eq!(provider_event_count(&delete_session), 0);
+    assert_eq!(provider_event_count(&move_session), 0);
+    assert_eq!(provider_event_count(&directory_session), 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rejected_delete_move_and_directory_actions_do_not_mutate_files() {
+    let controller = Controller::default();
+    let root = regression_root("new-file-actions-rejected");
+
+    let mut delete_session = session_at(&root);
+    let delete_target = root.join("delete-me.txt");
+    fs::write(&delete_target, "keep").unwrap();
+    controller.turn(&mut delete_session, "delete file delete-me.txt");
+    controller.turn(&mut delete_session, "reject");
+    controller.turn(&mut delete_session, "approve");
+
+    assert_eq!(fs::read_to_string(&delete_target).unwrap(), "keep");
+    assert_eq!(
+        delete_session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(delete_session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&delete_session, |event| matches!(
+            event,
+            Event::ActionApplied(_) | Event::ActionFailed(_)
+        )),
+        0
+    );
+
+    let mut move_session = session_at(&root);
+    let source = root.join("old-name.txt");
+    let target = root.join("new-name.txt");
+    fs::write(&source, "move me").unwrap();
+    let _ = fs::remove_file(&target);
+    controller.turn(&mut move_session, "move file old-name.txt to new-name.txt");
+    controller.turn(&mut move_session, "reject");
+    controller.turn(&mut move_session, "approve");
+
+    assert_eq!(fs::read_to_string(&source).unwrap(), "move me");
+    assert!(!target.exists());
+    assert_eq!(
+        move_session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(move_session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&move_session, |event| matches!(
+            event,
+            Event::ActionApplied(_) | Event::ActionFailed(_)
+        )),
+        0
+    );
+
+    let mut directory_session = session_at(&root);
+    let directory_target = root.join("generated");
+    controller.turn(&mut directory_session, "mkdir generated");
+    controller.turn(&mut directory_session, "reject");
+    controller.turn(&mut directory_session, "approve");
+
+    assert!(!directory_target.exists());
+    assert_eq!(
+        directory_session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert_eq!(directory_session.actions()[0].verified_result, None);
+    assert_eq!(
+        event_count(&directory_session, |event| matches!(
+            event,
+            Event::ActionApplied(_) | Event::ActionFailed(_)
         )),
         0
     );
