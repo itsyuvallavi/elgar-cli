@@ -1,6 +1,7 @@
 use elgar_core::{
     controller::{Controller, TurnResult},
     event::Event,
+    policy::PermissionPolicyMode,
     provider::ControllerProvider,
     session::Session,
 };
@@ -104,6 +105,25 @@ impl TuiShell {
         P: ControllerProvider,
     {
         let result = controller.turn(session, input);
+        self.consume_events(&result.events);
+        self.conversation.follow_latest();
+        result
+    }
+
+    pub fn submit_model_first_input<P>(
+        &mut self,
+        controller: &Controller<P>,
+        session: &mut Session,
+        input: &str,
+    ) -> TurnResult
+    where
+        P: ControllerProvider,
+    {
+        let result = controller.model_first_turn_with_policy(
+            session,
+            input,
+            PermissionPolicyMode::AutoCreateReviewModify,
+        );
         self.consume_events(&result.events);
         self.conversation.follow_latest();
         result
@@ -267,7 +287,7 @@ mod tests {
         let proposed = controller.turn(&mut session, "create file hello.py");
         shell.consume_events(&proposed.events);
         assert!(!target.exists());
-        assert!(shell.render().contains("State: waiting for approval"));
+        assert!(shell.render().contains("Status: waiting for approval"));
 
         let approved = shell.submit_approval(&controller, &mut session);
 
@@ -283,10 +303,9 @@ mod tests {
         ));
 
         let rendered = shell.render();
-        assert!(rendered.contains("Action: action-1 CreateFile"));
-        assert!(rendered.contains("Target: hello.py"));
-        assert!(rendered.contains("State: applied and verified"));
-        assert!(rendered.contains("Result: file written:"));
+        assert!(rendered.contains("File: hello.py"));
+        assert!(rendered.contains("Status: applied and verified"));
+        assert!(rendered.contains("Result: Wrote "));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -313,7 +332,7 @@ mod tests {
         assert_eq!(session.actions()[0].verified_result, None);
 
         let rendered = shell.render();
-        assert!(rendered.contains("State: rejected"));
+        assert!(rendered.contains("Status: rejected"));
         assert!(rendered.contains("Result: Rejected. No file was changed."));
 
         let _ = std::fs::remove_dir_all(root);
@@ -323,7 +342,11 @@ mod tests {
     fn tui_renders_failed_result_from_controller_events() {
         let controller = Controller::default();
         let root = temp_root("failed-through-controller");
-        let absolute_target = root.join("blocked.py");
+        let absolute_target = std::env::temp_dir().join(format!(
+            "elgar-tui-{}-blocked-outside-root.py",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&absolute_target);
         let mut session = Session::new("session-1", root.clone(), root.clone());
         let mut shell = TuiShell::new();
 
@@ -342,10 +365,11 @@ mod tests {
         );
 
         let rendered = shell.render();
-        assert!(rendered.contains("State: failed"));
+        assert!(rendered.contains("Status: failed"));
         assert!(rendered.contains("Result: unsafe write target"));
 
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(absolute_target);
     }
 
     fn temp_root(name: &str) -> std::path::PathBuf {

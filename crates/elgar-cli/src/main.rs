@@ -36,8 +36,9 @@ fn main() {
         .is_some_and(|arg| arg == elgar_cli::CONTROLLER_SMOKE_COMMAND)
     {
         let prompt = elgar_cli::provider_smoke_prompt(&args[1..]);
-        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-        match elgar_cli::render_controller_smoke_from_env(&prompt, &cwd, &cwd) {
+        let paths = elgar_cli::RuntimePaths::from_current_dir();
+        match elgar_cli::render_controller_smoke_from_env(&prompt, &paths.project_root, &paths.cwd)
+        {
             Ok(rendered) => println!("{rendered}"),
             Err(error) => {
                 eprintln!("{error}");
@@ -51,8 +52,12 @@ fn main() {
         .is_some_and(|arg| arg == elgar_cli::TUI_CONTROLLER_SMOKE_COMMAND)
     {
         let prompt = elgar_cli::provider_smoke_prompt(&args[1..]);
-        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-        match elgar_cli::render_tui_controller_smoke_from_env(&prompt, &cwd, &cwd) {
+        let paths = elgar_cli::RuntimePaths::from_current_dir();
+        match elgar_cli::render_tui_controller_smoke_from_env(
+            &prompt,
+            &paths.project_root,
+            &paths.cwd,
+        ) {
             Ok(rendered) => println!("{rendered}"),
             Err(error) => {
                 eprintln!("{error}");
@@ -65,10 +70,12 @@ fn main() {
         .first()
         .is_some_and(|arg| arg == elgar_cli::TUI_COMMAND)
     {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        let paths = elgar_cli::RuntimePaths::from_current_dir();
         let stdin = std::io::stdin();
         let stdout = std::io::stdout();
-        if let Err(error) = elgar_cli::run_tui_loop(stdin.lock(), stdout.lock(), &cwd, &cwd) {
+        if let Err(error) =
+            elgar_cli::run_tui_loop(stdin.lock(), stdout.lock(), &paths.project_root, &paths.cwd)
+        {
             eprintln!("TUI failed: {error}");
             std::process::exit(1);
         }
@@ -94,8 +101,8 @@ fn main() {
     }
 
     let input = args.join(" ");
-    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    match elgar_cli::render_cli_turn_from_runtime_config(&input, &cwd, &cwd) {
+    let paths = elgar_cli::RuntimePaths::from_current_dir();
+    match elgar_cli::render_cli_turn_from_runtime_config(&input, &paths.project_root, &paths.cwd) {
         Ok(rendered) => println!("{rendered}"),
         Err(error) => {
             eprintln!("{error}");

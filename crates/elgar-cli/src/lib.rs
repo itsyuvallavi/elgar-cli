@@ -28,7 +28,10 @@ pub const PROVIDER_SMOKE_DEFAULT_PROMPT: &str = "Say hello in one sentence.";
 pub const LM_STUDIO_MODEL_ENV: &str = "ELGAR_LM_STUDIO_MODEL";
 pub const LM_STUDIO_BASE_URL_ENV: &str = "ELGAR_LM_STUDIO_BASE_URL";
 pub const PROVIDER_CONFIG_ENV: &str = "ELGAR_PROVIDER_CONFIG";
+pub const PROJECT_ROOT_ENV: &str = "ELGAR_PROJECT_ROOT";
+pub const INSTALL_REPO_ROOT_ENV: &str = "ELGAR_INSTALL_REPO_ROOT";
 pub const PROVIDER_CONFIG_FILE: &str = "elgar-provider.json";
+const AGENTS_FILE: &str = "AGENTS.md";
 
 pub fn should_launch_terminal_tui_by_default(
     stdin_is_terminal: bool,
@@ -41,6 +44,38 @@ pub fn should_launch_terminal_tui_by_default(
 pub struct RuntimeProvider {
     pub config: ProviderConfig,
     pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimePaths {
+    pub project_root: PathBuf,
+    pub cwd: PathBuf,
+}
+
+impl RuntimePaths {
+    pub fn from_current_dir() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::from_cwd(cwd)
+    }
+
+    pub fn from_cwd(cwd: impl AsRef<Path>) -> Self {
+        let cwd = cwd.as_ref().to_path_buf();
+        let project_root = resolve_runtime_project_root(&cwd, installed_project_root());
+        Self { project_root, cwd }
+    }
+}
+
+pub fn resolve_runtime_project_root(
+    cwd: impl AsRef<Path>,
+    installed_root: Option<PathBuf>,
+) -> PathBuf {
+    let cwd = cwd.as_ref();
+
+    env_project_root()
+        .or_else(explicit_provider_config_root)
+        .or_else(|| find_elgar_project_root(cwd))
+        .or_else(|| installed_root.filter(|root| is_elgar_project_root(root)))
+        .unwrap_or_else(|| cwd.to_path_buf())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,13 +174,14 @@ pub fn render_cli_turn_from_runtime_config(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> Result<String, RuntimeProviderConfigError> {
+    let project_root_ref = project_root.as_ref();
     let cwd_ref = cwd.as_ref();
-    let Some(runtime) = load_runtime_provider(cwd_ref)? else {
-        return Ok(render_cli_turn(input, project_root, cwd_ref));
+    let Some(runtime) = load_runtime_provider(project_root_ref)? else {
+        return Ok(render_cli_turn(input, project_root_ref, cwd_ref));
     };
 
     let controller = Controller::with_lm_studio_provider(runtime.config);
-    let mut session = Session::new("cli-runtime-session", project_root.as_ref(), cwd_ref);
+    let mut session = Session::new("cli-runtime-session", project_root_ref, cwd_ref);
 
     controller.turn(&mut session, input);
     Ok(render_session(&session))
@@ -206,6 +242,51 @@ fn find_provider_config_file(start: impl AsRef<Path>) -> Option<PathBuf> {
         let parent = current.parent()?;
         current = parent;
     }
+}
+
+fn installed_project_root() -> Option<PathBuf> {
+    option_env!("ELGAR_INSTALL_REPO_ROOT")
+        .map(str::trim)
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+}
+
+fn env_project_root() -> Option<PathBuf> {
+    std::env::var(PROJECT_ROOT_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|root| is_elgar_project_root(root))
+}
+
+fn explicit_provider_config_root() -> Option<PathBuf> {
+    let value = std::env::var(PROVIDER_CONFIG_ENV).ok()?;
+    let trimmed = value.trim();
+    if matches!(trimmed, "" | "off" | "none" | "disabled") {
+        return None;
+    }
+
+    Path::new(trimmed)
+        .parent()
+        .map(Path::to_path_buf)
+        .filter(|root| is_elgar_project_root(root))
+}
+
+fn find_elgar_project_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start;
+    loop {
+        if is_elgar_project_root(current) {
+            return Some(current.to_path_buf());
+        }
+
+        let parent = current.parent()?;
+        current = parent;
+    }
+}
+
+fn is_elgar_project_root(root: &Path) -> bool {
+    root.join(PROVIDER_CONFIG_FILE).exists() || root.join(AGENTS_FILE).exists()
 }
 
 fn runtime_provider_from_file(
@@ -281,6 +362,10 @@ pub fn is_tui_copy_command(input: &str) -> bool {
     input.trim() == "/copy"
 }
 
+pub fn is_tui_memory_command(input: &str) -> bool {
+    input.trim() == "/memory"
+}
+
 pub fn is_tui_clear_command(input: &str) -> bool {
     matches!(input.trim(), "/clear" | "/new")
 }
@@ -301,12 +386,12 @@ fn submit_tui_input(
     ) {
         shell.push_local_message("Action commands must use /approve or /reject.");
     } else {
-        shell.submit_input(controller, session, input);
+        shell.submit_model_first_input(controller, session, input);
     }
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/approve   Apply the pending action\n/reject    Reject the pending action\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
+    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/approve   Apply the pending action\n/reject    Reject the pending action\n/memory    Show verified memory\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
 }
 
 pub fn render_tui_script<I, S>(
@@ -336,6 +421,8 @@ where
             rendered_turns.push(shell.render());
         } else if is_tui_copy_command(input) {
             rendered_turns.push(shell.conversation_copy_text());
+        } else if is_tui_memory_command(input) {
+            rendered_turns.push(elgar_tui::render_session_memory(&session));
         } else {
             submit_tui_input(&mut shell, &controller, &mut session, input);
             rendered_turns.push(shell.render());
@@ -374,6 +461,8 @@ where
             writeln!(writer, "{}", shell.render())?;
         } else if is_tui_copy_command(&input) {
             writeln!(writer, "{}", shell.conversation_copy_text())?;
+        } else if is_tui_memory_command(&input) {
+            writeln!(writer, "{}", elgar_tui::render_session_memory(&session))?;
         } else {
             submit_tui_input(&mut shell, &controller, &mut session, &input);
             writeln!(writer, "{}", shell.render())?;
@@ -384,10 +473,14 @@ where
 }
 
 pub fn run_tui_terminal() -> io::Result<()> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    match load_runtime_provider(&cwd) {
-        Ok(Some(runtime)) => elgar_tui::run_terminal_shell_with_lm_studio_provider(runtime.config),
-        Ok(None) => elgar_tui::run_terminal_shell(),
+    let paths = RuntimePaths::from_current_dir();
+    match load_runtime_provider(&paths.project_root) {
+        Ok(Some(runtime)) => elgar_tui::run_terminal_shell_with_lm_studio_provider_at(
+            runtime.config,
+            &paths.project_root,
+            &paths.cwd,
+        ),
+        Ok(None) => elgar_tui::run_terminal_shell_at(&paths.project_root, &paths.cwd),
         Err(error) => Err(io::Error::new(io::ErrorKind::InvalidInput, error)),
     }
 }
@@ -551,11 +644,12 @@ mod tests {
 
     use super::{
         is_tui_approval_command, is_tui_clear_command, is_tui_copy_command, is_tui_exit_command,
-        is_tui_help_command, is_tui_rejection_command, load_runtime_provider,
-        provider_smoke_config, provider_smoke_prompt, render_cli_turn_from_runtime_config,
-        render_controller_smoke, render_tui_controller_smoke, render_tui_help, render_tui_script,
-        run_tui_loop, should_launch_terminal_tui_by_default, ProviderSmokeConfig,
-        ProviderSmokeError, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
+        is_tui_help_command, is_tui_memory_command, is_tui_rejection_command,
+        load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
+        render_cli_turn_from_runtime_config, render_controller_smoke, render_tui_controller_smoke,
+        render_tui_help, render_tui_script, resolve_runtime_project_root, run_tui_loop,
+        should_launch_terminal_tui_by_default, ProviderSmokeConfig, ProviderSmokeError,
+        RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
         PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
@@ -723,6 +817,72 @@ mod tests {
     }
 
     #[test]
+    fn runtime_project_root_uses_installed_root_when_cwd_has_no_config() {
+        let installed = temp_root("runtime-installed-root");
+        let outside = temp_root("runtime-outside-root");
+        fs::write(installed.join(PROVIDER_CONFIG_FILE), "{}").unwrap();
+
+        let resolved = resolve_runtime_project_root(&outside, Some(installed.clone()));
+
+        assert_eq!(resolved, installed);
+
+        let _ = fs::remove_dir_all(outside);
+        let _ = fs::remove_dir_all(installed);
+    }
+
+    #[test]
+    fn runtime_project_root_prefers_cwd_config_over_installed_root() {
+        let installed = temp_root("runtime-installed-root-cwd-loses");
+        let workspace = temp_root("runtime-workspace-root");
+        let child = workspace.join("child");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(installed.join(PROVIDER_CONFIG_FILE), "{}").unwrap();
+        fs::write(workspace.join(PROVIDER_CONFIG_FILE), "{}").unwrap();
+
+        let resolved = resolve_runtime_project_root(&child, Some(installed.clone()));
+
+        assert_eq!(resolved, workspace);
+
+        let _ = fs::remove_dir_all(child);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(installed);
+    }
+
+    #[test]
+    fn runtime_paths_allow_cli_config_from_installed_root_outside_repo() {
+        let installed = temp_root("runtime-installed-config-cli");
+        let outside = temp_root("runtime-outside-config-cli");
+        fs::write(
+            installed.join(PROVIDER_CONFIG_FILE),
+            r#"{
+              "provider": "lm-studio",
+              "base_url": "https://127.0.0.1:1234/v1",
+              "default_model": "openai/gpt-oss-20b",
+              "mode": "live"
+            }"#,
+        )
+        .unwrap();
+
+        let project_root = resolve_runtime_project_root(&outside, Some(installed.clone()));
+        let paths = RuntimePaths {
+            project_root,
+            cwd: outside.clone(),
+        };
+
+        let rendered =
+            render_cli_turn_from_runtime_config("Say hello.", &paths.project_root, &paths.cwd)
+                .unwrap();
+
+        assert!(rendered.contains("user: Say hello."));
+        assert!(rendered.contains("provider started: lm-studio request lm-studio-request-"));
+        assert!(rendered.contains("only http:// provider URLs are supported"));
+        assert!(!rendered.contains("stub-provider"));
+
+        let _ = fs::remove_dir_all(outside);
+        let _ = fs::remove_dir_all(installed);
+    }
+
+    #[test]
     fn runtime_provider_config_live_requires_model() {
         let root = temp_root("runtime-provider-missing-model");
         let path = root.join(PROVIDER_CONFIG_FILE);
@@ -814,6 +974,7 @@ mod tests {
         assert!(help.contains("/new"));
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
+        assert!(help.contains("/memory"));
         assert!(help.contains("/copy"));
         assert!(help.contains("/exit"));
         assert!(help.contains("/quit"));
@@ -846,6 +1007,14 @@ mod tests {
         assert!(is_tui_copy_command(" /copy "));
         assert!(!is_tui_copy_command("copy"));
         assert!(!is_tui_copy_command("/clipboard"));
+    }
+
+    #[test]
+    fn tui_memory_command_is_explicit() {
+        assert!(is_tui_memory_command("/memory"));
+        assert!(is_tui_memory_command(" /memory "));
+        assert!(!is_tui_memory_command("memory"));
+        assert!(!is_tui_memory_command("/mem"));
     }
 
     #[test]
@@ -889,6 +1058,7 @@ mod tests {
         assert!(rendered.contains("Commands\n/commands"));
         assert!(rendered.contains("/approve"));
         assert!(rendered.contains("/reject"));
+        assert!(rendered.contains("/memory"));
         assert!(rendered.contains("/copy"));
         assert!(!rendered.contains("> /help"));
         assert!(!rendered.contains("> /commands"));
@@ -907,6 +1077,45 @@ mod tests {
         assert!(!rendered.contains("> /copy"));
         assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("lm-studio"));
+    }
+
+    #[test]
+    fn tui_script_memory_command_is_local_and_empty_without_provider_call() {
+        let root = temp_root("memory-empty-command");
+
+        let rendered = render_tui_script(["/memory"], &root, &root);
+
+        assert!(rendered.contains("Memory\n(empty)"));
+        assert!(!rendered.contains("> /memory"));
+        assert!(!rendered.contains("stub provider response"));
+        assert!(!rendered.contains("lm-studio"));
+        assert!(!rendered.contains("Input was not recognized"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tui_script_memory_command_reports_verified_project_state() {
+        let root = temp_root("memory-project-command");
+
+        let rendered = render_tui_script(
+            [
+                "create folder called src".to_string(),
+                "create file project-plan.md".to_string(),
+                "/memory".to_string(),
+            ],
+            &root,
+            &root,
+        );
+
+        assert!(root.join("src").is_dir());
+        assert!(root.join("project-plan.md").is_file());
+        assert!(rendered.contains("Memory"));
+        assert!(rendered.contains("folders\n- ok "));
+        assert!(rendered.contains("plans\n- ok "));
+        assert!(!rendered.contains("lm-studio"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -939,11 +1148,15 @@ mod tests {
 
         assert!(target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("Review needed: action-1 CreateFile write hello.py"));
+        assert!(rendered.contains("Creating hello.py."));
+        assert!(rendered.contains("Wrote "));
         assert!(rendered.contains("> approve"));
-        assert!(rendered.contains("Approved: action-1 CreateFile write hello.py"));
-        assert!(rendered.contains("Applied and verified: action-1 CreateFile"));
-        assert!(rendered.contains("hello.py was written"));
+        assert!(rendered.contains("No proposed action is waiting for approval."));
+        assert!(rendered.contains("Approved. Applying the action."));
+        assert!(rendered.contains("Status: applied and verified"));
+        assert!(rendered.contains(&format!("Result: Wrote {}.", target.display())));
+        assert!(!rendered.contains("Action: action-1 CreateFile"));
+        assert!(!rendered.contains("Summary: write hello.py"));
         assert!(!rendered.contains("lm-studio"));
 
         let _ = fs::remove_dir_all(root);
@@ -957,10 +1170,10 @@ mod tests {
         let rendered =
             render_tui_script(["create file hello.py", "approve", "reject"], &root, &root);
 
-        assert!(!target.exists());
+        assert!(target.exists());
         assert!(rendered.contains("Action commands must use /approve or /reject."));
-        assert!(!rendered.contains("Applied and verified"));
-        assert!(!rendered.contains("Rejected: action-1"));
+        assert!(rendered.contains("Status: applied and verified"));
+        assert!(!rendered.contains("Rejected. Nothing was changed."));
         assert!(!rendered.contains("lm-studio"));
 
         let _ = fs::remove_dir_all(root);
@@ -973,13 +1186,15 @@ mod tests {
 
         let rendered = render_tui_script(["create file hello.py", "/reject"], &root, &root);
 
-        assert!(!target.exists());
+        assert!(target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("Review needed: action-1 CreateFile write hello.py"));
+        assert!(rendered.contains("Creating hello.py."));
+        assert!(rendered.contains("Wrote "));
         assert!(rendered.contains("> reject"));
-        assert!(
-            rendered.contains("Rejected: action-1 CreateFile write hello.py. No file was changed.")
-        );
+        assert!(rendered.contains("No proposed action is waiting for rejection."));
+        assert!(rendered.contains("Status: applied and verified"));
+        assert!(!rendered.contains("Action: action-1 CreateFile"));
+        assert!(!rendered.contains("Summary: write hello.py"));
         assert!(!rendered.contains("lm-studio"));
 
         let _ = fs::remove_dir_all(root);
@@ -1041,8 +1256,12 @@ mod tests {
         assert!(target.exists());
         assert!(rendered.contains("> create file hello.py"));
         assert!(rendered.contains("> approve"));
-        assert!(rendered.contains("Applied and verified: action-1 CreateFile"));
-        assert!(rendered.contains("hello.py was written"));
+        assert!(rendered.contains("Creating hello.py."));
+        assert!(rendered.contains("No proposed action is waiting for approval."));
+        assert!(rendered.contains("Status: applied and verified"));
+        assert!(rendered.contains(&format!("Result: Wrote {}.", target.display())));
+        assert!(!rendered.contains("Action: action-1 CreateFile"));
+        assert!(!rendered.contains("Target: hello.py"));
         assert!(rendered.contains("Exiting Elgar TUI."));
         assert!(!rendered.contains("lm-studio"));
 

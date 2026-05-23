@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-cargo install --path "$repo_root/crates/elgar-cli" --force
+ELGAR_INSTALL_REPO_ROOT="$repo_root" cargo install --path "$repo_root/crates/elgar-cli" --force
 
 install_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
 printf 'installed elgar to %s/elgar\n' "$install_dir"

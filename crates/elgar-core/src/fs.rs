@@ -422,31 +422,6 @@ fn resolve_allowed_target(
     target_path: &Path,
     allowed_root: &Path,
 ) -> Result<PathBuf, FilesystemError> {
-    if target_path.is_absolute() {
-        return Err(FilesystemError::UnsafeTarget {
-            path: target_path.to_path_buf(),
-            reason: "absolute paths are not allowed".to_string(),
-        });
-    }
-
-    for component in target_path.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir => {
-                return Err(FilesystemError::UnsafeTarget {
-                    path: target_path.to_path_buf(),
-                    reason: "parent directory traversal is not allowed".to_string(),
-                });
-            }
-            Component::Prefix(_) | Component::RootDir => {
-                return Err(FilesystemError::UnsafeTarget {
-                    path: target_path.to_path_buf(),
-                    reason: "rooted paths are not allowed".to_string(),
-                });
-            }
-        }
-    }
-
     let canonical_root =
         allowed_root
             .canonicalize()
@@ -454,7 +429,28 @@ fn resolve_allowed_target(
                 path: allowed_root.to_path_buf(),
                 reason: source.to_string(),
             })?;
-    let resolved_target = allowed_root.join(target_path);
+    let resolved_target = if target_path.is_absolute() {
+        target_path.to_path_buf()
+    } else {
+        for component in target_path.components() {
+            match component {
+                Component::Normal(_) | Component::CurDir => {}
+                Component::ParentDir => {
+                    return Err(FilesystemError::UnsafeTarget {
+                        path: target_path.to_path_buf(),
+                        reason: "parent directory traversal is not allowed".to_string(),
+                    });
+                }
+                Component::Prefix(_) | Component::RootDir => {
+                    return Err(FilesystemError::UnsafeTarget {
+                        path: target_path.to_path_buf(),
+                        reason: "rooted paths are not allowed".to_string(),
+                    });
+                }
+            }
+        }
+        allowed_root.join(target_path)
+    };
     let parent = resolved_target
         .parent()
         .ok_or_else(|| FilesystemError::UnsafeTarget {
@@ -470,9 +466,14 @@ fn resolve_allowed_target(
             })?;
 
     if !canonical_parent.starts_with(&canonical_root) {
+        let reason = if target_path.is_absolute() {
+            "absolute paths are not allowed".to_string()
+        } else {
+            "target parent resolves outside the allowed root".to_string()
+        };
         return Err(FilesystemError::UnsafeTarget {
             path: target_path.to_path_buf(),
-            reason: "target parent resolves outside the allowed root".to_string(),
+            reason,
         });
     }
 

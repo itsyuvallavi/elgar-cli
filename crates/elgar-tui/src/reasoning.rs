@@ -22,11 +22,11 @@ pub(crate) fn format_provider_reasoning_summary(text: &str, max_chars: usize) ->
     } else if let Some(rest) = strip_prefix_case_insensitive(text, "just ") {
         progress_note_from_action(rest)
     } else {
-        normalize_sentence(text)
+        normalize_reasoning_instruction(text)
     };
 
     let formatted = truncate_chars(&formatted, max_chars);
-    if formatted.is_empty() {
+    if formatted.is_empty() || is_low_value_reasoning_summary(&formatted) {
         None
     } else {
         Some(formatted)
@@ -150,6 +150,8 @@ fn remove_reasoning_instruction_filler(text: &str) -> String {
         "short",
         "concisely",
         "concise",
+        "succinctly",
+        "succinct",
     ] {
         text = remove_word_case_insensitive(&text, word);
     }
@@ -224,6 +226,13 @@ fn normalize_sentence(text: &str) -> String {
         first.make_ascii_uppercase();
     }
     text
+}
+
+fn is_low_value_reasoning_summary(text: &str) -> bool {
+    matches!(
+        text.trim().to_ascii_lowercase().as_str(),
+        "answering." | "responding." | "replying."
+    )
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {

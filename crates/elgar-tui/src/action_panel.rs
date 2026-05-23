@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use elgar_core::event::{ActionEvent, Event, FileActionVerification, VerifiedActionResult};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -105,15 +107,11 @@ impl ActionApprovalPanel {
     }
 
     fn render(&self) -> String {
-        let mut lines = vec![
-            format!("Action: {} {}", self.action_id, self.action_type),
-            format!(
-                "Target: {}",
-                self.target.as_deref().unwrap_or("unavailable")
-            ),
-            format!("Summary: {}", self.summary),
-            format!("State: {}", self.state.render()),
-        ];
+        let mut lines = vec![format!("Status: {}", self.state.render())];
+
+        if let Some(request) = self.request_line() {
+            lines.push(request);
+        }
 
         if let Some(result) = &self.result {
             lines.push(format!("Result: {result}"));
@@ -121,6 +119,51 @@ impl ActionApprovalPanel {
 
         lines.push(self.state.instructions().to_string());
         lines.join("\n")
+    }
+
+    fn request_line(&self) -> Option<String> {
+        if let Some(path) = self.summary.strip_prefix("write ") {
+            return Some(format!("File: {}", path.trim()));
+        }
+
+        if let Some(path) = self.summary.strip_prefix("create directory ") {
+            return Some(format!("Folder: {}", user_display_path(path.trim())));
+        }
+
+        if let Some(path) = self.summary.strip_prefix("delete ") {
+            return Some(format!("File: {}", user_display_path(path.trim())));
+        }
+
+        if let Some(paths) = self.summary.strip_prefix("move ") {
+            return Some(format!("Move: {}", paths.trim()));
+        }
+
+        if let Some(path) = self.summary.strip_prefix("create Markdown plan ") {
+            return Some(format!("Plan: {}", user_display_path(path.trim())));
+        }
+
+        if let Some(path) = self.summary.strip_prefix("execute Markdown plan in ") {
+            return Some(format!(
+                "Project folder: {}",
+                user_display_path(path.trim())
+            ));
+        }
+
+        if let Some(command) = self
+            .target
+            .as_deref()
+            .or_else(|| self.summary.strip_prefix("run shell command "))
+        {
+            if self.action_type == "ShellCommand" {
+                return Some(format!("Command: {}", command.trim()));
+            }
+        }
+
+        if self.summary.trim().is_empty() {
+            None
+        } else {
+            Some(format!("Request: {}", self.summary.trim()))
+        }
     }
 }
 
@@ -146,11 +189,13 @@ impl ActionPanelState {
 
     fn instructions(self) -> &'static str {
         match self {
-            Self::Proposed => "No action has been applied yet. Use /approve or /reject.",
-            Self::Approved => "Approval recorded. Applying through the controller.",
-            Self::Applied => "Verified by the controller.",
-            Self::Rejected => "Rejected actions are final. Start a new proposal to reconsider.",
-            Self::Failed => "Failure recorded by the controller.",
+            Self::Proposed => {
+                "No changes have been made yet. Use /approve to apply or /reject to leave it unchanged."
+            }
+            Self::Approved => "Approved. Applying it now.",
+            Self::Applied => "Verified.",
+            Self::Rejected => "Rejected. Nothing was changed.",
+            Self::Failed => "Failed before verification completed.",
         }
     }
 }
@@ -158,38 +203,99 @@ impl ActionPanelState {
 fn render_verified_result(result: &VerifiedActionResult) -> String {
     match result {
         VerifiedActionResult::FileWritten { path } => {
-            format!("file written: {path}")
+            format!("Wrote {}.", user_display_path(path))
         }
         VerifiedActionResult::File(file) => render_file_verification(file),
         VerifiedActionResult::Shell(shell) => {
-            let mut rendered = format!(
-                "shell command finished: exit code {:?}, timed out: {}",
-                shell.exit_code, shell.timed_out
-            );
             if let Some(effect) = &shell.verified_effect {
-                rendered.push_str(&format!("; {effect}"));
+                if let Some(message) = render_shell_verified_effect(effect) {
+                    return message;
+                }
             }
-            rendered
+            "Shell command finished and verification was recorded.".to_string()
         }
     }
 }
 
+fn render_shell_verified_effect(effect: &str) -> Option<String> {
+    if let Some(path) = verified_effect_value(effect, "verified file exists: ") {
+        return Some(format!("Created {}.", user_display_path(path)));
+    }
+
+    if let Some(paths) = verified_effect_value(effect, "verified files exist: ") {
+        return Some(format!("Created files: {}.", user_display_path_list(paths)));
+    }
+
+    if let Some(path) = verified_effect_value(effect, "verified directory exists: ") {
+        return Some(format!("Created {}.", user_display_path(path)));
+    }
+
+    if let Some(paths) = verified_effect_value(effect, "verified directories exist: ") {
+        return Some(format!("Created {}.", user_display_path_list(paths)));
+    }
+
+    None
+}
+
+fn verified_effect_value<'a>(effect: &'a str, prefix: &str) -> Option<&'a str> {
+    effect
+        .split("; ")
+        .find_map(|part| part.strip_prefix(prefix).map(str::trim))
+        .filter(|value| !value.is_empty())
+}
+
 fn render_file_verification(result: &FileActionVerification) -> String {
     match result {
-        FileActionVerification::FileCreated { path } => format!("file created: {path}"),
-        FileActionVerification::FilePatched { path } => format!("file patched: {path}"),
-        FileActionVerification::FileOverwritten { path } => {
-            format!("file overwritten: {path}")
+        FileActionVerification::FileCreated { path } => {
+            format!("Created {}.", user_display_path(path))
         }
-        FileActionVerification::FileDeleted { path } => format!("file deleted: {path}"),
+        FileActionVerification::FilePatched { path } => {
+            format!("Updated {}.", user_display_path(path))
+        }
+        FileActionVerification::FileOverwritten { path } => {
+            format!("Overwrote {}.", user_display_path(path))
+        }
+        FileActionVerification::FileDeleted { path } => {
+            format!("Deleted {}.", user_display_path(path))
+        }
         FileActionVerification::FileMoved {
             source_path,
             target_path,
-        } => format!("file moved: {source_path} -> {target_path}"),
+        } => format!(
+            "Moved {} to {}.",
+            user_display_path(source_path),
+            user_display_path(target_path)
+        ),
         FileActionVerification::DirectoryCreated { path } => {
-            format!("directory created: {path}")
+            format!("Created {}.", user_display_path(path))
         }
     }
+}
+
+fn user_display_path(path: impl AsRef<Path>) -> String {
+    let path = path.as_ref();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let desktop = home.join("Desktop");
+        if path == desktop {
+            return "Desktop".to_string();
+        }
+        if let Ok(relative) = path.strip_prefix(&desktop) {
+            return PathBuf::from("Desktop")
+                .join(relative)
+                .display()
+                .to_string();
+        }
+    }
+
+    path.display().to_string()
+}
+
+fn user_display_path_list(paths: &str) -> String {
+    paths
+        .split(", ")
+        .map(user_display_path)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -219,11 +325,12 @@ mod tests {
         assert_eq!(panel.state, ActionPanelState::Proposed);
 
         let rendered = pending_action.render_body();
-        assert!(rendered.contains("Action: action-1 CreateFile"));
-        assert!(rendered.contains("Target: hello.py"));
-        assert!(rendered.contains("Summary: write hello.py"));
-        assert!(rendered.contains("State: waiting for approval"));
-        assert!(rendered.contains("No action has been applied yet. Use /approve or /reject."));
+        assert!(rendered.contains("File: hello.py"));
+        assert!(rendered.contains("Status: waiting for approval"));
+        assert!(rendered.contains("No changes have been made yet."));
+        assert!(rendered.contains("Use /approve to apply or /reject"));
+        assert!(!rendered.contains("Action: action-1 CreateFile"));
+        assert!(!rendered.contains("Summary: write hello.py"));
     }
 
     #[test]
@@ -248,11 +355,9 @@ mod tests {
         ));
 
         let rendered = pending_action.render_body();
-        assert!(rendered.contains("State: rejected"));
+        assert!(rendered.contains("Status: rejected"));
         assert!(rendered.contains("Result: Rejected. No file was changed."));
-        assert!(
-            rendered.contains("Rejected actions are final. Start a new proposal to reconsider.")
-        );
+        assert!(rendered.contains("Rejected. Nothing was changed."));
     }
 
     #[test]
@@ -268,7 +373,7 @@ mod tests {
         )));
 
         let rendered = pending_action.render_body();
-        assert!(rendered.contains("Action: action-1 unknown"));
-        assert!(rendered.contains("Result: file written: hello.py"));
+        assert!(rendered.contains("Status: applied and verified"));
+        assert!(rendered.contains("Result: Wrote hello.py."));
     }
 }

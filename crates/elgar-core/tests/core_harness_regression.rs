@@ -1,6 +1,8 @@
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard},
 };
 
 use elgar_core::{
@@ -10,7 +12,7 @@ use elgar_core::{
     provider::{ControllerProvider, ProviderError, ProviderRequestMetadata, ProviderStreamChunk},
     renderer::render_session,
     router::{route_input, Route},
-    session::Session,
+    session::{Session, StructuredProjectPlanStatus, PROJECT_MEMORY_LIMIT},
 };
 
 fn regression_root(name: &str) -> PathBuf {
@@ -25,6 +27,48 @@ fn regression_root(name: &str) -> PathBuf {
 
 fn session_at(root: &Path) -> Session {
     Session::new("regression-session", root, root)
+}
+
+static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvGuard {
+    name: &'static str,
+    previous: Option<OsString>,
+    _home_lock: Option<MutexGuard<'static, ()>>,
+}
+
+impl EnvGuard {
+    fn set(name: &'static str, value: &Path) -> Self {
+        let home_lock = (name == "HOME").then(|| {
+            HOME_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self {
+            name,
+            previous,
+            _home_lock: home_lock,
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::env::set_var(self.name, previous);
+        } else {
+            std::env::remove_var(self.name);
+        }
+    }
+}
+
+fn isolated_home(root: &Path) -> (PathBuf, EnvGuard) {
+    let home = root.join("home");
+    fs::create_dir_all(home.join("Desktop")).unwrap();
+    let home_guard = EnvGuard::set("HOME", &home);
+    (home, home_guard)
 }
 
 fn event_count(session: &Session, matches: impl Fn(&Event) -> bool) -> usize {
@@ -101,6 +145,19 @@ fn action_truth_event_count(session: &Session) -> usize {
 fn assert_no_action_or_verified_truth(session: &Session) {
     assert!(session.actions().is_empty());
     assert_eq!(action_truth_event_count(session), 0);
+}
+
+fn assert_no_package_install_command(command: &str) {
+    assert!(
+        command.lines().all(|line| {
+            let line = line.trim_start();
+            !line.starts_with("npm install")
+                && !line.starts_with("npm create")
+                && !line.starts_with("pnpm install")
+                && !line.starts_with("yarn install")
+        }),
+        "package install command should be deferred, got:\n{command}"
+    );
 }
 
 fn write_broad_capability_fixture(root: &Path) {
@@ -275,6 +332,32 @@ impl ControllerProvider for BroadCapabilityClaimProvider {
 }
 
 #[derive(Debug, Clone)]
+struct FolderPlanProvider;
+
+impl ControllerProvider for FolderPlanProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "folder-plan-provider",
+            Some("model-a".to_string()),
+            "folder-plan-1",
+        )
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new(
+            "Sure! Let me suggest a small folder structure.\n\
+             code:\n\
+                 project/\n\
+                 ├─ src/          # source files\n\
+                 ├─ tests/        # tests\n\
+                 ├─ docs/         # docs\n\
+                 └─ data/         # data\n\
+             Once you approve, I can generate the shell commands.",
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
 struct MarkdownPlanProvider;
 
 impl ControllerProvider for MarkdownPlanProvider {
@@ -291,6 +374,26 @@ impl ControllerProvider for MarkdownPlanProvider {
         assert!(prompt.contains("calculator"));
         Ok(ProviderOutput::new(
             "# Calculator UI Plan\n\n- Define requirements.\n- Build a small Tkinter UI.\n",
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SimpleMarkdownPlanProvider;
+
+impl ControllerProvider for SimpleMarkdownPlanProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "simple-markdown-plan-provider",
+            Some("model-a".to_string()),
+            "simple-markdown-plan-1",
+        )
+    }
+
+    fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        assert!(prompt.contains("Return only Markdown content"));
+        Ok(ProviderOutput::new(
+            "# Simple Project Plan\n\n- Create the project folder.\n- Add README.md.\n",
         ))
     }
 }
@@ -399,7 +502,926 @@ fn markdown_plan_request_proposes_create_file_with_provider_content_before_appro
 }
 
 #[test]
-fn markdown_plan_provider_prose_cannot_bypass_approval_or_rejected_terminal_state() {
+fn natural_desktop_markdown_plan_request_creates_pending_shell_write_action() {
+    let controller = Controller::new(SimpleMarkdownPlanProvider);
+    let root = regression_root("desktop-markdown-plan-proposal");
+    let (home, _home) = isolated_home(&root);
+    let mut session = session_at(&root);
+
+    let result = controller.turn(
+        &mut session,
+        "please create a plan for a simple project on my desktop",
+    );
+
+    assert_eq!(result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(provider_event_count(&session), 2);
+    assert_eq!(provider_assistant_message_count(&session), 1);
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+
+    let expected_file = home.join("Desktop").join("simple-project-plan.md");
+    match &session.actions()[0].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert!(action.command.contains("cat > "));
+            assert!(action.command.contains("simple-project-plan.md"));
+            assert_eq!(action.cwd, root);
+            assert_eq!(action.expected_file.as_ref(), Some(&expected_file));
+            assert!(action.expected_effect.contains("Write Markdown plan"));
+        }
+        other => panic!("expected ShellCommand action, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn natural_desktop_react_ts_project_request_proposes_controller_owned_plan_not_provider_chat() {
+    let controller = Controller::default();
+    let root = regression_root("desktop-react-ts-project-plan-proposal");
+    let (home, _home) = isolated_home(&root);
+    let mut session = session_at(&root);
+
+    let result = controller.turn(
+        &mut session,
+        "can you create a project on the desktop inside a folder you need to create called Demo? the project should be a simple react TS project.",
+    );
+
+    assert_eq!(result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(provider_event_count(&session), 0);
+    assert_eq!(provider_assistant_message_count(&session), 0);
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+
+    let expected_project_root = home.join("Desktop").join("Demo");
+    let expected_plan = expected_project_root.join("react-ts-project-plan.md");
+    match &session.actions()[0].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert_eq!(
+                action.expected_directory.as_ref(),
+                Some(&expected_project_root)
+            );
+            assert_eq!(action.expected_file.as_ref(), Some(&expected_plan));
+            assert!(action.command.contains("cat > "));
+            assert!(action.command.contains("React TS Project Plan"));
+            assert_no_package_install_command(action.command.as_str());
+        }
+        other => panic!("expected ShellCommand action, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn approved_react_ts_project_plan_then_execute_scaffolds_files_without_installing_packages() {
+    let controller = Controller::default();
+    let root = regression_root("react-ts-project-plan-execute");
+    let project_root = root.join("Desktop").join("Demo");
+    let plan_path = project_root.join("react-ts-project-plan.md");
+    let mut session = session_at(&root);
+
+    let plan_result = controller.turn(
+        &mut session,
+        &format!(
+            "can you create a simple React TS project at {}?",
+            project_root.display()
+        ),
+    );
+
+    assert_eq!(plan_result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(provider_event_count(&session), 0);
+    assert_eq!(session.actions().len(), 1);
+    controller.turn(&mut session, "approve");
+
+    assert!(project_root.is_dir());
+    assert!(plan_path.is_file());
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_folder()
+            .map(|reference| reference.path.as_path()),
+        Some(project_root.as_path())
+    );
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.path.as_path()),
+        Some(plan_path.as_path())
+    );
+
+    let provider_events_before_execute = provider_event_count(&session);
+    let execute_result = controller.turn(&mut session, "execute the plan");
+
+    assert_eq!(execute_result.route, Route::ExecutePlan);
+    assert_eq!(
+        provider_event_count(&session),
+        provider_events_before_execute
+    );
+    assert_eq!(session.actions().len(), 2);
+    let structured_plan = session
+        .project_memory()
+        .latest_structured_plan()
+        .expect("execute plan should record a structured project plan");
+    assert_eq!(structured_plan.project_root, project_root);
+    assert_eq!(structured_plan.stage, "scaffold");
+    assert_eq!(
+        structured_plan.status,
+        StructuredProjectPlanStatus::Proposed
+    );
+    assert_eq!(
+        structured_plan.expected_directories,
+        vec![project_root.join("src")]
+    );
+    assert!(structured_plan
+        .expected_files
+        .contains(&project_root.join("package.json")));
+    assert!(structured_plan
+        .expected_files
+        .contains(&project_root.join("src").join("App.tsx")));
+
+    match &session.actions()[1].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert_eq!(action.expected_directories, vec![project_root.join("src")]);
+            assert!(action
+                .expected_files
+                .contains(&project_root.join("package.json")));
+            assert!(action
+                .expected_files
+                .contains(&project_root.join("src").join("main.tsx")));
+            assert_no_package_install_command(action.command.as_str());
+        }
+        other => panic!("expected executable ShellCommand action, got {other:?}"),
+    }
+
+    controller.turn(&mut session, "approve");
+
+    assert!(project_root.join("package.json").is_file());
+    assert!(project_root.join("src").join("App.tsx").is_file());
+    assert!(project_root.join("src").join("main.tsx").is_file());
+    assert!(fs::read_to_string(project_root.join("README.md"))
+        .unwrap()
+        .contains("Package installation is deferred"));
+    assert_eq!(
+        session.actions()[1].action.state,
+        ActionLifecycleState::Applied
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn absolute_markdown_plan_request_writes_only_after_approval_and_verifies_file() {
+    let controller = Controller::new(SimpleMarkdownPlanProvider);
+    let root = regression_root("absolute-markdown-plan-shell");
+    let target = root.join("Desktop").join("PROJECT_PLAN.md");
+    let mut session = session_at(&root);
+
+    let result = controller.turn(
+        &mut session,
+        &format!("please create a plan at {}", target.display()),
+    );
+
+    assert_eq!(result.route, Route::ProposeMarkdownPlanFile);
+    assert!(!target.exists());
+    assert_eq!(session.actions().len(), 1);
+    match &session.actions()[0].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert!(action.command.contains("mkdir -p "));
+            assert!(action.command.contains("cat > "));
+            assert_eq!(action.expected_file.as_ref(), Some(&target));
+        }
+        other => panic!("expected ShellCommand action, got {other:?}"),
+    }
+
+    controller.turn(&mut session, "approve");
+
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "# Simple Project Plan\n\n- Create the project folder.\n- Add README.md.\n"
+    );
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    match session.actions()[0].verified_result.as_ref() {
+        Some(VerifiedActionResult::Shell(shell)) => {
+            assert_eq!(shell.exit_code, Some(0));
+            let expected_effect = format!("verified file exists: {}", target.display());
+            assert_eq!(
+                shell.verified_effect.as_deref(),
+                Some(expected_effect.as_str())
+            );
+        }
+        other => panic!("expected verified shell result, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn execute_plan_followup_without_pending_action_does_not_go_to_provider() {
+    let controller = Controller::new(SimpleMarkdownPlanProvider);
+    let root = regression_root("execute-plan-no-pending");
+    let mut session = session_at(&root);
+
+    let result = controller.turn(&mut session, "okay execute the plan");
+
+    assert_eq!(result.route, Route::ExecutePlan);
+    assert_eq!(provider_event_count(&session), 0);
+    assert!(session.actions().is_empty());
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("No controller-owned executable plan is waiting")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn markdown_plan_inside_verified_folder_then_execute_proposes_batch_files() {
+    let controller = Controller::new(SimpleMarkdownPlanProvider);
+    let root = regression_root("markdown-plan-inside-verified-folder");
+    let target_folder = root.join("Desktop").join("NoteKeeper");
+    let mut session = session_at(&root);
+
+    controller.turn(
+        &mut session,
+        &format!("create a folder at {}", target_folder.display()),
+    );
+    controller.turn(&mut session, "approve");
+
+    assert!(target_folder.is_dir());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_folder()
+            .map(|reference| reference.path.as_path()),
+        Some(target_folder.as_path())
+    );
+
+    let plan_result = controller.turn(
+        &mut session,
+        "create a plan for a small python project inside that folder",
+    );
+
+    assert_eq!(plan_result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(session.actions().len(), 2);
+    let plan_path = target_folder.join("small-python-project-plan.md");
+    match &session.actions()[1].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert_eq!(action.expected_file.as_ref(), Some(&plan_path));
+            assert!(action.command.contains("small-python-project-plan.md"));
+        }
+        other => panic!("expected Markdown ShellCommand action, got {other:?}"),
+    }
+
+    controller.turn(&mut session, "approve");
+
+    assert!(plan_path.is_file());
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.path.as_path()),
+        Some(plan_path.as_path())
+    );
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.project_root.as_path()),
+        Some(target_folder.as_path())
+    );
+    assert_eq!(
+        fs::read_to_string(&plan_path).unwrap(),
+        "# Simple Project Plan\n\n- Create the project folder.\n- Add README.md.\n"
+    );
+
+    let provider_events_before_execute = provider_event_count(&session);
+    let execute_result = controller.turn(&mut session, "okay execute the plan inside that folder");
+
+    assert_eq!(execute_result.route, Route::ExecutePlan);
+    assert_eq!(
+        provider_event_count(&session),
+        provider_events_before_execute
+    );
+    let structured_plan = session
+        .project_memory()
+        .latest_structured_plan()
+        .expect("execute plan should record a structured project plan");
+    assert_eq!(
+        structured_plan.source_action_id.as_deref(),
+        Some("action-3")
+    );
+    assert_eq!(structured_plan.source_plan_path, plan_path);
+    assert_eq!(structured_plan.project_root, target_folder);
+    assert_eq!(structured_plan.stage, "scaffold");
+    assert_eq!(
+        structured_plan.status,
+        StructuredProjectPlanStatus::Proposed
+    );
+    assert_eq!(
+        structured_plan.expected_directories,
+        vec![
+            structured_plan.project_root.join("src"),
+            structured_plan.project_root.join("tests")
+        ]
+    );
+    assert!(structured_plan
+        .expected_files
+        .contains(&structured_plan.project_root.join("README.md")));
+    assert_eq!(session.actions().len(), 3);
+    match &session.actions()[2].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert!(action.command.contains("src/csv_filter.py"));
+            assert!(action.command.contains("tests/test_csv_filter.py"));
+            assert_eq!(
+                action.expected_directories,
+                vec![target_folder.join("src"), target_folder.join("tests")]
+            );
+            assert_eq!(
+                action.expected_files,
+                vec![
+                    target_folder.join("src").join("__init__.py"),
+                    target_folder.join("src").join("csv_filter.py"),
+                    target_folder.join("tests").join("test_csv_filter.py"),
+                    target_folder.join("README.md"),
+                    target_folder.join("pyproject.toml"),
+                ]
+            );
+        }
+        other => panic!("expected executable ShellCommand action, got {other:?}"),
+    }
+
+    controller.turn(&mut session, "approve");
+
+    assert!(target_folder.join("src").join("csv_filter.py").is_file());
+    assert!(target_folder
+        .join("tests")
+        .join("test_csv_filter.py")
+        .is_file());
+    assert!(target_folder.join("README.md").is_file());
+    assert_eq!(
+        session.actions()[2].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_executed_structured_plan()
+            .map(|plan| plan.source_action_id.as_deref()),
+        Some(Some("action-3"))
+    );
+    match session.actions()[2].verified_result.as_ref() {
+        Some(VerifiedActionResult::Shell(shell)) => {
+            assert_eq!(shell.exit_code, Some(0));
+            assert!(shell
+                .verified_effect
+                .as_deref()
+                .is_some_and(|effect| effect.contains("verified files exist")));
+        }
+        other => panic!("expected verified shell result, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn create_plan_inside_folder_you_created_uses_latest_verified_folder_without_provider() {
+    let controller = Controller::default();
+    let root = regression_root("plan-inside-folder-you-created");
+    let home = root.join("home");
+    let desktop = home.join("Desktop");
+    fs::create_dir_all(&desktop).unwrap();
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let _home = EnvGuard::set("HOME", &home);
+    let mut session = session_at(&project);
+    let verified_folder = desktop.join("helloworld");
+
+    controller.turn(
+        &mut session,
+        "create a folder in desktop and call it helloworld",
+    );
+    controller.turn(&mut session, "approve");
+
+    assert!(verified_folder.is_dir());
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_folder()
+            .map(|reference| reference.path.as_path()),
+        Some(verified_folder.as_path())
+    );
+
+    let provider_events_before = provider_event_count(&session);
+    let result = controller.turn(
+        &mut session,
+        "create a plan for a basic react project inside the folder you created.",
+    );
+
+    assert_eq!(result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(
+        provider_event_count(&session),
+        provider_events_before,
+        "controller-owned plan creation must not fall through to provider prose"
+    );
+    assert_eq!(session.actions().len(), 2);
+    match &session.actions()[1].action.request {
+        ActionRequest::ShellCommand(action) => {
+            let expected_plan = verified_folder.join("react-project-plan.md");
+            assert_eq!(action.expected_directory.as_ref(), Some(&verified_folder));
+            assert_eq!(action.expected_file.as_ref(), Some(&expected_plan));
+            assert!(action.command.contains("React Project Plan"));
+            assert!(
+                !action
+                    .command
+                    .contains(&project.join("project-plan.md").display().to_string()),
+                "plan target must not be repo-local project/project-plan.md: {}",
+                action.command
+            );
+        }
+        other => panic!("expected Markdown ShellCommand action, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn execute_project_according_to_verified_plan_uses_verified_plan_folder() {
+    let controller = Controller::default();
+    let root = regression_root("execute-according-to-verified-plan-folder");
+    let home = root.join("home");
+    let desktop = home.join("Desktop");
+    fs::create_dir_all(&desktop).unwrap();
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let _home = EnvGuard::set("HOME", &home);
+    let mut session = session_at(&project);
+    let verified_folder = desktop.join("helloworld");
+    let expected_plan = verified_folder.join("react-project-plan.md");
+
+    controller.turn(
+        &mut session,
+        "create a folder in desktop and call it helloworld",
+    );
+    controller.turn(&mut session, "approve");
+    controller.turn(
+        &mut session,
+        "create a plan for a basic react project inside the folder you created.",
+    );
+    controller.turn(&mut session, "approve");
+
+    assert!(expected_plan.is_file());
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.path.as_path()),
+        Some(expected_plan.as_path())
+    );
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.project_root.as_path()),
+        Some(verified_folder.as_path())
+    );
+
+    let provider_events_before = provider_event_count(&session);
+    let result = controller.turn(&mut session, "create the project according to the plan!");
+
+    assert_eq!(result.route, Route::ExecutePlan);
+    assert_eq!(provider_event_count(&session), provider_events_before);
+    assert_eq!(session.actions().len(), 3);
+
+    let structured_plan = session
+        .project_memory()
+        .latest_structured_plan()
+        .expect("execute plan should record a structured project plan");
+    assert_eq!(structured_plan.source_plan_path, expected_plan);
+    assert_eq!(structured_plan.project_root, verified_folder);
+    assert_eq!(
+        structured_plan.status,
+        StructuredProjectPlanStatus::Proposed
+    );
+    assert!(structured_plan
+        .expected_files
+        .iter()
+        .all(|path| path.starts_with(&verified_folder)));
+    assert!(structured_plan
+        .expected_directories
+        .iter()
+        .all(|path| path.starts_with(&verified_folder)));
+
+    match &session.actions()[2].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert!(
+                action
+                    .expected_files
+                    .iter()
+                    .all(|path| path.starts_with(&verified_folder)),
+                "expected files must stay under verified folder: {:?}",
+                action.expected_files
+            );
+            assert!(
+                !action
+                    .expected_files
+                    .iter()
+                    .any(|path| path.starts_with(project.join("project"))),
+                "execute plan must not scaffold repo-local project/: {:?}",
+                action.expected_files
+            );
+        }
+        other => panic!("expected executable ShellCommand action, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn prompt_marker_folder_plan_then_create_project_stays_in_latest_verified_desktop_folder() {
+    let controller = Controller::default();
+    let root = regression_root("prompt-marker-desktop-project-flow");
+    let home = root.join("home");
+    let desktop = home.join("Desktop");
+    fs::create_dir_all(&desktop).unwrap();
+    let repo_root = root.join("repo");
+    fs::create_dir_all(&repo_root).unwrap();
+    let _home = EnvGuard::set("HOME", &home);
+    let mut session = session_at(&repo_root);
+    let verified_folder = desktop.join("promptmarker");
+    let expected_plan = verified_folder.join("react-project-plan.md");
+    let repo_local_project = repo_root.join("project");
+
+    let folder_result = controller.turn(
+        &mut session,
+        "> create a folder in desktop and call it promptmarker",
+    );
+    assert_eq!(folder_result.route, Route::ProposeCreateDirectory);
+    assert_eq!(provider_event_count(&session), 0);
+    controller.turn(&mut session, "approve");
+
+    assert!(verified_folder.is_dir());
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_folder()
+            .map(|reference| reference.path.as_path()),
+        Some(verified_folder.as_path())
+    );
+
+    let provider_events_before_plan = provider_event_count(&session);
+    let plan_result = controller.turn(
+        &mut session,
+        "> > create a plan for a basic react project inside the folder you created.",
+    );
+    assert_eq!(plan_result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(provider_event_count(&session), provider_events_before_plan);
+    controller.turn(&mut session, "approve");
+
+    assert!(expected_plan.is_file());
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.path.as_path()),
+        Some(expected_plan.as_path())
+    );
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.project_root.as_path()),
+        Some(verified_folder.as_path())
+    );
+
+    let provider_events_before_create = provider_event_count(&session);
+    let create_result = controller.turn(&mut session, "create the project");
+
+    assert_eq!(create_result.route, Route::ExecutePlan);
+    assert_eq!(
+        provider_event_count(&session),
+        provider_events_before_create
+    );
+    assert_eq!(session.actions().len(), 3);
+    match &session.actions()[2].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert!(
+                action
+                    .expected_files
+                    .iter()
+                    .all(|path| path.starts_with(&verified_folder)),
+                "expected files must stay under verified folder: {:?}",
+                action.expected_files
+            );
+            assert_no_package_install_command(action.command.as_str());
+        }
+        other => panic!("expected executable ShellCommand action, got {other:?}"),
+    }
+
+    controller.turn(&mut session, "approve");
+
+    assert!(verified_folder.join("package.json").is_file());
+    assert!(verified_folder.join("src").join("App.tsx").is_file());
+    assert!(verified_folder.join("src").join("main.tsx").is_file());
+    assert!(!repo_local_project.exists());
+    assert!(!repo_root.join("project-plan.md").exists());
+    assert_eq!(
+        session.actions()[2].action.state,
+        ActionLifecycleState::Applied
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn create_the_project_without_verified_plan_proposes_plan_inside_latest_verified_folder() {
+    let controller = Controller::default();
+    let root = regression_root("create-project-missing-plan-latest-folder");
+    let home = root.join("home");
+    let desktop = home.join("Desktop");
+    fs::create_dir_all(&desktop).unwrap();
+    let repo_root = root.join("repo");
+    fs::create_dir_all(&repo_root).unwrap();
+    let _home = EnvGuard::set("HOME", &home);
+    let mut session = session_at(&repo_root);
+    let verified_folder = desktop.join("missingplan");
+    let expected_plan = verified_folder.join("project-plan.md");
+
+    controller.turn(
+        &mut session,
+        "> create a folder in desktop and call it missingplan",
+    );
+    controller.turn(&mut session, "approve");
+
+    assert!(verified_folder.is_dir());
+    assert!(session.project_memory().latest_verified_plan().is_none());
+
+    let provider_events_before = provider_event_count(&session);
+    let result = controller.turn(&mut session, "create the project");
+
+    assert_eq!(result.route, Route::ExecutePlan);
+    assert_eq!(provider_event_count(&session), provider_events_before);
+    assert_eq!(session.actions().len(), 2);
+    match &session.actions()[1].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert_eq!(action.expected_directory.as_ref(), Some(&verified_folder));
+            assert_eq!(action.expected_file.as_ref(), Some(&expected_plan));
+            assert!(
+                !action
+                    .command
+                    .contains(&repo_root.join("project").display().to_string()),
+                "missing plan proposal must not target repo-local project/: {}",
+                action.command
+            );
+        }
+        other => panic!("expected Markdown ShellCommand action, got {other:?}"),
+    }
+
+    controller.turn(&mut session, "approve");
+
+    assert!(expected_plan.is_file());
+    assert!(!repo_root.join("project").exists());
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.path.as_path()),
+        Some(expected_plan.as_path())
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_memory_is_bounded_and_dedupes_verified_folder_references() {
+    let controller = Controller::default();
+    let root = regression_root("project-memory-bounded-folders");
+    let mut session = session_at(&root);
+
+    for index in 0..(PROJECT_MEMORY_LIMIT + 3) {
+        let folder = root.join("Desktop").join(format!("memory-{index}"));
+        controller.turn(
+            &mut session,
+            &format!("create a folder at {}", folder.display()),
+        );
+        controller.turn(&mut session, "approve");
+    }
+
+    assert_eq!(
+        session.project_memory().verified_folders.len(),
+        PROJECT_MEMORY_LIMIT
+    );
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_folder()
+            .map(|reference| reference.path.as_path()),
+        Some(root.join("Desktop").join("memory-10").as_path())
+    );
+
+    let duplicate = root.join("Desktop").join("memory-10");
+    controller.turn(
+        &mut session,
+        &format!("create a folder at {}", duplicate.display()),
+    );
+    controller.turn(&mut session, "approve");
+
+    assert_eq!(
+        session.project_memory().verified_folders.len(),
+        PROJECT_MEMORY_LIMIT
+    );
+    assert_eq!(
+        session
+            .project_memory()
+            .verified_folders
+            .iter()
+            .filter(|reference| reference.path == duplicate)
+            .count(),
+        1
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rejected_execute_plan_proposal_removes_proposed_structured_memory() {
+    let controller = Controller::new(SimpleMarkdownPlanProvider);
+    let root = regression_root("project-memory-rejected-structured-plan");
+    let target_folder = root.join("Desktop").join("RejectPlan");
+    let mut session = session_at(&root);
+
+    controller.turn(
+        &mut session,
+        &format!("create a folder at {}", target_folder.display()),
+    );
+    controller.turn(&mut session, "approve");
+    controller.turn(
+        &mut session,
+        "create a plan for a small python project inside that folder",
+    );
+    controller.turn(&mut session, "approve");
+
+    controller.turn(&mut session, "execute the plan inside that folder");
+    assert_eq!(session.project_memory().structured_plans.len(), 1);
+    assert_eq!(
+        session.project_memory().structured_plans[0].status,
+        StructuredProjectPlanStatus::Proposed
+    );
+
+    controller.turn(&mut session, "reject");
+
+    assert!(session.project_memory().structured_plans.is_empty());
+    assert!(!target_folder.join("src").exists());
+    assert_eq!(
+        session.actions()[2].action.state,
+        ActionLifecycleState::Rejected
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn execute_plan_reports_missing_latest_verified_plan_without_shell_proposal() {
+    let controller = Controller::new(SimpleMarkdownPlanProvider);
+    let root = regression_root("project-memory-stale-plan-no-fallback");
+    let folder_a = root.join("Desktop").join("PlanA");
+    let folder_b = root.join("Desktop").join("PlanB");
+    let mut session = session_at(&root);
+
+    for folder in [&folder_a, &folder_b] {
+        controller.turn(
+            &mut session,
+            &format!("create a folder at {}", folder.display()),
+        );
+        controller.turn(&mut session, "approve");
+        controller.turn(
+            &mut session,
+            "create a plan for a small python project inside that folder",
+        );
+        controller.turn(&mut session, "approve");
+    }
+
+    let plan_a = folder_a.join("small-python-project-plan.md");
+    let plan_b = folder_b.join("small-python-project-plan.md");
+    assert!(plan_a.is_file());
+    assert!(plan_b.is_file());
+    fs::remove_file(&plan_b).unwrap();
+
+    let actions_before = session.actions().len();
+    let truth_events_before = action_truth_event_count(&session);
+    let result = controller.turn(&mut session, "execute the plan");
+
+    assert_eq!(result.route, Route::ExecutePlan);
+    assert_eq!(session.actions().len(), actions_before);
+    assert_eq!(action_truth_event_count(&session), truth_events_before);
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.path.as_path()),
+        Some(plan_b.as_path())
+    );
+    assert!(!folder_a.join("src").exists());
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("latest verified Markdown plan could not be read")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn execute_plan_that_folder_reports_stale_latest_folder_without_plan_parent_fallback() {
+    let controller = Controller::new(SimpleMarkdownPlanProvider);
+    let root = regression_root("execute-plan-stale-that-folder");
+    let folder_a = root.join("Desktop").join("PlanFolder");
+    let folder_b = root.join("Desktop").join("StaleFolder");
+    let mut session = session_at(&root);
+
+    controller.turn(
+        &mut session,
+        &format!("create a folder at {}", folder_a.display()),
+    );
+    controller.turn(&mut session, "approve");
+    controller.turn(
+        &mut session,
+        "create a plan for a small python project inside that folder",
+    );
+    controller.turn(&mut session, "approve");
+    let plan_path = folder_a.join("small-python-project-plan.md");
+    assert!(plan_path.is_file());
+
+    controller.turn(
+        &mut session,
+        &format!("create a folder at {}", folder_b.display()),
+    );
+    controller.turn(&mut session, "approve");
+    assert!(folder_b.is_dir());
+    fs::remove_dir_all(&folder_b).unwrap();
+
+    let actions_before = session.actions().len();
+    let truth_events_before = action_truth_event_count(&session);
+    let result = controller.turn(&mut session, "execute the plan inside that folder");
+
+    assert_eq!(result.route, Route::ExecutePlan);
+    assert_eq!(session.actions().len(), actions_before);
+    assert_eq!(action_truth_event_count(&session), truth_events_before);
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.path.as_path()),
+        Some(plan_path.as_path())
+    );
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_folder()
+            .map(|reference| reference.path.as_path()),
+        Some(folder_b.as_path())
+    );
+    assert!(!folder_a.join("src").exists());
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("latest verified folder is missing")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn old_serialized_session_without_project_memory_deserializes_with_empty_memory() {
+    let root = regression_root("old-session-without-project-memory");
+    let root_string = root.display().to_string();
+
+    let session: Session = serde_json::from_value(serde_json::json!({
+        "id": "old-session",
+        "project_root": root_string,
+        "cwd": root_string,
+        "events": [],
+        "actions": [],
+        "provider_metadata": null
+    }))
+    .unwrap();
+
+    assert!(session.project_memory().verified_folders.is_empty());
+    assert!(session.project_memory().verified_plans.is_empty());
+    assert!(session.project_memory().structured_plans.is_empty());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn explicit_markdown_file_write_cannot_bypass_approval_or_rejected_terminal_state() {
     let controller = Controller::new(UnsafeMarkdownPlanProvider);
     let root = regression_root("markdown-plan-approval-boundary");
     let mut session = session_at(&root);
@@ -410,14 +1432,21 @@ fn markdown_plan_provider_prose_cannot_bypass_approval_or_rejected_terminal_stat
         "please write hidden-plan.md with a markdown plan for hidden work",
     );
 
-    assert_eq!(result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(result.route, Route::ProposeWriteFile);
     assert!(!target.exists());
     assert_eq!(session.actions().len(), 1);
     assert_eq!(
         session.actions()[0].action.state,
         ActionLifecycleState::Proposed
     );
+    match &session.actions()[0].action.request {
+        ActionRequest::CreateFile(action) => {
+            assert_eq!(action.target_path, PathBuf::from("hidden-plan.md"));
+        }
+        other => panic!("expected explicit CreateFile action, got {other:?}"),
+    }
     assert_eq!(action_truth_event_count(&session), 1);
+    assert_eq!(provider_event_count(&session), 0);
 
     controller.turn(&mut session, "reject");
     controller.turn(&mut session, "approve");
@@ -477,6 +1506,9 @@ fn provider_response_is_suggestion_only_and_cannot_mutate_controller_truth() {
         event_count(&session, |event| matches!(event, Event::ActionApplied(_))),
         0
     );
+    assert!(session.project_memory().verified_folders.is_empty());
+    assert!(session.project_memory().verified_plans.is_empty());
+    assert!(session.project_memory().structured_plans.is_empty());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -810,6 +1842,29 @@ fn router_classifies_create_file_and_unknown_input_is_safe() {
     );
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn app_like_file_names_route_to_create_file_actions_not_project_plans() {
+    for file_name in ["approved.py", "applied.py", "app.py"] {
+        let controller = Controller::default();
+        let root = regression_root(&format!("app-like-file-name-{file_name}"));
+        let mut session = session_at(&root);
+
+        let result = controller.turn(&mut session, &format!("create file {file_name}"));
+
+        assert_eq!(result.route, Route::ProposeWriteFile);
+        assert_eq!(provider_event_count(&session), 0);
+        assert_eq!(session.actions().len(), 1);
+        match &session.actions()[0].action.request {
+            ActionRequest::CreateFile(action) => {
+                assert_eq!(action.target_path, PathBuf::from(file_name));
+            }
+            other => panic!("expected CreateFile action for {file_name}, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 #[test]
@@ -1321,16 +2376,13 @@ fn natural_folder_requests_route_to_directory_or_shell_action() {
     assert!(relative_target.is_dir());
     assert_eq!(provider_event_count(&relative_session), 0);
 
+    let (home, _home) = isolated_home(&root);
     let mut desktop_session = session_at(&root);
     let desktop_result = controller.turn(
         &mut desktop_session,
         "can you create a folder called hello-world in the desktop?",
     );
-    let expected_desktop_target = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap()
-        .join("Desktop")
-        .join("hello-world");
+    let expected_desktop_target = home.join("Desktop").join("hello-world");
 
     assert_eq!(desktop_result.route, Route::ProposeCreateDirectory);
     assert_eq!(desktop_session.actions().len(), 1);
@@ -1352,6 +2404,59 @@ fn natural_folder_requests_route_to_directory_or_shell_action() {
     }
     controller.turn(&mut desktop_session, "reject");
     assert!(!root.join("hello-world").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn natural_desktop_folder_names_target_named_child_not_desktop_or_repo_the() {
+    let controller = Controller::default();
+    let root = regression_root("natural-desktop-folder-names");
+    let home = root.join("home");
+    let desktop = home.join("Desktop");
+    fs::create_dir_all(&desktop).unwrap();
+    let _home = EnvGuard::set("HOME", &home);
+
+    for (index, (input, folder_name)) in [
+        (
+            "create a folder in desktop and call it helloworld",
+            "helloworld",
+        ),
+        (
+            "create a folder on the desktop called helloworld",
+            "helloworld",
+        ),
+        ("create a folder called the demo on the desktop", "the demo"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let project = root.join(format!("project-{index}"));
+        fs::create_dir_all(&project).unwrap();
+        let mut session = session_at(&project);
+        let expected_target = desktop.join(folder_name);
+
+        let result = controller.turn(&mut session, input);
+
+        assert_eq!(result.route, Route::ProposeCreateDirectory);
+        assert_eq!(provider_event_count(&session), 0);
+        assert_eq!(session.actions().len(), 1);
+        assert!(!expected_target.exists());
+        assert!(!project.join("the").exists());
+        match &session.actions()[0].action.request {
+            ActionRequest::ShellCommand(action) => {
+                assert!(action.command.starts_with("mkdir -p "));
+                assert_eq!(action.cwd, project);
+                assert_eq!(action.expected_directory.as_ref(), Some(&expected_target));
+                assert_ne!(action.expected_directory.as_ref(), Some(&desktop));
+                assert_ne!(
+                    action.expected_directory.as_ref(),
+                    Some(&project.join("the"))
+                );
+            }
+            other => panic!("expected ShellCommand action, got {other:?}"),
+        }
+    }
 
     let _ = fs::remove_dir_all(root);
 }
@@ -1443,6 +2548,297 @@ fn natural_quoted_absolute_folder_request_handles_shell_path_quoting() {
         }
         other => panic!("expected verified shell result, got {other:?}"),
     }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_folder_plan_prose_alone_does_not_create_shell_proposal() {
+    let controller = Controller::new(FolderPlanProvider);
+    let root = regression_root("provider-folder-plan-prose-no-shell");
+    let base = root.join("Desktop");
+    fs::create_dir_all(&base).unwrap();
+    let mut session = session_at(&root);
+
+    let plan_result = controller.model_turn(&mut session, "suggest folders for a project");
+    assert_eq!(plan_result.route, Route::AskModel);
+    assert_eq!(provider_assistant_message_count(&session), 1);
+
+    let propose_result = controller.turn(
+        &mut session,
+        &format!("okay create this plan under {}", base.display()),
+    );
+
+    assert_eq!(propose_result.route, Route::ProposeCreateDirectory);
+    assert!(session.actions().is_empty());
+    assert_eq!(action_truth_event_count(&session), 0);
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("no target path could be parsed")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn followup_create_this_plan_proposes_and_verifies_all_planned_directories() {
+    let controller = Controller::new(FolderPlanProvider);
+    let root = regression_root("followup-folder-plan");
+    let base = root.join("Desktop");
+    fs::create_dir_all(&base).unwrap();
+    let plan_path = base.join("folder-plan.md");
+    let expected_dirs = ["src", "tests", "docs", "data"]
+        .map(|name| base.join("project").join(name))
+        .to_vec();
+    let mut session = session_at(&root);
+
+    let plan_result = controller.turn(
+        &mut session,
+        &format!("please create a plan at {}", plan_path.display()),
+    );
+    assert_eq!(plan_result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(provider_assistant_message_count(&session), 1);
+    controller.turn(&mut session, "approve");
+    assert!(plan_path.is_file());
+    assert_eq!(
+        session
+            .project_memory()
+            .latest_verified_plan()
+            .map(|reference| reference.path.as_path()),
+        Some(plan_path.as_path())
+    );
+
+    let propose_result = controller.turn(
+        &mut session,
+        &format!("okay create this plan under {}", base.display()),
+    );
+
+    assert_eq!(propose_result.route, Route::ProposeCreateDirectory);
+    assert_eq!(session.actions().len(), 2);
+    assert!(expected_dirs.iter().all(|path| !path.exists()));
+    match &session.actions()[1].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert!(action.command.starts_with("mkdir -p "));
+            for expected_dir in &expected_dirs {
+                assert!(
+                    action.command.contains(&expected_dir.display().to_string()),
+                    "command did not contain {}: {}",
+                    expected_dir.display(),
+                    action.command
+                );
+            }
+            assert_eq!(action.expected_directories, expected_dirs);
+            assert_eq!(action.expected_directory, None);
+        }
+        other => panic!("expected ShellCommand action, got {other:?}"),
+    }
+
+    controller.turn(&mut session, "approve");
+
+    assert!(expected_dirs.iter().all(|path| path.is_dir()));
+    assert_eq!(
+        session.actions()[1].action.state,
+        ActionLifecycleState::Applied
+    );
+    match session.actions()[1].verified_result.as_ref() {
+        Some(VerifiedActionResult::Shell(shell)) => {
+            assert_eq!(shell.exit_code, Some(0));
+            assert!(!shell.timed_out);
+            assert!(shell
+                .verified_effect
+                .as_deref()
+                .is_some_and(|effect| effect.contains("verified directories exist")));
+        }
+        other => panic!("expected verified shell result, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn missing_verified_folder_plan_file_does_not_create_shell_proposal() {
+    let controller = Controller::new(FolderPlanProvider);
+    let root = regression_root("missing-folder-plan-file-no-shell");
+    let base = root.join("Desktop");
+    fs::create_dir_all(&base).unwrap();
+    let plan_path = base.join("folder-plan.md");
+    let expected_dir = base.join("project").join("src");
+    let mut session = session_at(&root);
+
+    controller.turn(
+        &mut session,
+        &format!("please create a plan at {}", plan_path.display()),
+    );
+    controller.turn(&mut session, "approve");
+    assert!(plan_path.is_file());
+    fs::remove_file(&plan_path).unwrap();
+
+    let actions_before = session.actions().len();
+    let truth_events_before = action_truth_event_count(&session);
+    let result = controller.turn(
+        &mut session,
+        &format!("okay create this plan under {}", base.display()),
+    );
+
+    assert_eq!(result.route, Route::ProposeCreateDirectory);
+    assert_eq!(session.actions().len(), actions_before);
+    assert_eq!(action_truth_event_count(&session), truth_events_before);
+    assert!(!expected_dir.exists());
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("latest verified Markdown plan is missing")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn markdown_plan_that_folder_followup_reports_stale_latest_folder_without_fallback() {
+    let controller = Controller::new(SimpleMarkdownPlanProvider);
+    let root = regression_root("markdown-plan-stale-that-folder");
+    let folder_a = root.join("Desktop").join("FolderA");
+    let folder_b = root.join("Desktop").join("FolderB");
+    let mut session = session_at(&root);
+
+    for folder in [&folder_a, &folder_b] {
+        controller.turn(
+            &mut session,
+            &format!("create a folder at {}", folder.display()),
+        );
+        controller.turn(&mut session, "approve");
+    }
+    assert!(folder_a.is_dir());
+    assert!(folder_b.is_dir());
+    fs::remove_dir_all(&folder_b).unwrap();
+
+    let actions_before = session.actions().len();
+    let provider_events_before = provider_event_count(&session);
+    let result = controller.turn(
+        &mut session,
+        "create a plan for a small python project inside that folder",
+    );
+
+    assert_eq!(result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(session.actions().len(), actions_before);
+    assert_eq!(provider_event_count(&session), provider_events_before);
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("latest verified folder is missing")));
+    assert!(!folder_a.join("small-python-project-plan.md").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn explicit_markdown_plan_that_folder_reports_stale_latest_folder_before_accepting_md_token() {
+    let controller = Controller::new(SimpleMarkdownPlanProvider);
+    let root = regression_root("markdown-plan-explicit-md-stale-that-folder");
+    let folder_a = root.join("Desktop").join("FolderA");
+    let folder_b = root.join("Desktop").join("FolderB");
+    let mut session = session_at(&root);
+
+    for folder in [&folder_a, &folder_b] {
+        controller.turn(
+            &mut session,
+            &format!("create a folder at {}", folder.display()),
+        );
+        controller.turn(&mut session, "approve");
+    }
+    assert!(folder_a.is_dir());
+    assert!(folder_b.is_dir());
+    fs::remove_dir_all(&folder_b).unwrap();
+
+    let actions_before = session.actions().len();
+    let provider_events_before = provider_event_count(&session);
+    let result = controller.turn(&mut session, "create a plan foo.md inside that folder");
+
+    assert_eq!(result.route, Route::ProposeMarkdownPlanFile);
+    assert_eq!(session.actions().len(), actions_before);
+    assert_eq!(provider_event_count(&session), provider_events_before);
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("latest verified folder is missing")));
+    assert!(!root.join("foo.md").exists());
+    assert!(!folder_a.join("foo.md").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn create_plan_that_folder_followup_reports_stale_folder_without_default_fallback() {
+    let controller = Controller::new(FolderPlanProvider);
+    let root = regression_root("folder-plan-stale-that-folder");
+    let folder_a = root.join("Desktop").join("FolderA");
+    let folder_b = root.join("Desktop").join("FolderB");
+    let plan_path = folder_a.join("folder-plan.md");
+    let mut session = session_at(&root);
+
+    for folder in [&folder_a, &folder_b] {
+        controller.turn(
+            &mut session,
+            &format!("create a folder at {}", folder.display()),
+        );
+        controller.turn(&mut session, "approve");
+    }
+    controller.turn(
+        &mut session,
+        &format!("please create a plan at {}", plan_path.display()),
+    );
+    controller.turn(&mut session, "approve");
+    assert!(plan_path.is_file());
+    fs::remove_dir_all(&folder_b).unwrap();
+
+    let actions_before = session.actions().len();
+    let truth_events_before = action_truth_event_count(&session);
+    let result = controller.turn(&mut session, "okay create this plan inside that folder");
+
+    assert_eq!(result.route, Route::ProposeCreateDirectory);
+    assert_eq!(session.actions().len(), actions_before);
+    assert_eq!(action_truth_event_count(&session), truth_events_before);
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("latest verified folder is missing")));
+    assert!(!folder_a.join("project").exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn create_plan_that_folder_with_trailing_text_reports_stale_folder_without_plan_root_fallback() {
+    let controller = Controller::new(FolderPlanProvider);
+    let root = regression_root("folder-plan-stale-that-folder-please");
+    let folder_a = root.join("Desktop").join("FolderA");
+    let folder_b = root.join("Desktop").join("FolderB");
+    let plan_path = folder_a.join("folder-plan.md");
+    let mut session = session_at(&root);
+
+    for folder in [&folder_a, &folder_b] {
+        controller.turn(
+            &mut session,
+            &format!("create a folder at {}", folder.display()),
+        );
+        controller.turn(&mut session, "approve");
+    }
+    controller.turn(
+        &mut session,
+        &format!("please create a plan at {}", plan_path.display()),
+    );
+    controller.turn(&mut session, "approve");
+    assert!(plan_path.is_file());
+    fs::remove_dir_all(&folder_b).unwrap();
+
+    let actions_before = session.actions().len();
+    let truth_events_before = action_truth_event_count(&session);
+    let result = controller.turn(
+        &mut session,
+        "okay create this plan inside that folder please",
+    );
+
+    assert_eq!(result.route, Route::ProposeCreateDirectory);
+    assert_eq!(session.actions().len(), actions_before);
+    assert_eq!(action_truth_event_count(&session), truth_events_before);
+    assert!(controller_messages(&session)
+        .iter()
+        .any(|message| message.contains("latest verified folder is missing")));
+    assert!(!folder_a.join("project").exists());
 
     let _ = fs::remove_dir_all(root);
 }

@@ -10,13 +10,14 @@ pub use config::{
 };
 pub use lm_studio::{
     chat_lm_studio, chat_lm_studio_streaming, format_chat_request, format_chat_request_body,
-    parse_chat_response_json, parse_chat_response_json_with_metrics, parse_chat_stream_chunks,
-    parse_chat_stream_line, parse_chat_stream_response, parse_provider_error_json,
-    LmStudioProvider,
+    format_chat_request_body_with_tools, format_chat_request_with_tools, parse_chat_response_json,
+    parse_chat_response_json_with_metrics, parse_chat_stream_chunks, parse_chat_stream_line,
+    parse_chat_stream_response, parse_provider_error_json, LmStudioProvider,
 };
 pub use stub::{ProviderStub, ProviderStubResponse};
 pub use types::{
-    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatUsage, ControllerProvider,
-    ProviderError, ProviderErrorBody, ProviderErrorKind, ProviderErrorResponse,
-    ProviderRequestMetadata, ProviderStreamChunk,
+    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatToolCall,
+    ChatToolCallFunction, ChatToolChoice, ChatToolDefinition, ChatToolFunctionDefinition,
+    ChatToolType, ChatUsage, ControllerProvider, ProviderError, ProviderErrorBody,
+    ProviderErrorKind, ProviderErrorResponse, ProviderRequestMetadata, ProviderStreamChunk,
 };

@@ -55,6 +55,13 @@ If the command is not installed yet, run:
 ./bin/install-local
 ```
 
+The install command records the active repo path in the local binary. That lets
+`elgar` find this repo's `elgar-provider.json` and `AGENTS.md` even when the
+terminal is opened from another directory such as `~`. If the current directory
+or one of its parents has its own `elgar-provider.json` or `AGENTS.md`, that
+configured project wins over the installed fallback. For one-off overrides,
+set `ELGAR_PROJECT_ROOT` to the intended Elgar project root.
+
 `elgar tui-terminal` remains a compatibility alias. The line-oriented
 `elgar tui` command remains a stub/no-network harness path for now.
 

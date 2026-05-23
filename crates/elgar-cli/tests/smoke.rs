@@ -161,6 +161,42 @@ fn normal_cli_uses_repo_provider_config_when_present() {
 }
 
 #[test]
+fn normal_cli_uses_project_root_override_when_launched_outside_repo() {
+    let root = smoke_root("runtime-config-cli-root-override");
+    let outside = smoke_root("runtime-config-cli-outside");
+    fs::write(
+        root.join("elgar-provider.json"),
+        r#"{
+          "provider": "lm-studio",
+          "base_url": "https://127.0.0.1:1234/v1",
+          "default_model": "openai/gpt-oss-20b",
+          "mode": "live"
+        }"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .current_dir(&outside)
+        .arg("Say hello in one sentence.")
+        .env("ELGAR_PROJECT_ROOT", &root)
+        .env_remove("ELGAR_PROVIDER_CONFIG")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("user: Say hello in one sentence."));
+    assert!(stdout.contains("provider started: lm-studio request lm-studio-request-1"));
+    assert!(stdout.contains("only http:// provider URLs are supported"));
+    assert!(!stdout.contains("stub-provider"));
+
+    let _ = fs::remove_dir_all(outside);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn tui_command_reads_stdin_renders_stub_turn_and_exits() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
@@ -266,6 +302,7 @@ fn tui_command_help_is_local_and_does_not_call_provider() {
     assert!(stdout.contains("/new"));
     assert!(stdout.contains("/approve"));
     assert!(stdout.contains("/reject"));
+    assert!(stdout.contains("/memory"));
     assert!(stdout.contains("/copy"));
     assert!(stdout.contains("/help"));
     assert!(stdout.contains("/commands"));
@@ -313,12 +350,15 @@ fn tui_command_rejects_pending_action_with_slash_command_without_network() {
 
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
-    assert!(!target.exists());
+    assert!(target.exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("State: rejected"));
-    assert!(stdout.contains("Result: Rejected. No file was changed."));
-    assert!(stdout.contains("Rejected actions are final"));
+    assert!(stdout.contains("Status: applied and verified"));
+    assert!(stdout.contains(&format!(
+        "Result: Wrote {}.",
+        fs::canonicalize(&target).unwrap().display()
+    )));
+    assert!(stdout.contains("No proposed action is waiting for rejection."));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));
@@ -359,9 +399,11 @@ fn tui_command_approves_pending_action_with_slash_command_without_network() {
     assert!(target.exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("State: applied and verified"));
-    assert!(stdout.contains("Result: file written:"));
-    assert!(stdout.contains("approved.py"));
+    assert!(stdout.contains("Status: applied and verified"));
+    assert!(stdout.contains(&format!(
+        "Result: Wrote {}.",
+        fs::canonicalize(&target).unwrap().display()
+    )));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));
@@ -406,9 +448,12 @@ fn tui_command_approves_shell_action_with_slash_command_without_network() {
     assert_eq!(fs::read_to_string(&target).unwrap(), "ok");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("State: applied and verified"));
-    assert!(stdout.contains("Result: shell command finished"));
-    assert!(stdout.contains("timed out: false"));
+    assert!(stdout.contains("I can run this command. Approve to run it."));
+    assert!(stdout.contains(&format!("Command: printf ok > {}", target.display())));
+    assert!(stdout.contains("Status: applied and verified"));
+    assert!(stdout.contains("Result: Shell command finished and verification was recorded."));
+    assert!(!stdout.contains("Action: action-1 ShellCommand"));
+    assert!(!stdout.contains("Summary: run shell command"));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));
@@ -453,8 +498,8 @@ fn tui_command_rejects_shell_action_with_slash_command_without_execution() {
     assert!(!target.exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("State: rejected"));
-    assert!(stdout.contains("Rejected actions are final"));
+    assert!(stdout.contains("Status: rejected"));
+    assert!(stdout.contains("Rejected. Nothing was changed."));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));
@@ -495,25 +540,29 @@ fn tui_command_line_loop_preserves_controller_backed_action_lifecycle() {
 
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
-    assert!(!rejected_target.exists());
+    assert!(rejected_target.exists());
     assert!(approved_target.exists());
+    assert_eq!(fs::read_to_string(&rejected_target).unwrap(), "");
     assert_eq!(fs::read_to_string(&approved_target).unwrap(), "");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("> create file rejected.py"));
-    assert!(stdout.contains("Action: action-1 CreateFile"));
-    assert!(stdout.contains("Target: rejected.py"));
-    assert!(stdout.contains("State: waiting for approval"));
-    assert!(stdout.contains("State: rejected"));
-    assert!(stdout.contains("Result: Rejected. No file was changed."));
-    assert!(stdout.contains("Rejected actions are final"));
+    assert!(stdout.contains("Creating rejected.py."));
+    assert!(stdout.contains(&format!(
+        "Result: Wrote {}.",
+        fs::canonicalize(&rejected_target).unwrap().display()
+    )));
+    assert!(stdout.contains("No proposed action is waiting for rejection."));
     assert!(stdout.contains("No proposed action is waiting for approval."));
     assert!(stdout.contains("> create file approved.py"));
-    assert!(stdout.contains("Action: action-2 CreateFile"));
-    assert!(stdout.contains("Target: approved.py"));
-    assert!(stdout.contains("State: applied and verified"));
-    assert!(stdout.contains("Result: file written:"));
-    assert!(stdout.contains("approved.py"));
+    assert!(stdout.contains("Creating approved.py."));
+    assert!(stdout.contains("Status: applied and verified"));
+    assert!(stdout.contains(&format!(
+        "Result: Wrote {}.",
+        fs::canonicalize(&approved_target).unwrap().display()
+    )));
+    assert!(!stdout.contains("Action: action-1 CreateFile"));
+    assert!(!stdout.contains("Action: action-2 CreateFile"));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));

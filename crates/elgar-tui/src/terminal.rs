@@ -10,9 +10,9 @@ use crossterm::{
 };
 use elgar_core::{
     context::ContextAccounting,
-    event::{ProviderMetrics, ProviderTokenUsage},
+    event::ProviderMetrics,
     provider::{ControllerProvider, ProviderConfig},
-    router::{route_input, Route},
+    router::{normalize_pasted_transcript_input, route_input, Route},
     session::Session,
 };
 use ratatui::{
@@ -26,6 +26,7 @@ use elgar_core::controller::Controller;
 
 use crate::{
     input::{TerminalInput, TerminalInputAction},
+    memory::render_session_memory,
     panes::{ConversationLineStyle, ConversationPane},
     startup::StartupBlock,
     theme, TuiShell,
@@ -37,8 +38,7 @@ mod provider_task;
 
 use commands::{
     clear_terminal_conversation, clear_visible_terminal, copy_conversation_to_terminal_clipboard,
-    parse_terminal_command, render_terminal_help, terminal_text_starts_provider_turn,
-    TerminalCommand,
+    parse_terminal_command, render_terminal_help, TerminalCommand,
 };
 #[cfg(test)]
 use commands::{copy_conversation_with_clipboards, encode_base64, osc52_clipboard_sequence};
@@ -48,7 +48,9 @@ use prompt::{
     drawable_width, frame_separator_line, non_empty_lines, terminal_width, wrap_words,
     InlinePromptRenderer, InlineWorkingRenderer, LiveProviderOutput,
 };
-use provider_task::{start_provider_turn, ProviderTurnTask, ProviderTurnUpdate};
+#[cfg(test)]
+use provider_task::start_provider_turn;
+use provider_task::{start_model_first_turn, ProviderTurnTask, ProviderTurnUpdate};
 
 const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(100);
 const IDLE_RENDER_INTERVAL: Duration = Duration::from_millis(140);
@@ -82,6 +84,20 @@ pub fn run_terminal_shell_with_lm_studio_provider(config: ProviderConfig) -> io:
     )
 }
 
+pub fn run_terminal_shell_with_lm_studio_provider_at(
+    config: ProviderConfig,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+) -> io::Result<()> {
+    let context_window_tokens = config.configured_context_window_tokens();
+    run_terminal_shell_with_controller(
+        project_root,
+        cwd,
+        Controller::with_lm_studio_provider(config),
+        context_window_tokens,
+    )
+}
+
 pub fn run_terminal_shell_at(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
@@ -105,16 +121,21 @@ where
     let mut context = terminal_context(&session, &controller);
     print_inline_startup(&context)?;
 
+    let mut next_prompt_input = String::new();
     loop {
         controller.refresh_context_accounting(&mut session, context_window_tokens);
         context = terminal_context(&session, &controller);
-        let Some(input) = read_inline_prompt(&context)? else {
+        let Some(input) = read_inline_prompt(&context, &next_prompt_input)? else {
             break;
         };
+        next_prompt_input.clear();
 
-        if handle_inline_submission(&input, &controller, &mut session, &mut shell)? {
+        let (exit, preserved_input) =
+            handle_inline_submission(&input, &controller, &mut session, &mut shell)?;
+        if exit {
             break;
         }
+        next_prompt_input = preserved_input;
     }
 
     Ok(())
@@ -153,9 +174,12 @@ fn print_inline_startup(context: &TerminalShellContext) -> io::Result<()> {
     io::stdout().flush()
 }
 
-fn read_inline_prompt(context: &TerminalShellContext) -> io::Result<Option<String>> {
+fn read_inline_prompt(
+    context: &TerminalShellContext,
+    initial_input: &str,
+) -> io::Result<Option<String>> {
     let _guard = TerminalModeGuard::enter()?;
-    let mut input = TerminalInput::default();
+    let mut input = TerminalInput::from_text(initial_input);
     let mut renderer = InlinePromptRenderer::new(context.clone());
     renderer.render(input.text())?;
 
@@ -183,21 +207,21 @@ fn handle_inline_submission<P>(
     controller: &Controller<P>,
     session: &mut Session,
     shell: &mut TuiShell,
-) -> io::Result<bool>
+) -> io::Result<(bool, String)>
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
     match parse_terminal_command(submitted) {
-        TerminalCommand::Empty => Ok(false),
-        TerminalCommand::Exit => Ok(true),
+        TerminalCommand::Empty => Ok((false, String::new())),
+        TerminalCommand::Exit => Ok((true, String::new())),
         TerminalCommand::Help => {
             print_plain_block(render_terminal_help())?;
-            Ok(false)
+            Ok((false, String::new()))
         }
         TerminalCommand::Clear => {
             clear_terminal_conversation(shell);
             clear_visible_terminal()?;
-            Ok(false)
+            Ok((false, String::new()))
         }
         TerminalCommand::Copy => {
             let mut sink = io::stdout();
@@ -205,17 +229,21 @@ where
             if !shell.copy.render_hint().is_empty() {
                 print_plain_block(&shell.copy.render_hint())?;
             }
-            Ok(false)
+            Ok((false, String::new()))
         }
         TerminalCommand::Cancel => {
             print_plain_block("No provider request is running.")?;
-            Ok(false)
+            Ok((false, String::new()))
+        }
+        TerminalCommand::Memory => {
+            print_plain_block(&render_session_memory(session))?;
+            Ok((false, String::new()))
         }
         TerminalCommand::Unknown(command) => {
             print_plain_block(&format!(
                 "Unknown command: {command}. Type /commands for commands."
             ))?;
-            Ok(false)
+            Ok((false, String::new()))
         }
         TerminalCommand::Approve | TerminalCommand::Reject => {
             let before = shell.conversation.render_lines_with_styles().len();
@@ -227,27 +255,31 @@ where
                 io::stdout(),
             );
             print_new_conversation_lines(shell, before, false)?;
-            Ok(exit)
-        }
-        TerminalCommand::Text(text) if terminal_text_starts_provider_turn(text) => {
-            run_inline_provider_turn(text, controller, session, shell)?;
-            Ok(false)
+            Ok((exit, String::new()))
         }
         TerminalCommand::Text(text) => {
-            let before = shell.conversation.render_lines_with_styles().len();
-            handle_terminal_text_input(text, controller, session, shell);
-            print_new_conversation_lines(shell, before, false)?;
-            Ok(false)
+            if terminal_text_should_run_inline_model_first(text) {
+                let model_input = normalize_terminal_model_first_input(text);
+                let preserved_input =
+                    run_inline_model_first_turn(&model_input, controller, session, shell)?;
+                Ok((false, preserved_input))
+            } else {
+                let before = shell.conversation.render_lines_with_styles().len();
+                handle_terminal_text_input(text, controller, session, shell);
+                print_new_conversation_lines(shell, before, false)?;
+                Ok((false, String::new()))
+            }
         }
     }
 }
 
+#[cfg(test)]
 fn run_inline_provider_turn<P>(
     text: &str,
     controller: &Controller<P>,
     session: &mut Session,
     shell: &mut TuiShell,
-) -> io::Result<()>
+) -> io::Result<String>
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
@@ -290,7 +322,7 @@ where
                 working.clear()?;
                 drop(guard);
                 print_plain_block("Provider request canceled.")?;
-                return Ok(());
+                return Ok(String::new());
             }
             Ok(None) => {
                 if last_render.elapsed() >= IDLE_RENDER_INTERVAL {
@@ -319,11 +351,12 @@ where
                 working.clear()?;
                 drop(guard);
                 print_plain_block(&format!("Provider error: {message}"))?;
-                return Ok(());
+                return Ok(String::new());
             }
         }
     };
 
+    let preserved_input = input.text().to_string();
     working.clear()?;
     drop(guard);
     let completed = *completed;
@@ -331,9 +364,94 @@ where
     shell.consume_events(&completed.events);
     shell.conversation.follow_latest();
     print_new_conversation_lines(shell, before, true)?;
-    Ok(())
+    Ok(preserved_input)
 }
 
+fn run_inline_model_first_turn<P>(
+    text: &str,
+    controller: &Controller<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+) -> io::Result<String>
+where
+    P: ControllerProvider + Clone + Send + 'static,
+{
+    let before = shell.conversation.render_lines_with_styles().len();
+    print_spacer()?;
+    print_user_block(text)?;
+
+    let task = start_model_first_turn(controller.clone(), session.clone(), text.to_string());
+    let guard = TerminalModeGuard::enter()?;
+    let mut working = InlineWorkingRenderer::new(terminal_context(session, controller));
+    let mut input = TerminalInput::default();
+    let mut live_output = LiveProviderOutput::default();
+    let started = Instant::now();
+    let mut tick = 0usize;
+    working.render(
+        tick,
+        started.elapsed().as_secs(),
+        input.text(),
+        &live_output,
+    )?;
+    tick = tick.wrapping_add(1);
+    let mut last_render = Instant::now();
+
+    let completed = loop {
+        match task.try_complete() {
+            Ok(Some(ProviderTurnUpdate::Chunk(chunk))) => {
+                live_output.push_chunk(chunk);
+            }
+            Ok(Some(ProviderTurnUpdate::Completed(completed))) => break completed,
+            Ok(Some(ProviderTurnUpdate::Canceled)) => {
+                working.clear()?;
+                drop(guard);
+                print_plain_block("Provider request canceled.")?;
+                return Ok(String::new());
+            }
+            Ok(None) => {
+                if last_render.elapsed() >= IDLE_RENDER_INTERVAL {
+                    working.render(
+                        tick,
+                        started.elapsed().as_secs(),
+                        input.text(),
+                        &live_output,
+                    )?;
+                    tick = tick.wrapping_add(1);
+                    last_render = Instant::now();
+                }
+
+                if event::poll(Duration::from_millis(60))? {
+                    handle_active_provider_event(
+                        &task,
+                        &mut input,
+                        &mut working,
+                        tick,
+                        started.elapsed().as_secs(),
+                        &live_output,
+                    )?;
+                }
+            }
+            Err(message) => {
+                working.clear()?;
+                drop(guard);
+                print_plain_block(&format!("Provider error: {message}"))?;
+                return Ok(String::new());
+            }
+        }
+    };
+
+    let preserved_input = input.text().to_string();
+    working.clear()?;
+    drop(guard);
+    let completed = *completed;
+    *session = completed.session;
+    shell.consume_events(&completed.events);
+    shell.conversation.follow_latest();
+    print_new_conversation_lines(shell, before, true)?;
+    Ok(preserved_input)
+}
+
+#[cfg(test)]
 fn live_render_due(last_render: Instant, now: Instant) -> bool {
     now.duration_since(last_render) >= LIVE_RENDER_INTERVAL
 }
@@ -353,21 +471,46 @@ fn handle_active_provider_event(
         return Ok(());
     }
 
-    match input.handle_key(key) {
-        TerminalInputAction::Continue => {
+    match handle_active_provider_key(key, input) {
+        ActiveProviderKeyAction::Continue => {
             working.render(tick, elapsed_secs, input.text(), live_output)
         }
-        TerminalInputAction::Submit => {
-            let submitted = input.drain();
-            if matches!(parse_terminal_command(&submitted), TerminalCommand::Cancel) {
-                task.cancel();
-            }
+        ActiveProviderKeyAction::Cancel => {
+            task.cancel();
             working.render(tick, elapsed_secs, input.text(), live_output)
         }
-        TerminalInputAction::Exit => {
+        ActiveProviderKeyAction::Exit => {
             task.cancel();
             Ok(())
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveProviderKeyAction {
+    Continue,
+    Cancel,
+    Exit,
+}
+
+fn handle_active_provider_key(
+    key: crossterm::event::KeyEvent,
+    input: &mut TerminalInput,
+) -> ActiveProviderKeyAction {
+    match input.handle_key(key) {
+        TerminalInputAction::Continue => ActiveProviderKeyAction::Continue,
+        TerminalInputAction::Submit => {
+            if matches!(
+                parse_terminal_command(input.text()),
+                TerminalCommand::Cancel
+            ) {
+                let _ = input.drain();
+                ActiveProviderKeyAction::Cancel
+            } else {
+                ActiveProviderKeyAction::Continue
+            }
+        }
+        TerminalInputAction::Exit => ActiveProviderKeyAction::Exit,
     }
 }
 
@@ -377,7 +520,22 @@ fn print_new_conversation_lines(
     skip_user_and_loading: bool,
 ) -> io::Result<()> {
     let lines = shell.conversation.render_lines_with_styles();
-    for (line, style) in lines.into_iter().skip(before) {
+    for (line, style) in
+        conversation_print_blocks(lines.into_iter().skip(before), skip_user_and_loading)
+    {
+        print_conversation_line(&line, style)?;
+    }
+    io::stdout().flush()
+}
+
+fn conversation_print_blocks(
+    lines: impl IntoIterator<Item = (String, ConversationLineStyle)>,
+    skip_user_and_loading: bool,
+) -> Vec<(String, ConversationLineStyle)> {
+    let mut blocks = Vec::new();
+    let mut current: Option<(String, ConversationLineStyle)> = None;
+
+    for (line, style) in lines {
         if skip_user_and_loading
             && matches!(
                 style,
@@ -386,9 +544,26 @@ fn print_new_conversation_lines(
         {
             continue;
         }
-        print_conversation_line(&line, style)?;
+
+        match current.as_mut() {
+            Some((text, current_style)) if *current_style == style => {
+                text.push('\n');
+                text.push_str(&line);
+            }
+            Some(_) => {
+                let block = current.take().expect("current block should exist");
+                blocks.push(block);
+                current = Some((line, style));
+            }
+            None => current = Some((line, style)),
+        }
     }
-    io::stdout().flush()
+
+    if let Some(block) = current {
+        blocks.push(block);
+    }
+
+    blocks
 }
 
 fn print_conversation_line(line: &str, style: ConversationLineStyle) -> io::Result<()> {
@@ -629,10 +804,7 @@ impl TerminalShellContext {
             align_footer_line(&left, right, width)
         };
 
-        format!(
-            "{first_line}\n{}",
-            footer_context_label(&self.context_accounting, self.provider_metrics.as_ref())
-        )
+        first_line
     }
 }
 
@@ -717,61 +889,6 @@ fn align_footer_line(left: &str, right: &str, width: usize) -> String {
         )
     } else {
         format!("{left}  {right}")
-    }
-}
-
-fn footer_context_label(
-    context: &ContextAccounting,
-    provider_metrics: Option<&ProviderMetrics>,
-) -> String {
-    if let Some(tokens) = provider_metrics
-        .and_then(|metrics| metrics.usage.as_ref())
-        .and_then(provider_context_tokens)
-    {
-        return match context.max_window_tokens {
-            Some(max) => {
-                format!(
-                    "context: {}/{}",
-                    compact_token_count(tokens),
-                    compact_token_count(max)
-                )
-            }
-            None => format!("context: {} tokens", compact_token_count(tokens)),
-        };
-    }
-
-    match (context.estimated_tokens, context.max_window_tokens) {
-        (Some(used), Some(max)) => {
-            format!(
-                "context: ~{}/{}",
-                compact_token_count(used),
-                compact_token_count(max)
-            )
-        }
-        (Some(used), None) => format!("context: ~{} tokens", compact_token_count(used)),
-        (None, Some(max)) => format!("context: unknown/{}", compact_token_count(max)),
-        (None, None) => "context: unknown".to_string(),
-    }
-}
-
-fn provider_context_tokens(usage: &ProviderTokenUsage) -> Option<u64> {
-    usage
-        .total_tokens
-        .or_else(|| match (usage.prompt_tokens, usage.completion_tokens) {
-            (Some(prompt), Some(completion)) => Some(prompt.saturating_add(completion)),
-            (Some(prompt), None) => Some(prompt),
-            (None, Some(completion)) => Some(completion),
-            (None, None) => None,
-        })
-}
-
-fn compact_token_count(tokens: u64) -> String {
-    if tokens >= 1_000 && tokens % 1_000 == 0 {
-        format!("{}k", tokens / 1_000)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
     }
 }
 
@@ -901,28 +1018,6 @@ where
 }
 
 #[cfg(test)]
-fn handle_terminal_key_while_provider_active(
-    key: crossterm::event::KeyEvent,
-    input: &mut TerminalInput,
-    shell: &mut TuiShell,
-) -> bool {
-    if should_exit(key) {
-        return true;
-    }
-
-    if handle_scroll_key(key, shell) {
-        return false;
-    }
-
-    if matches!(key.code, crossterm::event::KeyCode::Enter) {
-        let _ = input.drain();
-        shell.input.text.clear();
-    }
-
-    false
-}
-
-#[cfg(test)]
 fn handle_terminal_key_with_copy_writer<P>(
     key: crossterm::event::KeyEvent,
     input: &mut TerminalInput,
@@ -987,6 +1082,12 @@ where
                 .push_local_message("No provider request is running.");
             shell.conversation.follow_latest();
         }
+        TerminalCommand::Memory => {
+            shell
+                .conversation
+                .push_local_message(render_session_memory(session));
+            shell.conversation.follow_latest();
+        }
         TerminalCommand::Copy => {
             let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);
         }
@@ -1026,9 +1127,20 @@ fn handle_terminal_text_input<P>(
             shell.conversation.follow_latest();
         }
         _ => {
-            shell.submit_input(controller, session, text);
+            shell.submit_model_first_input(controller, session, text);
         }
     }
+}
+
+fn terminal_text_should_run_inline_model_first(text: &str) -> bool {
+    !matches!(
+        route_input(text),
+        Route::ApproveAction | Route::RejectAction | Route::Help
+    )
+}
+
+fn normalize_terminal_model_first_input(text: &str) -> String {
+    normalize_pasted_transcript_input(text).trim().to_string()
 }
 
 #[cfg(test)]
@@ -1060,14 +1172,15 @@ where
             }
             false
         }
-        TerminalCommand::Text(text) if terminal_text_starts_provider_turn(text) => {
-            shell.conversation.push_pending_provider_turn(text);
+        TerminalCommand::Text(text) if terminal_text_should_run_inline_model_first(text) => {
+            let model_input = normalize_terminal_model_first_input(text);
+            shell.conversation.push_pending_provider_turn(&model_input);
             shell.conversation.follow_latest();
             shell.status.start_thinking_pulse();
-            *pending_turn = Some(start_provider_turn(
+            *pending_turn = Some(start_model_first_turn(
                 controller.clone(),
                 session.clone(),
-                text.to_string(),
+                model_input,
             ));
             false
         }

@@ -9,6 +9,7 @@ use std::{
 use elgar_core::{
     controller::Controller,
     event::Event,
+    policy::PermissionPolicyMode,
     provider::{ControllerProvider, ProviderStreamChunk},
     session::Session,
 };
@@ -62,6 +63,7 @@ pub(super) struct CompletedProviderTurn {
     pub(super) events: Vec<Event>,
 }
 
+#[cfg(test)]
 pub(super) fn start_provider_turn<P>(
     controller: Controller<P>,
     mut session: Session,
@@ -80,6 +82,38 @@ where
                 let _ = sender.send(ProviderTurnWorkerMessage::Chunk(chunk));
             }
         });
+        if worker_canceled.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = sender.send(ProviderTurnWorkerMessage::Complete(Ok(Box::new(
+            CompletedProviderTurn {
+                session,
+                events: result.events,
+            },
+        ))));
+    });
+
+    ProviderTurnTask { receiver, canceled }
+}
+
+pub(super) fn start_model_first_turn<P>(
+    controller: Controller<P>,
+    mut session: Session,
+    input: String,
+) -> ProviderTurnTask
+where
+    P: ControllerProvider + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+    let canceled = Arc::new(AtomicBool::new(false));
+    let worker_canceled = Arc::clone(&canceled);
+
+    thread::spawn(move || {
+        let result = controller.model_first_turn_with_policy(
+            &mut session,
+            &input,
+            PermissionPolicyMode::AutoCreateReviewModify,
+        );
         if worker_canceled.load(Ordering::SeqCst) {
             return;
         }

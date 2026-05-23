@@ -1,5 +1,5 @@
 pub(crate) fn render_assistant_markdown(markdown: &str) -> String {
-    let normalized = markdown.replace("\r\n", "\n").replace("<br>", "\n");
+    let normalized = normalize_markdown_artifacts(markdown);
     let lines: Vec<&str> = normalized.lines().collect();
     let mut rendered = Vec::new();
     let mut index = 0;
@@ -37,6 +37,11 @@ pub(crate) fn render_assistant_markdown(markdown: &str) -> String {
         }
         skip_blank_after_code_block = false;
 
+        if trimmed.is_empty() {
+            index += 1;
+            continue;
+        }
+
         if is_table_start(&lines, index) {
             let (table, next_index) = render_table(&lines, index);
             rendered.extend(table);
@@ -61,6 +66,126 @@ pub(crate) fn render_assistant_markdown(markdown: &str) -> String {
     }
 
     rendered.join("\n")
+}
+
+fn normalize_markdown_artifacts(markdown: &str) -> String {
+    let normalized = markdown.replace("\r\n", "\n").replace("<br>", "\n");
+    let normalized = expand_inline_fenced_code_blocks(&normalized);
+    split_inline_bullet_markers(&normalized)
+}
+
+fn expand_inline_fenced_code_blocks(text: &str) -> String {
+    text.lines()
+        .map(expand_inline_fenced_code_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn expand_inline_fenced_code_line(line: &str) -> String {
+    let mut rendered = Vec::new();
+    let mut rest = line;
+
+    while let Some(start) = rest.find("```") {
+        let prefix = rest[..start].trim_end();
+        if !prefix.is_empty() {
+            rendered.push(prefix.to_string());
+        }
+
+        let after_open = &rest[start + 3..];
+        let Some(end) = after_open.find("```") else {
+            rendered.push(rest.to_string());
+            return rendered.join("\n");
+        };
+
+        let fenced = after_open[..end].trim();
+        let (language, code) = split_inline_fence_content(fenced);
+        if language.is_empty() {
+            rendered.push("```".to_string());
+        } else {
+            rendered.push(format!("```{language}"));
+        }
+        rendered.extend(normalize_inline_code_content(code));
+        rendered.push("```".to_string());
+
+        rest = after_open[end + 3..].trim_start();
+    }
+
+    if !rest.trim().is_empty() {
+        rendered.push(rest.to_string());
+    }
+
+    if rendered.is_empty() {
+        line.to_string()
+    } else {
+        rendered.join("\n")
+    }
+}
+
+fn split_inline_fence_content(fenced: &str) -> (&str, &str) {
+    let fenced = fenced.trim();
+    let Some((first, rest)) = fenced.split_once(char::is_whitespace) else {
+        return (fenced, "");
+    };
+
+    if first
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        (first, rest.trim())
+    } else {
+        ("", fenced)
+    }
+}
+
+fn normalize_inline_code_content(code: &str) -> Vec<String> {
+    let mut normalized = code.trim().to_string();
+    for marker in [
+        "# 1.",
+        "# 2.",
+        "# 3.",
+        "# 4.",
+        "# 5.",
+        "# Expected",
+        "# Output",
+        "# Result",
+    ] {
+        normalized = normalized.replace(&format!(" {marker}"), &format!("\n{marker}"));
+    }
+
+    normalized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn split_inline_bullet_markers(text: &str) -> String {
+    let mut in_code_block = false;
+    text.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("```") {
+                in_code_block = !in_code_block;
+                return line.to_string();
+            }
+            if in_code_block {
+                return line.to_string();
+            }
+            split_inline_bullet_line(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn split_inline_bullet_line(line: &str) -> String {
+    let line = line.replace(": - ", ":\n- ");
+
+    if (line.contains("\n- ") && line.contains(" - ")) || line.matches(" - ").count() >= 2 {
+        line.replace(" - ", "\n- ")
+    } else {
+        line
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +221,9 @@ fn render_code_block(rendered: &mut Vec<String>, block: CodeBlock) {
         .unwrap_or(start);
 
     for line in &block.lines[start..end] {
+        if line.trim().is_empty() {
+            continue;
+        }
         rendered.push(format!("    {line}"));
     }
 }
@@ -258,10 +386,58 @@ mod tests {
     }
 
     #[test]
+    fn compacts_blank_lines_inside_fenced_code_blocks() {
+        let rendered = render_assistant_markdown(
+            "code:\n```python\nimport json\n\n\ndef main():\n\n    print(\"ok\")\n\n\nmain()\n```",
+        );
+
+        assert_eq!(
+            rendered,
+            "code:\ncode (python):\n    import json\n    def main():\n        print(\"ok\")\n    main()"
+        );
+    }
+
+    #[test]
+    fn compacts_blank_lines_between_plain_blocks_and_lists() {
+        let rendered = render_assistant_markdown(
+            "Sure! Let me suggest a small folder structure.\n\ncode:\n\n    project/\n\n    src/\n\nWhat to do:\n\n1. Create directories.\n\n2. Move files.\n\nOnce you approve, I can generate commands.",
+        );
+
+        assert_eq!(
+            rendered,
+            "Sure! Let me suggest a small folder structure.\ncode:\n    project/\n    src/\nWhat to do:\n1. Create directories.\n2. Move files.\nOnce you approve, I can generate commands."
+        );
+    }
+
+    #[test]
+    fn expands_inline_fenced_code_blocks_into_readable_blocks() {
+        let rendered = render_assistant_markdown(
+            "Use this: ```bash # 1. Start lm-studio --port 1234 # 2. Check curl http://127.0.0.1:1234/v1/health ``` Done.",
+        );
+
+        assert_eq!(
+            rendered,
+            "Use this:\ncode (bash):\n    # 1. Start lm-studio --port 1234\n    # 2. Check curl http://127.0.0.1:1234/v1/health\nDone."
+        );
+    }
+
+    #[test]
     fn renders_lists_with_clean_markers() {
         let rendered = render_assistant_markdown("- **one**\n  * two\n1. `three`");
 
         assert_eq!(rendered, "- one\n  - two\n1. three");
+    }
+
+    #[test]
+    fn expands_inline_bullet_markers_into_list_lines() {
+        let rendered = render_assistant_markdown(
+            "I can: - Answer questions. - Summarise documents. - Generate config files.",
+        );
+
+        assert_eq!(
+            rendered,
+            "I can:\n- Answer questions.\n- Summarise documents.\n- Generate config files."
+        );
     }
 
     #[test]

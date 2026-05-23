@@ -30,8 +30,8 @@ pub fn render_event(event: &Event) -> String {
         }
         Event::ProviderFinished(finished) => {
             format!(
-                "provider finished: {} request {}: {}",
-                finished.provider, finished.request_id, finished.output.text
+                "provider finished: {} request {}",
+                finished.provider, finished.request_id
             )
         }
         Event::ActionProposed(action) => {

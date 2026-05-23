@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub use crate::action::{ActionKind, FileActionVerification, ShellActionVerification};
+use crate::model_runtime::RawModelToolCall;
 
 /// A controller-recorded fact that can be rendered by CLI, TUI, or tests.
 ///
@@ -115,6 +116,8 @@ impl ProviderFinished {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderOutput {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<RawModelToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,9 +128,15 @@ impl ProviderOutput {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            tool_calls: Vec::new(),
             thinking: None,
             metrics: None,
         }
+    }
+
+    pub fn with_tool_calls(mut self, tool_calls: Vec<RawModelToolCall>) -> Self {
+        self.tool_calls = tool_calls;
+        self
     }
 
     pub fn with_thinking(mut self, thinking: impl Into<String>) -> Self {
@@ -294,6 +303,7 @@ mod tests {
             serde_json::from_str(r#"{"text":"provider response"}"#).unwrap();
 
         assert_eq!(output.text, "provider response");
+        assert!(output.tool_calls.is_empty());
         assert_eq!(output.thinking, None);
     }
 }

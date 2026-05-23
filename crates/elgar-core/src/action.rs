@@ -290,6 +290,12 @@ pub struct ShellCommandAction {
     pub expected_effect: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_directory: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_directories: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_files: Vec<PathBuf>,
     #[serde(default)]
     pub risk_notes: String,
     #[serde(default)]
@@ -309,6 +315,9 @@ impl ShellCommandAction {
             cwd: cwd.into(),
             timeout_seconds: SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS,
             expected_directory: None,
+            expected_directories: Vec::new(),
+            expected_file: None,
+            expected_files: Vec::new(),
             output_caps: ShellCommandOutputCaps::default(),
             environment: ShellCommandEnvironmentPolicy::InheritControllerEnvironment,
         }

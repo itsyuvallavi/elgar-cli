@@ -1,5 +1,8 @@
+use std::path::{Path, PathBuf};
+
 use elgar_core::event::{
-    AssistantMessageSource, Event, FileActionVerification, VerifiedActionResult,
+    ActionEvent, ActionKind, AssistantMessageSource, Event, FileActionVerification,
+    VerifiedActionResult,
 };
 
 use crate::{markdown::render_assistant_markdown, reasoning::format_provider_reasoning_summary};
@@ -119,6 +122,7 @@ impl ConversationPane {
                 let style = self.line_style(index);
                 entry
                     .lines()
+                    .filter(|line| !line.trim().is_empty())
                     .map(move |line| (line.to_string(), style))
                     .collect::<Vec<_>>()
             })
@@ -361,11 +365,16 @@ fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
             ConversationLineStyle::User,
         )),
         Event::AssistantMessage(message) => {
+            if message.source == AssistantMessageSource::Controller
+                && is_controller_action_boilerplate(&message.content)
+            {
+                return None;
+            }
+
             let rendered = match message.source {
-                AssistantMessageSource::Controller => {
-                    render_labeled_output("Elgar", &message.content)
+                AssistantMessageSource::Controller | AssistantMessageSource::Provider => {
+                    render_assistant_output(&message.content)
                 }
-                AssistantMessageSource::Provider => render_assistant_output(&message.content),
             };
             Some((rendered, ConversationLineStyle::Plain))
         }
@@ -376,28 +385,19 @@ fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
             render_provider_thinking(finished.output.thinking.as_deref())
                 .map(|line| (line, ConversationLineStyle::Thinking))
         }
-        Event::ActionProposed(action) => Some(format!(
-            "Review needed: {} {:?} {}",
-            action.action_id, action.action_kind, action.summary
-        ))
-        .map(|line| (line, ConversationLineStyle::Plain)),
-        Event::ActionApproved(action) => Some(format!(
-            "Approved: {} {:?} {}",
-            action.action_id, action.action_kind, action.summary
-        ))
-        .map(|line| (line, ConversationLineStyle::Plain)),
-        Event::ActionRejected(action) => Some(format!(
-            "Rejected: {} {:?} {}. No file was changed.",
-            action.action_id, action.action_kind, action.summary
-        ))
-        .map(|line| (line, ConversationLineStyle::Plain)),
-        Event::ActionApplied(applied) => Some(format!(
-            "Applied and verified: {} {:?} {}",
-            applied.action_id,
-            applied.action_kind,
-            render_verified_result(&applied.result)
-        ))
-        .map(|line| (line, ConversationLineStyle::Plain)),
+        Event::ActionProposed(action) => {
+            Some((render_action_proposed(action), ConversationLineStyle::Plain))
+        }
+        Event::ActionApproved(action) => {
+            Some((render_action_approved(action), ConversationLineStyle::Plain))
+        }
+        Event::ActionRejected(action) => {
+            Some((render_action_rejected(action), ConversationLineStyle::Plain))
+        }
+        Event::ActionApplied(applied) => Some((
+            render_verified_action_result(&applied.result),
+            ConversationLineStyle::Plain,
+        )),
         Event::ActionFailed(failed) => Some(format!(
             "Action failed: {} {:?} {}",
             failed.action_id, failed.action_kind, failed.reason
@@ -410,6 +410,66 @@ fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
     }
 }
 
+fn render_action_proposed(action: &ActionEvent) -> String {
+    if let Some(path) = create_directory_summary_path(&action.summary) {
+        return format!(
+            "I can create {}. Approve to create it.",
+            user_display_path(path)
+        );
+    }
+
+    match action.action_kind {
+        ActionKind::CreateFile => format!(
+            "I can write {}. Approve to write it.",
+            action
+                .target
+                .as_deref()
+                .or_else(|| action.summary.strip_prefix("write ").map(str::trim))
+                .unwrap_or(&action.summary)
+        ),
+        ActionKind::CreateDirectory => format!(
+            "I can create {}. Approve to create it.",
+            action.target.as_deref().unwrap_or(&action.summary)
+        ),
+        ActionKind::ShellCommand => render_shell_action_proposal(action),
+        _ => format!(
+            "I can apply this action: {}. Approve to continue.",
+            action.summary
+        ),
+    }
+}
+
+fn render_action_approved(action: &ActionEvent) -> String {
+    if let Some(path) = create_directory_summary_path(&action.summary) {
+        return format!("Approved. Creating {}.", user_display_path(path));
+    }
+
+    if action.summary.starts_with("create Markdown plan ") {
+        return "Approved. Creating the plan.".to_string();
+    }
+
+    if action.summary.starts_with("execute Markdown plan in ") {
+        return "Approved. Creating the project files.".to_string();
+    }
+
+    "Approved. Applying the action.".to_string()
+}
+
+fn render_action_rejected(action: &ActionEvent) -> String {
+    if let Some(path) = create_directory_summary_path(&action.summary) {
+        return format!("Rejected. Did not create {}.", user_display_path(path));
+    }
+
+    "Rejected. No changes were made.".to_string()
+}
+
+fn create_directory_summary_path(summary: &str) -> Option<&str> {
+    summary
+        .strip_prefix("create directory ")
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+}
+
 fn render_user_message(content: &str) -> String {
     content
         .lines()
@@ -418,17 +478,69 @@ fn render_user_message(content: &str) -> String {
         .join("\n")
 }
 
-fn render_labeled_output(label: &str, content: &str) -> String {
-    let rendered = render_assistant_output(content);
-    if rendered.contains('\n') {
-        format!("{label}:\n{rendered}")
-    } else {
-        format!("{label}: {rendered}")
-    }
-}
-
 fn render_assistant_output(content: &str) -> String {
     render_assistant_markdown(content)
+}
+
+fn render_shell_action_proposal(action: &ActionEvent) -> String {
+    if let Some(path) = action.summary.strip_prefix("create Markdown plan ") {
+        return format!(
+            "I can create the plan at {}. Approve to write it.",
+            user_display_path(path.trim())
+        );
+    }
+
+    if let Some(path) = action.summary.strip_prefix("execute Markdown plan in ") {
+        return format!(
+            "I can create the project files in {}. Approve to create them.",
+            user_display_path(path.trim())
+        );
+    }
+
+    "I can run this command. Approve to run it.".to_string()
+}
+
+fn is_controller_action_boilerplate(content: &str) -> bool {
+    let trimmed = content.trim();
+
+    if trimmed.starts_with("Proposed ") && trimmed.contains(" action") {
+        return true;
+    }
+
+    if trimmed.starts_with("Model-first tool call validated") {
+        return true;
+    }
+
+    if trimmed.starts_with("I can create ")
+        || trimmed.starts_with("I can write ")
+        || trimmed.starts_with("I can apply this action:")
+        || trimmed == "I can run the shell command. Approve to run it."
+    {
+        return true;
+    }
+
+    if trimmed.starts_with("Approved ") && trimmed.contains("Applying through the controller") {
+        return true;
+    }
+
+    if matches!(
+        trimmed,
+        "Executed approved shell command and recorded the verified result."
+            | "Applied approved action and recorded the verified result."
+    ) {
+        return true;
+    }
+
+    [
+        "Created ",
+        "Wrote ",
+        "Updated ",
+        "Overwrote ",
+        "Deleted ",
+        "Moved ",
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(prefix))
 }
 
 fn render_thinking_progress() -> String {
@@ -477,39 +589,102 @@ fn compact_thinking_summary(thinking: &str) -> Option<String> {
     format_provider_reasoning_summary(&summary, MAX_CHARS)
 }
 
-fn render_verified_result(result: &VerifiedActionResult) -> String {
+fn render_verified_action_result(result: &VerifiedActionResult) -> String {
     match result {
-        VerifiedActionResult::FileWritten { path } => format!("{path} was written"),
+        VerifiedActionResult::FileWritten { path } => {
+            format!("Wrote {}.", user_display_path(path))
+        }
         VerifiedActionResult::File(file) => render_file_verification(file),
         VerifiedActionResult::Shell(shell) => {
-            let mut rendered = format!(
-                "shell command finished with exit code {:?}, timed out: {}",
-                shell.exit_code, shell.timed_out
-            );
             if let Some(effect) = &shell.verified_effect {
-                rendered.push_str(&format!("; {effect}"));
+                if let Some(message) = render_shell_verified_effect(effect) {
+                    return message;
+                }
             }
-            rendered
+            "Shell command finished and verification was recorded.".to_string()
         }
     }
 }
 
+fn render_shell_verified_effect(effect: &str) -> Option<String> {
+    if let Some(path) = verified_effect_value(effect, "verified file exists: ") {
+        return Some(format!("Created {}.", user_display_path(path)));
+    }
+
+    if let Some(paths) = verified_effect_value(effect, "verified files exist: ") {
+        return Some(format!("Created files: {}.", user_display_path_list(paths)));
+    }
+
+    if let Some(path) = verified_effect_value(effect, "verified directory exists: ") {
+        return Some(format!("Created {}.", user_display_path(path)));
+    }
+
+    if let Some(paths) = verified_effect_value(effect, "verified directories exist: ") {
+        return Some(format!("Created {}.", user_display_path_list(paths)));
+    }
+
+    None
+}
+
+fn verified_effect_value<'a>(effect: &'a str, prefix: &str) -> Option<&'a str> {
+    effect
+        .split("; ")
+        .find_map(|part| part.strip_prefix(prefix).map(str::trim))
+        .filter(|value| !value.is_empty())
+}
+
 fn render_file_verification(result: &FileActionVerification) -> String {
     match result {
-        FileActionVerification::FileCreated { path } => format!("{path} was created"),
-        FileActionVerification::FilePatched { path } => format!("{path} was patched"),
-        FileActionVerification::FileOverwritten { path } => {
-            format!("{path} was overwritten")
+        FileActionVerification::FileCreated { path } => {
+            format!("Created {}.", user_display_path(path))
         }
-        FileActionVerification::FileDeleted { path } => format!("{path} was deleted"),
+        FileActionVerification::FilePatched { path } => {
+            format!("Updated {}.", user_display_path(path))
+        }
+        FileActionVerification::FileOverwritten { path } => {
+            format!("Overwrote {}.", user_display_path(path))
+        }
+        FileActionVerification::FileDeleted { path } => {
+            format!("Deleted {}.", user_display_path(path))
+        }
         FileActionVerification::FileMoved {
             source_path,
             target_path,
-        } => format!("{source_path} was moved to {target_path}"),
+        } => format!(
+            "Moved {} to {}.",
+            user_display_path(source_path),
+            user_display_path(target_path)
+        ),
         FileActionVerification::DirectoryCreated { path } => {
-            format!("{path} was created")
+            format!("Created {}.", user_display_path(path))
         }
     }
+}
+
+fn user_display_path(path: impl AsRef<Path>) -> String {
+    let path = path.as_ref();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let desktop = home.join("Desktop");
+        if path == desktop {
+            return "Desktop".to_string();
+        }
+        if let Ok(relative) = path.strip_prefix(&desktop) {
+            return PathBuf::from("Desktop")
+                .join(relative)
+                .display()
+                .to_string();
+        }
+    }
+
+    path.display().to_string()
+}
+
+fn user_display_path_list(paths: &str) -> String {
+    paths
+        .split(", ")
+        .map(user_display_path)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn render_error_line(message: &str) -> String {
@@ -596,15 +771,15 @@ mod tests {
         let rendered = conversation.render_body();
         assert!(rendered.contains("> hello"));
         assert!(!rendered.contains("User\n"));
-        assert!(rendered.contains("Elgar: hi"));
+        assert!(rendered.contains("hi"));
+        assert!(!rendered.contains("Elgar: hi"));
         assert!(!rendered.contains("thinking"));
         assert!(!rendered.contains("request-1"));
         assert!(!rendered.contains("Provider text is suggestion only."));
-        assert!(rendered.contains("Review needed: action-1 CreateFile write hello.py"));
-        assert!(rendered.contains("Approved: action-1 CreateFile write hello.py"));
-        assert!(rendered.contains("Applied and verified: action-1 CreateFile hello.py was written"));
-        assert!(rendered
-            .contains("Rejected: action-2 CreateFile write rejected.py. No file was changed."));
+        assert!(rendered.contains("I can write hello.py. Approve to write it."));
+        assert!(rendered.contains("Approved. Applying the action."));
+        assert!(rendered.contains("Wrote hello.py."));
+        assert!(rendered.contains("Rejected. No changes were made."));
         assert!(rendered.contains("Action failed: action-3 CreateFile permission denied"));
         assert!(rendered.contains("Error: boom"));
     }
@@ -617,6 +792,36 @@ mod tests {
         );
         assert_eq!(InputArea::default().render_body(), "> ");
         assert_eq!(CopyArea::default().render_hint(), "");
+    }
+
+    #[test]
+    fn completed_provider_output_does_not_render_blank_rows() {
+        let mut conversation = ConversationPane::default();
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "Plan\n\n- One\n\n- Two\n\ncode:\n```python\nprint(\"one\")\n\nprint(\"two\")\n```",
+            AssistantMessageSource::Provider,
+        )));
+
+        let rendered = conversation.render_lines_with_styles();
+
+        assert!(rendered
+            .iter()
+            .all(|(line, _style)| !line.trim().is_empty()));
+        assert_eq!(
+            rendered
+                .iter()
+                .map(|(line, _style)| line.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Plan",
+                "- One",
+                "- Two",
+                "code:",
+                "code (python):",
+                "    print(\"one\")",
+                "    print(\"two\")",
+            ]
+        );
     }
 
     #[test]
@@ -761,6 +966,31 @@ mod tests {
         assert!(!rendered.contains("short"));
         assert!(!rendered.contains("Need to"));
         assert!(!rendered.contains("request-1"));
+    }
+
+    #[test]
+    fn conversation_hides_low_value_provider_thinking() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ProviderStarted(ProviderStarted::new(
+            "stub-provider",
+            "request-1",
+        )));
+        conversation.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "stub-provider",
+            "request-1",
+            ProviderOutput::new("final answer").with_thinking("Answering succinctly."),
+        )));
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "final answer",
+            AssistantMessageSource::Provider,
+        )));
+
+        let rendered = conversation.render_body();
+
+        assert!(!rendered.contains("Answering succinctly"));
+        assert!(!rendered.contains("Answering."));
+        assert!(rendered.contains("final answer"));
     }
 
     #[test]

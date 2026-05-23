@@ -104,6 +104,7 @@ dependencies = [
  "crossterm",
  "elgar-core",
  "ratatui",
+ "serde_json",
 ]
 
 [[package]]

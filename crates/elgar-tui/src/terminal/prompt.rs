@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use crossterm::terminal::size as terminal_size;
 use elgar_core::provider::ProviderStreamChunk;
 
-use crate::reasoning::format_provider_reasoning_summary;
+use crate::{markdown::render_assistant_markdown, reasoning::format_provider_reasoning_summary};
 
 use super::{transcript_output_ansi, TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
 
@@ -184,7 +184,12 @@ impl LiveProviderOutput {
     }
 
     fn response_preview(&self) -> Option<String> {
-        compact_streaming_text(&self.response)
+        let rendered = render_assistant_markdown(&self.response);
+        if rendered.trim().is_empty() {
+            None
+        } else {
+            Some(rendered)
+        }
     }
 
     #[cfg(test)]
@@ -252,7 +257,7 @@ pub(super) fn active_working_frame_lines(
         .unwrap_or_default();
     let response_lines = live_output
         .response_preview()
-        .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
+        .map(|text| with_leading_spacer(rendered_preview_lines(&text, drawable_width(width))))
         .unwrap_or_default();
     let progress_lines = if reasoning_lines.is_empty() && response_lines.is_empty() {
         with_leading_spacer(vec![provider_progress_line(tick).to_string()])
@@ -286,6 +291,46 @@ fn with_leading_spacer(mut lines: Vec<String>) -> Vec<String> {
     spaced.push(String::new());
     spaced.append(&mut lines);
     spaced
+}
+
+fn rendered_preview_lines(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for raw_line in text.lines() {
+        if preserves_spacing(raw_line) {
+            lines.extend(wrap_preserving_spacing(raw_line, width));
+        } else {
+            lines.extend(wrap_words(raw_line, width));
+        }
+    }
+    lines
+        .into_iter()
+        .filter(|line| !line.trim().is_empty())
+        .collect()
+}
+
+fn preserves_spacing(line: &str) -> bool {
+    line.starts_with(' ') || line.starts_with('\t')
+}
+
+fn wrap_preserving_spacing(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for character in line.chars() {
+        if current.chars().count() >= width {
+            lines.push(current);
+            current = String::new();
+        }
+        current.push(character);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 fn compact_streaming_text(text: &str) -> Option<String> {

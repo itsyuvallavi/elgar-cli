@@ -1,12 +1,22 @@
+use std::{
+    ffi::OsString,
+    path::Path,
+    sync::{Mutex, MutexGuard},
+};
+
 use elgar_core::{
-    action::ActionLifecycleState,
+    action::{ActionLifecycleState, ActionRequest},
     context::{ContextAccounting, LoadedContextFile},
     controller::Controller,
     event::{
         AssistantMessage, AssistantMessageSource, Event, ProviderMetrics, ProviderOutput,
         ProviderTokenUsage,
     },
-    provider::{ControllerProvider, ProviderError, ProviderRequestMetadata, ProviderStreamChunk},
+    model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
+    provider::{
+        ChatToolDefinition, ControllerProvider, ProviderError, ProviderRequestMetadata,
+        ProviderStreamChunk,
+    },
     session::Session,
 };
 use ratatui::{backend::TestBackend, Terminal};
@@ -17,15 +27,50 @@ use super::prompt::{
     live_response_ansi, LIVE_REASONING_PREVIEW_BYTES, LIVE_RESPONSE_PREVIEW_BYTES,
 };
 use super::{
-    active_working_frame_lines, copy_conversation_to_terminal_clipboard,
+    active_working_frame_lines, conversation_print_blocks, copy_conversation_to_terminal_clipboard,
     copy_conversation_with_clipboards, default_shell_text, encode_base64, handle_scroll_key,
     handle_submitted_terminal_input_for_loop, handle_terminal_key,
-    handle_terminal_key_while_provider_active, handle_terminal_key_with_copy_writer,
-    inline_prompt_frame_lines, live_render_due, osc52_clipboard_sequence, parse_terminal_command,
-    plain_block_lines, render_terminal_help, render_tui_shell, should_exit, status_style,
-    style_terminal_conversation, transcript_output_ansi, LiveProviderOutput, ProviderTurnUpdate,
-    TerminalCommand, TerminalShellContext, LIVE_RENDER_INTERVAL,
+    handle_terminal_key_with_copy_writer, inline_prompt_frame_lines, live_render_due,
+    osc52_clipboard_sequence, parse_terminal_command, plain_block_lines, render_terminal_help,
+    render_tui_shell, should_exit, status_style, style_terminal_conversation,
+    transcript_output_ansi, LiveProviderOutput, ProviderTurnUpdate, TerminalCommand,
+    TerminalShellContext, LIVE_RENDER_INTERVAL,
 };
+
+static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvGuard {
+    name: &'static str,
+    previous: Option<OsString>,
+    _home_lock: Option<MutexGuard<'static, ()>>,
+}
+
+impl EnvGuard {
+    fn set(name: &'static str, value: &Path) -> Self {
+        let home_lock = (name == "HOME").then(|| {
+            HOME_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self {
+            name,
+            previous,
+            _home_lock: home_lock,
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::env::set_var(self.name, previous);
+        } else {
+            std::env::remove_var(self.name);
+        }
+    }
+}
 
 fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
     let backend = TestBackend::new(80, 20);
@@ -107,11 +152,11 @@ fn inline_prompt_frame_matches_old_elgar_runtime_shape() {
     assert!(top[1].starts_with("────"));
     assert_eq!(input, vec!["▸ hello▌"]);
     assert_eq!(bottom, vec![top[1].clone()]);
-    assert_eq!(footer.len(), 2);
+    assert_eq!(footer.len(), 1);
     assert!(footer[0].contains("openai/gpt-oss-20b"));
-    assert_eq!(footer[1], "context: unknown");
     assert!(!footer.join("\n").contains("select visible"));
     assert!(!footer.join("\n").contains("PgUp"));
+    assert!(!footer.join("\n").contains("context:"));
 }
 
 #[test]
@@ -131,7 +176,8 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     assert_eq!(input, vec!["▸ /cancel▌"]);
     assert_eq!(bottom, vec![top[1].clone()]);
     assert!(footer[0].contains("model-a"));
-    assert_eq!(footer[1], "context: unknown");
+    assert_eq!(footer.len(), 1);
+    assert!(!footer.join("\n").contains("context:"));
 }
 
 #[test]
@@ -186,7 +232,7 @@ fn active_working_frame_polishes_common_live_reasoning_prefixes() {
     let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "status", &live_output, 80);
 
-    assert_eq!(reasoning, vec!["", "Answering."]);
+    assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
 
@@ -202,7 +248,7 @@ fn active_working_frame_removes_instruction_filler_from_reasoning() {
     let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
-    assert_eq!(reasoning, vec!["", "Responding."]);
+    assert!(reasoning.is_empty());
     assert!(!reasoning.join("\n").contains("short"));
     assert!(!reasoning.join("\n").contains("Elgar"));
     assert!(response.is_empty());
@@ -315,6 +361,99 @@ fn active_working_frame_reveals_response_before_completion() {
     let (_progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
     assert_eq!(response, vec!["", "Hello! How can I help you today?"]);
+}
+
+#[test]
+fn active_working_frame_preserves_streamed_markdown_structure() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Text(
+        "I can:\n\n- Answer questions.\n- Summarise documents.".to_string(),
+    ));
+
+    let (_progress, _reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "what can you do?", &live_output, 80);
+
+    assert_eq!(
+        response,
+        vec![
+            "",
+            "I can:",
+            "- Answer questions.",
+            "- Summarise documents."
+        ]
+    );
+}
+
+#[test]
+fn live_and_completed_markdown_blocks_share_compact_spacing() {
+    let response = "Sure! Let me suggest a small, clean folder structure.\n\ncode:\n\n    project/\n\n    src/\n\nWhat to do:\n\n1. Create directories.\n\n2. Move files.\n\nOnce you approve, I can generate commands.";
+    let rendered = crate::markdown::render_assistant_markdown(response);
+    let completed_lines = plain_block_lines(&rendered, 80);
+
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Text(response.to_string()));
+
+    let (_progress, _reasoning, live_lines, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "i meant create folders", &live_output, 80);
+
+    assert_eq!(
+        live_lines.into_iter().skip(1).collect::<Vec<_>>(),
+        completed_lines
+    );
+    assert!(!rendered.contains("\n\n"));
+}
+
+#[test]
+fn completed_terminal_transcript_groups_plain_lines_into_one_print_block() {
+    let blocks = conversation_print_blocks(
+        vec![
+            (
+                "Project Plan".to_string(),
+                crate::panes::ConversationLineStyle::Plain,
+            ),
+            (
+                "- First step.".to_string(),
+                crate::panes::ConversationLineStyle::Plain,
+            ),
+            (
+                "- Second step.".to_string(),
+                crate::panes::ConversationLineStyle::Plain,
+            ),
+        ],
+        false,
+    );
+
+    assert_eq!(
+        blocks,
+        vec![(
+            "Project Plan\n- First step.\n- Second step.".to_string(),
+            crate::panes::ConversationLineStyle::Plain
+        )]
+    );
+}
+
+#[test]
+fn active_working_frame_expands_inline_markdown_artifacts() {
+    let context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("model-a".to_string()));
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_chunk(ProviderStreamChunk::Text(
+        "Use this: ```bash # 1. Start lm-studio --port 1234 # 2. Check curl http://127.0.0.1:1234/v1/health ``` Done."
+            .to_string(),
+    ));
+
+    let (_progress, _reasoning, response, _top, _input, _bottom, _footer) =
+        active_working_frame_lines(&context, 0, 1, "help", &live_output, 120);
+
+    assert!(response.contains(&"Use this:".to_string()));
+    assert!(response.contains(&"code (bash):".to_string()));
+    assert!(response.contains(&"    # 1. Start lm-studio --port 1234".to_string()));
+    assert!(response.contains(&"    # 2. Check curl http://127.0.0.1:1234/v1/health".to_string()));
+    assert!(response.contains(&"Done.".to_string()));
 }
 
 #[test]
@@ -433,14 +572,15 @@ fn default_terminal_shell_is_empty_and_no_network() {
     let text = default_shell_text();
 
     assert!(text.contains("elgar v0.2"));
-    assert!(text.contains("/commands · /clear · /cancel · /approve · /reject · /copy · /exit"));
+    assert!(text
+        .contains("/commands · /clear · /cancel · /approve · /reject · /memory · /copy · /exit"));
     assert!(text
         .contains("Elgar uses your local LM Studio model and keeps file changes behind approval."));
     assert!(text.contains("[Context]"));
     assert!(text.contains("[Provider]\n  stub-provider · none"));
     assert!(text.contains("(empty conversation)"));
     assert!(text.contains("> "));
-    assert!(text.contains("context: unknown"));
+    assert!(!text.contains("context:"));
     let footer = TerminalShellContext::new(".", ".")
         .with_provider("stub-provider", None)
         .footer_body(
@@ -508,7 +648,7 @@ fn terminal_layout_renders_default_shell_regions() {
     assert!(text.contains("(empty conversation)"));
     assert!(text.contains("> "));
     assert!(text.contains("repo crates"));
-    assert!(text.contains("context: unknown"));
+    assert!(!text.contains("context:"));
     assert!(!text.contains("br:"));
     assert!(!text.contains("select visible text"));
     assert!(!text.contains("provider:"));
@@ -531,12 +671,13 @@ fn terminal_layout_renders_pending_action_only_when_present() {
 
     let text = draw_to_text(&shell, &TerminalShellContext::from_session(&session));
 
-    assert!(text.contains("Review needed: action-1 CreateFile write hello.py"));
+    assert!(text.contains("I can write hello.py. Approve to write it."));
     assert!(text.contains("review action"));
-    assert!(text.contains("Action: action-1 CreateFile"));
-    assert!(text.contains("State: waiting for approval"));
-    assert!(text.contains("No action has been applied yet"));
-    assert!(text.contains("Use /approve or /reject"));
+    assert!(text.contains("File: hello.py"));
+    assert!(text.contains("Status: waiting for approval"));
+    assert!(text.contains("No changes have been made yet"));
+    assert!(text.contains("Use /approve to apply or /reject"));
+    assert!(!text.contains("Action: action-1 CreateFile"));
     assert!(text.contains("> "));
     assert!(text.contains("review action"));
 }
@@ -557,7 +698,7 @@ fn terminal_footer_uses_provider_model_metadata_when_available() {
 
     assert!(text.contains("model-a"));
     assert!(footer.contains("model-a"));
-    assert!(footer.contains("context: unknown"));
+    assert!(!footer.contains("context:"));
     assert!(!footer.contains("reply ready"));
     assert!(!footer.contains("select visible text"));
     assert!(!footer.contains("provider:"));
@@ -587,7 +728,7 @@ fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
     assert!(footer.contains("crates/elgar-tui"));
     assert!(footer.contains("(feature/footer)"));
     assert!(footer.contains("openai/gpt-oss-20b"));
-    assert!(footer.contains("context: unknown"));
+    assert!(!footer.contains("context:"));
     assert!(!footer.contains("repo:"));
     assert!(!footer.contains("cwd:"));
     assert!(!footer.contains("branch:"));
@@ -602,7 +743,7 @@ fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
 }
 
 #[test]
-fn terminal_footer_formats_controller_context_accounting() {
+fn terminal_footer_hides_controller_context_accounting() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()))
         .with_context_accounting(ContextAccounting {
@@ -619,13 +760,15 @@ fn terminal_footer_formats_controller_context_accounting() {
 
     let footer = context.footer_body("ready", "copy");
 
-    assert!(footer.contains("context: ~321/128k"));
+    assert!(!footer.contains("context:"));
+    assert!(!footer.contains("~321"));
+    assert!(!footer.contains("128k"));
     assert!(!footer.contains('%'));
     assert!(!footer.contains("TBD"));
 }
 
 #[test]
-fn terminal_footer_prefers_real_provider_usage_when_present() {
+fn terminal_footer_hides_provider_usage_when_present() {
     let mut metrics = ProviderMetrics::new(
         "request-usage",
         Some("openai/gpt-oss-20b".to_string()),
@@ -650,7 +793,8 @@ fn terminal_footer_prefers_real_provider_usage_when_present() {
 
     let footer = context.footer_body("ready", "copy");
 
-    assert!(footer.contains("context: 10/128k"));
+    assert!(!footer.contains("context:"));
+    assert!(!footer.contains("10/128k"));
     assert!(!footer.contains("~321"));
     assert!(!footer.contains('%'));
 }
@@ -689,13 +833,14 @@ fn terminal_context_from_session_carries_provider_usage_to_footer() {
     let context = TerminalShellContext::from_session(&session);
     let footer = context.footer_body("ready", "copy");
 
-    assert!(footer.contains("context: 16 tokens"));
     assert!(footer.contains("model-a"));
+    assert!(!footer.contains("context:"));
+    assert!(!footer.contains("16 tokens"));
     assert!(!footer.contains('%'));
 }
 
 #[test]
-fn terminal_footer_keeps_context_unknown_when_provider_usage_is_absent() {
+fn terminal_footer_hides_context_when_provider_usage_is_absent() {
     let metrics = ProviderMetrics::new(
         "request-no-usage",
         Some("openai/gpt-oss-20b".to_string()),
@@ -714,13 +859,13 @@ fn terminal_footer_keeps_context_unknown_when_provider_usage_is_absent() {
 
     let footer = context.footer_body("ready", "copy");
 
-    assert!(footer.contains("context: unknown"));
+    assert!(!footer.contains("context:"));
     assert!(!footer.contains("TBD"));
     assert!(!footer.contains('%'));
 }
 
 #[test]
-fn terminal_footer_keeps_missing_usage_unknown_with_configured_window() {
+fn terminal_footer_hides_context_with_configured_window() {
     let context =
         TerminalShellContext::new("/repo", "/repo").with_context_accounting(ContextAccounting {
             loaded_files: Vec::new(),
@@ -731,7 +876,8 @@ fn terminal_footer_keeps_missing_usage_unknown_with_configured_window() {
 
     let footer = context.footer_body("ready", "copy");
 
-    assert!(footer.contains("context: unknown/128k"));
+    assert!(!footer.contains("context:"));
+    assert!(!footer.contains("128k"));
     assert!(!footer.contains('%'));
 }
 
@@ -814,6 +960,333 @@ fn terminal_loop_sends_unclassified_non_slash_text_to_provider() {
     assert_eq!(session.events().len(), completed.events.len());
     assert!(shell.render().contains("stub provider response"));
     assert!(!shell.render().contains("Input was not recognized"));
+}
+
+#[test]
+fn terminal_loop_keeps_prompt_marker_folder_plan_create_project_controller_owned() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-folder-plan-execute-model-first");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+    let verified_folder = root.join("helloworld");
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "> create folder called helloworld",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    assert!(pending_turn.is_some());
+    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(chunks.is_empty());
+    assert!(verified_folder.is_dir());
+    assert_eq!(session.actions().len(), 1);
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert!(shell.render().contains("Created"));
+    assert!(!shell.render().contains("Model-first tool call validated"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_loop_model_first_same_folder_plan_uses_provider_tools_and_verified_folder() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-same-folder-plan-model-first");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+    let verified_folder = root.join("helloworld");
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "create folder called helloworld",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    assert!(pending_turn.is_some());
+    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(chunks.is_empty());
+    assert!(verified_folder.is_dir());
+
+    let provider_events_before_plan = provider_event_count(&session);
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "create a plan for a simple React TS project in the same folder",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    assert!(pending_turn.is_some());
+    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(chunks.is_empty());
+    assert!(provider_event_count(&session) > provider_events_before_plan);
+
+    let plan_path = verified_folder.join("react-ts-project-plan.md");
+    let applied_plan = session
+        .actions()
+        .iter()
+        .find(|record| {
+            record.action.state == ActionLifecycleState::Applied
+                && matches!(record.action.request, ActionRequest::CreateFile(_))
+        })
+        .expect("same-folder plan should be applied");
+    let ActionRequest::CreateFile(action) = &applied_plan.action.request else {
+        panic!("same-folder plan should create a Markdown file");
+    };
+    assert_eq!(
+        action.target_path,
+        std::path::PathBuf::from("helloworld/react-ts-project-plan.md")
+    );
+    assert!(applied_plan.verified_result.is_some());
+    assert!(plan_path.is_file());
+    assert!(!root.join("react-ts-project-plan.md").exists());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_loop_routes_unclassified_action_like_text_to_controller_not_provider() {
+    let controller = Controller::default();
+    let mut session = Session::new("session-1", "/repo", "/repo");
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "create the local widget after setup",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_some());
+    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(chunks.is_empty());
+    assert!(provider_event_count(&session) > 0);
+    assert!(shell.render().contains("stub provider response"));
+    assert!(!shell.render().contains("Input was not recognized"));
+}
+
+#[test]
+fn terminal_loop_polite_folder_request_uses_model_tool_path() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-polished-folder-request");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "create folder called review-guard",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_some());
+    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(chunks.is_empty());
+    assert!(provider_event_count(&session) > 0);
+    assert!(root.join("review-guard").is_dir());
+    assert_eq!(session.actions().len(), 1);
+    assert!(matches!(
+        &session.actions()[0].action.request,
+        ActionRequest::CreateDirectory(_)
+    ));
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert!(!shell.render().contains("Input was not recognized"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_loop_broad_react_project_request_uses_provider_not_controller_plan() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-polished-react-project-request");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "can you please create a react project called demo",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_some());
+    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(chunks.is_empty());
+    assert!(provider_event_count(&session) > 0);
+    assert!(session.actions().is_empty());
+    assert!(!root.join("demo").exists());
+    assert!(!root.join("demo/react-project-plan.md").exists());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_loop_model_first_guidance_renders_naturally_without_creating_files() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-model-first-guidance");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "create a project in that folder",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_some());
+    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(chunks.is_empty());
+    assert!(session.actions().is_empty());
+    assert!(!root.join("project").exists());
+    assert!(shell
+        .render()
+        .contains("Which folder should I use for the project?"));
+    assert!(!shell.render().contains("Proposed action"));
+    assert!(!shell.render().contains("Created"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_memory_command_is_local_and_empty_without_provider_call() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-memory-empty");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "/memory",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_none());
+    let rendered = shell.render();
+    assert!(rendered.contains("Memory\n(empty)"));
+    assert!(!rendered.contains("stub provider response"));
+    assert!(!rendered.contains("lm-studio"));
+    assert!(!rendered.contains("Input was not recognized"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_memory_command_reports_verified_project_state() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-memory-project");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "create folder called src",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "create file project-plan.md",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+
+    assert!(root.join("project-plan.md").is_file());
+    assert!(pending_turn.is_none());
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/memory",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+
+    let rendered = shell.render();
+    assert!(rendered.contains("Memory"));
+    assert!(rendered.contains("folders\n- ok "));
+    assert!(rendered.contains("plans\n- ok "));
+    assert!(!rendered.contains("lm-studio"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_memory_command_reports_latest_provider_prompt_memory_trace() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-memory-provider-trace");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "create folder called workspace",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "where did you put that folder?",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    let completed = wait_for_completed_provider_turn(&pending_turn.take().unwrap());
+    session = completed.session;
+    shell.conversation.discard_pending_provider_turn();
+    shell.consume_events(&completed.events);
+
+    assert!(session.latest_provider_prompt_memory_selection().is_some());
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/memory",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+
+    let rendered = shell.render();
+    assert!(rendered.contains("provider prompt memory"));
+    assert!(rendered.contains("selected"));
+    assert!(rendered.contains("verified folder ok "));
+    assert!(!rendered.contains("Verified memory selected by Elgar controller:"));
+    assert!(!rendered.contains("User request:"));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -937,6 +1410,48 @@ fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_sa
             Ok(ProviderOutput::new("Provider suggests creating hidden.py"))
         }
 
+        fn chat_with_tools_with_metadata(
+            &self,
+            prompt: &str,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<ProviderOutput, ProviderError> {
+            if prompt.contains("create file approved.py") {
+                return Ok(
+                    ProviderOutput::new("Creating approved.py.").with_tool_calls(vec![
+                        RawModelToolCall {
+                            id: "dogfood-tool-call-1".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: serde_json::json!({
+                                "target_path": "approved.py",
+                                "contents": ""
+                            }),
+                            assistant_summary: Some("create approved.py".to_string()),
+                        },
+                    ]),
+                );
+            }
+
+            if prompt.contains("create file rejected.py") {
+                return Ok(
+                    ProviderOutput::new("Creating rejected.py.").with_tool_calls(vec![
+                        RawModelToolCall {
+                            id: "dogfood-tool-call-1".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: serde_json::json!({
+                                "target_path": "rejected.py",
+                                "contents": ""
+                            }),
+                            assistant_summary: Some("create rejected.py".to_string()),
+                        },
+                    ]),
+                );
+            }
+
+            Ok(ProviderOutput::new("Provider suggests creating hidden.py")
+                .with_thinking("Need answer without mutating files."))
+        }
+
         fn chat_stream(
             &self,
             _prompt: &str,
@@ -976,13 +1491,7 @@ fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_sa
 
     let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
 
-    assert_eq!(
-        chunks,
-        vec![
-            ProviderStreamChunk::Reasoning("Need answer without mutating files.".to_string()),
-            ProviderStreamChunk::Text("Provider suggests creating hidden.py".to_string())
-        ]
-    );
+    assert!(chunks.is_empty());
     assert!(shell
         .render()
         .contains("Provider suggests creating hidden.py"));
@@ -1037,18 +1546,11 @@ fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_sa
         &mut shell,
         &mut pending_turn,
     ));
-    assert!(!rejected_target.exists());
-    assert!(!handle_submitted_terminal_input_for_loop(
-        "/reject",
-        &controller,
-        &mut session,
-        &mut shell,
-        &mut pending_turn,
-    ));
-    assert!(!rejected_target.exists());
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(rejected_target.exists());
     assert_eq!(
         session.actions()[0].action.state,
-        ActionLifecycleState::Rejected
+        ActionLifecycleState::Applied
     );
 
     assert!(!handle_submitted_terminal_input_for_loop(
@@ -1058,14 +1560,7 @@ fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_sa
         &mut shell,
         &mut pending_turn,
     ));
-    assert!(!approved_target.exists());
-    assert!(!handle_submitted_terminal_input_for_loop(
-        "/approve",
-        &controller,
-        &mut session,
-        &mut shell,
-        &mut pending_turn,
-    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
     assert!(approved_target.exists());
     assert_eq!(
         session.actions()[1].action.state,
@@ -1098,6 +1593,15 @@ fn terminal_live_provider_dogfood_error_does_not_mutate_actions_or_files() {
         }
 
         fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Err(ProviderError::network("provider request timed out"))
+        }
+
+        fn chat_with_tools_with_metadata(
+            &self,
+            _prompt: &str,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<ProviderOutput, ProviderError> {
             Err(ProviderError::network("provider request timed out"))
         }
     }
@@ -1290,7 +1794,7 @@ fn terminal_footer_shows_lm_studio_provider_and_model_without_usage_claims() {
     let footer = context.footer_body("ready", "select visible text");
 
     assert!(footer.contains("openai/gpt-oss-20b"));
-    assert!(footer.contains("context: unknown"));
+    assert!(!footer.contains("context:"));
     assert!(!footer.contains("provider:"));
     assert!(!footer.contains("model:"));
     assert!(!footer.contains("select visible text"));
@@ -1314,7 +1818,8 @@ fn terminal_conversation_scrollback_keeps_input_status_and_pending_visible() {
     assert!(text.contains("elgar v0.2"));
     assert!(!text.contains("Review needed: action-1 CreateFile write hello.py"));
     assert!(text.contains("review action"));
-    assert!(text.contains("Action: action-1 CreateFile"));
+    assert!(text.contains("File: hello.py"));
+    assert!(!text.contains("Action: action-1 CreateFile"));
     assert!(text.contains("> "));
     assert!(text.contains("repo"));
 }
@@ -1352,6 +1857,7 @@ fn terminal_commands_are_slash_only() {
     assert_eq!(parse_terminal_command("/approve"), TerminalCommand::Approve);
     assert_eq!(parse_terminal_command("/reject"), TerminalCommand::Reject);
     assert_eq!(parse_terminal_command("/cancel"), TerminalCommand::Cancel);
+    assert_eq!(parse_terminal_command("/memory"), TerminalCommand::Memory);
     assert_eq!(parse_terminal_command("/copy"), TerminalCommand::Copy);
     assert_eq!(parse_terminal_command("/exit"), TerminalCommand::Exit);
     assert_eq!(parse_terminal_command("/quit"), TerminalCommand::Exit);
@@ -1386,6 +1892,7 @@ fn terminal_commands_are_slash_only() {
     assert!(help.contains("/approve"));
     assert!(help.contains("/reject"));
     assert!(help.contains("/cancel"));
+    assert!(help.contains("/memory"));
     assert!(help.contains("/copy"));
     assert!(help.contains("/exit"));
     assert!(help.contains("/quit"));
@@ -1457,37 +1964,64 @@ fn terminal_clear_slash_commands_clear_only_local_conversation() {
 }
 
 #[test]
-fn terminal_rejects_stale_input_while_provider_is_active() {
+fn terminal_provider_active_enter_preserves_non_cancel_draft() {
     let mut input = TerminalInput::default();
-    let mut shell = TuiShell::new();
-    shell.status.start_thinking_pulse();
 
-    for character in "/approve".chars() {
-        let exited = handle_terminal_key_while_provider_active(
+    for character in "keep this draft".chars() {
+        assert_eq!(
+            super::handle_active_provider_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(character),
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                &mut input,
+            ),
+            super::ActiveProviderKeyAction::Continue
+        );
+    }
+
+    assert_eq!(input.text(), "keep this draft");
+    assert_eq!(
+        super::handle_active_provider_key(
             crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char(character),
+                crossterm::event::KeyCode::Enter,
                 crossterm::event::KeyModifiers::NONE,
             ),
             &mut input,
-            &mut shell,
+        ),
+        super::ActiveProviderKeyAction::Continue
+    );
+    assert_eq!(input.text(), "keep this draft");
+}
+
+#[test]
+fn terminal_provider_active_enter_consumes_cancel_command() {
+    let mut input = TerminalInput::default();
+
+    for character in "/cancel".chars() {
+        assert_eq!(
+            super::handle_active_provider_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(character),
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                &mut input,
+            ),
+            super::ActiveProviderKeyAction::Continue
         );
-        assert!(!exited);
     }
 
-    assert!(input.text().is_empty());
-
-    let exited = handle_terminal_key_while_provider_active(
-        crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
+    assert_eq!(
+        super::handle_active_provider_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &mut input,
         ),
-        &mut input,
-        &mut shell,
+        super::ActiveProviderKeyAction::Cancel
     );
-
-    assert!(!exited);
-    assert!(input.text().is_empty());
-    assert!(shell.status.provider_active());
+    assert_eq!(input.text(), "");
 }
 
 #[test]
@@ -1820,8 +2354,8 @@ fn terminal_approve_slash_command_approves_pending_action_through_shell() {
         session.actions()[0].action.state,
         ActionLifecycleState::Applied
     );
-    assert!(shell.render().contains("State: applied and verified"));
-    assert!(shell.render().contains("Result: file written:"));
+    assert!(shell.render().contains("Status: applied and verified"));
+    assert!(shell.render().contains("Result: Wrote"));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1845,7 +2379,7 @@ fn terminal_reject_slash_command_rejects_pending_action_through_shell() {
         session.actions()[0].action.state,
         ActionLifecycleState::Rejected
     );
-    assert!(shell.render().contains("State: rejected"));
+    assert!(shell.render().contains("Status: rejected"));
     assert!(shell
         .render()
         .contains("Result: Rejected. No file was changed."));
@@ -1923,4 +2457,17 @@ fn temp_root(name: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     root
+}
+
+fn provider_event_count(session: &Session) -> usize {
+    session
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::ProviderStarted(_) | Event::ProviderFinished(_)
+            )
+        })
+        .count()
 }

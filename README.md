@@ -50,13 +50,22 @@ elgar
 
 `elgar` with no arguments launches the terminal TUI when run from an
 interactive terminal. In non-interactive shells it exits safely with a short
-message instead of hanging.
+message instead of hanging. The local install records this repo path so
+`elgar` can still find `elgar-provider.json` and `AGENTS.md` when launched from
+another directory. A configured project in the current directory or one of its
+parents still takes precedence.
 
 ## Provider Mode
 
 Normal CLI/TUI runs can use LM Studio when `elgar-provider.json` enables live
 mode and LM Studio is running locally. Without a live provider config, Elgar
 uses deterministic stub/no-network behavior.
+
+To force a no-network run:
+
+```sh
+ELGAR_PROVIDER_CONFIG=off elgar
+```
 
 Live provider smoke commands are manual and optional. They are documented in:
 

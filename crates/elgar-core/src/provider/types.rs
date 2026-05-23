@@ -1,6 +1,6 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::event::ProviderOutput;
 
@@ -17,6 +17,7 @@ pub enum ChatRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: ChatRole,
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub content: String,
     #[serde(
         default,
@@ -30,6 +31,12 @@ pub struct ChatMessage {
         skip_serializing_if = "Option::is_none"
     )]
     pub thinking: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_vec",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub tool_calls: Vec<ChatToolCall>,
 }
 
 impl ChatMessage {
@@ -51,6 +58,7 @@ impl ChatMessage {
             content: content.into(),
             reasoning: None,
             thinking: None,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -67,6 +75,35 @@ impl ChatMessage {
     }
 }
 
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_nullable_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ChatToolCallFunction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatToolCallFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub model: String,
@@ -74,6 +111,53 @@ pub struct ChatRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ChatToolDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ChatToolChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatToolDefinition {
+    #[serde(rename = "type")]
+    pub tool_type: ChatToolType,
+    pub function: ChatToolFunctionDefinition,
+}
+
+impl ChatToolDefinition {
+    pub fn function(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
+        Self {
+            tool_type: ChatToolType::Function,
+            function: ChatToolFunctionDefinition {
+                name: name.into(),
+                description: description.into(),
+                parameters,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatToolType {
+    Function,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatToolFunctionDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatToolChoice {
+    Auto,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -149,6 +233,17 @@ pub trait ControllerProvider {
         _metadata: &ProviderRequestMetadata,
     ) -> Result<ProviderOutput, ProviderError> {
         self.chat(prompt)
+    }
+
+    fn chat_with_tools_with_metadata(
+        &self,
+        _prompt: &str,
+        _metadata: &ProviderRequestMetadata,
+        _tools: Vec<ChatToolDefinition>,
+    ) -> Result<ProviderOutput, ProviderError> {
+        Err(ProviderError::configuration(
+            "provider does not support tool-enabled chat",
+        ))
     }
 
     fn chat_stream(

@@ -2,6 +2,7 @@ pub mod action_panel;
 mod input;
 pub mod layout;
 mod markdown;
+mod memory;
 pub mod panes;
 mod reasoning;
 pub mod shell;
@@ -12,6 +13,7 @@ mod theme;
 
 pub use action_panel::{ActionApprovalPanel, ActionPanelState, PendingActionArea};
 pub use layout::LayoutRegion;
+pub use memory::render_session_memory;
 pub use panes::{ConversationPane, InputArea, StatusLine};
 pub use shell::TuiShell;
 pub use smoke::{
@@ -19,5 +21,6 @@ pub use smoke::{
     TuiControllerSmoke,
 };
 pub use terminal::{
-    default_shell_text, run_terminal_shell, run_terminal_shell_with_lm_studio_provider,
+    default_shell_text, run_terminal_shell, run_terminal_shell_at,
+    run_terminal_shell_with_lm_studio_provider, run_terminal_shell_with_lm_studio_provider_at,
 };

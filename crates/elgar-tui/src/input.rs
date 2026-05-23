@@ -7,6 +7,12 @@ pub(crate) struct TerminalInput {
 }
 
 impl TerminalInput {
+    pub(crate) fn from_text(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let cursor = text.len();
+        Self { text, cursor }
+    }
+
     pub(crate) fn text(&self) -> &str {
         &self.text
     }

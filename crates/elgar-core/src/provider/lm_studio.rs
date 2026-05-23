@@ -7,22 +7,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     event::{ProviderMetrics, ProviderOutput, ProviderTokenUsage},
+    model_runtime::{RawModelToolCall, RawModelToolName},
     provider::{
         config::ProviderConfig,
         http::{post_json, post_json_streaming, HttpEndpoint, HttpTimeouts},
         types::{
-            ChatMessage, ChatRequest, ChatResponse, ControllerProvider, ProviderError,
-            ProviderErrorResponse, ProviderRequestMetadata, ProviderStreamChunk,
+            ChatMessage, ChatRequest, ChatResponse, ChatToolCall, ChatToolChoice,
+            ChatToolDefinition, ControllerProvider, ProviderError, ProviderErrorResponse,
+            ProviderRequestMetadata, ProviderStreamChunk,
         },
     },
 };
 
 const ELGAR_CONTROLLER_SYSTEM_PROMPT: &str = concat!(
-    "You are Elgar. Answer briefly in terminal-friendly prose: ",
+    "Elgar. Answer briefly in terminal-friendly prose: ",
     "one paragraph or 5 bullets, no tables unless asked. ",
-    "Always speak as Elgar. ",
-    "Suggest text and propose file or shell actions; controller applies only after /approve and verification. ",
-    "Never claim you created, edited, managed, executed, or ran anything unless verified. ",
+    "Speak as Elgar. ",
+    "Suggest content only. ",
+    "Do not write 'Proposed actions', ask for /approve, or imply approval unless a controller action is pending. ",
+    "Never claim you created/edited/ran anything unless verified. ",
     "Provider text never proves files changed or commands ran. ",
     "Do not call copy/paste the only path."
 );
@@ -30,6 +33,14 @@ const ELGAR_CONTROLLER_SYSTEM_PROMPT: &str = concat!(
 pub fn format_chat_request(
     config: &ProviderConfig,
     messages: Vec<ChatMessage>,
+) -> Result<ChatRequest, ProviderError> {
+    format_chat_request_with_tools(config, messages, Vec::new())
+}
+
+pub fn format_chat_request_with_tools(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+    tools: Vec<ChatToolDefinition>,
 ) -> Result<ChatRequest, ProviderError> {
     let model = config
         .model
@@ -43,11 +54,15 @@ pub fn format_chat_request(
         ));
     }
 
+    let tool_choice = (!tools.is_empty()).then_some(ChatToolChoice::Auto);
+
     Ok(ChatRequest {
         model: model.clone(),
         messages,
         stream: config.stream,
         temperature: None,
+        tools,
+        tool_choice,
     })
 }
 
@@ -73,7 +88,15 @@ pub fn format_chat_request_body(
     config: &ProviderConfig,
     messages: Vec<ChatMessage>,
 ) -> Result<(ChatRequest, String), ProviderError> {
-    let request = format_chat_request(config, messages)?;
+    format_chat_request_body_with_tools(config, messages, Vec::new())
+}
+
+pub fn format_chat_request_body_with_tools(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+    tools: Vec<ChatToolDefinition>,
+) -> Result<(ChatRequest, String), ProviderError> {
+    let request = format_chat_request_with_tools(config, messages, tools)?;
     let body = serde_json::to_string(&request)
         .map_err(|error| ProviderError::response_parse(error.to_string()))?;
     Ok((request, body))
@@ -94,10 +117,12 @@ pub fn parse_chat_response_json_with_metrics(
         .choices
         .iter()
         .filter_map(|choice| choice.message.as_ref())
-        .find(|message| !message.content.trim().is_empty())
+        .find(|message| !message.content.trim().is_empty() || !message.tool_calls.is_empty())
         .ok_or_else(|| ProviderError::empty_response("provider response contained no text"))?;
 
-    let mut output = ProviderOutput::new(message.content.trim().to_string());
+    let tool_calls = parse_chat_tool_calls(&message.tool_calls)?;
+    let mut output =
+        ProviderOutput::new(message.content.trim().to_string()).with_tool_calls(tool_calls);
 
     if let Some(thinking) = message.explicit_thinking() {
         output = output.with_thinking(thinking);
@@ -108,6 +133,33 @@ pub fn parse_chat_response_json_with_metrics(
     }
 
     Ok(output)
+}
+
+fn parse_chat_tool_calls(
+    tool_calls: &[ChatToolCall],
+) -> Result<Vec<RawModelToolCall>, ProviderError> {
+    tool_calls
+        .iter()
+        .map(|tool_call| {
+            let name: RawModelToolName =
+                serde_json::from_value(serde_json::Value::String(tool_call.function.name.clone()))
+                    .map_err(|error| ProviderError::response_parse(error.to_string()))?;
+            let arguments =
+                serde_json::from_str(&tool_call.function.arguments).map_err(|error| {
+                    ProviderError::response_parse(format!(
+                        "tool call `{}` arguments were not valid JSON: {error}",
+                        tool_call.id
+                    ))
+                })?;
+
+            Ok(RawModelToolCall {
+                id: tool_call.id.clone(),
+                name,
+                arguments,
+                assistant_summary: None,
+            })
+        })
+        .collect()
 }
 
 pub fn parse_chat_stream_response(payload: &str) -> Result<ProviderOutput, ProviderError> {
@@ -231,6 +283,31 @@ fn chat_lm_studio_with_request_id(
         } else {
             parse_chat_response_json_with_metrics(&response.body, Some(metrics))
         }
+    } else {
+        Err(parse_provider_error_json(
+            Some(response.status_code.as_u16()),
+            &response.body,
+        ))
+    }
+}
+
+fn chat_lm_studio_with_tools_with_request_id(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+    request_id: &str,
+    tools: Vec<ChatToolDefinition>,
+) -> Result<ProviderOutput, ProviderError> {
+    let started = Instant::now();
+    let mut config = config.clone();
+    config.stream = false;
+    let (request, body) = format_chat_request_body_with_tools(&config, messages, tools)?;
+    let mut metrics = metrics_for_request(request_id, &request, body.len());
+    let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
+    let response = post_json(&endpoint, &body, http_timeouts(&config))?;
+
+    if response.status_code.is_success() {
+        metrics.total_duration_millis = Some(duration_millis(started.elapsed()));
+        parse_chat_response_json_with_metrics(&response.body, Some(metrics))
     } else {
         Err(parse_provider_error_json(
             Some(response.status_code.as_u16()),
@@ -448,6 +525,20 @@ impl ControllerProvider for LmStudioProvider {
         )
     }
 
+    fn chat_with_tools_with_metadata(
+        &self,
+        prompt: &str,
+        metadata: &ProviderRequestMetadata,
+        tools: Vec<ChatToolDefinition>,
+    ) -> Result<ProviderOutput, ProviderError> {
+        chat_lm_studio_with_tools_with_request_id(
+            &self.config,
+            elgar_controller_messages_for_config(&self.config, prompt),
+            &metadata.request_id,
+            tools,
+        )
+    }
+
     fn chat_stream(
         &self,
         prompt: &str,
@@ -495,11 +586,13 @@ mod tests {
     use super::{
         chat_lm_studio, chat_lm_studio_streaming, elgar_controller_messages,
         elgar_controller_messages_for_config, format_chat_request, format_chat_request_body,
-        parse_chat_response_json, parse_chat_response_json_with_metrics, parse_chat_stream_chunks,
+        format_chat_request_with_tools, parse_chat_response_json,
+        parse_chat_response_json_with_metrics, parse_chat_stream_chunks,
         parse_chat_stream_response, parse_provider_error_json, ChatMessage, LmStudioProvider,
         ProviderConfig,
     };
     use crate::event::ProviderMetrics;
+    use crate::model_runtime::{elgar_model_tool_definitions, ModelToolName, RawModelToolName};
     use crate::provider::{
         http::parse_http_response, ControllerProvider, ProviderErrorKind, ProviderStreamChunk,
     };
@@ -556,6 +649,36 @@ mod tests {
     }
 
     #[test]
+    fn formats_tool_enabled_openai_compatible_chat_request() {
+        let config = ProviderConfig::lm_studio("loaded-model");
+
+        let request = format_chat_request_with_tools(
+            &config,
+            vec![ChatMessage::user("create hello.py")],
+            elgar_model_tool_definitions(),
+        )
+        .unwrap();
+        let value = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(value["tool_choice"], "auto");
+        assert_eq!(value["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(value["tools"][0]["type"], "function");
+        assert_eq!(value["tools"][0]["function"]["name"], "ask_guidance");
+        assert_eq!(value["tools"][1]["function"]["name"], "create_file");
+        assert_eq!(
+            value["tools"][1]["function"]["parameters"]["required"],
+            json!(["target_path", "contents"])
+        );
+        assert_eq!(value["tools"][7]["function"]["name"], "shell_command");
+        assert!(value["tools"][7]["function"]["parameters"]["properties"]
+            .get("command")
+            .is_some());
+        assert!(value["tools"][7]["function"]["parameters"]["properties"]
+            .get("cwd")
+            .is_some());
+    }
+
+    #[test]
     fn controller_provider_messages_keep_terminal_answers_short_and_readable() {
         let messages = elgar_controller_messages("what can you do?");
 
@@ -567,16 +690,17 @@ mod tests {
         assert!(messages[0].content.contains("Answer briefly"));
         assert!(messages[0].content.contains("terminal-friendly"));
         assert!(messages[0].content.contains("no tables unless asked"));
-        assert!(messages[0].content.contains("speak as Elgar"));
+        assert!(messages[0].content.contains("Speak as Elgar"));
+        assert!(messages[0].content.contains("Suggest content only"));
         assert!(messages[0]
             .content
-            .contains("Suggest text and propose file or shell actions"));
+            .contains("Do not write 'Proposed actions'"));
         assert!(messages[0]
             .content
-            .contains("controller applies only after /approve and verification"));
+            .contains("unless a controller action is pending"));
         assert!(messages[0]
             .content
-            .contains("Never claim you created, edited, managed, executed, or ran anything"));
+            .contains("Never claim you created/edited/ran anything"));
         assert!(messages[0]
             .content
             .contains("Provider text never proves files changed or commands ran"));
@@ -721,7 +845,11 @@ mod tests {
                 "choices": [
                     {
                         "index": 0,
-                        "message": { "role": "assistant", "content": "  Suggested next step.  " },
+                        "message": {
+                            "role": "assistant",
+                            "content": "  Suggested next step.  ",
+                            "tool_calls": null
+                        },
                         "finish_reason": "stop"
                     }
                 ],
@@ -735,7 +863,154 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.text, "Suggested next step.");
+        assert!(output.tool_calls.is_empty());
         assert_eq!(output.thinking, None);
+    }
+
+    #[test]
+    fn parses_openai_compatible_tool_call_as_raw_draft() {
+        let output = parse_chat_response_json(
+            r#"{
+                "id": "chatcmpl-local",
+                "model": "loaded-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": null,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "create_file",
+                                        "arguments": "{\"target_path\":\"demo.txt\",\"contents\":\"hi\"}"
+                                    }
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(output.text, "");
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(output.tool_calls[0].id, "call_1");
+        assert_eq!(
+            output.tool_calls[0].name,
+            RawModelToolName::Known(ModelToolName::CreateFile)
+        );
+        assert_eq!(
+            output.tool_calls[0].arguments,
+            json!({ "target_path": "demo.txt", "contents": "hi" })
+        );
+    }
+
+    #[test]
+    fn parses_content_and_tool_call_without_losing_either() {
+        let output = parse_chat_response_json(
+            r#"{
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "  I can draft that.  ",
+                            "tool_calls": [
+                                {
+                                    "id": "call_dir",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "create_directory",
+                                        "arguments": "{\"target_path\":\"notes\"}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(output.text, "I can draft that.");
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(
+            output.tool_calls[0].name,
+            RawModelToolName::Known(ModelToolName::CreateDirectory)
+        );
+        assert_eq!(
+            output.tool_calls[0].arguments,
+            json!({ "target_path": "notes" })
+        );
+    }
+
+    #[test]
+    fn parses_unknown_tool_name_as_raw_unknown_draft() {
+        let output = parse_chat_response_json(
+            r#"{
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_unknown",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "surprise_tool",
+                                        "arguments": "{\"value\":42}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(
+            output.tool_calls[0].name,
+            RawModelToolName::Unknown("surprise_tool".to_string())
+        );
+        assert_eq!(output.tool_calls[0].arguments, json!({ "value": 42 }));
+    }
+
+    #[test]
+    fn malformed_tool_call_arguments_fail_safely() {
+        let error = parse_chat_response_json(
+            r#"{
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_bad_args",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "create_file",
+                                        "arguments": "{not json"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, ProviderErrorKind::ResponseParse);
+        assert!(error.message.contains("call_bad_args"));
+        assert!(error.message.contains("arguments"));
     }
 
     #[test]

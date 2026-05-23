@@ -5,7 +5,7 @@ use std::{
 };
 
 use elgar_core::{
-    action::ActionLifecycleState,
+    action::{ActionLifecycleState, ActionRequest},
     controller::Controller,
     event::{Event, ProviderOutput, VerifiedActionResult},
     provider::{
@@ -65,6 +65,32 @@ impl ControllerProvider for ClaimingProvider {
     }
 }
 
+#[derive(Debug, Clone)]
+struct FolderPlanProvider;
+
+impl ControllerProvider for FolderPlanProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "folder-plan-provider",
+            Some("folder-plan-model".to_string()),
+            "folder-plan-1",
+        )
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new(
+            "Sure! Let me suggest a small, clean folder structure.\n\
+             code:\n\
+                 project/\n\
+                 ├─ src/          # all source files\n\
+                 ├─ tests/        # unit- and integration-tests\n\
+                 ├─ docs/         # documentation\n\
+                 └─ data/         # data files\n\
+             Once you approve, I can generate the shell commands.",
+        ))
+    }
+}
+
 struct EnvGuard {
     name: &'static str,
     previous: Option<OsString>,
@@ -72,6 +98,12 @@ struct EnvGuard {
 
 impl EnvGuard {
     fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self { name, previous }
+    }
+
+    fn set_path(name: &'static str, value: &Path) -> Self {
         let previous = std::env::var_os(name);
         std::env::set_var(name, value);
         Self { name, previous }
@@ -333,11 +365,12 @@ fn displays_proposed_write_file_action_without_writing() {
     );
 
     let rendered = shell.render();
-    assert!(rendered.contains("Pending Action\nAction: action-1 CreateFile"));
-    assert!(rendered.contains("Target: hello.py"));
-    assert!(rendered.contains("Summary: write hello.py"));
-    assert!(rendered.contains("State: waiting for approval"));
-    assert!(rendered.contains("No action has been applied yet. Use /approve or /reject."));
+    assert!(rendered.contains("Pending Action\nStatus: waiting for approval"));
+    assert!(rendered.contains("File: hello.py"));
+    assert!(rendered.contains("No changes have been made yet."));
+    assert!(rendered.contains("Use /approve to apply or /reject"));
+    assert!(!rendered.contains("Action: action-1 CreateFile"));
+    assert!(!rendered.contains("Summary: write hello.py"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -367,8 +400,8 @@ fn approves_write_file_through_controller_and_renders_verified_result() {
     );
 
     let rendered = shell.render();
-    assert!(rendered.contains("State: applied and verified"));
-    assert!(rendered.contains(&format!("Result: file written: {}", target.display())));
+    assert!(rendered.contains("Status: applied and verified"));
+    assert!(rendered.contains(&format!("Result: Wrote {}.", target.display())));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -393,9 +426,9 @@ fn rejects_write_file_through_controller_without_writing() {
     assert_eq!(session.actions()[0].verified_result, None);
 
     let rendered = shell.render();
-    assert!(rendered.contains("State: rejected"));
+    assert!(rendered.contains("Status: rejected"));
     assert!(rendered.contains("Result: Rejected. No file was changed."));
-    assert!(rendered.contains("Rejected actions are final"));
+    assert!(rendered.contains("Rejected. Nothing was changed."));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -427,9 +460,128 @@ fn approves_shell_command_through_controller_and_renders_shell_result() {
     ));
 
     let rendered = shell.render();
-    assert!(rendered.contains("State: applied and verified"));
-    assert!(rendered.contains("Result: shell command finished"));
-    assert!(rendered.contains("timed out: false"));
+    assert!(rendered.contains("Status: applied and verified"));
+    assert!(rendered.contains("Result: Shell command finished and verification was recorded."));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn followup_folder_plan_creates_pending_action_and_approval_verifies_directories() {
+    let controller = Controller::new(FolderPlanProvider);
+    let root = smoke_root("followup-folder-plan");
+    let desktop = root.join("Desktop");
+    fs::create_dir_all(&desktop).unwrap();
+    let plan_path = desktop.join("folder-plan.md");
+    let expected_dirs = ["src", "tests", "docs", "data"]
+        .map(|name| desktop.join("project").join(name))
+        .to_vec();
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::new();
+
+    shell.submit_input(
+        &controller,
+        &mut session,
+        "what folder structure should I use?",
+    );
+    assert!(session.actions().is_empty());
+    assert!(expected_dirs.iter().all(|path| !path.exists()));
+
+    shell.submit_input(
+        &controller,
+        &mut session,
+        &format!("please create a plan at {}", plan_path.display()),
+    );
+    shell.submit_approval(&controller, &mut session);
+    assert!(plan_path.is_file());
+
+    shell.submit_input(
+        &controller,
+        &mut session,
+        &format!("okay create this plan under {}", desktop.display()),
+    );
+
+    assert_eq!(session.actions().len(), 2);
+    assert!(expected_dirs.iter().all(|path| !path.exists()));
+    let rendered = shell.render();
+    assert!(rendered.contains("Pending Action"));
+    assert!(rendered.contains("Command: mkdir -p"));
+    assert!(!rendered.contains("ShellCommand"));
+    assert!(rendered.contains("mkdir -p"));
+    assert!(rendered.contains("Use /approve to apply or /reject"));
+
+    let result = shell.submit_approval(&controller, &mut session);
+
+    assert_eq!(result.route, Route::ApproveAction);
+    assert!(expected_dirs.iter().all(|path| path.is_dir()));
+    assert_eq!(
+        session.actions()[1].action.state,
+        ActionLifecycleState::Applied
+    );
+    match session.actions()[1].verified_result.as_ref() {
+        Some(VerifiedActionResult::Shell(shell_result)) => {
+            assert_eq!(shell_result.exit_code, Some(0));
+            assert!(shell_result
+                .verified_effect
+                .as_deref()
+                .is_some_and(|effect| effect.contains("verified directories exist")));
+        }
+        other => panic!("expected verified shell result, got {other:?}"),
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn natural_desktop_folder_request_renders_specific_review_and_verified_copy() {
+    let controller = Controller::default();
+    let root = smoke_root("desktop-folder-copy");
+    let home = root.join("home");
+    let desktop = home.join("Desktop");
+    fs::create_dir_all(&desktop).unwrap();
+    let _home = EnvGuard::set_path("HOME", &home);
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let target = desktop.join("helloworld");
+    let mut session = session_at(&project);
+    let mut shell = TuiShell::new();
+
+    let propose_result = shell.submit_input(
+        &controller,
+        &mut session,
+        "create a folder in desktop and call it helloworld",
+    );
+
+    assert_eq!(propose_result.route, Route::ProposeCreateDirectory);
+    assert_eq!(session.actions().len(), 1);
+    assert!(!target.exists());
+    match &session.actions()[0].action.request {
+        ActionRequest::ShellCommand(action) => {
+            assert_eq!(action.expected_directory.as_ref(), Some(&target));
+            assert_eq!(action.cwd, project);
+            assert!(action.command.starts_with("mkdir -p "));
+        }
+        other => panic!("expected ShellCommand action, got {other:?}"),
+    }
+
+    let rendered = shell.render();
+    assert!(rendered.contains("I can create Desktop/helloworld. Approve to create it."));
+    assert!(rendered.contains("Status: waiting for approval"));
+    assert!(rendered.contains("Folder: Desktop/helloworld"));
+    assert!(rendered.contains("No changes have been made yet."));
+    assert!(!rendered.contains("Review needed:"));
+    assert!(!rendered.contains("Proposed ShellCommand action"));
+    assert!(!rendered.contains("Action: action-1 ShellCommand"));
+    assert!(!rendered.contains("Target: mkdir -p "));
+
+    let approve_result = shell.submit_approval(&controller, &mut session);
+
+    assert_eq!(approve_result.route, Route::ApproveAction);
+    assert!(target.is_dir());
+    let rendered = shell.render();
+    assert!(rendered.contains("Created Desktop/helloworld."));
+    assert!(!rendered.contains("Applied approved file action"));
+    assert!(!rendered.contains("Executed approved shell command"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -458,8 +610,8 @@ fn rejects_shell_command_through_controller_without_execution() {
     assert_eq!(session.actions()[0].verified_result, None);
 
     let rendered = shell.render();
-    assert!(rendered.contains("State: rejected"));
-    assert!(rendered.contains("Rejected actions are final"));
+    assert!(rendered.contains("Status: rejected"));
+    assert!(rendered.contains("Rejected. Nothing was changed."));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -479,7 +631,8 @@ fn renders_delete_move_directory_actions_without_mutating_on_render() {
     let rendered = delete_shell.render();
 
     assert!(rendered.contains("Pending Action"));
-    assert!(rendered.contains("DeleteFile"));
+    assert!(rendered.contains("File: delete-me.txt"));
+    assert!(!rendered.contains("DeleteFile"));
     assert_eq!(delete_session, before_render);
     assert_eq!(fs::read_to_string(&delete_target).unwrap(), "keep");
 
@@ -521,7 +674,7 @@ fn rendering_and_rejection_do_not_call_provider_or_mutate_files_directly() {
     let before_render = session.clone();
     let rendered = shell.render();
 
-    assert!(rendered.contains("State: waiting for approval"));
+    assert!(rendered.contains("Status: waiting for approval"));
     assert_eq!(session, before_render);
     assert!(!target.exists());
     assert_eq!(session.provider_metadata(), None);

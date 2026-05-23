@@ -6,6 +6,7 @@ use crate::{
     action::{Action, ActionLifecycleState},
     context::ContextAccounting,
     event::{Event, ProviderMetrics, VerifiedActionResult},
+    policy::PolicyDecision,
 };
 
 /// Core-owned state for one controller session.
@@ -22,8 +23,15 @@ pub struct Session {
     actions: Vec<ActionRecord>,
     provider_metadata: Option<ProviderMetadata>,
     #[serde(default)]
+    project_memory: ProjectMemory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latest_provider_prompt_memory_selection: Option<ProviderPromptMemorySelection>,
+    #[serde(default)]
     context_accounting: ContextAccounting,
 }
+
+pub const PROJECT_MEMORY_LIMIT: usize = 8;
+pub const PROVIDER_PROMPT_MEMORY_SELECTION_FACT_LIMIT: usize = PROJECT_MEMORY_LIMIT;
 
 impl Session {
     pub fn new(
@@ -38,6 +46,8 @@ impl Session {
             events: Vec::new(),
             actions: Vec::new(),
             provider_metadata: None,
+            project_memory: ProjectMemory::default(),
+            latest_provider_prompt_memory_selection: None,
             context_accounting: ContextAccounting::unknown(),
         }
     }
@@ -80,6 +90,18 @@ impl Session {
         self.provider_metadata.as_ref()
     }
 
+    /// Controller-owned project references learned only from verified actions.
+    pub fn project_memory(&self) -> &ProjectMemory {
+        &self.project_memory
+    }
+
+    /// Latest provider prompt memory selection trace recorded by the controller.
+    pub fn latest_provider_prompt_memory_selection(
+        &self,
+    ) -> Option<&ProviderPromptMemorySelection> {
+        self.latest_provider_prompt_memory_selection.as_ref()
+    }
+
     /// Controller-recorded context accounting for UI display and provider budgeting.
     pub fn context_accounting(&self) -> &ContextAccounting {
         &self.context_accounting
@@ -104,6 +126,37 @@ impl Session {
     pub(crate) fn set_context_accounting(&mut self, context_accounting: ContextAccounting) {
         self.context_accounting = context_accounting;
     }
+
+    pub(crate) fn record_verified_folder_reference(&mut self, reference: VerifiedFolderReference) {
+        self.project_memory.remember_verified_folder(reference);
+    }
+
+    pub(crate) fn record_verified_plan_reference(&mut self, reference: VerifiedPlanReference) {
+        self.project_memory.remember_verified_plan(reference);
+    }
+
+    pub(crate) fn record_structured_project_plan(&mut self, plan: StructuredProjectPlan) {
+        self.project_memory.remember_structured_plan(plan);
+    }
+
+    pub(crate) fn set_latest_provider_prompt_memory_selection(
+        &mut self,
+        selection: Option<ProviderPromptMemorySelection>,
+    ) {
+        self.latest_provider_prompt_memory_selection = selection.map(|mut selection| {
+            selection.bound();
+            selection
+        });
+    }
+
+    pub(crate) fn mark_structured_project_plan_executed(&mut self, action_id: &str) {
+        self.project_memory.mark_structured_plan_executed(action_id);
+    }
+
+    pub(crate) fn remove_structured_project_plan_for_action(&mut self, action_id: &str) {
+        self.project_memory
+            .remove_structured_plan_for_action(action_id);
+    }
 }
 
 /// A data-only record of an action as known by the controller.
@@ -112,6 +165,8 @@ pub struct ActionRecord {
     pub action: Action,
     pub verified_result: Option<VerifiedActionResult>,
     pub failure_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_decision: Option<PolicyDecision>,
 }
 
 impl ActionRecord {
@@ -120,11 +175,223 @@ impl ActionRecord {
             action,
             verified_result: None,
             failure_reason: None,
+            policy_decision: None,
         }
     }
 }
 
 pub type ActionState = ActionLifecycleState;
+
+/// Bounded trace of memory facts selected or omitted for the latest provider prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ProviderPromptMemorySelection {
+    #[serde(default)]
+    pub selected: Vec<ProviderPromptMemorySelectedFact>,
+    #[serde(default)]
+    pub omitted: Vec<ProviderPromptMemoryOmittedFact>,
+}
+
+impl ProviderPromptMemorySelection {
+    pub fn new(
+        selected: Vec<ProviderPromptMemorySelectedFact>,
+        omitted: Vec<ProviderPromptMemoryOmittedFact>,
+    ) -> Self {
+        let mut selection = Self { selected, omitted };
+        selection.bound();
+        selection
+    }
+
+    fn bound(&mut self) {
+        trim_to_limit(
+            &mut self.selected,
+            PROVIDER_PROMPT_MEMORY_SELECTION_FACT_LIMIT,
+        );
+        trim_to_limit(
+            &mut self.omitted,
+            PROVIDER_PROMPT_MEMORY_SELECTION_FACT_LIMIT,
+        );
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderPromptMemorySelectedFact {
+    pub kind: String,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<PathBuf>,
+    pub source_action_id: String,
+}
+
+impl ProviderPromptMemorySelectedFact {
+    pub fn new(
+        kind: impl Into<String>,
+        path: PathBuf,
+        project_root: Option<PathBuf>,
+        source_action_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: kind.into(),
+            path,
+            project_root,
+            source_action_id: source_action_id.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderPromptMemoryOmittedFact {
+    pub kind: String,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<PathBuf>,
+    pub source_action_id: String,
+    pub reason: String,
+}
+
+impl ProviderPromptMemoryOmittedFact {
+    pub fn new(
+        kind: impl Into<String>,
+        path: PathBuf,
+        project_root: Option<PathBuf>,
+        source_action_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: kind.into(),
+            path,
+            project_root,
+            source_action_id: source_action_id.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Controller-owned memory for project-building references.
+///
+/// This is not provider memory. Entries are created only by controller code
+/// after approved filesystem/shell actions have verified their expected
+/// effects, except structured plans, which are controller proposals derived
+/// from verified plan files.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ProjectMemory {
+    #[serde(default)]
+    pub verified_folders: Vec<VerifiedFolderReference>,
+    #[serde(default)]
+    pub verified_plans: Vec<VerifiedPlanReference>,
+    #[serde(default)]
+    pub structured_plans: Vec<StructuredProjectPlan>,
+}
+
+impl ProjectMemory {
+    pub fn latest_verified_folder(&self) -> Option<&VerifiedFolderReference> {
+        self.verified_folders.last()
+    }
+
+    pub fn latest_verified_plan(&self) -> Option<&VerifiedPlanReference> {
+        self.verified_plans.last()
+    }
+
+    pub fn latest_structured_plan(&self) -> Option<&StructuredProjectPlan> {
+        self.structured_plans.last()
+    }
+
+    pub fn latest_executed_structured_plan(&self) -> Option<&StructuredProjectPlan> {
+        self.structured_plans
+            .iter()
+            .rev()
+            .find(|plan| plan.status == StructuredProjectPlanStatus::Executed)
+    }
+
+    fn remember_verified_folder(&mut self, reference: VerifiedFolderReference) {
+        self.verified_folders
+            .retain(|existing| existing.path != reference.path);
+        self.verified_folders.push(reference);
+        trim_to_memory_limit(&mut self.verified_folders);
+    }
+
+    fn remember_verified_plan(&mut self, reference: VerifiedPlanReference) {
+        self.verified_plans
+            .retain(|existing| existing.path != reference.path);
+        self.verified_plans.push(reference);
+        trim_to_memory_limit(&mut self.verified_plans);
+    }
+
+    fn remember_structured_plan(&mut self, plan: StructuredProjectPlan) {
+        if let Some(source_action_id) = plan.source_action_id.as_ref() {
+            self.structured_plans.retain(|existing| {
+                existing.source_action_id.as_deref() != Some(source_action_id.as_str())
+            });
+        } else {
+            self.structured_plans.retain(|existing| {
+                existing.source_plan_path != plan.source_plan_path
+                    || existing.project_root != plan.project_root
+                    || existing.stage != plan.stage
+            });
+        }
+        self.structured_plans.push(plan);
+        trim_to_memory_limit(&mut self.structured_plans);
+    }
+
+    fn mark_structured_plan_executed(&mut self, action_id: &str) {
+        if let Some(plan) = self
+            .structured_plans
+            .iter_mut()
+            .rev()
+            .find(|plan| plan.source_action_id.as_deref() == Some(action_id))
+        {
+            plan.status = StructuredProjectPlanStatus::Executed;
+        }
+    }
+
+    fn remove_structured_plan_for_action(&mut self, action_id: &str) {
+        self.structured_plans
+            .retain(|plan| plan.source_action_id.as_deref() != Some(action_id));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedFolderReference {
+    pub path: PathBuf,
+    pub source_action_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedPlanReference {
+    pub path: PathBuf,
+    pub project_root: PathBuf,
+    pub source_action_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredProjectPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_action_id: Option<String>,
+    pub source_plan_path: PathBuf,
+    pub project_root: PathBuf,
+    pub stage: String,
+    #[serde(default)]
+    pub status: StructuredProjectPlanStatus,
+    pub expected_directories: Vec<PathBuf>,
+    pub expected_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum StructuredProjectPlanStatus {
+    #[default]
+    Proposed,
+    Executed,
+}
+
+fn trim_to_memory_limit<T>(items: &mut Vec<T>) {
+    trim_to_limit(items, PROJECT_MEMORY_LIMIT);
+}
+
+fn trim_to_limit<T>(items: &mut Vec<T>, limit: usize) {
+    if items.len() > limit {
+        let overflow = items.len() - limit;
+        items.drain(0..overflow);
+    }
+}
 
 /// Deterministic result of selecting a pending action from a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,7 +435,7 @@ mod tests {
         ProviderOutput, VerifiedActionResult,
     };
 
-    use super::{ActionRecord, PendingActionSelection, ProviderMetadata, Session};
+    use super::{ActionRecord, PendingActionSelection, ProjectMemory, ProviderMetadata, Session};
 
     #[test]
     fn new_session_stores_identity_paths_and_empty_state() {
@@ -180,6 +447,7 @@ mod tests {
         assert!(session.events.is_empty());
         assert!(session.actions.is_empty());
         assert_eq!(session.provider_metadata, None);
+        assert_eq!(session.project_memory, ProjectMemory::default());
 
         let debug = format!("{session:?}");
         assert!(debug.contains("session-1"));

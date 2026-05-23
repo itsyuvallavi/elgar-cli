@@ -120,11 +120,27 @@ impl ContextBundle {
         recent_conversation: Option<&str>,
         input: &str,
     ) -> String {
+        self.prompt_for_with_recent_conversation_and_verified_memory(
+            recent_conversation,
+            None,
+            input,
+        )
+    }
+
+    pub fn prompt_for_with_recent_conversation_and_verified_memory(
+        &self,
+        recent_conversation: Option<&str>,
+        verified_memory: Option<&str>,
+        input: &str,
+    ) -> String {
         let recent_conversation = recent_conversation
             .map(str::trim)
             .filter(|conversation| !conversation.is_empty());
+        let verified_memory = verified_memory
+            .map(str::trim)
+            .filter(|memory| !memory.is_empty());
 
-        if self.sections.is_empty() && recent_conversation.is_none() {
+        if self.sections.is_empty() && recent_conversation.is_none() && verified_memory.is_none() {
             return input.to_string();
         }
 
@@ -144,6 +160,12 @@ impl ContextBundle {
         if let Some(recent_conversation) = recent_conversation {
             blocks.push(format!(
                 "Recent conversation selected by Elgar controller:\n{recent_conversation}"
+            ));
+        }
+
+        if let Some(verified_memory) = verified_memory {
+            blocks.push(format!(
+                "Verified memory selected by Elgar controller:\n{verified_memory}"
             ));
         }
 
@@ -353,7 +375,7 @@ fn estimate_tokens_from_bytes(bytes: u64) -> u64 {
     bytes.div_ceil(4)
 }
 
-fn context_budget_tokens(max_window_tokens: Option<u64>) -> u64 {
+pub fn context_budget_tokens(max_window_tokens: Option<u64>) -> u64 {
     match max_window_tokens {
         Some(max) => DEFAULT_CONTEXT_BUDGET_TOKENS.min(max.saturating_sub(256)),
         None => DEFAULT_CONTEXT_BUDGET_TOKENS,
