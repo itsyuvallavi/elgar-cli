@@ -164,13 +164,13 @@ where
     let action_gate = ActionGate::new(runtime.provider.clone());
     let mut shell = TuiShell::with_policy_mode(policy_mode);
 
-    let mut context = terminal_context(&session, &runtime, policy_mode);
+    let mut context = terminal_context(&session, &runtime, shell.policy_mode);
     print_inline_startup(&context)?;
 
     let mut next_prompt_input = String::new();
     loop {
         runtime.refresh_context_accounting(&mut session, context_window_tokens);
-        context = terminal_context(&session, &runtime, policy_mode);
+        context = terminal_context(&session, &runtime, shell.policy_mode);
         let Some(input) = read_inline_prompt(&context, &next_prompt_input)? else {
             break;
         };
@@ -289,6 +289,10 @@ where
         }
         TerminalCommand::Memory => {
             print_plain_block(&render_session_memory(session))?;
+            Ok((false, String::new()))
+        }
+        TerminalCommand::Permissions(argument) => {
+            print_plain_block(&shell.apply_permission_command(argument))?;
             Ok((false, String::new()))
         }
         TerminalCommand::Unknown(command) => {
@@ -910,6 +914,10 @@ where
                 .conversation
                 .push_local_message(render_session_memory(session));
             shell.conversation.follow_latest();
+        }
+        TerminalCommand::Permissions(argument) => {
+            let message = shell.apply_permission_command(argument);
+            shell.push_local_message(message);
         }
         TerminalCommand::Copy => {
             let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);

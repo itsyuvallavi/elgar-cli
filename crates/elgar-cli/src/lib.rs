@@ -439,6 +439,24 @@ pub fn is_tui_memory_command(input: &str) -> bool {
     input.trim() == "/memory"
 }
 
+pub fn tui_permission_command_argument(input: &str) -> Option<Option<&str>> {
+    let trimmed = input.trim();
+    if matches!(trimmed, "/permissions" | "/policy") {
+        return Some(None);
+    }
+    trimmed
+        .strip_prefix("/permissions ")
+        .or_else(|| trimmed.strip_prefix("/policy "))
+        .map(str::trim)
+        .map(|argument| {
+            if argument.is_empty() {
+                None
+            } else {
+                Some(argument)
+            }
+        })
+}
+
 pub fn is_tui_clear_command(input: &str) -> bool {
     matches!(input.trim(), "/clear" | "/new")
 }
@@ -460,6 +478,9 @@ fn submit_tui_input(
         shell.submit_rejection(action_gate, session);
     } else if is_tui_cancel_command(input) {
         shell.push_local_message("No active provider turn to cancel.");
+    } else if let Some(argument) = tui_permission_command_argument(input) {
+        let message = shell.apply_permission_command(argument);
+        shell.push_local_message(message);
     } else if matches!(route_input(input), Route::ApproveAction) {
         if matches!(
             session.pending_action_selection(),
@@ -484,7 +505,7 @@ fn submit_tui_input(
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/cancel    Cancel the active provider turn\n/approve   Apply the pending action\n/reject    Reject the pending action\n/memory    Show verified memory\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
+    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/memory                Show verified memory\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
 }
 
 pub fn render_tui_script<I, S>(
@@ -790,9 +811,10 @@ mod tests {
         provider_smoke_prompt, render_cli_turn_from_runtime_config, render_controller_smoke,
         render_tui_controller_smoke, render_tui_help, render_tui_script,
         render_tui_script_with_policy, resolve_runtime_project_root, run_tui_loop,
-        runtime_permission_policy_mode, should_launch_terminal_tui_by_default, ProviderSmokeConfig,
-        ProviderSmokeError, RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
-        PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
+        runtime_permission_policy_mode, should_launch_terminal_tui_by_default,
+        tui_permission_command_argument, ProviderSmokeConfig, ProviderSmokeError, RuntimePaths,
+        RuntimeProviderConfigError, PROVIDER_CONFIG_FILE, PROVIDER_SMOKE_DEFAULT_PROMPT,
+        TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
     fn temp_root(name: &str) -> PathBuf {
@@ -1164,6 +1186,7 @@ mod tests {
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
         assert!(help.contains("/memory"));
+        assert!(help.contains("/permissions"));
         assert!(help.contains("/copy"));
         assert!(help.contains("/exit"));
         assert!(help.contains("/quit"));
@@ -1175,6 +1198,21 @@ mod tests {
         assert!(!help.contains("/provider"));
         assert!(!help.contains("/bash"));
         assert!(!help.contains("/api"));
+    }
+
+    #[test]
+    fn tui_permission_command_parses_show_cycle_and_set_forms() {
+        assert_eq!(tui_permission_command_argument("/permissions"), Some(None));
+        assert_eq!(tui_permission_command_argument("/policy"), Some(None));
+        assert_eq!(
+            tui_permission_command_argument("/permissions next"),
+            Some(Some("next"))
+        );
+        assert_eq!(
+            tui_permission_command_argument(" /policy full-access "),
+            Some(Some("full-access"))
+        );
+        assert_eq!(tui_permission_command_argument("permissions"), None);
     }
 
     #[test]
@@ -1380,6 +1418,31 @@ mod tests {
         assert!(!rendered.contains("Status: applied and verified"));
         assert!(!rendered.contains("Wrote "));
         assert!(rendered.contains("Status: waiting for approval"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tui_script_permission_command_changes_runtime_policy() {
+        let root = temp_root("permission-toggle-command");
+
+        let rendered = render_tui_script(
+            [
+                "/permissions review_all",
+                "create file gated.py",
+                "/reject",
+                "/permissions auto_create_review_modify",
+                "create file allowed.py",
+            ],
+            &root,
+            &root,
+        );
+
+        assert!(rendered.contains("Permission mode set to review_all"));
+        assert!(rendered.contains("Status: waiting for approval"));
+        assert!(!root.join("gated.py").exists());
+        assert!(rendered.contains("Permission mode set to auto_create_review_modify"));
+        assert!(root.join("allowed.py").is_file());
 
         let _ = fs::remove_dir_all(root);
     }

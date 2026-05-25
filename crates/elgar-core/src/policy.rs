@@ -16,6 +16,13 @@ pub enum PermissionPolicyMode {
 }
 
 impl PermissionPolicyMode {
+    pub const ALL: [Self; 4] = [
+        Self::ReviewAll,
+        Self::AutoCreateReviewModify,
+        Self::WorkspaceWriteWithReview,
+        Self::FullAccess,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReviewAll => "review_all",
@@ -27,6 +34,27 @@ impl PermissionPolicyMode {
 
     pub fn parse(value: &str) -> Result<Self, PermissionPolicyModeParseError> {
         value.parse()
+    }
+
+    pub fn next(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|mode| *mode == self)
+            .unwrap_or_default();
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ReviewAll => "review every file and shell action",
+            Self::AutoCreateReviewModify => {
+                "auto-create files and folders; review edits, deletes, moves, and shell"
+            }
+            Self::WorkspaceWriteWithReview => {
+                "auto-apply workspace file writes; review deletes, moves, and shell"
+            }
+            Self::FullAccess => "auto-apply validated file and shell actions",
+        }
     }
 }
 
@@ -251,6 +279,26 @@ mod tests {
 
         let error = PermissionPolicyMode::parse("danger").unwrap_err();
         assert!(error.to_string().contains("invalid permission policy mode"));
+    }
+
+    #[test]
+    fn policy_modes_cycle_in_display_order() {
+        assert_eq!(
+            PermissionPolicyMode::ReviewAll.next(),
+            PermissionPolicyMode::AutoCreateReviewModify
+        );
+        assert_eq!(
+            PermissionPolicyMode::AutoCreateReviewModify.next(),
+            PermissionPolicyMode::WorkspaceWriteWithReview
+        );
+        assert_eq!(
+            PermissionPolicyMode::WorkspaceWriteWithReview.next(),
+            PermissionPolicyMode::FullAccess
+        );
+        assert_eq!(
+            PermissionPolicyMode::FullAccess.next(),
+            PermissionPolicyMode::ReviewAll
+        );
     }
 
     #[test]

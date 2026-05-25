@@ -5,11 +5,8 @@ fn default_terminal_shell_is_empty_and_no_network() {
     let text = default_shell_text();
 
     assert!(text.contains("elgar v0.2"));
-    assert!(text
-        .contains("/commands · /clear · /cancel · /approve · /reject · /memory · /copy · /exit"));
-    assert!(text.contains(
-        "Elgar is running with the default no-network stub provider and keeps file changes behind approval."
-    ));
+    assert!(text.contains("/commands · /permissions · /clear · /approve · /reject · /copy · /exit"));
+    assert!(text.contains("Elgar is running with the default no-network stub provider."));
     assert!(text.contains("[Context]"));
     assert!(text.contains("[Provider]\n  stub-provider · none"));
     assert!(text.contains("[Policy]\n  auto_create_review_modify"));

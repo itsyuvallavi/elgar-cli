@@ -128,10 +128,57 @@ impl TuiShell {
         self.conversation.follow_latest();
     }
 
+    pub fn apply_permission_command(&mut self, argument: Option<&str>) -> String {
+        let Some(argument) = argument.map(str::trim).filter(|value| !value.is_empty()) else {
+            return render_permission_mode_status(self.policy_mode);
+        };
+
+        if argument.eq_ignore_ascii_case("next") {
+            self.policy_mode = self.policy_mode.next();
+            return format!(
+                "Permission mode set to {}: {}.",
+                self.policy_mode,
+                self.policy_mode.description()
+            );
+        }
+
+        match PermissionPolicyMode::parse(argument) {
+            Ok(mode) => {
+                self.policy_mode = mode;
+                format!(
+                    "Permission mode set to {}: {}.",
+                    self.policy_mode,
+                    self.policy_mode.description()
+                )
+            }
+            Err(_) => format!(
+                "Unknown permission mode `{argument}`. Use one of: {}.",
+                permission_mode_names()
+            ),
+        }
+    }
+
     pub fn push_local_message(&mut self, message: impl Into<String>) {
         self.conversation.push_local_message(message);
         self.conversation.follow_latest();
     }
+}
+
+fn render_permission_mode_status(mode: PermissionPolicyMode) -> String {
+    format!(
+        "Permission mode is {}: {}.\nAvailable modes: {}.",
+        mode,
+        mode.description(),
+        permission_mode_names()
+    )
+}
+
+fn permission_mode_names() -> String {
+    PermissionPolicyMode::ALL
+        .iter()
+        .map(|mode| mode.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl Default for TuiShell {
@@ -163,6 +210,36 @@ mod tests {
         assert_eq!(
             shell.policy_mode,
             elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify
+        );
+    }
+
+    #[test]
+    fn permission_command_shows_sets_and_cycles_modes() {
+        let mut shell =
+            TuiShell::with_policy_mode(elgar_core::policy::PermissionPolicyMode::ReviewAll);
+
+        let status = shell.apply_permission_command(None);
+        assert!(status.contains("Permission mode is review_all"));
+
+        let cycled = shell.apply_permission_command(Some("next"));
+        assert!(cycled.contains("auto_create_review_modify"));
+        assert_eq!(
+            shell.policy_mode,
+            elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify
+        );
+
+        let set = shell.apply_permission_command(Some("full-access"));
+        assert!(set.contains("full_access"));
+        assert_eq!(
+            shell.policy_mode,
+            elgar_core::policy::PermissionPolicyMode::FullAccess
+        );
+
+        let invalid = shell.apply_permission_command(Some("anything"));
+        assert!(invalid.contains("Unknown permission mode"));
+        assert_eq!(
+            shell.policy_mode,
+            elgar_core::policy::PermissionPolicyMode::FullAccess
         );
     }
 

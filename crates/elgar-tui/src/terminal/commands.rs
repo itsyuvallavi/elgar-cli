@@ -13,6 +13,7 @@ pub(super) enum TerminalCommand<'a> {
     Reject,
     Cancel,
     Memory,
+    Permissions(Option<&'a str>),
     Copy,
     Exit,
     Unknown(&'a str),
@@ -29,6 +30,21 @@ pub(super) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
         "/reject" => TerminalCommand::Reject,
         "/cancel" => TerminalCommand::Cancel,
         "/memory" => TerminalCommand::Memory,
+        "/permissions" | "/policy" => TerminalCommand::Permissions(None),
+        command
+            if command
+                .strip_prefix("/permissions ")
+                .or_else(|| command.strip_prefix("/policy "))
+                .is_some() =>
+        {
+            TerminalCommand::Permissions(
+                command
+                    .strip_prefix("/permissions ")
+                    .or_else(|| command.strip_prefix("/policy "))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty()),
+            )
+        }
         "/copy" => TerminalCommand::Copy,
         "/exit" | "/quit" | "/q" => TerminalCommand::Exit,
         command if command.starts_with('/') => TerminalCommand::Unknown(command),
@@ -37,7 +53,7 @@ pub(super) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
 }
 
 pub(super) fn render_terminal_help() -> &'static str {
-    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/cancel    Cancel the active provider turn\n/approve   Apply the pending action\n/reject    Reject the pending action\n/memory    Show verified memory\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
+    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/memory                Show verified memory\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
 }
 
 pub(super) fn clear_terminal_conversation(shell: &mut TuiShell) {
@@ -180,4 +196,38 @@ pub(super) fn encode_base64(bytes: &[u8]) -> String {
     }
 
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_terminal_command, render_terminal_help, TerminalCommand};
+
+    #[test]
+    fn permissions_command_parses_show_cycle_and_set_forms() {
+        assert_eq!(
+            parse_terminal_command("/permissions"),
+            TerminalCommand::Permissions(None)
+        );
+        assert_eq!(
+            parse_terminal_command("/policy"),
+            TerminalCommand::Permissions(None)
+        );
+        assert_eq!(
+            parse_terminal_command("/permissions next"),
+            TerminalCommand::Permissions(Some("next"))
+        );
+        assert_eq!(
+            parse_terminal_command(" /policy full-access "),
+            TerminalCommand::Permissions(Some("full-access"))
+        );
+    }
+
+    #[test]
+    fn help_lists_permissions_command() {
+        let help = render_terminal_help();
+
+        assert!(help.contains("/permissions"));
+        assert!(help.contains("/permissions next"));
+        assert!(help.contains("/permissions <mode>"));
+    }
 }

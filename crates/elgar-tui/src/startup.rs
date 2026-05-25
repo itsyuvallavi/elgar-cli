@@ -48,7 +48,7 @@ impl StartupBlock {
 
     pub fn render(&self) -> String {
         format!(
-            "elgar v0.2\n/commands · /clear · /cancel · /approve · /reject · /memory · /copy · /exit\n\n{}\n\n[Context]\n{}\n\n[Provider]\n  {} · {}\n\n[Policy]\n  {}",
+            "elgar v0.2\n/commands · /permissions · /clear · /approve · /reject · /copy · /exit\n\n{}\n\n[Context]\n{}\n\n[Provider]\n  {} · {}\n\n[Policy]\n  {}",
             self.provider_description(),
             self.render_context_files(),
             self.provider.as_deref().unwrap_or("none"),
@@ -57,15 +57,13 @@ impl StartupBlock {
         )
     }
 
-    fn provider_description(&self) -> &'static str {
+    fn provider_description(&self) -> String {
         match self.provider.as_deref() {
-            Some("lm-studio") => {
-                "Elgar uses your local LM Studio model and keeps file changes behind approval."
-            }
+            Some("lm-studio") => "Elgar uses your local LM Studio model.".to_string(),
             Some("stub-provider") => {
-                "Elgar is running with the default no-network stub provider and keeps file changes behind approval."
+                "Elgar is running with the default no-network stub provider.".to_string()
             }
-            _ => "Elgar keeps file changes behind approval.",
+            _ => "Elgar is ready.".to_string(),
         }
     }
 
@@ -104,7 +102,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "elgar v0.2\n/commands · /clear · /cancel · /approve · /reject · /memory · /copy · /exit\n\nElgar uses your local LM Studio model and keeps file changes behind approval.\n\n[Context]\n  AGENTS.md\n\n[Provider]\n  lm-studio · openai/gpt-oss-20b\n\n[Policy]\n  auto_create_review_modify"
+            "elgar v0.2\n/commands · /permissions · /clear · /approve · /reject · /copy · /exit\n\nElgar uses your local LM Studio model.\n\n[Context]\n  AGENTS.md\n\n[Provider]\n  lm-studio · openai/gpt-oss-20b\n\n[Policy]\n  auto_create_review_modify"
         );
         assert!(!rendered.contains("elgar-provider.json"));
         assert!(!rendered.contains("Commands:"));
