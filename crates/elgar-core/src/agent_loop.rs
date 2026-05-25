@@ -6,7 +6,7 @@ use std::{
 use serde_json::Value;
 
 use crate::{
-    action::{Action, ActionRequest},
+    action::{Action, ActionRequest, CreateFileAction},
     controller::TurnResult,
     controller_project_memory::record_verified_project_memory,
     controller_reporting::verified_action_success_message,
@@ -147,7 +147,10 @@ where
         };
 
         let path_resolution = agent_context.path_resolution(&session.project_root);
-        let resolved_outputs = resolve_agent_tool_outputs(outputs, &path_resolution);
+        let resolved_outputs = repair_directory_only_file_request(
+            input,
+            resolve_agent_tool_outputs(outputs, &path_resolution),
+        );
 
         if policy_mode == PermissionPolicyMode::ReviewAll {
             if let Some(action) = review_required_action_to_propose(&resolved_outputs, policy_mode)
@@ -220,6 +223,110 @@ fn resolve_agent_tool_outputs(
             }
         })
         .collect()
+}
+
+fn repair_directory_only_file_request(
+    input: &str,
+    outputs: Vec<ResolvedAgentToolOutput>,
+) -> Vec<ResolvedAgentToolOutput> {
+    if outputs.len() != 1 {
+        return outputs;
+    }
+
+    let Some(file_request) = parse_clear_file_create_request(input) else {
+        return outputs;
+    };
+
+    let ResolvedAgentToolOutput::Action(action) = &outputs[0] else {
+        return outputs;
+    };
+    let ActionRequest::CreateDirectory(create_directory) = &action.request else {
+        return outputs;
+    };
+
+    if Some(create_directory.target_path.as_path()) != file_request.target_path.parent() {
+        return outputs;
+    }
+
+    let request = ActionRequest::CreateFile(file_request);
+    let target_label = request.approval_target();
+
+    vec![ResolvedAgentToolOutput::Action(ValidatedModelToolAction {
+        tool_call_id: action.tool_call_id.clone(),
+        request,
+        summary: "create requested file".to_string(),
+        target_label,
+    })]
+}
+
+fn parse_clear_file_create_request(input: &str) -> Option<CreateFileAction> {
+    let trimmed = input.trim();
+    let rest = [
+        "create a file called ",
+        "create file called ",
+        "write a file called ",
+        "write file called ",
+        "create a file named ",
+        "create file named ",
+        "write a file named ",
+        "write file named ",
+    ]
+    .into_iter()
+    .find_map(|prefix| strip_ascii_case_prefix(trimmed, prefix))?;
+
+    let (file_name, rest) = split_ascii_case_once(rest, " inside ")?;
+    let (directory, contents) = split_ascii_case_once(rest, " with ")?;
+    let file_name = clean_requested_value(file_name)?;
+    let directory = clean_requested_value(directory)?;
+    let contents = clean_requested_contents(contents)?;
+    let target_path = expand_user_path(Path::new(&directory)).join(file_name);
+
+    Some(CreateFileAction {
+        target_path,
+        contents,
+    })
+}
+
+fn clean_requested_value(value: &str) -> Option<String> {
+    let value = value
+        .trim()
+        .trim_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':' | '"' | '\''));
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn clean_requested_contents(value: &str) -> Option<String> {
+    let value = value
+        .trim()
+        .trim_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':' | '"' | '\''));
+    Some(value.to_string())
+}
+
+fn expand_user_path(path: &Path) -> PathBuf {
+    let path_string = path.as_os_str().to_string_lossy();
+    if path_string == "~" {
+        return home_dir().unwrap_or_else(|| path.to_path_buf());
+    }
+    if let Some(rest) = path_string.strip_prefix("~/") {
+        if let Some(home) = home_dir() {
+            return home.join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+fn split_ascii_case_once<'a>(input: &'a str, delimiter: &str) -> Option<(&'a str, &'a str)> {
+    let index = input
+        .as_bytes()
+        .windows(delimiter.len())
+        .position(|window| window.eq_ignore_ascii_case(delimiter.as_bytes()))?;
+    Some((&input[..index], &input[index + delimiter.len()..]))
+}
+
+fn strip_ascii_case_prefix<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
+    let candidate = input.get(..prefix.len())?;
+    candidate
+        .eq_ignore_ascii_case(prefix)
+        .then(|| &input[prefix.len()..])
 }
 
 fn review_required_action_to_propose(

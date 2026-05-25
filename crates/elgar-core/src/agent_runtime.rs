@@ -368,6 +368,60 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn agent_runtime_review_all_repairs_directory_only_tool_for_clear_file_request() {
+        let root = temp_root("review-all-directory-only-file");
+        let _home = EnvGuard::set_home(&root);
+        let target_dir = root.join("ElgarPermissionTest");
+        let target_file = target_dir.join("test.txt");
+        let provider = BatchToolProvider::new(vec![RawModelToolCall {
+            id: "tool-dir".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+            arguments: serde_json::json!({
+                "target_path": target_dir
+            }),
+            assistant_summary: Some("create parent directory".to_string()),
+        }]);
+        let runtime = AgentRuntime::new(provider.clone());
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.turn(
+            &mut session,
+            "create a file called test.txt inside ~/ElgarPermissionTest with hello",
+            PermissionPolicyMode::ReviewAll,
+        );
+
+        assert!(!target_file.exists());
+        assert_eq!(provider.call_count(), 1);
+        assert_eq!(session.actions().len(), 1);
+        let record = session.actions().last().expect("pending action");
+        assert_eq!(record.action.state, ActionLifecycleState::Proposed);
+        let ActionRequest::CreateFile(create_file) = &record.action.request else {
+            panic!("expected repaired pending create file action");
+        };
+        assert_eq!(create_file.target_path, target_file);
+        assert_eq!(create_file.contents, "hello");
+        assert!(result
+            .events
+            .iter()
+            .all(|event| !matches!(event, Event::AssistantMessage(message) if message.content.contains("approve"))));
+
+        ActionGate::new(ProviderStub::default()).approve(&mut session);
+
+        assert_eq!(
+            session.actions().last().unwrap().failure_reason,
+            None,
+            "approval should not fail"
+        );
+        assert_eq!(fs::read_to_string(&target_file).unwrap(), "hello");
+        assert_eq!(
+            session.actions().last().unwrap().action.state,
+            ActionLifecycleState::Applied
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[derive(Debug, Clone)]
     struct ToolProvider {
         call: RawModelToolCall,
