@@ -544,6 +544,7 @@ fn extract_stub_project_root(original: &str, lower: &str) -> Option<String> {
 
 fn extract_stub_named_value(original: &str, lower: &str) -> Option<String> {
     extract_stub_after_marker(original, lower, "name it ")
+        .or_else(|| extract_stub_after_marker(original, lower, "call the folder "))
         .or_else(|| extract_stub_after_marker(original, lower, "called "))
         .or_else(|| extract_stub_after_marker(original, lower, "named "))
 }
@@ -773,6 +774,21 @@ mod tests {
         ] {
             assert!(targets.contains(&expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn stub_project_request_accepts_call_the_folder_name() {
+        let output = ProviderStub::default()
+            .ask_with_tools("create a react project using tailwind and TS, call the folder TEST")
+            .output;
+        let targets = output
+            .tool_calls
+            .iter()
+            .map(|call| call.arguments["target_path"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>();
+
+        assert!(targets.contains(&"TEST/package.json"));
+        assert!(targets.contains(&"TEST/src/App.tsx"));
     }
 
     #[test]

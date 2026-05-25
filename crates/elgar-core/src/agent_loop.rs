@@ -20,8 +20,8 @@ use crate::{
     },
     fs::Filesystem,
     model_runtime::{
-        elgar_model_tool_definitions, validate_model_tool_outputs, RawModelToolCall,
-        ValidatedModelToolAction, ValidatedModelToolOutput,
+        elgar_model_tool_definitions, validate_model_tool_outputs, ModelToolValidationErrorKind,
+        RawModelToolCall, ValidatedModelToolAction, ValidatedModelToolOutput,
     },
     policy::{PermissionPolicyMode, PolicyDecision},
     provider::{ChatMessage, ChatRole, ChatToolCall, ChatToolCallFunction, ControllerProvider},
@@ -60,7 +60,7 @@ where
     if let Some(context) = agent_recent_conversation_context(session, start_index) {
         messages.push(ChatMessage::system(context));
     }
-    if let Some(context) = agent_context.prompt_context {
+    if let Some(context) = agent_context.prompt_context.clone() {
         messages.push(ChatMessage::system(context));
     }
     messages.push(ChatMessage::user(input));
@@ -116,8 +116,17 @@ where
         let outputs = match validate_model_tool_outputs(&tool_calls) {
             Ok(outputs) => outputs,
             Err(error) => {
-                let message = error.message;
-                session.push_event(Event::Error(ErrorEvent::new(message.clone())));
+                let active_project_base = agent_context.active_project_base();
+                let message = recoverable_tool_validation_message(
+                    &error.message,
+                    &error,
+                    active_project_base.as_deref(),
+                );
+                if !is_recoverable_edit_target_validation_error(&error)
+                    || active_project_base.is_none()
+                {
+                    session.push_event(Event::Error(ErrorEvent::new(message.clone())));
+                }
                 for tool_call in tool_calls {
                     messages.push(ChatMessage::tool(tool_call.id, message.clone()));
                 }
@@ -136,6 +145,7 @@ where
                         action,
                         agent_context.requested_project_base.as_deref(),
                         agent_context.followup_base.as_deref(),
+                        &session.project_root,
                     );
                     let result =
                         apply_permissive_agent_action(session, action.request, action.summary);
@@ -296,6 +306,47 @@ struct AgentVerifiedMemoryContext {
     requested_project_base: Option<PathBuf>,
 }
 
+impl AgentVerifiedMemoryContext {
+    fn active_project_base(&self) -> Option<PathBuf> {
+        self.requested_project_base
+            .clone()
+            .or_else(|| self.followup_base.clone())
+    }
+}
+
+fn recoverable_tool_validation_message(
+    message: &str,
+    error: &crate::model_runtime::ModelToolValidationError,
+    active_project_base: Option<&Path>,
+) -> String {
+    if !is_recoverable_edit_target_validation_error(error) {
+        return message.to_string();
+    }
+
+    let Some(base) = active_project_base else {
+        return format!("{message}. Ask the user which project file to edit.");
+    };
+
+    format!(
+        "{message}. Retry inside the active project root `{}` with a concrete project file path, or ask_guidance if the target is unclear.",
+        base.display()
+    )
+}
+
+fn is_recoverable_edit_target_validation_error(
+    error: &crate::model_runtime::ModelToolValidationError,
+) -> bool {
+    matches!(
+        error.kind,
+        ModelToolValidationErrorKind::MissingArgument
+            | ModelToolValidationErrorKind::MalformedArgument
+    ) && error.argument.as_deref() == Some("target_path")
+        && matches!(
+            error.tool_name.as_deref(),
+            Some("patch_file" | "overwrite_file" | "delete_file")
+        )
+}
+
 fn agent_verified_memory_context(session: &mut Session, input: &str) -> AgentVerifiedMemoryContext {
     let normalized = input.to_ascii_lowercase();
     let short_followup = mentions_short_followup(&normalized);
@@ -405,6 +456,7 @@ fn requested_project_base(input: &str, location_base: Option<&Path>) -> Option<P
     }
 
     let name = requested_name_after(input, "call it")
+        .or_else(|| requested_name_after(input, "call the folder"))
         .or_else(|| requested_name_after(input, "called"))
         .or_else(|| requested_name_after(input, "name it"))?;
     let path = PathBuf::from(name);
@@ -590,30 +642,70 @@ fn retarget_agent_action(
     action: ValidatedModelToolAction,
     requested_project_base: Option<&Path>,
     followup_base: Option<&Path>,
+    workspace_root: &Path,
 ) -> ValidatedModelToolAction {
     if let Some(base) = requested_project_base {
-        return retarget_safe_create_to_requested_project_base(base, action);
+        return retarget_action_to_project_base(base, Some(workspace_root), action);
+    }
+
+    if let Some(base) = followup_base {
+        return retarget_action_to_project_base(base, Some(workspace_root), action);
     }
 
     retarget_safe_create_to_followup_base(followup_base, action)
 }
 
-fn retarget_safe_create_to_requested_project_base(
+fn retarget_action_to_project_base(
     base: &Path,
+    workspace_root: Option<&Path>,
     mut validated: ValidatedModelToolAction,
 ) -> ValidatedModelToolAction {
     match &mut validated.request {
         ActionRequest::CreateFile(create_file) => {
-            if let Some(target_path) = requested_project_target_path(&create_file.target_path, base)
+            if let Some(target_path) =
+                project_base_target_path(&create_file.target_path, base, workspace_root)
             {
                 create_file.target_path = target_path;
             }
         }
         ActionRequest::CreateDirectory(create_directory) => {
             if let Some(target_path) =
-                requested_project_target_path(&create_directory.target_path, base)
+                project_base_target_path(&create_directory.target_path, base, workspace_root)
             {
                 create_directory.target_path = target_path;
+            }
+        }
+        ActionRequest::PatchFile(patch_file) => {
+            if let Some(target_path) =
+                project_base_target_path(&patch_file.target_path, base, workspace_root)
+            {
+                patch_file.target_path = target_path;
+            }
+        }
+        ActionRequest::OverwriteFile(overwrite_file) => {
+            if let Some(target_path) =
+                project_base_target_path(&overwrite_file.target_path, base, workspace_root)
+            {
+                overwrite_file.target_path = target_path;
+            }
+        }
+        ActionRequest::DeleteFile(delete_file) => {
+            if let Some(target_path) =
+                project_base_target_path(&delete_file.target_path, base, workspace_root)
+            {
+                delete_file.target_path = target_path;
+            }
+        }
+        ActionRequest::MoveFile(move_file) => {
+            if let Some(source_path) =
+                project_base_target_path(&move_file.source_path, base, workspace_root)
+            {
+                move_file.source_path = source_path;
+            }
+            if let Some(target_path) =
+                project_base_target_path(&move_file.target_path, base, workspace_root)
+            {
+                move_file.target_path = target_path;
             }
         }
         _ => return validated,
@@ -623,9 +715,39 @@ fn retarget_safe_create_to_requested_project_base(
     validated
 }
 
-fn requested_project_target_path(target_path: &Path, base: &Path) -> Option<PathBuf> {
-    if target_path.is_absolute() || target_path.starts_with(base) {
+fn project_base_target_path(
+    target_path: &Path,
+    base: &Path,
+    workspace_root: Option<&Path>,
+) -> Option<PathBuf> {
+    if target_path.starts_with(base) {
         return None;
+    }
+
+    if target_path.is_absolute() {
+        if let Some(workspace_root) = workspace_root {
+            if let Ok(relative) = target_path.strip_prefix(workspace_root) {
+                return project_base_target_path(relative, base, None);
+            }
+        }
+        if let Some(target_path) = sibling_project_target_path(target_path, base) {
+            return Some(target_path);
+        }
+        return strip_base_suffix_prefix(target_path, base).map(|suffix| {
+            if suffix.as_os_str().is_empty() {
+                base.to_path_buf()
+            } else {
+                base.join(suffix)
+            }
+        });
+    }
+
+    if let Some(suffix) = strip_base_suffix_prefix(target_path, base) {
+        return Some(if suffix.as_os_str().is_empty() {
+            base.to_path_buf()
+        } else {
+            base.join(suffix)
+        });
     }
 
     if let Some(suffix) = strip_repeated_base_name_prefix_for_agent(target_path, base) {
@@ -645,6 +767,68 @@ fn requested_project_target_path(target_path: &Path, base: &Path) -> Option<Path
     }
 
     Some(base.join(target_path))
+}
+
+fn sibling_project_target_path(target_path: &Path, base: &Path) -> Option<PathBuf> {
+    let parent = base.parent()?;
+    let relative = target_path.strip_prefix(parent).ok()?;
+    let mut components = relative.components();
+    let first = components.next()?;
+    let std::path::Component::Normal(first) = first else {
+        return None;
+    };
+    if Some(first) == base.file_name() || !is_generic_project_root_component(first) {
+        return None;
+    }
+    let suffix = components.as_path();
+    Some(if suffix.as_os_str().is_empty() {
+        base.to_path_buf()
+    } else {
+        base.join(suffix)
+    })
+}
+
+fn is_generic_project_root_component(value: &std::ffi::OsStr) -> bool {
+    let value = value.to_string_lossy().to_ascii_lowercase();
+    matches!(
+        value.as_str(),
+        "project"
+            | "app"
+            | "my-app"
+            | "my-next-app"
+            | "my-nextapp"
+            | "my-nextjs-app"
+            | "react-app"
+            | "react-project"
+            | "vite-project"
+    )
+}
+
+fn strip_base_suffix_prefix(target_path: &Path, base: &Path) -> Option<PathBuf> {
+    let target_components = normal_path_components(target_path);
+    let base_components = normal_path_components(base);
+    for start in 0..base_components.len() {
+        let base_suffix = &base_components[start..];
+        if base_suffix.is_empty() || target_components.len() < base_suffix.len() {
+            continue;
+        }
+        for target_start in 0..=target_components.len() - base_suffix.len() {
+            let target_end = target_start + base_suffix.len();
+            if target_components[target_start..target_end] == base_suffix[..] {
+                return Some(target_components[target_end..].iter().collect());
+            }
+        }
+    }
+    None
+}
+
+fn normal_path_components(path: &Path) -> Vec<std::ffi::OsString> {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_os_string()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn strip_repeated_base_name_prefix_for_agent(target_path: &Path, base: &Path) -> Option<PathBuf> {
@@ -1145,6 +1329,13 @@ mod tests {
             Some(PathBuf::from("/Users/yuval/Desktop/Demo123"))
         );
         assert_eq!(
+            requested_project_base(
+                "create a react project using tailwind and TS in the desktop, call the folder TEST",
+                Some(Path::new("/Users/yuval/Desktop")),
+            ),
+            Some(PathBuf::from("/Users/yuval/Desktop/TEST"))
+        );
+        assert_eq!(
             requested_project_base("create a folder called notes on the desktop", None),
             None
         );
@@ -1155,25 +1346,206 @@ mod tests {
         let base = Path::new("FreshNextApp");
 
         assert_eq!(
-            requested_project_target_path(Path::new("project"), base),
+            project_base_target_path(Path::new("project"), base, None),
             Some(PathBuf::from("FreshNextApp"))
         );
         assert_eq!(
-            requested_project_target_path(Path::new("project/package.json"), base),
+            project_base_target_path(Path::new("project/package.json"), base, None),
             Some(PathBuf::from("FreshNextApp/package.json"))
         );
         assert_eq!(
-            requested_project_target_path(Path::new("my-nextjs-app/tsconfig.json"), base),
+            project_base_target_path(Path::new("my-nextjs-app/tsconfig.json"), base, None),
             Some(PathBuf::from("FreshNextApp/tsconfig.json"))
         );
         assert_eq!(
-            requested_project_target_path(Path::new("app/page.tsx"), base),
+            project_base_target_path(Path::new("app/page.tsx"), base, None),
             Some(PathBuf::from("FreshNextApp/app/page.tsx"))
         );
         assert_eq!(
-            requested_project_target_path(Path::new("FreshNextApp/package.json"), base),
+            project_base_target_path(Path::new("FreshNextApp/package.json"), base, None),
             None
         );
+    }
+
+    #[test]
+    fn requested_desktop_project_target_path_does_not_duplicate_desktop_or_folder() {
+        let base = Path::new("/Users/yuval/Desktop/TEST");
+        let workspace = Path::new("/Users/yuval/__git/elgar");
+
+        assert_eq!(
+            project_base_target_path(Path::new("Desktop/TEST"), base, Some(workspace)),
+            Some(PathBuf::from("/Users/yuval/Desktop/TEST"))
+        );
+        assert_eq!(
+            project_base_target_path(
+                Path::new("Desktop/TEST/package.json"),
+                base,
+                Some(workspace)
+            ),
+            Some(PathBuf::from("/Users/yuval/Desktop/TEST/package.json"))
+        );
+        assert_eq!(
+            project_base_target_path(
+                Path::new("/Users/yuval/Desktop/Desktop/TEST/tailwind.config.js"),
+                base,
+                Some(workspace),
+            ),
+            Some(PathBuf::from(
+                "/Users/yuval/Desktop/TEST/tailwind.config.js"
+            ))
+        );
+        assert_eq!(
+            project_base_target_path(
+                Path::new("/Users/yuval/Desktop/project/tailwind.config.js"),
+                base,
+                Some(workspace),
+            ),
+            Some(PathBuf::from(
+                "/Users/yuval/Desktop/TEST/tailwind.config.js"
+            ))
+        );
+        assert_eq!(
+            project_base_target_path(
+                Path::new("/Users/yuval/__git/elgar/tailwind.config.js"),
+                base,
+                Some(workspace),
+            ),
+            Some(PathBuf::from(
+                "/Users/yuval/Desktop/TEST/tailwind.config.js"
+            ))
+        );
+        assert_eq!(
+            project_base_target_path(
+                Path::new("/Users/yuval/__git/elgar/my-nextjs-app/tailwind.config.js"),
+                base,
+                Some(workspace),
+            ),
+            Some(PathBuf::from(
+                "/Users/yuval/Desktop/TEST/tailwind.config.js"
+            ))
+        );
+    }
+
+    #[test]
+    fn permissive_agent_exact_named_react_project_targets_verified_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-named-react",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo_tailwind = repo.join("tailwind.config.js");
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating TEST.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "named-react-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "project" }),
+                    assistant_summary: None,
+                },
+                RawModelToolCall {
+                    id: "named-react-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "project/package.json",
+                        "contents": "{\"name\":\"test\",\"devDependencies\":{\"tailwindcss\":\"latest\",\"typescript\":\"latest\"}}\n"
+                    }),
+                    assistant_summary: None,
+                },
+                RawModelToolCall {
+                    id: "named-react-3".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": repo_tailwind.display().to_string(),
+                        "contents": "module.exports = { content: [] };\n"
+                    }),
+                    assistant_summary: None,
+                },
+                RawModelToolCall {
+                    id: "named-react-4".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::PatchFile),
+                    arguments: json!({
+                        "target_path": repo_tailwind.display().to_string(),
+                        "find": "content: []",
+                        "replace": "content: ['./index.html', './src/**/*.{ts,tsx}']"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &repo, &repo);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a react project using tailwind and TS, call the folder TEST",
+        );
+
+        let project = repo.join("TEST");
+        assert!(project.is_dir());
+        assert!(project.join("package.json").is_file());
+        assert_eq!(
+            std::fs::read_to_string(project.join("tailwind.config.js")).unwrap(),
+            "module.exports = { content: ['./index.html', './src/**/*.{ts,tsx}'] };\n"
+        );
+        assert!(!repo.join("project").exists());
+        assert!(!repo.join("tailwind.config.js").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recoverable_missing_patch_target_is_retried_without_error_event() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-patch-recovery",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Patching config.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "missing-target-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::PatchFile),
+                    arguments: json!({
+                        "find": "content: []",
+                        "replace": "content: ['./src/**/*.{ts,tsx}']"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Creating config instead.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "missing-target-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "tailwind.config.js",
+                        "contents": "module.exports = { content: ['./src/**/*.{ts,tsx}'] };\n"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &repo, &repo);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a react project using tailwind and TS, call the folder TEST",
+        );
+
+        assert!(repo.join("TEST/tailwind.config.js").is_file());
+        assert!(!repo.join("tailwind.config.js").exists());
+        assert!(!session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::Error(error) if error.message.contains("missing required argument"))));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[derive(Debug, Clone)]
