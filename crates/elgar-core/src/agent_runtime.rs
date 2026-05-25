@@ -334,7 +334,10 @@ mod tests {
 
         let result = runtime.turn(
             &mut session,
-            "create a file called test.txt inside ~/ElgarPermissionTest with hello",
+            &format!(
+                "create a file called test.txt inside {} with hello",
+                target_dir.display()
+            ),
             PermissionPolicyMode::ReviewAll,
         );
 
@@ -387,7 +390,10 @@ mod tests {
 
         let result = runtime.turn(
             &mut session,
-            "create a file called test.txt inside ~/ElgarPermissionTest with hello",
+            &format!(
+                "create a file called test.txt inside {} with hello",
+                target_dir.display()
+            ),
             PermissionPolicyMode::ReviewAll,
         );
 
@@ -413,6 +419,96 @@ mod tests {
             None,
             "approval should not fail"
         );
+        assert_eq!(fs::read_to_string(&target_file).unwrap(), "hello");
+        assert_eq!(
+            session.actions().last().unwrap().action.state,
+            ActionLifecycleState::Applied
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_runtime_review_all_reports_existing_same_file_without_pending_action() {
+        let root = temp_root("review-all-existing-same-file");
+        let target_dir = root.join("ElgarPermissionTest");
+        let target_file = target_dir.join("test.txt");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(&target_file, "hello").unwrap();
+        let provider = BatchToolProvider::new(vec![RawModelToolCall {
+            id: "tool-dir".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+            arguments: serde_json::json!({
+                "target_path": target_dir
+            }),
+            assistant_summary: Some("create parent directory".to_string()),
+        }]);
+        let runtime = AgentRuntime::new(provider.clone());
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.turn(
+            &mut session,
+            &format!(
+                "create a file called test.txt inside {} with hello",
+                target_dir.display()
+            ),
+            PermissionPolicyMode::ReviewAll,
+        );
+
+        assert_eq!(provider.call_count(), 1);
+        assert!(session.actions().is_empty());
+        assert_eq!(fs::read_to_string(&target_file).unwrap(), "hello");
+        assert!(result.events.iter().any(|event| {
+            matches!(event, Event::AssistantMessage(message) if message.content.contains("already exists with the requested content"))
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_runtime_review_all_turns_existing_different_create_into_overwrite_review() {
+        let root = temp_root("review-all-existing-different-file");
+        let target_dir = root.join("ElgarPermissionTest");
+        let target_file = target_dir.join("test.txt");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(&target_file, "old").unwrap();
+        let provider = BatchToolProvider::new(vec![RawModelToolCall {
+            id: "tool-dir".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+            arguments: serde_json::json!({
+                "target_path": target_dir
+            }),
+            assistant_summary: Some("create parent directory".to_string()),
+        }]);
+        let runtime = AgentRuntime::new(provider.clone());
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.turn(
+            &mut session,
+            &format!(
+                "create a file called test.txt inside {} with hello",
+                target_dir.display()
+            ),
+            PermissionPolicyMode::ReviewAll,
+        );
+
+        assert_eq!(provider.call_count(), 1);
+        assert_eq!(session.actions().len(), 1);
+        let record = session.actions().last().expect("pending action");
+        assert_eq!(record.action.state, ActionLifecycleState::Proposed);
+        let ActionRequest::OverwriteFile(overwrite_file) = &record.action.request else {
+            panic!("expected overwrite review for existing file");
+        };
+        assert_eq!(overwrite_file.target_path, target_file);
+        assert_eq!(overwrite_file.contents, "hello");
+        assert_eq!(fs::read_to_string(&target_file).unwrap(), "old");
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionProposed(action) if action.target.as_deref() == Some(target_file.to_str().unwrap()))));
+
+        ActionGate::new(ProviderStub::default()).approve(&mut session);
+
         assert_eq!(fs::read_to_string(&target_file).unwrap(), "hello");
         assert_eq!(
             session.actions().last().unwrap().action.state,

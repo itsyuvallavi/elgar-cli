@@ -1,12 +1,13 @@
 use std::{
     collections::HashSet,
+    fs,
     path::{Path, PathBuf},
 };
 
 use serde_json::Value;
 
 use crate::{
-    action::{Action, ActionRequest, CreateFileAction},
+    action::{Action, ActionRequest, CreateFileAction, OverwriteFileAction},
     controller::TurnResult,
     controller_project_memory::record_verified_project_memory,
     controller_reporting::verified_action_success_message,
@@ -66,6 +67,17 @@ where
 {
     let start_index = session.events().len();
     session.push_event(Event::UserMessage(UserMessage::new(input)));
+
+    if let Some(message) = repeated_plan_create_response(session, input) {
+        session.push_event(Event::AssistantMessage(AssistantMessage::new(
+            message,
+            AssistantMessageSource::Controller,
+        )));
+        return TurnResult {
+            route: Route::AskModel,
+            events: session.events()[start_index..].to_vec(),
+        };
+    }
 
     let agent_context = agent_verified_memory_context(session, input);
     let mut messages = vec![ChatMessage::new(ChatRole::System, AGENT_SYSTEM_PROMPT)];
@@ -147,10 +159,22 @@ where
         };
 
         let path_resolution = agent_context.path_resolution(&session.project_root);
-        let resolved_outputs = repair_directory_only_file_request(
+        let resolved_outputs = sanitize_plan_execution_outputs(
+            session,
             input,
             resolve_agent_tool_outputs(outputs, &path_resolution),
         );
+        let resolved_outputs = match resolved_outputs {
+            PlanExecutionSanitization::Outputs(outputs) => {
+                repair_directory_only_file_request(input, outputs)
+            }
+            PlanExecutionSanitization::Retry(message) => {
+                for tool_call in tool_calls {
+                    messages.push(ChatMessage::tool(tool_call.id, message.clone()));
+                }
+                continue;
+            }
+        };
 
         if policy_mode == PermissionPolicyMode::ReviewAll {
             if let Some(action) = review_required_action_to_propose(&resolved_outputs, policy_mode)
@@ -223,6 +247,77 @@ fn resolve_agent_tool_outputs(
             }
         })
         .collect()
+}
+
+enum PlanExecutionSanitization {
+    Outputs(Vec<ResolvedAgentToolOutput>),
+    Retry(String),
+}
+
+fn sanitize_plan_execution_outputs(
+    session: &Session,
+    input: &str,
+    outputs: Vec<ResolvedAgentToolOutput>,
+) -> PlanExecutionSanitization {
+    if !mentions_plan_execution_request(&input.to_ascii_lowercase()) {
+        return PlanExecutionSanitization::Outputs(outputs);
+    }
+
+    let Some(plan) = session.project_memory().latest_verified_plan() else {
+        return PlanExecutionSanitization::Outputs(outputs);
+    };
+
+    let filtered = outputs
+        .into_iter()
+        .filter(|output| match output {
+            ResolvedAgentToolOutput::Action(action) => !is_redundant_plan_execution_action(
+                session,
+                &action.request,
+                &plan.path,
+                &plan.project_root,
+            ),
+            ResolvedAgentToolOutput::Guidance(_) => true,
+        })
+        .collect::<Vec<_>>();
+
+    let has_substantial_action = filtered
+        .iter()
+        .any(|output| matches!(output, ResolvedAgentToolOutput::Action(_)));
+    if has_substantial_action {
+        return PlanExecutionSanitization::Outputs(filtered);
+    }
+
+    PlanExecutionSanitization::Retry(format!(
+        "The user asked to execute the verified plan, not recreate the plan file. Use the latest verified plan at `{}` as source and create the actual project files under `{}`. Do not create, patch, or overwrite the plan file again. Original user request: {}",
+        plan.path.display(),
+        plan.project_root.display(),
+        input
+    ))
+}
+
+fn is_redundant_plan_execution_action(
+    session: &Session,
+    request: &ActionRequest,
+    plan_path: &Path,
+    plan_root: &Path,
+) -> bool {
+    match request {
+        ActionRequest::CreateFile(create_file) => {
+            resolved_target_path_for_existing_check(session, &create_file.target_path) == plan_path
+        }
+        ActionRequest::OverwriteFile(overwrite_file) => {
+            resolved_target_path_for_existing_check(session, &overwrite_file.target_path)
+                == plan_path
+        }
+        ActionRequest::PatchFile(patch_file) => {
+            resolved_target_path_for_existing_check(session, &patch_file.target_path) == plan_path
+        }
+        ActionRequest::CreateDirectory(create_directory) => {
+            resolved_target_path_for_existing_check(session, &create_directory.target_path)
+                == plan_root
+        }
+        _ => false,
+    }
 }
 
 fn repair_directory_only_file_request(
@@ -370,6 +465,16 @@ fn apply_agent_action_with_policy(
     summary: String,
     policy_mode: PermissionPolicyMode,
 ) -> String {
+    let request = match reconcile_create_file_target(session, request) {
+        CreateFileReconciliation::Request(request) => request,
+        CreateFileReconciliation::AlreadySatisfied(message) => {
+            session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                message.clone(),
+                AssistantMessageSource::Controller,
+            )));
+            return message;
+        }
+    };
     let proposed = Action::proposed(next_action_id(session), request, summary);
     let policy_decision = policy_decision_for_agent_action(policy_mode, &proposed);
 
@@ -416,6 +521,49 @@ fn apply_agent_action_with_policy(
             )));
             format!("Tool failed: {reason}")
         }
+    }
+}
+
+enum CreateFileReconciliation {
+    Request(ActionRequest),
+    AlreadySatisfied(String),
+}
+
+fn reconcile_create_file_target(
+    session: &Session,
+    request: ActionRequest,
+) -> CreateFileReconciliation {
+    let ActionRequest::CreateFile(create_file) = request else {
+        return CreateFileReconciliation::Request(request);
+    };
+
+    let target_path = resolved_target_path_for_existing_check(session, &create_file.target_path);
+    if !target_path.is_file() {
+        return CreateFileReconciliation::Request(ActionRequest::CreateFile(create_file));
+    }
+
+    match fs::read_to_string(&target_path) {
+        Ok(existing_contents) if existing_contents == create_file.contents => {
+            CreateFileReconciliation::AlreadySatisfied(format!(
+                "{} already exists with the requested content.",
+                target_path.display()
+            ))
+        }
+        Ok(_) => {
+            CreateFileReconciliation::Request(ActionRequest::OverwriteFile(OverwriteFileAction {
+                target_path: create_file.target_path,
+                contents: create_file.contents,
+            }))
+        }
+        Err(_) => CreateFileReconciliation::Request(ActionRequest::CreateFile(create_file)),
+    }
+}
+
+fn resolved_target_path_for_existing_check(session: &Session, target_path: &Path) -> PathBuf {
+    if target_path.is_absolute() {
+        target_path.to_path_buf()
+    } else {
+        session.cwd.join(target_path)
     }
 }
 
@@ -693,10 +841,47 @@ fn mentions_followup_plan(normalized: &str) -> bool {
         || normalized.contains("according to the plan")
         || normalized.contains("implement plan")
         || normalized.contains("implement the plan")
+        || normalized.contains("implement it")
         || normalized.contains("execute plan")
         || normalized.contains("execute the plan")
+        || normalized.contains("execute it")
+        || normalized.contains("apply the plan")
+        || normalized.contains("apply it")
         || normalized.contains("create project according")
         || normalized.contains("create the project")
+}
+
+fn mentions_plan_execution_request(normalized: &str) -> bool {
+    normalized.contains("implement the plan")
+        || normalized.contains("implement plan")
+        || normalized.contains("implement it")
+        || normalized.contains("execute the plan")
+        || normalized.contains("execute plan")
+        || normalized.contains("execute it")
+        || normalized.contains("apply the plan")
+        || normalized.contains("apply it")
+}
+
+fn repeated_plan_create_response(session: &Session, input: &str) -> Option<String> {
+    let normalized = input.to_ascii_lowercase();
+    let asks_to_create_plan = normalized.contains("create the plan")
+        || normalized.contains("create a plan")
+        || normalized.contains("make the plan")
+        || normalized.contains("write the plan");
+    let asks_to_replace = normalized.contains("replace")
+        || normalized.contains("overwrite")
+        || normalized.contains("update")
+        || normalized.contains("change");
+
+    if !asks_to_create_plan || asks_to_replace {
+        return None;
+    }
+
+    let plan = session.project_memory().latest_verified_plan()?;
+    Some(format!(
+        "The plan already exists at {}. I will use that plan unless you ask me to update or replace it.",
+        display_project_path(session, &plan.path)
+    ))
 }
 
 fn requested_project_base(input: &str, location_base: Option<&Path>) -> Option<PathBuf> {
@@ -1254,6 +1439,150 @@ mod tests {
             event,
             Event::AssistantMessage(message) if message.content.contains("We need create")
         )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_execute_it_retries_when_model_recreates_plan_only() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-plan-retry",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ReactProject")).unwrap();
+        let plan_path = root.join("ReactProject/plan.md");
+        std::fs::write(
+            &plan_path,
+            "# React Project Plan\n\n- Create package.json.\n- Create src/App.tsx.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Recreating the plan.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "bad-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "ReactProject" }),
+                    assistant_summary: Some("create ReactProject".to_string()),
+                },
+                RawModelToolCall {
+                    id: "bad-call-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "ReactProject/plan.md",
+                        "contents": "# Replacement Plan\n"
+                    }),
+                    assistant_summary: Some("create plan".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Creating the project files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "good-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "package.json",
+                        "contents": "{\"scripts\":{\"dev\":\"vite\"}}\n"
+                    }),
+                    assistant_summary: Some("create package.json".to_string()),
+                },
+                RawModelToolCall {
+                    id: "good-call-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/App.tsx",
+                        "contents": "export default function App() { return <h1>Hello</h1>; }\n"
+                    }),
+                    assistant_summary: Some("create app".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: PathBuf::from("ReactProject/plan.md"),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(VerifiedActionResult::File(
+            crate::event::FileActionVerification::FileCreated {
+                path: "ReactProject/plan.md".to_string(),
+            },
+        ));
+        session.push_action(plan_record);
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "ReactProject/plan.md".to_string(),
+            }),
+        );
+
+        run_permissive_agent_turn(&provider, &mut session, "okay execute it");
+
+        assert_eq!(
+            std::fs::read_to_string(&plan_path).unwrap(),
+            "# React Project Plan\n\n- Create package.json.\n- Create src/App.tsx.\n"
+        );
+        assert!(root.join("ReactProject/package.json").is_file());
+        assert!(root.join("ReactProject/src/App.tsx").is_file());
+        assert!(!root.join("package.json").exists());
+        let provider_requests = provider.messages.lock().unwrap();
+        assert!(provider_requests.len() >= 2);
+        assert!(provider_requests[1].iter().any(|message| {
+            matches!(message.role, ChatRole::Tool)
+                && message.content.contains("not recreate the plan file")
+        }));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_repeated_create_plan_reports_existing_plan() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-repeat-plan",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ReactProject")).unwrap();
+        std::fs::write(root.join("ReactProject/plan.md"), "# React Project Plan\n").unwrap();
+        let provider = SequenceProvider::new(Vec::new());
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: PathBuf::from("ReactProject/plan.md"),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "ReactProject/plan.md".to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(&provider, &mut session, "create the plan please");
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.content.contains("The plan already exists at ReactProject/plan.md")
+        )));
+        assert!(provider.messages.lock().unwrap().is_empty());
+        assert_eq!(session.actions().len(), 1);
 
         let _ = std::fs::remove_dir_all(&root);
     }
