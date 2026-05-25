@@ -1362,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn tui_script_selected_review_all_policy_does_not_gate_permissive_file_creates() {
+    fn tui_script_selected_review_all_policy_gates_file_creates() {
         let root = temp_root("review-all-policy-command");
         let target = root.join("hello.py");
 
@@ -1373,13 +1373,13 @@ mod tests {
             PermissionPolicyMode::ReviewAll,
         );
 
-        assert!(target.exists());
+        assert!(!target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("Pending Action\nnone"));
+        assert!(rendered.contains("Pending Action"));
+        assert!(rendered.contains("hello.py"));
         assert!(!rendered.contains("Status: applied and verified"));
-        assert!(rendered.contains("Wrote "));
-        assert!(!rendered.contains("Status: waiting for approval"));
-        assert!(!rendered.contains("Approve to write it."));
+        assert!(!rendered.contains("Wrote "));
+        assert!(rendered.contains("Status: waiting for approval"));
 
         let _ = fs::remove_dir_all(root);
     }

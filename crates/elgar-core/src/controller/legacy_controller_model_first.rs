@@ -1,6 +1,6 @@
 //! Legacy controller-review model-first runtime.
 //!
-//! Normal live TUI turns use `agent_loop::run_permissive_agent_turn`. This
+//! Normal live TUI turns use `AgentRuntime` and `agent_loop::run_agent_turn_with_policy`. This
 //! module remains only for compatibility and controller-review smoke coverage.
 
 use std::path::{Path, PathBuf};

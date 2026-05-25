@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
-/// Controller-owned permission policy mode.
+/// Runtime-owned permission policy mode.
 ///
-/// This is a type contract only. Selecting a mode does not change routing,
-/// approval, or filesystem apply behavior until the controller explicitly uses
-/// policy decisions.
+/// Selecting a mode controls whether validated model tool calls can apply
+/// immediately or must wait for explicit user review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionPolicyMode {

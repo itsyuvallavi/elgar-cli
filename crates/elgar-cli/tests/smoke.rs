@@ -414,7 +414,7 @@ fn tui_command_approves_pending_action_with_slash_command_without_network() {
 }
 
 #[test]
-fn tui_command_applies_shell_action_without_manual_approval() {
+fn tui_command_applies_shell_action_after_manual_approval() {
     let root = smoke_root("slash-approve-shell");
     let target = root.join("shell-approved.txt");
     let input = format!(
@@ -451,11 +451,10 @@ fn tui_command_applies_shell_action_without_manual_approval() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Shell command finished and verification was recorded."));
-    assert!(stdout.contains("Pending Action\nnone"));
-    assert!(!stdout.contains("Status: applied and verified"));
-    assert!(stdout.contains("No proposed action is waiting for approval."));
-    assert!(!stdout.contains("Action: action-1 ShellCommand"));
-    assert!(!stdout.contains("Summary: run shell command"));
+    assert!(stdout.contains("Pending Action"));
+    assert!(stdout.contains("Status: applied and verified"));
+    assert!(stdout.contains("Command: printf ok >"));
+    assert!(!stdout.contains("No proposed action is waiting for approval."));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));
@@ -464,7 +463,7 @@ fn tui_command_applies_shell_action_without_manual_approval() {
 }
 
 #[test]
-fn tui_command_reject_after_permissive_shell_action_has_no_pending_action() {
+fn tui_command_reject_after_shell_action_proposal_does_not_execute() {
     let root = smoke_root("slash-reject-shell");
     let target = root.join("shell-rejected.txt");
     let input = format!(
@@ -497,12 +496,13 @@ fn tui_command_reject_after_permissive_shell_action_has_no_pending_action() {
 
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
-    assert_eq!(fs::read_to_string(&target).unwrap(), "no");
+    assert!(!target.exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Pending Action\nnone"));
-    assert!(!stdout.contains("Status: applied and verified"));
-    assert!(stdout.contains("No proposed action is waiting for rejection."));
+    assert!(stdout.contains("Pending Action"));
+    assert!(stdout.contains("Status: rejected"));
+    assert!(stdout.contains("Command: printf no >"));
+    assert!(!stdout.contains("Shell command finished and verification was recorded."));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));

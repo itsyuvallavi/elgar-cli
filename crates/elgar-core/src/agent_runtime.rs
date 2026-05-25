@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    agent_loop::run_permissive_agent_turn,
+    agent_loop::run_agent_turn_with_policy,
     context::ContextAccounting,
     controller::TurnResult,
     policy::PermissionPolicyMode,
@@ -52,9 +52,9 @@ where
         &self,
         session: &mut Session,
         input: &str,
-        _policy_mode: PermissionPolicyMode,
+        policy_mode: PermissionPolicyMode,
     ) -> TurnResult {
-        run_permissive_agent_turn(&self.provider, session, input)
+        run_agent_turn_with_policy(&self.provider, session, input, policy_mode)
     }
 }
 
@@ -68,7 +68,16 @@ impl Default for AgentRuntime<ProviderStub> {
 mod tests {
     use std::fs;
 
-    use crate::{event::Event, provider::ProviderStub};
+    use crate::{
+        action::ActionLifecycleState,
+        event::{Event, ProviderOutput},
+        model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
+        policy::{ApprovalSource, PermissionPolicyMode, PolicyDecisionKind},
+        provider::{
+            ChatMessage, ChatToolDefinition, ControllerProvider, ProviderError,
+            ProviderRequestMetadata, ProviderStub,
+        },
+    };
 
     use super::*;
 
@@ -120,5 +129,178 @@ mod tests {
             .any(|event| matches!(event, Event::ActionApplied(_))));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_runtime_review_all_proposes_create_without_mutating() {
+        let root = temp_root("review-all-create");
+        let runtime = AgentRuntime::new(ProviderStub::default());
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.turn(
+            &mut session,
+            "create a folder called review-all-folder",
+            PermissionPolicyMode::ReviewAll,
+        );
+
+        assert!(!root.join("review-all-folder").exists());
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionProposed(_))));
+        assert!(!result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+        let record = session.actions().last().expect("pending action");
+        assert_eq!(record.action.state, ActionLifecycleState::Proposed);
+        assert_eq!(
+            record
+                .policy_decision
+                .as_ref()
+                .map(|decision| decision.kind),
+            Some(PolicyDecisionKind::RequireReview)
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_runtime_auto_create_records_policy_approval_not_user_approval() {
+        let root = temp_root("auto-create-policy-source");
+        let runtime = AgentRuntime::new(ProviderStub::default());
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.turn(
+            &mut session,
+            "create a folder called auto-folder",
+            PermissionPolicyMode::AutoCreateReviewModify,
+        );
+
+        assert!(root.join("auto-folder").is_dir());
+        let approved = result
+            .events
+            .iter()
+            .find_map(|event| match event {
+                Event::ActionApproved(event) => Some(event),
+                _ => None,
+            })
+            .expect("approved event");
+        assert!(matches!(
+            approved.approval_source,
+            Some(ApprovalSource::Policy {
+                mode: PermissionPolicyMode::AutoCreateReviewModify,
+                ..
+            })
+        ));
+        let record = session.actions().last().expect("applied action");
+        assert!(record
+            .policy_decision
+            .as_ref()
+            .is_some_and(|decision| decision.is_policy_approved()));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_runtime_auto_create_gates_shell_commands() {
+        let root = temp_root("auto-create-shell");
+        let runtime = AgentRuntime::new(ProviderStub::default());
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.turn(
+            &mut session,
+            "run shell command echo hello",
+            PermissionPolicyMode::AutoCreateReviewModify,
+        );
+
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionProposed(_))));
+        assert!(!result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+        let record = session.actions().last().expect("pending shell action");
+        assert_eq!(record.action.state, ActionLifecycleState::Proposed);
+        assert_eq!(
+            record
+                .policy_decision
+                .as_ref()
+                .map(|decision| decision.kind),
+            Some(PolicyDecisionKind::RequireReview)
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_runtime_workspace_write_policy_applies_safe_overwrite() {
+        let root = temp_root("workspace-overwrite");
+        fs::write(root.join("demo.txt"), "old\n").unwrap();
+        let runtime = AgentRuntime::new(ToolProvider::new(RawModelToolCall {
+            id: "tool-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::OverwriteFile),
+            arguments: serde_json::json!({
+                "target_path": "demo.txt",
+                "contents": "new\n"
+            }),
+            assistant_summary: Some("overwrite demo.txt".to_string()),
+        }));
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.turn(
+            &mut session,
+            "overwrite demo.txt",
+            PermissionPolicyMode::WorkspaceWriteWithReview,
+        );
+
+        assert_eq!(fs::read_to_string(root.join("demo.txt")).unwrap(), "new\n");
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+        let record = session.actions().last().expect("applied overwrite");
+        assert_eq!(record.action.state, ActionLifecycleState::Applied);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[derive(Debug, Clone)]
+    struct ToolProvider {
+        call: RawModelToolCall,
+    }
+
+    impl ToolProvider {
+        fn new(call: RawModelToolCall) -> Self {
+            Self { call }
+        }
+    }
+
+    impl ControllerProvider for ToolProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new("tool-provider", None, "tool-request-1")
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("tool provider"))
+        }
+
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<ProviderOutput, ProviderError> {
+            if messages
+                .iter()
+                .any(|message| matches!(message.role, crate::provider::ChatRole::Tool))
+            {
+                return Ok(ProviderOutput::new("Done."));
+            }
+
+            Ok(ProviderOutput::new("Using a tool.").with_tool_calls(vec![self.call.clone()]))
+        }
     }
 }

@@ -28,7 +28,8 @@ use crate::{
     provider_visible_text_from_text_only_output,
     router::Route,
     session::{
-        ActionRecord, ProviderPromptMemorySelectedFact, ProviderPromptMemorySelection, Session,
+        ActionRecord, PendingActionSelection, ProviderPromptMemorySelectedFact,
+        ProviderPromptMemorySelection, Session,
     },
     shell::ShellExecutor,
 };
@@ -49,6 +50,18 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
 const MAX_AGENT_TOOL_ROUNDS: usize = 6;
 
 pub fn run_permissive_agent_turn<P>(provider: &P, session: &mut Session, input: &str) -> TurnResult
+where
+    P: ControllerProvider,
+{
+    run_agent_turn_with_policy(provider, session, input, PermissionPolicyMode::FullAccess)
+}
+
+pub fn run_agent_turn_with_policy<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+    policy_mode: PermissionPolicyMode,
+) -> TurnResult
 where
     P: ControllerProvider,
 {
@@ -147,8 +160,12 @@ where
                         agent_context.followup_base.as_deref(),
                         &session.project_root,
                     );
-                    let result =
-                        apply_permissive_agent_action(session, action.request, action.summary);
+                    let result = apply_agent_action_with_policy(
+                        session,
+                        action.request,
+                        action.summary,
+                        policy_mode,
+                    );
                     messages.push(ChatMessage::tool(action.tool_call_id, result));
                 }
             }
@@ -161,16 +178,20 @@ where
     }
 }
 
-fn apply_permissive_agent_action(
+fn apply_agent_action_with_policy(
     session: &mut Session,
     request: ActionRequest,
     summary: String,
+    policy_mode: PermissionPolicyMode,
 ) -> String {
-    let action = Action::proposed(next_action_id(session), request, summary).approve();
-    let policy_decision = PolicyDecision::allow_apply(
-        PermissionPolicyMode::FullAccess,
-        "permissive agent tool loop executed the model tool call directly",
-    );
+    let proposed = Action::proposed(next_action_id(session), request, summary);
+    let policy_decision = policy_decision_for_agent_action(policy_mode, &proposed);
+
+    if policy_decision.user_approval_required {
+        return propose_agent_action_for_review(session, proposed, policy_decision);
+    }
+
+    let action = proposed.approve();
     let approval_source = policy_decision.approval_source.clone();
     let index = session.actions().len();
     let mut record = ActionRecord::new(action.clone());
@@ -208,6 +229,73 @@ fn apply_permissive_agent_action(
                 reason.clone(),
             )));
             format!("Tool failed: {reason}")
+        }
+    }
+}
+
+fn propose_agent_action_for_review(
+    session: &mut Session,
+    action: Action,
+    policy_decision: PolicyDecision,
+) -> String {
+    match session.pending_action_selection() {
+        PendingActionSelection::None => {}
+        PendingActionSelection::Single(_) => {
+            return "A proposed action is already waiting. Ask the user to approve or reject it before proposing another action.".to_string();
+        }
+        PendingActionSelection::Ambiguous => {
+            return "Multiple proposed actions are already waiting. Ask the user to approve or reject pending work before proposing another action.".to_string();
+        }
+    }
+
+    let target = action.request.approval_target();
+    let mut record = ActionRecord::new(action.clone());
+    record.policy_decision = Some(policy_decision);
+    session.push_event(Event::ActionProposed(
+        ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+            .with_target(target.clone()),
+    ));
+    session.push_action(record);
+
+    format!(
+        "Proposed {:?} for review at {target}. Wait for the user to approve or reject before treating it as done.",
+        action.kind()
+    )
+}
+
+fn policy_decision_for_agent_action(mode: PermissionPolicyMode, action: &Action) -> PolicyDecision {
+    match (mode, &action.request) {
+        (PermissionPolicyMode::FullAccess, _) => PolicyDecision::allow_apply(
+            mode,
+            "full_access policy validated and allowed the model tool call",
+        ),
+        (
+            PermissionPolicyMode::AutoCreateReviewModify,
+            ActionRequest::CreateFile(_) | ActionRequest::CreateDirectory(_),
+        ) => PolicyDecision::allow_apply(
+            mode,
+            "auto_create_review_modify allows validated safe create actions",
+        ),
+        (
+            PermissionPolicyMode::WorkspaceWriteWithReview,
+            ActionRequest::CreateFile(_)
+            | ActionRequest::CreateDirectory(_)
+            | ActionRequest::OverwriteFile(_)
+            | ActionRequest::PatchFile(_),
+        ) => PolicyDecision::allow_apply(
+            mode,
+            "workspace_write_with_review allows validated workspace write actions",
+        ),
+        (PermissionPolicyMode::AutoCreateReviewModify, _) => PolicyDecision::require_review(
+            mode,
+            "auto_create_review_modify gates edits, deletes, moves, and shell commands",
+        ),
+        (PermissionPolicyMode::WorkspaceWriteWithReview, _) => PolicyDecision::require_review(
+            mode,
+            "workspace_write_with_review gates deletes, moves, and shell commands",
+        ),
+        (PermissionPolicyMode::ReviewAll, _) => {
+            PolicyDecision::require_review(mode, "review_all requires user approval")
         }
     }
 }
