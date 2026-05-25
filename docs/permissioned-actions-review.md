@@ -6,14 +6,14 @@ Scope reviewed: ELG-216 through ELG-219.
 
 ## Result
 
-The expanded permissioned action slice matches the v0.2 controller boundary:
+The expanded permissioned action slice was originally reviewed against the v0.2 controller boundary. Current normal chat should enter through `AgentRuntime`; explicit approvals go through the action gate.
 
-- Controller owns action lifecycle and verified truth.
+- Core owns action lifecycle and verified truth.
 - Model/provider text can suggest but cannot approve, execute, mutate, or verify.
 - User approval is required before filesystem mutation or shell execution.
 - Filesystem confirms file truth for create, edit, overwrite, delete, move, and directory actions.
 - Shell executor confirms command truth for approved shell actions.
-- UI and CLI render controller-owned events and results without owning mutation or execution.
+- UI and CLI render core events and results without owning mutation or execution.
 - Default checks remain no-network and no-model.
 
 ## Covered Behaviors
@@ -29,7 +29,7 @@ Shell actions:
 
 - Proposed shell commands do not execute.
 - Rejected shell commands do not execute.
-- Approved shell commands execute once through the controller.
+- Approved shell commands execute once through the action gate path.
 - Shell results record stdout, stderr, exit code, elapsed time, timeout status,
   and output truncation flags.
 - Timeout and capped-output paths are covered.
@@ -43,9 +43,9 @@ Provider boundary:
 
 UI boundary:
 
-- TUI and CLI route approval/rejection through the controller.
+- TUI and CLI route approval/rejection through the narrow action gate.
 - Rendering pending actions does not mutate files or run commands.
-- Shell results render as controller-owned results.
+- Shell results render as verified core results.
 
 ## Known Gaps
 
@@ -69,6 +69,6 @@ Reasoning:
 
 - Permissioned mutation/execution boundaries are now covered.
 - Extensions still wait, so the next slice should be read-first and local.
-- Obsidian memory can build on controller-backed context accounting without
+- Obsidian memory can build on core context accounting without
   introducing write access, live provider requirements, or external network
   dependencies.

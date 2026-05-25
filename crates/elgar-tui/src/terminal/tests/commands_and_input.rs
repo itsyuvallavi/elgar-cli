@@ -89,7 +89,12 @@ fn terminal_plain_approval_words_do_not_apply_pending_actions() {
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    shell.submit_input(&controller, &mut session, "create file approved.py");
+    submit_legacy_controller_input(
+        &mut shell,
+        &controller,
+        &mut session,
+        "create file approved.py",
+    );
     let before_session = session.clone();
 
     let exited = submit_text("approve", &mut input, &controller, &mut session, &mut shell);
@@ -114,7 +119,12 @@ fn terminal_clear_slash_commands_clear_only_local_conversation() {
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    shell.submit_input(&controller, &mut session, "create file clear.py");
+    submit_legacy_controller_input(
+        &mut shell,
+        &controller,
+        &mut session,
+        "create file clear.py",
+    );
     let before_session = session.clone();
     let before_pending = shell.pending_action.clone();
 
@@ -381,7 +391,12 @@ fn terminal_approve_slash_command_approves_pending_action_through_shell() {
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    shell.submit_input(&controller, &mut session, "create file approved.py");
+    submit_legacy_controller_input(
+        &mut shell,
+        &controller,
+        &mut session,
+        "create file approved.py",
+    );
     assert!(!target.exists());
 
     let exited = submit_text(
@@ -413,7 +428,12 @@ fn terminal_reject_slash_command_rejects_pending_action_through_shell() {
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    shell.submit_input(&controller, &mut session, "create file rejected.py");
+    submit_legacy_controller_input(
+        &mut shell,
+        &controller,
+        &mut session,
+        "create file rejected.py",
+    );
 
     let exited = submit_text("/reject", &mut input, &controller, &mut session, &mut shell);
 
@@ -463,7 +483,12 @@ fn terminal_function_keys_and_ctrl_y_are_not_command_actions() {
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    shell.submit_input(&controller, &mut session, "create file approved.py");
+    submit_legacy_controller_input(
+        &mut shell,
+        &controller,
+        &mut session,
+        "create file approved.py",
+    );
     let before_session = session.clone();
 
     for key in [

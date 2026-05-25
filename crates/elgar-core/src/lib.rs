@@ -1,4 +1,5 @@
 pub mod action;
+pub mod action_gate;
 pub mod agent_loop;
 pub mod agent_runtime;
 pub mod context;
@@ -27,4 +28,4 @@ pub mod router;
 pub mod session;
 pub mod shell;
 
-pub const CORE_PHILOSOPHY: &str = "Controller owns truth. Model suggests. User approves. Filesystem confirms. UI reports. Tests protect. Extensions wait.";
+pub const CORE_PHILOSOPHY: &str = "Model reasons. Runtime routes. Action gate enforces. Filesystem confirms. UI reports. Tests protect. Extensions wait.";

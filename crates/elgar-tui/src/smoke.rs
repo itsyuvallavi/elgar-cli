@@ -49,7 +49,8 @@ where
         cwd.as_ref(),
     );
     let mut shell = TuiShell::new();
-    let turn = shell.submit_input(controller, &mut session, input);
+    let turn = controller.turn(&mut session, input);
+    shell.consume_events(&turn.events);
     let rendered = shell.render();
 
     TuiControllerSmoke {

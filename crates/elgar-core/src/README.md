@@ -2,11 +2,12 @@
 
 ## Purpose
 
-Core module surface for agent runtime flow, actions, policy, providers, routing, sessions, filesystem helpers, shell helpers, legacy controller compatibility, and rendering.
+Core module surface for agent runtime flow, action gate approval/rejection, actions, policy, providers, routing, sessions, filesystem helpers, shell helpers, legacy controller compatibility, and rendering.
 
 ## Important Files and Folders
 
 - `agent_runtime.rs` is the normal chat entrypoint for live TUI and CLI script turns.
+- `action_gate.rs` is the narrow explicit approval/rejection entrypoint after model/runtime work.
 - `controller.rs` and `controller/` are legacy/review compatibility paths.
 - `action.rs`, `policy.rs`, `fs.rs`, and `shell.rs` define permissioned work boundaries.
 - `provider/` owns LM Studio and provider abstractions.

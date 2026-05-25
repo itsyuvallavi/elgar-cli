@@ -5,6 +5,7 @@ use std::{
 };
 
 use elgar_core::{
+    action_gate::ActionGate,
     agent_runtime::AgentRuntime,
     controller::Controller,
     policy::PermissionPolicyMode,
@@ -449,14 +450,14 @@ pub fn is_tui_cancel_command(input: &str) -> bool {
 fn submit_tui_input(
     shell: &mut elgar_tui::TuiShell,
     runtime: &AgentRuntime,
-    controller: &Controller,
+    action_gate: &ActionGate,
     session: &mut Session,
     input: &str,
 ) {
     if is_tui_approval_command(input) {
-        shell.submit_approval(controller, session);
+        shell.submit_approval(action_gate, session);
     } else if is_tui_rejection_command(input) {
-        shell.submit_rejection(controller, session);
+        shell.submit_rejection(action_gate, session);
     } else if is_tui_cancel_command(input) {
         shell.push_local_message("No active provider turn to cancel.");
     } else if matches!(route_input(input), Route::ApproveAction) {
@@ -464,7 +465,7 @@ fn submit_tui_input(
             session.pending_action_selection(),
             PendingActionSelection::None
         ) {
-            shell.submit_approval(controller, session);
+            shell.submit_approval(action_gate, session);
         } else {
             shell.push_local_message("Action commands must use /approve or /reject.");
         }
@@ -473,7 +474,7 @@ fn submit_tui_input(
             session.pending_action_selection(),
             PendingActionSelection::None
         ) {
-            shell.submit_rejection(controller, session);
+            shell.submit_rejection(action_gate, session);
         } else {
             shell.push_local_message("Action commands must use /approve or /reject.");
         }
@@ -508,7 +509,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let controller = Controller::default();
+    let action_gate = ActionGate::default();
     let runtime = AgentRuntime::default();
     let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
     let mut shell = elgar_tui::TuiShell::with_policy_mode(policy_mode);
@@ -533,7 +534,7 @@ where
         } else if is_tui_memory_command(input) {
             rendered_turns.push(elgar_tui::render_session_memory(&session));
         } else {
-            submit_tui_input(&mut shell, &runtime, &controller, &mut session, input);
+            submit_tui_input(&mut shell, &runtime, &action_gate, &mut session, input);
             rendered_turns.push(shell.render());
         }
     }
@@ -571,7 +572,7 @@ where
     R: BufRead,
     W: Write,
 {
-    let controller = Controller::default();
+    let action_gate = ActionGate::default();
     let runtime = AgentRuntime::default();
     let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
     let mut shell = elgar_tui::TuiShell::with_policy_mode(policy_mode);
@@ -597,7 +598,7 @@ where
         } else if is_tui_memory_command(&input) {
             writeln!(writer, "{}", elgar_tui::render_session_memory(&session))?;
         } else {
-            submit_tui_input(&mut shell, &runtime, &controller, &mut session, &input);
+            submit_tui_input(&mut shell, &runtime, &action_gate, &mut session, &input);
             writeln!(writer, "{}", shell.render())?;
         }
     }
@@ -1468,7 +1469,7 @@ mod tests {
     }
 
     #[test]
-    fn tui_loop_routes_approval_command_through_controller() {
+    fn tui_loop_routes_approval_command_through_action_gate() {
         let root = temp_root("loop-approve-command");
         let target = root.join("hello.py");
         let input = b"create file hello.py\n/approve\n/exit\n";

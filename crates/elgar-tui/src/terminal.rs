@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 use elgar_core::{
+    action_gate::ActionGate,
     agent_runtime::AgentRuntime,
     context::ContextAccounting,
     event::ProviderMetrics,
@@ -24,6 +25,7 @@ use ratatui::{
     Frame,
 };
 
+#[cfg(test)]
 use elgar_core::controller::Controller;
 
 use crate::{
@@ -159,7 +161,7 @@ where
 {
     let mut session = Session::new("terminal-tui-session", project_root.as_ref(), cwd.as_ref());
     runtime.refresh_context_accounting(&mut session, context_window_tokens);
-    let controller = Controller::new(runtime.provider.clone());
+    let action_gate = ActionGate::new(runtime.provider.clone());
     let mut shell = TuiShell::with_policy_mode(policy_mode);
 
     let mut context = terminal_context(&session, &runtime, policy_mode);
@@ -175,7 +177,7 @@ where
         next_prompt_input.clear();
 
         let (exit, preserved_input) =
-            handle_inline_submission(&input, &runtime, &controller, &mut session, &mut shell)?;
+            handle_inline_submission(&input, &runtime, &action_gate, &mut session, &mut shell)?;
         if exit {
             break;
         }
@@ -254,7 +256,7 @@ fn read_inline_prompt(
 fn handle_inline_submission<P>(
     submitted: &str,
     runtime: &AgentRuntime<P>,
-    controller: &Controller<P>,
+    action_gate: &ActionGate<P>,
     session: &mut Session,
     shell: &mut TuiShell,
 ) -> io::Result<(bool, String)>
@@ -300,7 +302,7 @@ where
             let exit = handle_submitted_terminal_input(
                 submitted,
                 runtime,
-                controller,
+                action_gate,
                 session,
                 shell,
                 io::stdout(),
@@ -316,7 +318,7 @@ where
                 Ok((false, preserved_input))
             } else {
                 let before = shell.conversation.render_lines_with_styles().len();
-                handle_terminal_text_input(text, runtime, controller, session, shell);
+                handle_terminal_text_input(text, runtime, action_gate, session, shell);
                 print_new_conversation_lines(shell, before, false, false)?;
                 Ok((false, String::new()))
             }
@@ -855,10 +857,11 @@ where
             let submitted = input.drain();
             shell.input.text.clear();
             let runtime = AgentRuntime::new(controller.provider.clone());
+            let action_gate = ActionGate::new(controller.provider.clone());
             handle_submitted_terminal_input(
                 &submitted,
                 &runtime,
-                controller,
+                &action_gate,
                 session,
                 shell,
                 copy_writer,
@@ -870,7 +873,7 @@ where
 fn handle_submitted_terminal_input<P>(
     submitted: &str,
     runtime: &AgentRuntime<P>,
-    controller: &Controller<P>,
+    action_gate: &ActionGate<P>,
     session: &mut Session,
     shell: &mut TuiShell,
     copy_writer: impl Write,
@@ -891,10 +894,10 @@ where
             clear_terminal_conversation(shell);
         }
         TerminalCommand::Approve => {
-            shell.submit_approval(controller, session);
+            shell.submit_approval(action_gate, session);
         }
         TerminalCommand::Reject => {
-            shell.submit_rejection(controller, session);
+            shell.submit_rejection(action_gate, session);
         }
         TerminalCommand::Cancel => {
             shell
@@ -919,7 +922,7 @@ where
             shell.conversation.follow_latest();
         }
         TerminalCommand::Text(text) => {
-            handle_terminal_text_input(text, runtime, controller, session, shell);
+            handle_terminal_text_input(text, runtime, action_gate, session, shell);
         }
     }
     false
@@ -928,7 +931,7 @@ where
 fn handle_terminal_text_input<P>(
     text: &str,
     runtime: &AgentRuntime<P>,
-    controller: &Controller<P>,
+    action_gate: &ActionGate<P>,
     session: &mut Session,
     shell: &mut TuiShell,
 ) where
@@ -940,7 +943,7 @@ fn handle_terminal_text_input<P>(
                 session.pending_action_selection(),
                 PendingActionSelection::None
             ) {
-                shell.submit_approval(controller, session);
+                shell.submit_approval(action_gate, session);
             } else {
                 shell
                     .conversation
@@ -953,7 +956,7 @@ fn handle_terminal_text_input<P>(
                 session.pending_action_selection(),
                 PendingActionSelection::None
             ) {
-                shell.submit_rejection(controller, session);
+                shell.submit_rejection(action_gate, session);
             } else {
                 shell
                     .conversation
@@ -1029,10 +1032,11 @@ where
         }
         _ => {
             let runtime = AgentRuntime::new(controller.provider.clone());
+            let action_gate = ActionGate::new(controller.provider.clone());
             handle_submitted_terminal_input(
                 submitted,
                 &runtime,
-                controller,
+                &action_gate,
                 session,
                 shell,
                 io::stdout(),

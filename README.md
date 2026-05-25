@@ -4,23 +4,24 @@ Elgar is a local-first Rust agent harness. The v0.2 line is a clean restart
 focused on a small, inspectable core:
 
 ```text
-Controller owns truth.
-Model suggests.
-User approves.
+Model reasons.
+Runtime routes.
+Action gate enforces.
 Filesystem confirms.
 UI reports.
 Tests protect.
 Extensions wait.
 ```
 
-The current build includes a controller-backed action lifecycle, permissioned
-file and shell actions, a terminal TUI, LM Studio provider support, context
-accounting, and no-network regression checks.
+The current build includes a model-first agent runtime, a narrow action gate
+for explicit approvals, permissioned file and shell actions, a terminal TUI,
+LM Studio provider support, context accounting, and no-network regression
+checks.
 
 ## Workspace
 
 ```text
-crates/elgar-core   controller, routing, session, actions, filesystem, provider, shell
+crates/elgar-core   runtime, action gate, routing, session, actions, filesystem, provider, shell
 crates/elgar-cli    command-line entry point and smoke/performance commands
 crates/elgar-tui    terminal UI rendering, input, panes, theme, and TUI shell
 docs/               current implementation notes and local operating docs
@@ -78,9 +79,9 @@ Default local checks and CI do not require LM Studio.
 ## Permission Model
 
 Provider/model text is never treated as verified truth. For file or shell work,
-Elgar records a controller-owned proposal first. The user must approve with
-`/approve` before anything mutates or executes. The filesystem or shell executor
-then records the verified result.
+Elgar records a typed action first. The action gate handles explicit
+`/approve` or `/reject` commands before any gated operation mutates or executes.
+The filesystem or shell executor then records the verified result.
 
 Examples:
 

@@ -3,36 +3,36 @@ use serde::{Deserialize, Serialize};
 pub use crate::action::{ActionKind, FileActionVerification, ShellActionVerification};
 use crate::{model_runtime::RawModelToolCall, policy::ApprovalSource};
 
-/// A controller-recorded fact that can be rendered by CLI, TUI, or tests.
+/// A core-recorded fact that can be rendered by CLI, TUI, or tests.
 ///
 /// Events are not provider wishes. In particular, provider output is captured
 /// only as provider output; it does not prove that a file changed, a command ran,
 /// or an action moved through its lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Event {
-    /// The controller recorded input received from the user.
+    /// The runtime recorded input received from the user.
     UserMessage(UserMessage),
-    /// The controller recorded assistant text for display.
+    /// The runtime or action gate recorded assistant text for display.
     AssistantMessage(AssistantMessage),
-    /// The controller started a provider request.
+    /// The runtime started a provider request.
     ProviderStarted(ProviderStarted),
-    /// The controller received provider output.
+    /// The runtime received provider output.
     ProviderFinished(ProviderFinished),
-    /// The controller created a proposed action.
+    /// The runtime or legacy review path created a proposed action.
     ActionProposed(ActionEvent),
-    /// The controller recorded user approval for a proposed action.
+    /// The action gate recorded user approval for a proposed action.
     ActionApproved(ActionEvent),
-    /// The controller recorded user rejection for a proposed action.
+    /// The action gate recorded user rejection for a proposed action.
     ActionRejected(ActionEvent),
-    /// The controller recorded a verified applied action result.
+    /// The core recorded a verified applied action result.
     ActionApplied(ActionApplied),
-    /// The controller recorded that an action failed.
+    /// The core recorded that an action failed.
     ActionFailed(ActionFailed),
-    /// The controller recorded an error.
+    /// The core recorded an error.
     Error(ErrorEvent),
 }
 
-/// User-authored text recorded by the controller.
+/// User-authored text recorded by the runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserMessage {
     pub content: String,
@@ -71,7 +71,7 @@ pub enum AssistantMessageSource {
     Provider,
 }
 
-/// A provider request started by the controller.
+/// A provider request started by the runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderStarted {
     pub provider: String,

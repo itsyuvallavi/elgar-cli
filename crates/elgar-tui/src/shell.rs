@@ -1,10 +1,6 @@
 use elgar_core::{
-    agent_runtime::AgentRuntime,
-    controller::{Controller, TurnResult},
-    event::Event,
-    policy::PermissionPolicyMode,
-    provider::ControllerProvider,
-    session::Session,
+    action_gate::ActionGate, agent_runtime::AgentRuntime, controller::TurnResult, event::Event,
+    policy::PermissionPolicyMode, provider::ControllerProvider, session::Session,
 };
 
 use crate::{
@@ -82,36 +78,27 @@ impl TuiShell {
 
     pub fn submit_approval<P>(
         &mut self,
-        controller: &Controller<P>,
+        action_gate: &ActionGate<P>,
         session: &mut Session,
     ) -> TurnResult
     where
         P: ControllerProvider,
     {
-        self.submit_input(controller, session, "approve")
+        let result = action_gate.approve(session);
+        self.consume_events(&result.events);
+        self.conversation.follow_latest();
+        result
     }
 
     pub fn submit_rejection<P>(
         &mut self,
-        controller: &Controller<P>,
+        action_gate: &ActionGate<P>,
         session: &mut Session,
     ) -> TurnResult
     where
         P: ControllerProvider,
     {
-        self.submit_input(controller, session, "reject")
-    }
-
-    pub fn submit_input<P>(
-        &mut self,
-        controller: &Controller<P>,
-        session: &mut Session,
-        input: &str,
-    ) -> TurnResult
-    where
-        P: ControllerProvider,
-    {
-        let result = controller.turn(session, input);
+        let result = action_gate.reject(session);
         self.consume_events(&result.events);
         self.conversation.follow_latest();
         result
@@ -156,8 +143,8 @@ impl Default for TuiShell {
 #[cfg(test)]
 mod tests {
     use elgar_core::{
-        action::ActionLifecycleState, controller::Controller, event::VerifiedActionResult,
-        session::Session,
+        action::ActionLifecycleState, action_gate::ActionGate, agent_runtime::AgentRuntime,
+        controller::Controller, event::VerifiedActionResult, session::Session,
     };
 
     use crate::layout::LayoutRegion;
@@ -268,14 +255,15 @@ mod tests {
 
     #[test]
     fn submitting_input_follows_latest_without_mutating_session_truth() {
-        let controller = Controller::default();
         let mut session = Session::new("session-1", ".", ".");
         let before = session.clone();
         let mut shell = TuiShell::new();
         shell.conversation.lines = (0..10).map(|index| format!("line {index}")).collect();
         shell.conversation.scroll_up(5);
 
-        let result = shell.submit_input(&controller, &mut session, "what does the harness do?");
+        let runtime = AgentRuntime::default();
+
+        let result = shell.submit_agent_input(&runtime, &mut session, "what does the harness do?");
 
         assert_eq!(result.route, elgar_core::router::Route::AskModel);
         assert_eq!(shell.conversation.scroll_offset(4), 8);
@@ -284,8 +272,9 @@ mod tests {
     }
 
     #[test]
-    fn tui_approval_is_routed_through_controller_and_renders_applied_result() {
+    fn tui_approval_is_routed_through_action_gate_and_renders_applied_result() {
         let controller = Controller::default();
+        let action_gate = ActionGate::default();
         let root = temp_root("approve-through-controller");
         let target = root.join("hello.py");
         let mut session = Session::new("session-1", root.clone(), root.clone());
@@ -296,7 +285,7 @@ mod tests {
         assert!(!target.exists());
         assert!(shell.render().contains("Status: waiting for approval"));
 
-        let approved = shell.submit_approval(&controller, &mut session);
+        let approved = shell.submit_approval(&action_gate, &mut session);
 
         assert_eq!(approved.route, elgar_core::router::Route::ApproveAction);
         assert!(target.exists());
@@ -318,8 +307,9 @@ mod tests {
     }
 
     #[test]
-    fn tui_rejection_is_routed_through_controller_and_does_not_write() {
+    fn tui_rejection_is_routed_through_action_gate_and_does_not_write() {
         let controller = Controller::default();
+        let action_gate = ActionGate::default();
         let root = temp_root("reject-through-controller");
         let target = root.join("hello.py");
         let mut session = Session::new("session-1", root.clone(), root.clone());
@@ -328,7 +318,7 @@ mod tests {
         let proposed = controller.turn(&mut session, "create file hello.py");
         shell.consume_events(&proposed.events);
 
-        let rejected = shell.submit_rejection(&controller, &mut session);
+        let rejected = shell.submit_rejection(&action_gate, &mut session);
 
         assert_eq!(rejected.route, elgar_core::router::Route::RejectAction);
         assert!(!target.exists());
@@ -348,6 +338,7 @@ mod tests {
     #[test]
     fn tui_renders_failed_result_from_controller_events() {
         let controller = Controller::default();
+        let action_gate = ActionGate::default();
         let root = temp_root("failed-through-controller");
         let absolute_target = std::env::temp_dir().join(format!(
             "elgar-tui-{}-blocked-outside-root.py",
@@ -363,7 +354,7 @@ mod tests {
         );
         shell.consume_events(&proposed.events);
 
-        shell.submit_approval(&controller, &mut session);
+        shell.submit_approval(&action_gate, &mut session);
 
         assert!(!absolute_target.exists());
         assert_eq!(

@@ -123,6 +123,17 @@ fn submit_text(
     )
 }
 
+fn submit_legacy_controller_input(
+    shell: &mut TuiShell,
+    controller: &Controller,
+    session: &mut Session,
+    input: &str,
+) -> elgar_core::controller::TurnResult {
+    let result = controller.turn(session, input);
+    shell.consume_events(&result.events);
+    result
+}
+
 fn wait_for_completed_provider_turn(
     task: &super::ProviderTurnTask,
 ) -> super::provider_task::CompletedProviderTurn {
