@@ -280,15 +280,19 @@ fn sanitize_plan_execution_outputs(
         })
         .collect::<Vec<_>>();
 
-    let has_substantial_action = filtered
-        .iter()
-        .any(|output| matches!(output, ResolvedAgentToolOutput::Action(_)));
-    if has_substantial_action {
+    let has_project_file_action = filtered.iter().any(|output| {
+        matches!(
+            output,
+            ResolvedAgentToolOutput::Action(action)
+                if is_plan_execution_project_file_action(&action.request)
+        )
+    });
+    if has_project_file_action {
         return PlanExecutionSanitization::Outputs(filtered);
     }
 
     PlanExecutionSanitization::Retry(format!(
-        "The user asked to execute the verified plan, not recreate the plan file. Use the latest verified plan at `{}` as source and create the actual project files under `{}`. Do not create, patch, or overwrite the plan file again. Original user request: {}",
+        "The user asked to execute the verified plan. Directory creation alone is incomplete. Use the latest verified plan at `{}` as source and create the actual project files under `{}`. Do not create, patch, or overwrite the plan file again. Original user request: {}",
         plan.path.display(),
         plan.project_root.display(),
         input
@@ -318,6 +322,15 @@ fn is_redundant_plan_execution_action(
         }
         _ => false,
     }
+}
+
+fn is_plan_execution_project_file_action(request: &ActionRequest) -> bool {
+    matches!(
+        request,
+        ActionRequest::CreateFile(_)
+            | ActionRequest::OverwriteFile(_)
+            | ActionRequest::PatchFile(_)
+    )
 }
 
 fn repair_directory_only_file_request(
@@ -1537,7 +1550,113 @@ mod tests {
         assert!(provider_requests.len() >= 2);
         assert!(provider_requests[1].iter().any(|message| {
             matches!(message.role, ChatRole::Tool)
-                && message.content.contains("not recreate the plan file")
+                && message
+                    .content
+                    .contains("Directory creation alone is incomplete")
+        }));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_execute_it_retries_directory_only_plan_execution() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-dir-only-retry",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ReactProject2")).unwrap();
+        let plan_path = root.join("ReactProject2/plan.md");
+        std::fs::write(
+            &plan_path,
+            "# React TS Tailwind Plan\n\n- Create package.json.\n- Create src/main.tsx.\n- Create src/App.tsx.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating directories.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "dir-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "public" }),
+                    assistant_summary: Some("create public".to_string()),
+                },
+                RawModelToolCall {
+                    id: "dir-call-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "src" }),
+                    assistant_summary: Some("create src".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Creating files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "file-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "package.json",
+                        "contents": "{\"scripts\":{\"dev\":\"vite\"}}\n"
+                    }),
+                    assistant_summary: Some("create package.json".to_string()),
+                },
+                RawModelToolCall {
+                    id: "file-call-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.tsx",
+                        "contents": "import './styles.css';\n"
+                    }),
+                    assistant_summary: Some("create main".to_string()),
+                },
+                RawModelToolCall {
+                    id: "file-call-3".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/App.tsx",
+                        "contents": "export default function App() { return <h1>Hello</h1>; }\n"
+                    }),
+                    assistant_summary: Some("create app".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: PathBuf::from("ReactProject2/plan.md"),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "ReactProject2/plan.md".to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(&provider, &mut session, "okay execute it");
+
+        assert!(!root.join("public").exists());
+        assert!(!root.join("src").exists());
+        assert!(root.join("ReactProject2/package.json").is_file());
+        assert!(root.join("ReactProject2/src/main.tsx").is_file());
+        assert!(root.join("ReactProject2/src/App.tsx").is_file());
+        assert_eq!(
+            std::fs::read_to_string(&plan_path).unwrap(),
+            "# React TS Tailwind Plan\n\n- Create package.json.\n- Create src/main.tsx.\n- Create src/App.tsx.\n"
+        );
+        let provider_requests = provider.messages.lock().unwrap();
+        assert!(provider_requests.len() >= 2);
+        assert!(provider_requests[1].iter().any(|message| {
+            matches!(message.role, ChatRole::Tool)
+                && message
+                    .content
+                    .contains("Directory creation alone is incomplete")
         }));
 
         let _ = std::fs::remove_dir_all(&root);
