@@ -37,6 +37,8 @@ pub struct ChatMessage {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub tool_calls: Vec<ChatToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -59,7 +61,24 @@ impl ChatMessage {
             reasoning: None,
             thinking: None,
             tool_calls: Vec::new(),
+            tool_call_id: None,
         }
+    }
+
+    pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: ChatRole::Tool,
+            content: content.into(),
+            reasoning: None,
+            thinking: None,
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+
+    pub fn with_tool_calls(mut self, tool_calls: Vec<ChatToolCall>) -> Self {
+        self.tool_calls = tool_calls;
+        self
     }
 
     pub fn explicit_thinking(&self) -> Option<String> {
@@ -244,6 +263,21 @@ pub trait ControllerProvider {
         Err(ProviderError::configuration(
             "provider does not support tool-enabled chat",
         ))
+    }
+
+    fn chat_messages_with_tools_with_metadata(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+        tools: Vec<ChatToolDefinition>,
+    ) -> Result<ProviderOutput, ProviderError> {
+        let prompt = messages
+            .iter()
+            .rev()
+            .find(|message| matches!(message.role, ChatRole::User))
+            .map(|message| message.content.as_str())
+            .unwrap_or_default();
+        self.chat_with_tools_with_metadata(prompt, metadata, tools)
     }
 
     fn chat_stream(

@@ -61,7 +61,7 @@ fn apply_create_file(
     create_file: &crate::action::CreateFileAction,
     allowed_root: &Path,
 ) -> Result<VerifiedActionResult, FilesystemError> {
-    let target_path = resolve_allowed_target(&create_file.target_path, allowed_root)?;
+    let target_path = resolve_allowed_create_file_target(&create_file.target_path, allowed_root)?;
 
     create_new_synced_file(&target_path, &create_file.contents)?;
     verify_file_contents(&target_path, &create_file.contents)?;
@@ -177,6 +177,23 @@ fn apply_create_directory(
 ) -> Result<VerifiedActionResult, FilesystemError> {
     let target_path = resolve_allowed_target(&create_directory.target_path, allowed_root)?;
     if target_exists(&target_path)? {
+        if target_path
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(FilesystemError::UnsafeTarget {
+                path: create_directory.target_path.clone(),
+                reason: "target directory symlinks are not allowed".to_string(),
+            });
+        }
+        if target_path.is_dir() {
+            verify_directory_exists(&target_path)?;
+            return Ok(VerifiedActionResult::File(
+                FileActionVerification::DirectoryCreated {
+                    path: target_path.display().to_string(),
+                },
+            ));
+        }
         return Err(FilesystemError::TargetAlreadyExists { path: target_path });
     }
 
@@ -204,6 +221,144 @@ fn resolve_existing_target(
         });
     }
     Ok(resolved_target)
+}
+
+fn resolve_allowed_create_file_target(
+    target_path: &Path,
+    allowed_root: &Path,
+) -> Result<PathBuf, FilesystemError> {
+    let canonical_root =
+        allowed_root
+            .canonicalize()
+            .map_err(|source| FilesystemError::UnsafeRoot {
+                path: allowed_root.to_path_buf(),
+                reason: source.to_string(),
+            })?;
+    let resolved_target = resolve_allowed_target_path(target_path, allowed_root)?;
+
+    ensure_existing_target_is_not_symlink(&resolved_target, target_path)?;
+    ensure_target_parent_can_be_created(&resolved_target, target_path, &canonical_root)?;
+
+    Ok(resolved_target)
+}
+
+fn resolve_allowed_target_path(
+    target_path: &Path,
+    allowed_root: &Path,
+) -> Result<PathBuf, FilesystemError> {
+    if target_path.is_absolute() {
+        return Ok(target_path.to_path_buf());
+    }
+
+    for component in target_path.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(FilesystemError::UnsafeTarget {
+                    path: target_path.to_path_buf(),
+                    reason: "parent directory traversal is not allowed".to_string(),
+                });
+            }
+            Component::Prefix(_) | Component::RootDir => {
+                return Err(FilesystemError::UnsafeTarget {
+                    path: target_path.to_path_buf(),
+                    reason: "rooted paths are not allowed".to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(allowed_root.join(target_path))
+}
+
+fn ensure_target_parent_can_be_created(
+    resolved_target: &Path,
+    original_target: &Path,
+    canonical_root: &Path,
+) -> Result<(), FilesystemError> {
+    let parent = resolved_target
+        .parent()
+        .ok_or_else(|| FilesystemError::UnsafeTarget {
+            path: original_target.to_path_buf(),
+            reason: "target parent could not be determined".to_string(),
+        })?;
+
+    let canonical_existing_parent =
+        nearest_existing_parent(parent)?
+            .canonicalize()
+            .map_err(|source| FilesystemError::WriteFailed {
+                path: resolved_target.to_path_buf(),
+                reason: source.to_string(),
+            })?;
+
+    if !canonical_existing_parent.starts_with(canonical_root) {
+        let reason = if original_target.is_absolute() {
+            "absolute paths are not allowed".to_string()
+        } else {
+            "target parent resolves outside the allowed root".to_string()
+        };
+        return Err(FilesystemError::UnsafeTarget {
+            path: original_target.to_path_buf(),
+            reason,
+        });
+    }
+
+    fs::create_dir_all(parent).map_err(|source| FilesystemError::WriteFailed {
+        path: resolved_target.to_path_buf(),
+        reason: source.to_string(),
+    })?;
+
+    let canonical_parent =
+        parent
+            .canonicalize()
+            .map_err(|source| FilesystemError::WriteFailed {
+                path: resolved_target.to_path_buf(),
+                reason: source.to_string(),
+            })?;
+    if !canonical_parent.starts_with(canonical_root) {
+        let reason = if original_target.is_absolute() {
+            "absolute paths are not allowed".to_string()
+        } else {
+            "target parent resolves outside the allowed root".to_string()
+        };
+        return Err(FilesystemError::UnsafeTarget {
+            path: original_target.to_path_buf(),
+            reason,
+        });
+    }
+
+    Ok(())
+}
+
+fn nearest_existing_parent(path: &Path) -> Result<PathBuf, FilesystemError> {
+    let mut candidate = path;
+    loop {
+        if candidate.exists() {
+            return Ok(candidate.to_path_buf());
+        }
+        candidate = candidate
+            .parent()
+            .ok_or_else(|| FilesystemError::UnsafeTarget {
+                path: path.to_path_buf(),
+                reason: "target parent could not be determined".to_string(),
+            })?;
+    }
+}
+
+fn ensure_existing_target_is_not_symlink(
+    resolved_target: &Path,
+    original_target: &Path,
+) -> Result<(), FilesystemError> {
+    if resolved_target
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(FilesystemError::UnsafeTarget {
+            path: original_target.to_path_buf(),
+            reason: "target file symlinks are not allowed".to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -690,6 +845,32 @@ mod tests {
     }
 
     #[test]
+    fn approved_relative_write_file_creates_missing_parent_directories() {
+        let root = root("approved-nested");
+        let path = root.join("src/plans/ProjectPlan.md");
+        let action = Action::proposed_write_file(
+            "action-1",
+            "src/plans/ProjectPlan.md",
+            "# Plan",
+            "write nested plan",
+        )
+        .approve();
+
+        let result = Filesystem::apply_write_file(&action, &root);
+
+        assert_eq!(
+            result,
+            Ok(VerifiedActionResult::FileWritten {
+                path: path.display().to_string()
+            })
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# Plan");
+        assert_no_atomic_temp_files(&root);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn approved_write_file_fails_when_target_already_exists_without_overwriting() {
         let root = root("existing-target");
         let path = root.join("existing.txt");
@@ -1008,6 +1189,28 @@ mod tests {
     fn approved_create_directory_creates_directory_and_verifies_it() {
         let root = root("approved-create-directory");
         let path = root.join("new-dir");
+        let action = proposed_create_directory("new-dir").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Ok(VerifiedActionResult::File(
+                FileActionVerification::DirectoryCreated {
+                    path: path.display().to_string()
+                }
+            ))
+        );
+        assert!(path.is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_create_directory_existing_directory_is_verified_idempotent_success() {
+        let root = root("approved-existing-create-directory");
+        let path = root.join("new-dir");
+        fs::create_dir_all(&path).unwrap();
         let action = proposed_create_directory("new-dir").approve();
 
         let result = Filesystem::apply_file_action(&action, &root);

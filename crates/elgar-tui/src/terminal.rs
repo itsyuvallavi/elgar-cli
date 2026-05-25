@@ -11,9 +11,10 @@ use crossterm::{
 use elgar_core::{
     context::ContextAccounting,
     event::ProviderMetrics,
+    policy::PermissionPolicyMode,
     provider::{ControllerProvider, ProviderConfig},
     router::{normalize_pasted_transcript_input, route_input, Route},
-    session::Session,
+    session::{PendingActionSelection, Session},
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -33,8 +34,10 @@ use crate::{
 };
 
 mod commands;
+mod footer;
 mod prompt;
 mod provider_task;
+mod text;
 
 use commands::{
     clear_terminal_conversation, clear_visible_terminal, copy_conversation_to_terminal_clipboard,
@@ -42,6 +45,7 @@ use commands::{
 };
 #[cfg(test)]
 use commands::{copy_conversation_with_clipboards, encode_base64, osc52_clipboard_sequence};
+use footer::{align_footer_line, footer_location_label};
 #[cfg(test)]
 use prompt::{active_working_frame_lines, inline_prompt_frame_lines};
 use prompt::{
@@ -51,7 +55,9 @@ use prompt::{
 #[cfg(test)]
 use provider_task::start_provider_turn;
 use provider_task::{start_model_first_turn, ProviderTurnTask, ProviderTurnUpdate};
+use text::{conversation_print_blocks, pad_line, plain_block_lines};
 
+#[cfg(test)]
 const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(100);
 const IDLE_RENDER_INTERVAL: Duration = Duration::from_millis(140);
 
@@ -60,6 +66,7 @@ const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_CYAN: &str = "\x1b[38;2;143;207;198m";
 const ANSI_MUTED: &str = "\x1b[38;2;118;126;126m";
 const ANSI_TEXT: &str = "\x1b[38;2;214;219;224m";
+const ANSI_TOOL_BLOCK: &str = "\x1b[38;2;186;214;194m\x1b[48;2;29;45;34m";
 const ANSI_USER_BLOCK: &str = "\x1b[1m\x1b[38;2;143;207;198m\x1b[48;2;8;32;32m";
 const ANSI_CURSOR_HIDE: &str = "\x1b[?25l";
 const ANSI_CURSOR_SHOW: &str = "\x1b[?25h";
@@ -81,6 +88,7 @@ pub fn run_terminal_shell_with_lm_studio_provider(config: ProviderConfig) -> io:
         &cwd,
         Controller::with_lm_studio_provider(config),
         context_window_tokens,
+        PermissionPolicyMode::AutoCreateReviewModify,
     )
 }
 
@@ -89,12 +97,27 @@ pub fn run_terminal_shell_with_lm_studio_provider_at(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> io::Result<()> {
+    run_terminal_shell_with_lm_studio_provider_at_with_policy(
+        config,
+        project_root,
+        cwd,
+        PermissionPolicyMode::AutoCreateReviewModify,
+    )
+}
+
+pub fn run_terminal_shell_with_lm_studio_provider_at_with_policy(
+    config: ProviderConfig,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    policy_mode: PermissionPolicyMode,
+) -> io::Result<()> {
     let context_window_tokens = config.configured_context_window_tokens();
     run_terminal_shell_with_controller(
         project_root,
         cwd,
         Controller::with_lm_studio_provider(config),
         context_window_tokens,
+        policy_mode,
     )
 }
 
@@ -102,7 +125,19 @@ pub fn run_terminal_shell_at(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> io::Result<()> {
-    run_terminal_shell_with_controller(project_root, cwd, Controller::default(), None)
+    run_terminal_shell_at_with_policy(
+        project_root,
+        cwd,
+        PermissionPolicyMode::AutoCreateReviewModify,
+    )
+}
+
+pub fn run_terminal_shell_at_with_policy(
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    policy_mode: PermissionPolicyMode,
+) -> io::Result<()> {
+    run_terminal_shell_with_controller(project_root, cwd, Controller::default(), None, policy_mode)
 }
 
 fn run_terminal_shell_with_controller<P>(
@@ -110,21 +145,22 @@ fn run_terminal_shell_with_controller<P>(
     cwd: impl AsRef<Path>,
     controller: Controller<P>,
     context_window_tokens: Option<u64>,
+    policy_mode: PermissionPolicyMode,
 ) -> io::Result<()>
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
     let mut session = Session::new("terminal-tui-session", project_root.as_ref(), cwd.as_ref());
     controller.refresh_context_accounting(&mut session, context_window_tokens);
-    let mut shell = TuiShell::new();
+    let mut shell = TuiShell::with_policy_mode(policy_mode);
 
-    let mut context = terminal_context(&session, &controller);
+    let mut context = terminal_context(&session, &controller, policy_mode);
     print_inline_startup(&context)?;
 
     let mut next_prompt_input = String::new();
     loop {
         controller.refresh_context_accounting(&mut session, context_window_tokens);
-        context = terminal_context(&session, &controller);
+        context = terminal_context(&session, &controller, policy_mode);
         let Some(input) = read_inline_prompt(&context, &next_prompt_input)? else {
             break;
         };
@@ -141,11 +177,16 @@ where
     Ok(())
 }
 
-fn terminal_context<P>(session: &Session, controller: &Controller<P>) -> TerminalShellContext
+fn terminal_context<P>(
+    session: &Session,
+    controller: &Controller<P>,
+    policy_mode: PermissionPolicyMode,
+) -> TerminalShellContext
 where
     P: ControllerProvider,
 {
     let mut context = TerminalShellContext::from_session(session);
+    context.policy_mode = policy_mode;
     if context.provider.is_none() {
         let request = controller.provider.request_metadata();
         context.provider = Some(request.provider);
@@ -254,7 +295,7 @@ where
                 shell,
                 io::stdout(),
             );
-            print_new_conversation_lines(shell, before, false)?;
+            print_new_conversation_lines(shell, before, false, false)?;
             Ok((exit, String::new()))
         }
         TerminalCommand::Text(text) => {
@@ -266,105 +307,11 @@ where
             } else {
                 let before = shell.conversation.render_lines_with_styles().len();
                 handle_terminal_text_input(text, controller, session, shell);
-                print_new_conversation_lines(shell, before, false)?;
+                print_new_conversation_lines(shell, before, false, false)?;
                 Ok((false, String::new()))
             }
         }
     }
-}
-
-#[cfg(test)]
-fn run_inline_provider_turn<P>(
-    text: &str,
-    controller: &Controller<P>,
-    session: &mut Session,
-    shell: &mut TuiShell,
-) -> io::Result<String>
-where
-    P: ControllerProvider + Clone + Send + 'static,
-{
-    let before = shell.conversation.render_lines_with_styles().len();
-    print_spacer()?;
-    print_user_block(text)?;
-
-    let task = start_provider_turn(controller.clone(), session.clone(), text.to_string());
-    let guard = TerminalModeGuard::enter()?;
-    let mut working = InlineWorkingRenderer::new(terminal_context(session, controller));
-    let mut input = TerminalInput::default();
-    let mut live_output = LiveProviderOutput::default();
-    let started = Instant::now();
-    let mut tick = 0usize;
-    working.render(
-        tick,
-        started.elapsed().as_secs(),
-        input.text(),
-        &live_output,
-    )?;
-    tick = tick.wrapping_add(1);
-    let mut last_render = Instant::now();
-
-    let completed = loop {
-        match task.try_complete() {
-            Ok(Some(ProviderTurnUpdate::Chunk(chunk))) => {
-                live_output.push_chunk(chunk);
-                if live_render_due(last_render, Instant::now()) {
-                    working.render(
-                        tick,
-                        started.elapsed().as_secs(),
-                        input.text(),
-                        &live_output,
-                    )?;
-                    last_render = Instant::now();
-                }
-            }
-            Ok(Some(ProviderTurnUpdate::Completed(completed))) => break completed,
-            Ok(Some(ProviderTurnUpdate::Canceled)) => {
-                working.clear()?;
-                drop(guard);
-                print_plain_block("Provider request canceled.")?;
-                return Ok(String::new());
-            }
-            Ok(None) => {
-                if last_render.elapsed() >= IDLE_RENDER_INTERVAL {
-                    working.render(
-                        tick,
-                        started.elapsed().as_secs(),
-                        input.text(),
-                        &live_output,
-                    )?;
-                    tick = tick.wrapping_add(1);
-                    last_render = Instant::now();
-                }
-
-                if event::poll(Duration::from_millis(60))? {
-                    handle_active_provider_event(
-                        &task,
-                        &mut input,
-                        &mut working,
-                        tick,
-                        started.elapsed().as_secs(),
-                        &live_output,
-                    )?;
-                }
-            }
-            Err(message) => {
-                working.clear()?;
-                drop(guard);
-                print_plain_block(&format!("Provider error: {message}"))?;
-                return Ok(String::new());
-            }
-        }
-    };
-
-    let preserved_input = input.text().to_string();
-    working.clear()?;
-    drop(guard);
-    let completed = *completed;
-    *session = completed.session;
-    shell.consume_events(&completed.events);
-    shell.conversation.follow_latest();
-    print_new_conversation_lines(shell, before, true)?;
-    Ok(preserved_input)
 }
 
 fn run_inline_model_first_turn<P>(
@@ -380,11 +327,19 @@ where
     print_spacer()?;
     print_user_block(text)?;
 
-    let task = start_model_first_turn(controller.clone(), session.clone(), text.to_string());
+    let task = start_model_first_turn(
+        controller.clone(),
+        session.clone(),
+        text.to_string(),
+        shell.policy_mode,
+    );
     let guard = TerminalModeGuard::enter()?;
-    let mut working = InlineWorkingRenderer::new(terminal_context(session, controller));
+    let mut working =
+        InlineWorkingRenderer::new(terminal_context(session, controller, shell.policy_mode));
     let mut input = TerminalInput::default();
     let mut live_output = LiveProviderOutput::default();
+    live_output.suppress_reasoning_preview();
+    live_output.suppress_response_preview();
     let started = Instant::now();
     let mut tick = 0usize;
     working.render(
@@ -398,6 +353,7 @@ where
 
     let completed = loop {
         match task.try_complete() {
+            #[cfg(test)]
             Ok(Some(ProviderTurnUpdate::Chunk(chunk))) => {
                 live_output.push_chunk(chunk);
             }
@@ -447,7 +403,7 @@ where
     *session = completed.session;
     shell.consume_events(&completed.events);
     shell.conversation.follow_latest();
-    print_new_conversation_lines(shell, before, true)?;
+    print_new_conversation_lines(shell, before, true, true)?;
     Ok(preserved_input)
 }
 
@@ -518,52 +474,17 @@ fn print_new_conversation_lines(
     shell: &TuiShell,
     before: usize,
     skip_user_and_loading: bool,
+    skip_thinking: bool,
 ) -> io::Result<()> {
     let lines = shell.conversation.render_lines_with_styles();
-    for (line, style) in
-        conversation_print_blocks(lines.into_iter().skip(before), skip_user_and_loading)
-    {
+    for (line, style) in conversation_print_blocks(
+        lines.into_iter().skip(before),
+        skip_user_and_loading,
+        skip_thinking,
+    ) {
         print_conversation_line(&line, style)?;
     }
     io::stdout().flush()
-}
-
-fn conversation_print_blocks(
-    lines: impl IntoIterator<Item = (String, ConversationLineStyle)>,
-    skip_user_and_loading: bool,
-) -> Vec<(String, ConversationLineStyle)> {
-    let mut blocks = Vec::new();
-    let mut current: Option<(String, ConversationLineStyle)> = None;
-
-    for (line, style) in lines {
-        if skip_user_and_loading
-            && matches!(
-                style,
-                ConversationLineStyle::User | ConversationLineStyle::Loading
-            )
-        {
-            continue;
-        }
-
-        match current.as_mut() {
-            Some((text, current_style)) if *current_style == style => {
-                text.push('\n');
-                text.push_str(&line);
-            }
-            Some(_) => {
-                let block = current.take().expect("current block should exist");
-                blocks.push(block);
-                current = Some((line, style));
-            }
-            None => current = Some((line, style)),
-        }
-    }
-
-    if let Some(block) = current {
-        blocks.push(block);
-    }
-
-    blocks
 }
 
 fn print_conversation_line(line: &str, style: ConversationLineStyle) -> io::Result<()> {
@@ -584,6 +505,10 @@ fn print_conversation_line(line: &str, style: ConversationLineStyle) -> io::Resu
         ConversationLineStyle::Plain => {
             print_spacer()?;
             print_plain_block(line)
+        }
+        ConversationLineStyle::Tool => {
+            print_spacer()?;
+            print_tool_block(line)
         }
     }
 }
@@ -616,41 +541,16 @@ fn print_plain_block(text: &str) -> io::Result<()> {
     io::stdout().flush()
 }
 
-fn plain_block_lines(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut lines = Vec::new();
-    for raw_line in text.split('\n') {
-        if preserves_leading_spacing(raw_line) {
-            lines.extend(wrap_preserving_spacing(raw_line, width));
-        } else {
-            lines.extend(wrap_words(raw_line, width));
-        }
+fn print_tool_block(text: &str) -> io::Result<()> {
+    let width = drawable_width(terminal_width());
+    for line in plain_block_lines(text, width) {
+        writeln!(
+            io::stdout(),
+            "{ANSI_TOOL_BLOCK}{}{ANSI_RESET}",
+            pad_line(&line, width)
+        )?;
     }
-    non_empty_lines(lines)
-}
-
-fn preserves_leading_spacing(line: &str) -> bool {
-    line.starts_with(' ') || line.starts_with('\t')
-}
-
-fn wrap_preserving_spacing(line: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    if line.is_empty() {
-        return vec![String::new()];
-    }
-
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for character in line.chars() {
-        if current.chars().count() == width {
-            lines.push(std::mem::take(&mut current));
-        }
-        current.push(character);
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
+    io::stdout().flush()
 }
 
 pub fn render_default_terminal_shell(frame: &mut Frame<'_>) {
@@ -745,6 +645,7 @@ pub struct TerminalShellContext {
     pub model: Option<String>,
     pub provider_metrics: Option<ProviderMetrics>,
     pub context_accounting: ContextAccounting,
+    pub policy_mode: PermissionPolicyMode,
 }
 
 impl TerminalShellContext {
@@ -756,6 +657,7 @@ impl TerminalShellContext {
             model: None,
             provider_metrics: None,
             context_accounting: ContextAccounting::unknown(),
+            policy_mode: PermissionPolicyMode::AutoCreateReviewModify,
         }
     }
 
@@ -778,6 +680,11 @@ impl TerminalShellContext {
 
     pub fn with_context_accounting(mut self, context_accounting: ContextAccounting) -> Self {
         self.context_accounting = context_accounting;
+        self
+    }
+
+    pub fn with_policy_mode(mut self, policy_mode: PermissionPolicyMode) -> Self {
+        self.policy_mode = policy_mode;
         self
     }
 
@@ -817,6 +724,7 @@ fn render_terminal_startup(context: &TerminalShellContext) -> String {
     let startup = StartupBlock::from_context_accounting(
         context.provider.clone(),
         context.model.clone(),
+        context.policy_mode,
         &context.context_accounting,
     );
     startup.render()
@@ -847,124 +755,17 @@ fn style_terminal_conversation(
             ConversationLineStyle::Loading => Line::styled(line, theme::thinking()),
             ConversationLineStyle::Thinking => Line::styled(line, theme::thinking()),
             ConversationLineStyle::Plain => Line::styled(line, theme::model_output()),
+            ConversationLineStyle::Tool => {
+                Line::styled(pad_line(&line, width), theme::tool_output())
+            }
         },
     ));
 
     Text::from(lines)
 }
 
-fn pad_line(line: &str, width: usize) -> String {
-    let visible_width = line.chars().count();
-    if visible_width >= width {
-        line.to_string()
-    } else {
-        format!("{line}{:padding$}", "", padding = width - visible_width)
-    }
-}
-
 fn default_no_network_line() -> &'static str {
     "default no-network stub"
-}
-
-fn footer_location_label(project_root: &Path, cwd: &Path) -> String {
-    let mut parts = vec![project_footer_label(project_root)];
-    if cwd != project_root {
-        parts.push(compact_cwd_label(project_root, cwd));
-    }
-    if let Some(branch) = current_git_branch(project_root) {
-        parts.push(format!("({branch})"));
-    }
-    parts.join(" ")
-}
-
-fn align_footer_line(left: &str, right: &str, width: usize) -> String {
-    let left_width = left.chars().count();
-    let right_width = right.chars().count();
-    let minimum_gap = 2;
-    if width > left_width + right_width + minimum_gap {
-        format!(
-            "{left}{:gap$}{right}",
-            "",
-            gap = width - left_width - right_width
-        )
-    } else {
-        format!("{left}  {right}")
-    }
-}
-
-fn current_git_branch(project_root: &Path) -> Option<String> {
-    let head = std::fs::read_to_string(project_root.join(".git").join("HEAD")).ok()?;
-    let head = head.trim();
-    if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
-        return non_empty_label(branch);
-    }
-    None
-}
-
-fn non_empty_label(label: &str) -> Option<String> {
-    let label = label.trim();
-    if label.is_empty() {
-        None
-    } else {
-        Some(label.to_string())
-    }
-}
-
-fn compact_path_label(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| path.display().to_string())
-}
-
-fn project_footer_label(project_root: &Path) -> String {
-    if let Some(home_label) = home_relative_label(project_root) {
-        return home_label;
-    }
-    compact_repo_label(project_root)
-}
-
-fn home_relative_label(path: &Path) -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let home = PathBuf::from(home);
-    let relative = path.strip_prefix(home).ok()?;
-    let label = relative.display().to_string();
-    if label.is_empty() {
-        Some("~".to_string())
-    } else {
-        Some(format!("~/{}", label))
-    }
-}
-
-fn compact_repo_label(project_root: &Path) -> String {
-    let repo = compact_path_label(project_root);
-    let Some(parent) = project_root.parent() else {
-        return repo;
-    };
-    let Some(parent_name) = parent.file_name().and_then(|name| name.to_str()) else {
-        return repo;
-    };
-    if parent_name.is_empty() {
-        repo
-    } else {
-        format!("{parent_name}/{repo}")
-    }
-}
-
-fn compact_cwd_label(project_root: &Path, cwd: &Path) -> String {
-    if cwd == project_root {
-        ".".to_string()
-    } else if let Ok(relative) = cwd.strip_prefix(project_root) {
-        let label = relative.display().to_string();
-        if label.is_empty() {
-            ".".to_string()
-        } else {
-            label
-        }
-    } else {
-        compact_path_label(cwd)
-    }
 }
 
 fn divider_block(title: &'static str) -> Block<'static> {
@@ -1114,11 +915,31 @@ fn handle_terminal_text_input<P>(
     P: ControllerProvider,
 {
     match route_input(text) {
-        Route::ApproveAction | Route::RejectAction => {
-            shell
-                .conversation
-                .push_local_message("Action commands must use /approve or /reject.");
-            shell.conversation.follow_latest();
+        Route::ApproveAction => {
+            if matches!(
+                session.pending_action_selection(),
+                PendingActionSelection::None
+            ) {
+                shell.submit_approval(controller, session);
+            } else {
+                shell
+                    .conversation
+                    .push_local_message("Action commands must use /approve or /reject.");
+                shell.conversation.follow_latest();
+            }
+        }
+        Route::RejectAction => {
+            if matches!(
+                session.pending_action_selection(),
+                PendingActionSelection::None
+            ) {
+                shell.submit_rejection(controller, session);
+            } else {
+                shell
+                    .conversation
+                    .push_local_message("Action commands must use /approve or /reject.");
+                shell.conversation.follow_latest();
+            }
         }
         Route::Help => {
             shell
@@ -1181,6 +1002,7 @@ where
                 controller.clone(),
                 session.clone(),
                 model_input,
+                shell.policy_mode,
             ));
             false
         }

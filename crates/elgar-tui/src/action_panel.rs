@@ -1,10 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use elgar_core::event::{ActionEvent, Event, FileActionVerification, VerifiedActionResult};
+use elgar_core::policy::ApprovalSource;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PendingActionArea {
     pub panel: Option<ActionApprovalPanel>,
+    hidden_policy_actions: HashSet<String>,
 }
 
 impl PendingActionArea {
@@ -14,6 +19,21 @@ impl PendingActionArea {
                 self.panel = Some(ActionApprovalPanel::pending(action));
             }
             Event::ActionApproved(action) => {
+                if action
+                    .approval_source
+                    .as_ref()
+                    .is_some_and(ApprovalSource::is_policy)
+                {
+                    self.hidden_policy_actions.insert(action.action_id.clone());
+                    if self
+                        .panel
+                        .as_ref()
+                        .is_some_and(|panel| panel.action_id == action.action_id)
+                    {
+                        self.panel = None;
+                    }
+                    return;
+                }
                 self.update_or_replace(action, ActionPanelState::Approved, None)
             }
             Event::ActionRejected(action) => self.update_or_replace(
@@ -21,11 +41,24 @@ impl PendingActionArea {
                 ActionPanelState::Rejected,
                 Some("Rejected. No file was changed.".to_string()),
             ),
-            Event::ActionApplied(action) => self.update_result(
-                &action.action_id,
-                ActionPanelState::Applied,
-                Some(render_verified_result(&action.result)),
-            ),
+            Event::ActionApplied(action) => {
+                if self.hidden_policy_actions.remove(&action.action_id) {
+                    if self
+                        .panel
+                        .as_ref()
+                        .is_some_and(|panel| panel.action_id == action.action_id)
+                    {
+                        self.panel = None;
+                    }
+                    return;
+                }
+
+                self.update_result(
+                    &action.action_id,
+                    ActionPanelState::Applied,
+                    Some(render_verified_result(&action.result)),
+                )
+            }
             Event::ActionFailed(action) => self.update_result(
                 &action.action_id,
                 ActionPanelState::Failed,
@@ -375,5 +408,31 @@ mod tests {
         let rendered = pending_action.render_body();
         assert!(rendered.contains("Status: applied and verified"));
         assert!(rendered.contains("Result: Wrote hello.py."));
+    }
+
+    #[test]
+    fn policy_auto_created_actions_do_not_leave_pending_panel_noise() {
+        let mut pending_action = PendingActionArea::default();
+
+        pending_action.observe_event(&Event::ActionApproved(
+            ActionEvent::new(
+                "action-1",
+                elgar_core::event::ActionKind::CreateFile,
+                "create package.json",
+            )
+            .with_approval_source(elgar_core::policy::ApprovalSource::policy(
+                elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify,
+                "safe create",
+            )),
+        ));
+        pending_action.observe_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "package.json".to_string(),
+            },
+        )));
+
+        assert_eq!(pending_action.render_body(), "none");
     }
 }

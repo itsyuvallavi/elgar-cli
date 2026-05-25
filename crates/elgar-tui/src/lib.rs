@@ -22,5 +22,7 @@ pub use smoke::{
 };
 pub use terminal::{
     default_shell_text, run_terminal_shell, run_terminal_shell_at,
-    run_terminal_shell_with_lm_studio_provider, run_terminal_shell_with_lm_studio_provider_at,
+    run_terminal_shell_at_with_policy, run_terminal_shell_with_lm_studio_provider,
+    run_terminal_shell_with_lm_studio_provider_at,
+    run_terminal_shell_with_lm_studio_provider_at_with_policy,
 };

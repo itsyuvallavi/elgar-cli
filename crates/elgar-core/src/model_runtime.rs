@@ -63,7 +63,9 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
                 &[
                     (
                         "target_path",
-                        string_property("Project-relative path for the new file."),
+                        string_property(
+                            "Path for the new file. Use the user's explicit Desktop path/name when provided; otherwise use a project-relative path.",
+                        ),
                     ),
                     ("contents", string_property("Full contents to write.")),
                 ],
@@ -76,7 +78,9 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
             object_parameters(
                 &[(
                     "target_path",
-                    string_property("Project-relative path for the new directory."),
+                    string_property(
+                        "Path for the new directory. Use the user's explicit Desktop path/name when provided; otherwise use a project-relative path.",
+                    ),
                 )],
                 &["target_path"],
             ),
@@ -235,7 +239,7 @@ impl RawModelToolName {
         }
     }
 
-    fn raw_label(&self) -> String {
+    pub fn raw_label(&self) -> String {
         match self {
             Self::Known(name) => name.label().to_string(),
             Self::Unknown(name) => name.clone(),
@@ -505,7 +509,21 @@ fn required_path(
     key: &str,
 ) -> Result<PathBuf, ModelToolValidationError> {
     let value = required_non_empty_string(tool_call, arguments, tool_name, key)?;
+    if path_contains_ellipsis_placeholder(&value) {
+        return Err(ModelToolValidationError::malformed_argument(
+            tool_call.id.clone(),
+            tool_name.label(),
+            key,
+            "a complete path without ellipsis placeholders",
+        ));
+    }
     Ok(PathBuf::from(value))
+}
+
+fn path_contains_ellipsis_placeholder(value: &str) -> bool {
+    value
+        .split(['/', '\\'])
+        .any(|component| component.contains("...") || component.contains('…'))
 }
 
 fn optional_path(
@@ -808,6 +826,20 @@ mod tests {
         };
         assert_eq!(validated.target_label, "src/generated");
         assert_eq!(action.target_path, PathBuf::from("src/generated"));
+    }
+
+    #[test]
+    fn path_arguments_reject_ellipsis_placeholders() {
+        let error = validate_model_tool_calls(&[raw_call(
+            "call-truncated",
+            RawModelToolName::Known(ModelToolName::CreateDirectory),
+            json!({ "target_path": "/Users/yuval/next-tailwind-...." }),
+        )])
+        .expect_err("truncated display paths must not become filesystem targets");
+
+        assert_eq!(error.kind, ModelToolValidationErrorKind::MalformedArgument);
+        assert_eq!(error.argument.as_deref(), Some("target_path"));
+        assert!(error.message.contains("complete path"));
     }
 
     #[test]

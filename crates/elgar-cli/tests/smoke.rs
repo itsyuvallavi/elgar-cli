@@ -353,11 +353,12 @@ fn tui_command_rejects_pending_action_with_slash_command_without_network() {
     assert!(target.exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Status: applied and verified"));
     assert!(stdout.contains(&format!(
-        "Result: Wrote {}.",
+        "Wrote {}.",
         fs::canonicalize(&target).unwrap().display()
     )));
+    assert!(stdout.contains("Pending Action\nnone"));
+    assert!(!stdout.contains("Status: applied and verified"));
     assert!(stdout.contains("No proposed action is waiting for rejection."));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
@@ -399,11 +400,12 @@ fn tui_command_approves_pending_action_with_slash_command_without_network() {
     assert!(target.exists());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Status: applied and verified"));
     assert!(stdout.contains(&format!(
-        "Result: Wrote {}.",
+        "Wrote {}.",
         fs::canonicalize(&target).unwrap().display()
     )));
+    assert!(stdout.contains("Pending Action\nnone"));
+    assert!(!stdout.contains("Status: applied and verified"));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));
@@ -412,7 +414,7 @@ fn tui_command_approves_pending_action_with_slash_command_without_network() {
 }
 
 #[test]
-fn tui_command_approves_shell_action_with_slash_command_without_network() {
+fn tui_command_applies_shell_action_without_manual_approval() {
     let root = smoke_root("slash-approve-shell");
     let target = root.join("shell-approved.txt");
     let input = format!(
@@ -448,10 +450,10 @@ fn tui_command_approves_shell_action_with_slash_command_without_network() {
     assert_eq!(fs::read_to_string(&target).unwrap(), "ok");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("I can run this command. Approve to run it."));
-    assert!(stdout.contains(&format!("Command: printf ok > {}", target.display())));
-    assert!(stdout.contains("Status: applied and verified"));
-    assert!(stdout.contains("Result: Shell command finished and verification was recorded."));
+    assert!(stdout.contains("Shell command finished and verification was recorded."));
+    assert!(stdout.contains("Pending Action\nnone"));
+    assert!(!stdout.contains("Status: applied and verified"));
+    assert!(stdout.contains("No proposed action is waiting for approval."));
     assert!(!stdout.contains("Action: action-1 ShellCommand"));
     assert!(!stdout.contains("Summary: run shell command"));
     assert!(stdout.contains("Exiting Elgar TUI."));
@@ -462,7 +464,7 @@ fn tui_command_approves_shell_action_with_slash_command_without_network() {
 }
 
 #[test]
-fn tui_command_rejects_shell_action_with_slash_command_without_execution() {
+fn tui_command_reject_after_permissive_shell_action_has_no_pending_action() {
     let root = smoke_root("slash-reject-shell");
     let target = root.join("shell-rejected.txt");
     let input = format!(
@@ -495,11 +497,12 @@ fn tui_command_rejects_shell_action_with_slash_command_without_execution() {
 
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
-    assert!(!target.exists());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "no");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Status: rejected"));
-    assert!(stdout.contains("Rejected. Nothing was changed."));
+    assert!(stdout.contains("Pending Action\nnone"));
+    assert!(!stdout.contains("Status: applied and verified"));
+    assert!(stdout.contains("No proposed action is waiting for rejection."));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));
@@ -547,20 +550,21 @@ fn tui_command_line_loop_preserves_controller_backed_action_lifecycle() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("> create file rejected.py"));
-    assert!(stdout.contains("Creating rejected.py."));
+    assert!(!stdout.contains("Creating rejected.py."));
     assert!(stdout.contains(&format!(
-        "Result: Wrote {}.",
+        "Wrote {}.",
         fs::canonicalize(&rejected_target).unwrap().display()
     )));
     assert!(stdout.contains("No proposed action is waiting for rejection."));
     assert!(stdout.contains("No proposed action is waiting for approval."));
     assert!(stdout.contains("> create file approved.py"));
-    assert!(stdout.contains("Creating approved.py."));
-    assert!(stdout.contains("Status: applied and verified"));
+    assert!(!stdout.contains("Creating approved.py."));
     assert!(stdout.contains(&format!(
-        "Result: Wrote {}.",
+        "Wrote {}.",
         fs::canonicalize(&approved_target).unwrap().display()
     )));
+    assert!(stdout.contains("Pending Action\nnone"));
+    assert!(!stdout.contains("Status: applied and verified"));
     assert!(!stdout.contains("Action: action-1 CreateFile"));
     assert!(!stdout.contains("Action: action-2 CreateFile"));
     assert!(stdout.contains("Exiting Elgar TUI."));

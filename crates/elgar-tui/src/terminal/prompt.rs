@@ -1,13 +1,17 @@
 use std::io::{self, Write};
 
 use crossterm::terminal::size as terminal_size;
+#[cfg(test)]
 use elgar_core::provider::ProviderStreamChunk;
+use elgar_core::provider_visible_text_from_text_only_output;
 
 use crate::{markdown::render_assistant_markdown, reasoning::format_provider_reasoning_summary};
 
 use super::{transcript_output_ansi, TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
 
+#[cfg(test)]
 pub(super) const LIVE_REASONING_PREVIEW_BYTES: usize = 1024;
+#[cfg(test)]
 pub(super) const LIVE_RESPONSE_PREVIEW_BYTES: usize = 4096;
 const LIVE_REASONING_SUMMARY_CHARS: usize = 160;
 
@@ -164,9 +168,20 @@ pub(super) fn live_response_ansi() -> &'static str {
 pub(super) struct LiveProviderOutput {
     reasoning: String,
     response: String,
+    suppress_reasoning_preview: bool,
+    suppress_response_preview: bool,
 }
 
 impl LiveProviderOutput {
+    pub(super) fn suppress_reasoning_preview(&mut self) {
+        self.suppress_reasoning_preview = true;
+    }
+
+    pub(super) fn suppress_response_preview(&mut self) {
+        self.suppress_response_preview = true;
+    }
+
+    #[cfg(test)]
     pub(super) fn push_chunk(&mut self, chunk: ProviderStreamChunk) {
         match chunk {
             ProviderStreamChunk::Reasoning(value) => {
@@ -179,12 +194,21 @@ impl LiveProviderOutput {
     }
 
     fn reasoning_summary(&self) -> Option<String> {
+        if self.suppress_reasoning_preview {
+            return None;
+        }
+
         compact_streaming_text(&self.reasoning)
             .and_then(|text| format_provider_reasoning_summary(&text, LIVE_REASONING_SUMMARY_CHARS))
     }
 
     fn response_preview(&self) -> Option<String> {
-        let rendered = render_assistant_markdown(&self.response);
+        if self.suppress_response_preview {
+            return None;
+        }
+
+        let visible = provider_visible_text_from_text_only_output(self.response.clone())?;
+        let rendered = render_assistant_markdown(&visible);
         if rendered.trim().is_empty() {
             None
         } else {
@@ -203,6 +227,7 @@ impl LiveProviderOutput {
     }
 }
 
+#[cfg(test)]
 fn append_capped(target: &mut String, value: &str, max_bytes: usize) {
     target.push_str(value);
     if target.len() <= max_bytes {
@@ -260,7 +285,7 @@ pub(super) fn active_working_frame_lines(
         .map(|text| with_leading_spacer(rendered_preview_lines(&text, drawable_width(width))))
         .unwrap_or_default();
     let progress_lines = if reasoning_lines.is_empty() && response_lines.is_empty() {
-        with_leading_spacer(vec![provider_progress_line(tick).to_string()])
+        with_leading_spacer(vec![provider_progress_line(input, tick).to_string()])
     } else {
         Vec::new()
     };
@@ -277,12 +302,42 @@ pub(super) fn active_working_frame_lines(
     )
 }
 
-fn provider_progress_line(tick: usize) -> &'static str {
+fn provider_progress_line(input: &str, tick: usize) -> &'static str {
+    if is_project_creation_prompt(input) {
+        return project_creation_progress_line(tick);
+    }
+
     match tick % 4 {
         0 => "Working with local model",
         1 => "Working with local model.",
         2 => "Working with local model..",
         _ => "Working with local model...",
+    }
+}
+
+fn is_project_creation_prompt(input: &str) -> bool {
+    let normalized = input.to_ascii_lowercase();
+    let asks_for_creation = normalized.contains("create")
+        || normalized.contains("make")
+        || normalized.contains("set up")
+        || normalized.contains("setup")
+        || normalized.contains("scaffold");
+    let project_target = normalized.contains("project")
+        || normalized.contains("next")
+        || normalized.contains("react")
+        || normalized.contains("tailwind")
+        || normalized.contains("typescript")
+        || normalized.contains(" ts ");
+
+    asks_for_creation && project_target
+}
+
+fn project_creation_progress_line(tick: usize) -> &'static str {
+    match tick % 4 {
+        0 => "I'm setting up the project",
+        1 => "I'm creating the project files.",
+        2 => "I'm wiring the project structure..",
+        _ => "I'm finishing the setup...",
     }
 }
 

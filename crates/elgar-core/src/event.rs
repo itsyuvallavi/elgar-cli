@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub use crate::action::{ActionKind, FileActionVerification, ShellActionVerification};
-use crate::model_runtime::RawModelToolCall;
+use crate::{model_runtime::RawModelToolCall, policy::ApprovalSource};
 
 /// A controller-recorded fact that can be rendered by CLI, TUI, or tests.
 ///
@@ -202,6 +202,8 @@ pub struct ActionEvent {
     pub action_kind: ActionKind,
     pub target: Option<String>,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_source: Option<ApprovalSource>,
 }
 
 impl ActionEvent {
@@ -215,11 +217,17 @@ impl ActionEvent {
             action_kind,
             target: None,
             summary: summary.into(),
+            approval_source: None,
         }
     }
 
     pub fn with_target(mut self, target: impl Into<String>) -> Self {
         self.target = Some(target.into());
+        self
+    }
+
+    pub fn with_approval_source(mut self, source: ApprovalSource) -> Self {
+        self.approval_source = Some(source);
         self
     }
 }

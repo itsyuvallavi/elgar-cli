@@ -37,24 +37,29 @@ impl TerminalInput {
             }
             KeyCode::Enter => TerminalInputAction::Submit,
             KeyCode::Backspace => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.text.remove(self.cursor);
+                let cursor = floor_char_boundary(&self.text, self.cursor);
+                if cursor > 0 {
+                    let previous = previous_char_boundary(&self.text, cursor);
+                    self.text.drain(previous..cursor);
+                    self.cursor = previous;
                 }
                 TerminalInputAction::Continue
             }
             KeyCode::Delete => {
-                if self.cursor < self.text.len() {
-                    self.text.remove(self.cursor);
+                let cursor = floor_char_boundary(&self.text, self.cursor);
+                if cursor < self.text.len() {
+                    let next = next_char_boundary(&self.text, cursor);
+                    self.text.drain(cursor..next);
+                    self.cursor = cursor;
                 }
                 TerminalInputAction::Continue
             }
             KeyCode::Left => {
-                self.cursor = self.cursor.saturating_sub(1);
+                self.cursor = previous_char_boundary(&self.text, self.cursor);
                 TerminalInputAction::Continue
             }
             KeyCode::Right => {
-                self.cursor = (self.cursor + 1).min(self.text.len());
+                self.cursor = next_char_boundary(&self.text, self.cursor);
                 TerminalInputAction::Continue
             }
             KeyCode::Home => {
@@ -67,6 +72,7 @@ impl TerminalInput {
             }
             KeyCode::Char(character) => {
                 if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.cursor = floor_char_boundary(&self.text, self.cursor);
                     self.text.insert(self.cursor, character);
                     self.cursor += character.len_utf8();
                 }
@@ -75,6 +81,40 @@ impl TerminalInput {
             _ => TerminalInputAction::Continue,
         }
     }
+}
+
+fn floor_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
+}
+
+fn previous_char_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = floor_char_boundary(text, cursor);
+    if cursor == 0 {
+        return 0;
+    }
+
+    let mut previous = cursor - 1;
+    while previous > 0 && !text.is_char_boundary(previous) {
+        previous -= 1;
+    }
+    previous
+}
+
+fn next_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut cursor = floor_char_boundary(text, cursor);
+    if cursor >= text.len() {
+        return text.len();
+    }
+
+    cursor += 1;
+    while cursor < text.len() && !text.is_char_boundary(cursor) {
+        cursor += 1;
+    }
+    cursor
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +151,29 @@ mod tests {
         input.handle_key(key(KeyCode::Right));
         input.handle_key(key(KeyCode::Char('d')));
         assert_eq!(input.text(), "acd");
+    }
+
+    #[test]
+    fn terminal_input_moves_by_characters_for_multibyte_text() {
+        let mut input = TerminalInput::from_text("a🙂b");
+
+        input.handle_key(key(KeyCode::Left));
+        input.handle_key(key(KeyCode::Backspace));
+        assert_eq!(input.text(), "ab");
+
+        input.handle_key(key(KeyCode::Char('é')));
+        assert_eq!(input.text(), "aéb");
+    }
+
+    #[test]
+    fn terminal_input_delete_removes_multibyte_character_at_cursor() {
+        let mut input = TerminalInput::from_text("a🙂b");
+
+        input.handle_key(key(KeyCode::Left));
+        input.handle_key(key(KeyCode::Left));
+        input.handle_key(key(KeyCode::Delete));
+
+        assert_eq!(input.text(), "ab");
     }
 
     #[test]

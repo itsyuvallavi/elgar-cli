@@ -1,4 +1,5 @@
 use elgar_core::{
+    agent_loop::run_permissive_agent_turn,
     controller::{Controller, TurnResult},
     event::Event,
     policy::PermissionPolicyMode,
@@ -19,16 +20,22 @@ pub struct TuiShell {
     pub status: StatusLine,
     pub pending_action: PendingActionArea,
     pub copy: CopyArea,
+    pub policy_mode: PermissionPolicyMode,
 }
 
 impl TuiShell {
     pub fn new() -> Self {
+        Self::with_policy_mode(PermissionPolicyMode::AutoCreateReviewModify)
+    }
+
+    pub fn with_policy_mode(policy_mode: PermissionPolicyMode) -> Self {
         Self {
             conversation: ConversationPane::default(),
             input: InputArea::default(),
             status: StatusLine::ready(),
             pending_action: PendingActionArea::default(),
             copy: CopyArea::default(),
+            policy_mode,
         }
     }
 
@@ -119,18 +126,16 @@ impl TuiShell {
     where
         P: ControllerProvider,
     {
-        let result = controller.model_first_turn_with_policy(
-            session,
-            input,
-            PermissionPolicyMode::AutoCreateReviewModify,
-        );
+        // Live TUI natural-language input uses the agent loop. The legacy
+        // controller-review model-first runtime is compatibility/smoke only.
+        let result = run_permissive_agent_turn(&controller.provider, session, input);
         self.consume_events(&result.events);
         self.conversation.follow_latest();
         result
     }
 
     pub fn conversation_copy_text(&self) -> String {
-        self.conversation.render_body()
+        self.conversation.render_copy_body()
     }
 
     pub fn clear_conversation(&mut self) {
@@ -170,6 +175,10 @@ mod tests {
         assert_eq!(shell.status.text, "ready");
         assert_eq!(shell.pending_action.panel, None);
         assert_eq!(shell.copy.render_hint(), "");
+        assert_eq!(
+            shell.policy_mode,
+            elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify
+        );
     }
 
     #[test]

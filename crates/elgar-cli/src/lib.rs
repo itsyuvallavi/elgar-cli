@@ -6,13 +6,14 @@ use std::{
 
 use elgar_core::{
     controller::Controller,
+    policy::PermissionPolicyMode,
     provider::{
         chat_lm_studio, ChatMessage, ProviderCompatibility, ProviderConfig, ProviderError,
         LM_STUDIO_DEFAULT_BASE_URL,
     },
     renderer::render_session,
     router::{route_input, Route},
-    session::Session,
+    session::{PendingActionSelection, Session},
 };
 use serde::Deserialize;
 
@@ -28,6 +29,7 @@ pub const PROVIDER_SMOKE_DEFAULT_PROMPT: &str = "Say hello in one sentence.";
 pub const LM_STUDIO_MODEL_ENV: &str = "ELGAR_LM_STUDIO_MODEL";
 pub const LM_STUDIO_BASE_URL_ENV: &str = "ELGAR_LM_STUDIO_BASE_URL";
 pub const PROVIDER_CONFIG_ENV: &str = "ELGAR_PROVIDER_CONFIG";
+pub const PERMISSION_POLICY_MODE_ENV: &str = "ELGAR_PERMISSION_POLICY_MODE";
 pub const PROJECT_ROOT_ENV: &str = "ELGAR_PROJECT_ROOT";
 pub const INSTALL_REPO_ROOT_ENV: &str = "ELGAR_INSTALL_REPO_ROOT";
 pub const PROVIDER_CONFIG_FILE: &str = "elgar-provider.json";
@@ -85,6 +87,7 @@ pub enum RuntimeProviderConfigError {
     ParseFailed { path: PathBuf, message: String },
     UnsupportedProvider { provider: String },
     MissingModel { path: PathBuf },
+    InvalidPermissionPolicyMode { source: String, value: String },
 }
 
 impl std::fmt::Display for RuntimeProviderConfigError {
@@ -123,6 +126,12 @@ impl std::fmt::Display for RuntimeProviderConfigError {
                     path.display()
                 )
             }
+            Self::InvalidPermissionPolicyMode { source, value } => {
+                write!(
+                    formatter,
+                    "permission policy config failed: {source} has invalid mode `{value}`; expected review_all, auto_create_review_modify, workspace_write_with_review, or full_access"
+                )
+            }
         }
     }
 }
@@ -155,6 +164,8 @@ struct RuntimeProviderConfigFile {
     context_window_tokens: Option<u64>,
     #[serde(default)]
     compatibility: ProviderCompatibility,
+    #[serde(default)]
+    permission_policy_mode: Option<String>,
 }
 
 pub fn render_cli_turn(
@@ -207,6 +218,66 @@ pub fn load_runtime_provider(
     })?;
 
     runtime_provider_from_file(path, file)
+}
+
+pub fn default_permission_policy_mode() -> PermissionPolicyMode {
+    PermissionPolicyMode::AutoCreateReviewModify
+}
+
+pub fn runtime_permission_policy_mode(
+    start: impl AsRef<Path>,
+) -> Result<PermissionPolicyMode, RuntimeProviderConfigError> {
+    match std::env::var(PERMISSION_POLICY_MODE_ENV) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return PermissionPolicyMode::parse(trimmed).map_err(|_| {
+                    RuntimeProviderConfigError::InvalidPermissionPolicyMode {
+                        source: PERMISSION_POLICY_MODE_ENV.to_string(),
+                        value: value.to_string(),
+                    }
+                });
+            }
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(RuntimeProviderConfigError::InvalidEnvironment {
+                name: PERMISSION_POLICY_MODE_ENV,
+            });
+        }
+    }
+
+    let Some(path) = runtime_provider_config_path(start)? else {
+        return Ok(default_permission_policy_mode());
+    };
+
+    let contents =
+        fs::read_to_string(&path).map_err(|error| RuntimeProviderConfigError::ReadFailed {
+            path: path.clone(),
+            message: error.to_string(),
+        })?;
+    let file: RuntimeProviderConfigFile = serde_json::from_str(&contents).map_err(|error| {
+        RuntimeProviderConfigError::ParseFailed {
+            path: path.clone(),
+            message: error.to_string(),
+        }
+    })?;
+
+    let Some(value) = file
+        .permission_policy_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(default_permission_policy_mode());
+    };
+
+    PermissionPolicyMode::parse(value).map_err(|_| {
+        RuntimeProviderConfigError::InvalidPermissionPolicyMode {
+            source: path.display().to_string(),
+            value: value.to_string(),
+        }
+    })
 }
 
 fn runtime_provider_config_path(
@@ -370,6 +441,10 @@ pub fn is_tui_clear_command(input: &str) -> bool {
     matches!(input.trim(), "/clear" | "/new")
 }
 
+pub fn is_tui_cancel_command(input: &str) -> bool {
+    input.trim() == "/cancel"
+}
+
 fn submit_tui_input(
     shell: &mut elgar_tui::TuiShell,
     controller: &Controller,
@@ -380,18 +455,33 @@ fn submit_tui_input(
         shell.submit_approval(controller, session);
     } else if is_tui_rejection_command(input) {
         shell.submit_rejection(controller, session);
-    } else if matches!(
-        route_input(input),
-        Route::ApproveAction | Route::RejectAction
-    ) {
-        shell.push_local_message("Action commands must use /approve or /reject.");
+    } else if is_tui_cancel_command(input) {
+        shell.push_local_message("No active provider turn to cancel.");
+    } else if matches!(route_input(input), Route::ApproveAction) {
+        if matches!(
+            session.pending_action_selection(),
+            PendingActionSelection::None
+        ) {
+            shell.submit_approval(controller, session);
+        } else {
+            shell.push_local_message("Action commands must use /approve or /reject.");
+        }
+    } else if matches!(route_input(input), Route::RejectAction) {
+        if matches!(
+            session.pending_action_selection(),
+            PendingActionSelection::None
+        ) {
+            shell.submit_rejection(controller, session);
+        } else {
+            shell.push_local_message("Action commands must use /approve or /reject.");
+        }
     } else {
         shell.submit_model_first_input(controller, session, input);
     }
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/approve   Apply the pending action\n/reject    Reject the pending action\n/memory    Show verified memory\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
+    "Commands\n/commands  Show commands\n/clear     Clear the visible conversation\n/new       Clear the visible conversation\n/cancel    Cancel the active provider turn\n/approve   Apply the pending action\n/reject    Reject the pending action\n/memory    Show verified memory\n/copy      Copy the conversation\n/exit      Quit\n/quit      Quit\n/q         Quit\n/help      Show commands"
 }
 
 pub fn render_tui_script<I, S>(
@@ -403,9 +493,22 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
+    render_tui_script_with_policy(inputs, project_root, cwd, default_permission_policy_mode())
+}
+
+pub fn render_tui_script_with_policy<I, S>(
+    inputs: I,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    policy_mode: PermissionPolicyMode,
+) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let controller = Controller::default();
     let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
-    let mut shell = elgar_tui::TuiShell::new();
+    let mut shell = elgar_tui::TuiShell::with_policy_mode(policy_mode);
     let mut rendered_turns = Vec::new();
 
     for input in inputs {
@@ -418,6 +521,9 @@ where
             rendered_turns.push(render_tui_help().to_string());
         } else if is_tui_clear_command(input) {
             shell.clear_conversation();
+            rendered_turns.push(shell.render());
+        } else if is_tui_cancel_command(input) {
+            shell.push_local_message("No active provider turn to cancel.");
             rendered_turns.push(shell.render());
         } else if is_tui_copy_command(input) {
             rendered_turns.push(shell.conversation_copy_text());
@@ -434,7 +540,7 @@ where
 
 pub fn run_tui_loop<R, W>(
     reader: R,
-    mut writer: W,
+    writer: W,
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> io::Result<()>
@@ -442,9 +548,29 @@ where
     R: BufRead,
     W: Write,
 {
+    run_tui_loop_with_policy(
+        reader,
+        writer,
+        project_root,
+        cwd,
+        default_permission_policy_mode(),
+    )
+}
+
+pub fn run_tui_loop_with_policy<R, W>(
+    reader: R,
+    mut writer: W,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    policy_mode: PermissionPolicyMode,
+) -> io::Result<()>
+where
+    R: BufRead,
+    W: Write,
+{
     let controller = Controller::default();
     let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
-    let mut shell = elgar_tui::TuiShell::new();
+    let mut shell = elgar_tui::TuiShell::with_policy_mode(policy_mode);
 
     writeln!(writer, "Elgar TUI. Type /exit, /quit, or /q to leave.")?;
     for line in reader.lines() {
@@ -458,6 +584,9 @@ where
             writeln!(writer, "{}", render_tui_help())?;
         } else if is_tui_clear_command(&input) {
             shell.clear_conversation();
+            writeln!(writer, "{}", shell.render())?;
+        } else if is_tui_cancel_command(&input) {
+            shell.push_local_message("No active provider turn to cancel.");
             writeln!(writer, "{}", shell.render())?;
         } else if is_tui_copy_command(&input) {
             writeln!(writer, "{}", shell.conversation_copy_text())?;
@@ -474,13 +603,20 @@ where
 
 pub fn run_tui_terminal() -> io::Result<()> {
     let paths = RuntimePaths::from_current_dir();
+    let policy_mode = runtime_permission_policy_mode(&paths.project_root)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     match load_runtime_provider(&paths.project_root) {
-        Ok(Some(runtime)) => elgar_tui::run_terminal_shell_with_lm_studio_provider_at(
+        Ok(Some(runtime)) => elgar_tui::run_terminal_shell_with_lm_studio_provider_at_with_policy(
             runtime.config,
             &paths.project_root,
             &paths.cwd,
+            policy_mode,
         ),
-        Ok(None) => elgar_tui::run_terminal_shell_at(&paths.project_root, &paths.cwd),
+        Ok(None) => elgar_tui::run_terminal_shell_at_with_policy(
+            &paths.project_root,
+            &paths.cwd,
+            policy_mode,
+        ),
         Err(error) => Err(io::Error::new(io::ErrorKind::InvalidInput, error)),
     }
 }
@@ -639,17 +775,18 @@ fn read_env(name: &'static str) -> Result<Option<String>, ProviderSmokeError> {
 
 #[cfg(test)]
 mod tests {
-    use elgar_core::provider::LM_STUDIO_DEFAULT_BASE_URL;
+    use elgar_core::{policy::PermissionPolicyMode, provider::LM_STUDIO_DEFAULT_BASE_URL};
     use std::{fs, path::PathBuf};
 
     use super::{
-        is_tui_approval_command, is_tui_clear_command, is_tui_copy_command, is_tui_exit_command,
-        is_tui_help_command, is_tui_memory_command, is_tui_rejection_command,
-        load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
-        render_cli_turn_from_runtime_config, render_controller_smoke, render_tui_controller_smoke,
-        render_tui_help, render_tui_script, resolve_runtime_project_root, run_tui_loop,
-        should_launch_terminal_tui_by_default, ProviderSmokeConfig, ProviderSmokeError,
-        RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
+        default_permission_policy_mode, is_tui_approval_command, is_tui_clear_command,
+        is_tui_copy_command, is_tui_exit_command, is_tui_help_command, is_tui_memory_command,
+        is_tui_rejection_command, load_runtime_provider, provider_smoke_config,
+        provider_smoke_prompt, render_cli_turn_from_runtime_config, render_controller_smoke,
+        render_tui_controller_smoke, render_tui_help, render_tui_script,
+        render_tui_script_with_policy, resolve_runtime_project_root, run_tui_loop,
+        runtime_permission_policy_mode, should_launch_terminal_tui_by_default, ProviderSmokeConfig,
+        ProviderSmokeError, RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
         PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
@@ -808,10 +945,56 @@ mod tests {
         let root = temp_root("runtime-provider-absent");
 
         assert_eq!(load_runtime_provider(&root).unwrap(), None);
+        assert_eq!(
+            runtime_permission_policy_mode(&root).unwrap(),
+            default_permission_policy_mode()
+        );
 
         let rendered = render_cli_turn_from_runtime_config("hello", &root, &root).unwrap();
         assert!(rendered.contains("provider started: stub-provider"));
         assert!(!rendered.contains("lm-studio"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_permission_policy_mode_loads_from_provider_config() {
+        let root = temp_root("runtime-policy-config");
+        fs::write(
+            root.join(PROVIDER_CONFIG_FILE),
+            r#"{
+              "provider": "lm-studio",
+              "mode": "off",
+              "permission_policy_mode": "review_all"
+            }"#,
+        )
+        .unwrap();
+
+        let mode = runtime_permission_policy_mode(&root).unwrap();
+
+        assert_eq!(mode, PermissionPolicyMode::ReviewAll);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_permission_policy_mode_rejects_invalid_config_value() {
+        let root = temp_root("runtime-policy-invalid");
+        fs::write(
+            root.join(PROVIDER_CONFIG_FILE),
+            r#"{
+              "permission_policy_mode": "trust_everything"
+            }"#,
+        )
+        .unwrap();
+
+        let error = runtime_permission_policy_mode(&root).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RuntimeProviderConfigError::InvalidPermissionPolicyMode { .. }
+        ));
+        assert!(error.to_string().contains("trust_everything"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -972,6 +1155,7 @@ mod tests {
         assert!(help.starts_with("Commands\n/commands"));
         assert!(help.contains("/clear"));
         assert!(help.contains("/new"));
+        assert!(help.contains("/cancel"));
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
         assert!(help.contains("/memory"));
@@ -986,6 +1170,16 @@ mod tests {
         assert!(!help.contains("/provider"));
         assert!(!help.contains("/bash"));
         assert!(!help.contains("/api"));
+    }
+
+    #[test]
+    fn tui_line_loop_cancel_command_is_documented_and_local() {
+        let rendered = render_tui_script(["/cancel"], ".", ".");
+
+        assert!(render_tui_help().contains("/cancel"));
+        assert!(rendered.contains("No active provider turn to cancel."));
+        assert!(!rendered.contains("> /cancel"));
+        assert!(!rendered.contains("stub provider response"));
     }
 
     #[test]
@@ -1148,16 +1342,39 @@ mod tests {
 
         assert!(target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("Creating hello.py."));
+        assert!(!rendered.contains("Creating hello.py."));
         assert!(rendered.contains("Wrote "));
         assert!(rendered.contains("> approve"));
         assert!(rendered.contains("No proposed action is waiting for approval."));
-        assert!(rendered.contains("Approved. Applying the action."));
-        assert!(rendered.contains("Status: applied and verified"));
-        assert!(rendered.contains(&format!("Result: Wrote {}.", target.display())));
+        assert!(rendered.contains("Pending Action\nnone"));
+        assert!(!rendered.contains("Status: applied and verified"));
+        assert!(!rendered.contains(&format!("Result: Wrote {}.", target.display())));
         assert!(!rendered.contains("Action: action-1 CreateFile"));
         assert!(!rendered.contains("Summary: write hello.py"));
         assert!(!rendered.contains("lm-studio"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tui_script_selected_review_all_policy_does_not_gate_permissive_file_creates() {
+        let root = temp_root("review-all-policy-command");
+        let target = root.join("hello.py");
+
+        let rendered = render_tui_script_with_policy(
+            ["create file hello.py"],
+            &root,
+            &root,
+            PermissionPolicyMode::ReviewAll,
+        );
+
+        assert!(target.exists());
+        assert!(rendered.contains("> create file hello.py"));
+        assert!(rendered.contains("Pending Action\nnone"));
+        assert!(!rendered.contains("Status: applied and verified"));
+        assert!(rendered.contains("Wrote "));
+        assert!(!rendered.contains("Status: waiting for approval"));
+        assert!(!rendered.contains("Approve to write it."));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1171,8 +1388,10 @@ mod tests {
             render_tui_script(["create file hello.py", "approve", "reject"], &root, &root);
 
         assert!(target.exists());
-        assert!(rendered.contains("Action commands must use /approve or /reject."));
-        assert!(rendered.contains("Status: applied and verified"));
+        assert!(rendered.contains("No proposed action is waiting for approval."));
+        assert!(rendered.contains("No proposed action is waiting for rejection."));
+        assert!(rendered.contains("Pending Action\nnone"));
+        assert!(!rendered.contains("Status: applied and verified"));
         assert!(!rendered.contains("Rejected. Nothing was changed."));
         assert!(!rendered.contains("lm-studio"));
 
@@ -1188,11 +1407,12 @@ mod tests {
 
         assert!(target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("Creating hello.py."));
+        assert!(!rendered.contains("Creating hello.py."));
         assert!(rendered.contains("Wrote "));
         assert!(rendered.contains("> reject"));
         assert!(rendered.contains("No proposed action is waiting for rejection."));
-        assert!(rendered.contains("Status: applied and verified"));
+        assert!(rendered.contains("Pending Action\nnone"));
+        assert!(!rendered.contains("Status: applied and verified"));
         assert!(!rendered.contains("Action: action-1 CreateFile"));
         assert!(!rendered.contains("Summary: write hello.py"));
         assert!(!rendered.contains("lm-studio"));
@@ -1256,10 +1476,11 @@ mod tests {
         assert!(target.exists());
         assert!(rendered.contains("> create file hello.py"));
         assert!(rendered.contains("> approve"));
-        assert!(rendered.contains("Creating hello.py."));
+        assert!(!rendered.contains("Creating hello.py."));
         assert!(rendered.contains("No proposed action is waiting for approval."));
-        assert!(rendered.contains("Status: applied and verified"));
-        assert!(rendered.contains(&format!("Result: Wrote {}.", target.display())));
+        assert!(rendered.contains("Pending Action\nnone"));
+        assert!(!rendered.contains("Status: applied and verified"));
+        assert!(!rendered.contains(&format!("Result: Wrote {}.", target.display())));
         assert!(!rendered.contains("Action: action-1 CreateFile"));
         assert!(!rendered.contains("Target: hello.py"));
         assert!(rendered.contains("Exiting Elgar TUI."));

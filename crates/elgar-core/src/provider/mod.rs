@@ -1,6 +1,8 @@
 mod config;
 mod http;
 mod lm_studio;
+mod lm_studio_format;
+mod lm_studio_parse;
 mod stub;
 mod types;
 

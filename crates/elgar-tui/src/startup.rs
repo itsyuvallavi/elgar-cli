@@ -1,12 +1,13 @@
 #[cfg(test)]
 use std::path::Path;
 
-use elgar_core::context::ContextAccounting;
+use elgar_core::{context::ContextAccounting, policy::PermissionPolicyMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupBlock {
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub policy_mode: PermissionPolicyMode,
     pub context_files: Vec<String>,
 }
 
@@ -19,17 +20,24 @@ impl StartupBlock {
         model: Option<String>,
     ) -> Self {
         let context = ContextAccounting::from_default_local_files(project_root, cwd, None);
-        Self::from_context_accounting(provider, model, &context)
+        Self::from_context_accounting(
+            provider,
+            model,
+            PermissionPolicyMode::AutoCreateReviewModify,
+            &context,
+        )
     }
 
     pub fn from_context_accounting(
         provider: Option<String>,
         model: Option<String>,
+        policy_mode: PermissionPolicyMode,
         context: &ContextAccounting,
     ) -> Self {
         Self {
             provider,
             model,
+            policy_mode,
             context_files: context
                 .loaded_files
                 .iter()
@@ -40,11 +48,25 @@ impl StartupBlock {
 
     pub fn render(&self) -> String {
         format!(
-            "elgar v0.2\n/commands · /clear · /cancel · /approve · /reject · /memory · /copy · /exit\n\nElgar uses your local LM Studio model and keeps file changes behind approval.\n\n[Context]\n{}\n\n[Provider]\n  {} · {}",
+            "elgar v0.2\n/commands · /clear · /cancel · /approve · /reject · /memory · /copy · /exit\n\n{}\n\n[Context]\n{}\n\n[Provider]\n  {} · {}\n\n[Policy]\n  {}",
+            self.provider_description(),
             self.render_context_files(),
             self.provider.as_deref().unwrap_or("none"),
-            self.model.as_deref().unwrap_or("none")
+            self.model.as_deref().unwrap_or("none"),
+            self.policy_mode
         )
+    }
+
+    fn provider_description(&self) -> &'static str {
+        match self.provider.as_deref() {
+            Some("lm-studio") => {
+                "Elgar uses your local LM Studio model and keeps file changes behind approval."
+            }
+            Some("stub-provider") => {
+                "Elgar is running with the default no-network stub provider and keeps file changes behind approval."
+            }
+            _ => "Elgar keeps file changes behind approval.",
+        }
     }
 
     fn render_context_files(&self) -> String {
@@ -82,7 +104,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "elgar v0.2\n/commands · /clear · /cancel · /approve · /reject · /memory · /copy · /exit\n\nElgar uses your local LM Studio model and keeps file changes behind approval.\n\n[Context]\n  AGENTS.md\n\n[Provider]\n  lm-studio · openai/gpt-oss-20b"
+            "elgar v0.2\n/commands · /clear · /cancel · /approve · /reject · /memory · /copy · /exit\n\nElgar uses your local LM Studio model and keeps file changes behind approval.\n\n[Context]\n  AGENTS.md\n\n[Provider]\n  lm-studio · openai/gpt-oss-20b\n\n[Policy]\n  auto_create_review_modify"
         );
         assert!(!rendered.contains("elgar-provider.json"));
         assert!(!rendered.contains("Commands:"));
@@ -101,8 +123,24 @@ mod tests {
 
         let rendered = StartupBlock::new(&root, &root, None, None).render();
 
+        assert!(!rendered.contains("local LM Studio model"));
         assert!(rendered.contains("[Context]\n  (none)"));
         assert!(rendered.contains("[Provider]\n  none · none"));
+        assert!(rendered.contains("[Policy]\n  auto_create_review_modify"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_block_does_not_claim_lm_studio_for_stub_provider() {
+        let root = temp_root("startup-stub");
+
+        let rendered =
+            StartupBlock::new(&root, &root, Some("stub-provider".to_string()), None).render();
+
+        assert!(!rendered.contains("local LM Studio model"));
+        assert!(rendered.contains("[Provider]\n  stub-provider · none"));
+        assert!(rendered.contains("[Policy]\n  auto_create_review_modify"));
 
         let _ = fs::remove_dir_all(root);
     }

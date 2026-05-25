@@ -29,6 +29,12 @@ pub(crate) fn model_output() -> Style {
     primary()
 }
 
+pub(crate) fn tool_output() -> Style {
+    Style::default()
+        .fg(Color::Rgb(186, 214, 194))
+        .bg(Color::Rgb(29, 45, 34))
+}
+
 #[cfg(test)]
 pub(crate) fn success() -> Style {
     Style::default().fg(Color::Rgb(143, 188, 143))
@@ -52,8 +58,8 @@ mod tests {
     use ratatui::style::{Color, Modifier};
 
     use super::{
-        accent, error, model_output, muted, primary, success, thinking, user_input_block,
-        warning_action,
+        accent, error, model_output, muted, primary, success, thinking, tool_output,
+        user_input_block, warning_action,
     };
 
     #[test]
@@ -65,6 +71,8 @@ mod tests {
         assert_eq!(user_input_block().bg, Some(Color::Rgb(25, 47, 50)));
         assert_eq!(thinking().fg, Some(Color::Rgb(150, 159, 176)));
         assert_eq!(model_output().fg, primary().fg);
+        assert_eq!(tool_output().fg, Some(Color::Rgb(186, 214, 194)));
+        assert_eq!(tool_output().bg, Some(Color::Rgb(29, 45, 34)));
         assert_eq!(success().fg, Some(Color::Rgb(143, 188, 143)));
         assert_eq!(warning_action().fg, Some(Color::Rgb(214, 181, 110)));
         assert_eq!(error().fg, Some(Color::Rgb(218, 118, 118)));
@@ -75,6 +83,7 @@ mod tests {
         assert!(!primary().add_modifier.contains(Modifier::BOLD));
         assert!(!muted().add_modifier.contains(Modifier::BOLD));
         assert!(!thinking().add_modifier.contains(Modifier::BOLD));
+        assert!(!tool_output().add_modifier.contains(Modifier::BOLD));
         assert!(accent().add_modifier.contains(Modifier::BOLD));
         assert!(user_input_block().add_modifier.contains(Modifier::BOLD));
         assert!(warning_action().add_modifier.contains(Modifier::BOLD));

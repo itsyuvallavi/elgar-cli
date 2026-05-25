@@ -2983,23 +2983,29 @@ fn write_file_lifecycle_requires_user_approval_and_records_terminal_states() {
         .iter()
         .any(|event| matches!(event, Event::ActionApplied(_))));
 
-    let mut failed_session = session_at(&root);
-    let failed_target = root.join("missing").join("failed.py");
+    let mut nested_session = session_at(&root);
+    let nested_target = root.join("missing").join("nested.py");
 
-    controller.turn(&mut failed_session, "create file missing/failed.py");
-    controller.turn(&mut failed_session, "approve");
+    controller.turn(&mut nested_session, "create file missing/nested.py");
+    controller.turn(&mut nested_session, "approve");
 
-    assert!(!failed_target.exists());
+    assert!(nested_target.exists());
+    assert_eq!(fs::read_to_string(&nested_target).unwrap(), "");
     assert_eq!(
-        failed_session.actions()[0].action.state,
-        ActionLifecycleState::Failed
+        nested_session.actions()[0].action.state,
+        ActionLifecycleState::Applied
     );
-    assert_eq!(failed_session.actions()[0].verified_result, None);
-    assert!(failed_session.actions()[0].failure_reason.is_some());
-    assert!(failed_session
+    assert_eq!(
+        nested_session.actions()[0].verified_result,
+        Some(VerifiedActionResult::FileWritten {
+            path: nested_target.display().to_string()
+        })
+    );
+    assert_eq!(nested_session.actions()[0].failure_reason, None);
+    assert!(nested_session
         .events()
         .iter()
-        .any(|event| matches!(event, Event::ActionFailed(_))));
+        .any(|event| matches!(event, Event::ActionApplied(_))));
 
     let _ = fs::remove_dir_all(root);
 }

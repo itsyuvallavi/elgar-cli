@@ -71,11 +71,22 @@ fn main() {
         .is_some_and(|arg| arg == elgar_cli::TUI_COMMAND)
     {
         let paths = elgar_cli::RuntimePaths::from_current_dir();
+        let policy_mode = match elgar_cli::runtime_permission_policy_mode(&paths.project_root) {
+            Ok(mode) => mode,
+            Err(error) => {
+                eprintln!("TUI failed: {error}");
+                std::process::exit(1);
+            }
+        };
         let stdin = std::io::stdin();
         let stdout = std::io::stdout();
-        if let Err(error) =
-            elgar_cli::run_tui_loop(stdin.lock(), stdout.lock(), &paths.project_root, &paths.cwd)
-        {
+        if let Err(error) = elgar_cli::run_tui_loop_with_policy(
+            stdin.lock(),
+            stdout.lock(),
+            &paths.project_root,
+            &paths.cwd,
+            policy_mode,
+        ) {
             eprintln!("TUI failed: {error}");
             std::process::exit(1);
         }

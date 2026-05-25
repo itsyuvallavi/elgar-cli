@@ -6,12 +6,11 @@ use std::{
     thread,
 };
 
+#[cfg(test)]
+use elgar_core::provider::ProviderStreamChunk;
 use elgar_core::{
-    controller::Controller,
-    event::Event,
-    policy::PermissionPolicyMode,
-    provider::{ControllerProvider, ProviderStreamChunk},
-    session::Session,
+    agent_loop::run_permissive_agent_turn, controller::Controller, event::Event,
+    policy::PermissionPolicyMode, provider::ControllerProvider, session::Session,
 };
 
 pub(super) struct ProviderTurnTask {
@@ -34,6 +33,7 @@ impl ProviderTurnTask {
         }
 
         match self.receiver.try_recv() {
+            #[cfg(test)]
             Ok(ProviderTurnWorkerMessage::Chunk(chunk)) => {
                 Ok(Some(ProviderTurnUpdate::Chunk(chunk)))
             }
@@ -53,6 +53,7 @@ impl ProviderTurnTask {
 }
 
 pub(super) enum ProviderTurnUpdate {
+    #[cfg(test)]
     Chunk(ProviderStreamChunk),
     Completed(Box<CompletedProviderTurn>),
     Canceled,
@@ -100,6 +101,7 @@ pub(super) fn start_model_first_turn<P>(
     controller: Controller<P>,
     mut session: Session,
     input: String,
+    _policy_mode: PermissionPolicyMode,
 ) -> ProviderTurnTask
 where
     P: ControllerProvider + Send + 'static,
@@ -108,12 +110,10 @@ where
     let canceled = Arc::new(AtomicBool::new(false));
     let worker_canceled = Arc::clone(&canceled);
 
+    // Live TUI natural-language turns run through the Pi-style agent loop.
+    // The controller-review model-first runtime is legacy smoke coverage only.
     thread::spawn(move || {
-        let result = controller.model_first_turn_with_policy(
-            &mut session,
-            &input,
-            PermissionPolicyMode::AutoCreateReviewModify,
-        );
+        let result = run_permissive_agent_turn(&controller.provider, &mut session, &input);
         if worker_canceled.load(Ordering::SeqCst) {
             return;
         }
@@ -129,6 +129,7 @@ where
 }
 
 enum ProviderTurnWorkerMessage {
+    #[cfg(test)]
     Chunk(ProviderStreamChunk),
     Complete(Result<Box<CompletedProviderTurn>, String>),
 }

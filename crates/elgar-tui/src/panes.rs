@@ -4,8 +4,17 @@ use elgar_core::event::{
     ActionEvent, ActionKind, AssistantMessageSource, Event, FileActionVerification,
     VerifiedActionResult,
 };
+use elgar_core::policy::ApprovalSource;
 
-use crate::{markdown::render_assistant_markdown, reasoning::format_provider_reasoning_summary};
+use crate::markdown::render_assistant_markdown;
+
+mod provider_thinking;
+mod tool_activity;
+
+#[cfg(test)]
+use provider_thinking::is_low_value_provider_tool_planning_thinking;
+use provider_thinking::render_provider_thinking;
+use tool_activity::{create_write_tool_item, CreateWriteToolBatch, CreateWriteToolItem};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationPane {
@@ -13,6 +22,7 @@ pub struct ConversationPane {
     line_styles: Vec<ConversationLineStyle>,
     scrollback: ConversationScrollback,
     loading_pulse: ThinkingPulse,
+    create_batch: Option<CreateWriteToolBatch>,
 }
 
 impl ConversationPane {
@@ -21,6 +31,21 @@ impl ConversationPane {
             Event::ProviderStarted(_) => self.loading_pulse.reset(),
             Event::ProviderFinished(_) | Event::Error(_) => self.remove_loading_pulse(),
             _ => {}
+        }
+
+        if let Event::ActionApplied(applied) = event {
+            if let Some(item) = create_write_tool_item(&applied.result) {
+                self.push_create_batch_item(item);
+                return;
+            }
+        }
+
+        if is_hidden_policy_approval(event) {
+            return;
+        }
+
+        if !matches!(event, Event::Error(_)) {
+            self.create_batch = None;
         }
 
         if let Some((line, style)) = render_tui_event(event) {
@@ -107,6 +132,22 @@ impl ConversationPane {
         }
     }
 
+    pub(crate) fn render_copy_body(&self) -> String {
+        let lines = self
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(index, _line)| self.line_style(*index) != ConversationLineStyle::Thinking)
+            .map(|(_index, line)| line.as_str())
+            .collect::<Vec<_>>();
+
+        if lines.is_empty() {
+            "(empty conversation)".to_string()
+        } else {
+            lines.join("\n")
+        }
+    }
+
     pub(crate) fn render_lines_with_styles(&self) -> Vec<(String, ConversationLineStyle)> {
         if self.lines.is_empty() {
             return vec![(
@@ -162,6 +203,28 @@ impl ConversationPane {
             self.line_styles.push(ConversationLineStyle::Plain);
         }
     }
+
+    fn push_create_batch_item(&mut self, item: CreateWriteToolItem) {
+        match &mut self.create_batch {
+            Some(batch) => {
+                batch.push(item);
+                if let Some(line) = self.lines.get_mut(batch.line_index) {
+                    *line = batch.render();
+                }
+                if let Some(style) = self.line_styles.get_mut(batch.line_index) {
+                    *style = batch.line_style();
+                }
+            }
+            None => {
+                let line_index = self.lines.len();
+                let batch = CreateWriteToolBatch::new(line_index, item);
+                let line = batch.render();
+                let style = batch.line_style();
+                self.create_batch = Some(batch);
+                self.push_line(line, style);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -171,6 +234,7 @@ pub(crate) enum ConversationLineStyle {
     User,
     Loading,
     Thinking,
+    Tool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -382,6 +446,10 @@ fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
             Some((render_thinking_progress(), ConversationLineStyle::Loading))
         }
         Event::ProviderFinished(finished) => {
+            if !finished.output.tool_calls.is_empty() {
+                return None;
+            }
+
             render_provider_thinking(finished.output.thinking.as_deref())
                 .map(|line| (line, ConversationLineStyle::Thinking))
         }
@@ -389,7 +457,7 @@ fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
             Some((render_action_proposed(action), ConversationLineStyle::Plain))
         }
         Event::ActionApproved(action) => {
-            Some((render_action_approved(action), ConversationLineStyle::Plain))
+            render_action_approved(action).map(|line| (line, ConversationLineStyle::Plain))
         }
         Event::ActionRejected(action) => {
             Some((render_action_rejected(action), ConversationLineStyle::Plain))
@@ -408,6 +476,17 @@ fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
             ConversationLineStyle::Plain,
         )),
     }
+}
+
+fn is_hidden_policy_approval(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::ActionApproved(action)
+            if action
+                .approval_source
+                .as_ref()
+                .is_some_and(ApprovalSource::is_policy)
+    )
 }
 
 fn render_action_proposed(action: &ActionEvent) -> String {
@@ -439,20 +518,32 @@ fn render_action_proposed(action: &ActionEvent) -> String {
     }
 }
 
-fn render_action_approved(action: &ActionEvent) -> String {
+fn render_action_approved(action: &ActionEvent) -> Option<String> {
+    if action
+        .approval_source
+        .as_ref()
+        .is_some_and(ApprovalSource::is_policy)
+    {
+        return render_policy_approved_action(action);
+    }
+
     if let Some(path) = create_directory_summary_path(&action.summary) {
-        return format!("Approved. Creating {}.", user_display_path(path));
+        return Some(format!("Approved. Creating {}.", user_display_path(path)));
     }
 
     if action.summary.starts_with("create Markdown plan ") {
-        return "Approved. Creating the plan.".to_string();
+        return Some("Approved. Creating the plan.".to_string());
     }
 
     if action.summary.starts_with("execute Markdown plan in ") {
-        return "Approved. Creating the project files.".to_string();
+        return Some("Approved. Creating the project files.".to_string());
     }
 
-    "Approved. Applying the action.".to_string()
+    Some("Approved. Applying the action.".to_string())
+}
+
+fn render_policy_approved_action(_action: &ActionEvent) -> Option<String> {
+    None
 }
 
 fn render_action_rejected(action: &ActionEvent) -> String {
@@ -545,48 +636,6 @@ fn is_controller_action_boilerplate(content: &str) -> bool {
 
 fn render_thinking_progress() -> String {
     ThinkingPulse::default().label().to_string()
-}
-
-fn render_provider_thinking(thinking: Option<&str>) -> Option<String> {
-    let thinking = thinking?.trim();
-    if thinking.is_empty() {
-        return None;
-    }
-
-    ThinkingBlock::collapsed(thinking).map(|block| block.render_collapsed())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ThinkingBlock {
-    summary: String,
-    detail: String,
-    expanded: bool,
-}
-
-impl ThinkingBlock {
-    fn collapsed(detail: &str) -> Option<Self> {
-        Some(Self {
-            summary: compact_thinking_summary(detail)?,
-            detail: render_assistant_markdown(detail),
-            expanded: false,
-        })
-    }
-
-    fn render_collapsed(&self) -> String {
-        let _future_expanded_detail = if self.expanded {
-            Some(self.detail.as_str())
-        } else {
-            None
-        };
-        self.summary.clone()
-    }
-}
-
-fn compact_thinking_summary(thinking: &str) -> Option<String> {
-    let rendered = render_assistant_markdown(thinking);
-    let summary = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
-    const MAX_CHARS: usize = 96;
-    format_provider_reasoning_summary(&summary, MAX_CHARS)
 }
 
 fn render_verified_action_result(result: &VerifiedActionResult) -> String {
@@ -693,8 +742,25 @@ fn render_error_line(message: &str) -> String {
             "Provider error from {}: {}",
             provider_error.provider, provider_error.detail
         )
+    } else if let Some(tool_error) = render_model_tool_error(message) {
+        tool_error
     } else {
         format!("Error: {message}")
+    }
+}
+
+fn render_model_tool_error(message: &str) -> Option<String> {
+    let rest = message.strip_prefix("model tool `")?;
+    let (tool, rest) = rest.split_once('`')?;
+    let arg = rest
+        .split_once("missing required argument `")
+        .and_then(|(_prefix, rest)| rest.split_once('`').map(|(arg, _suffix)| arg));
+
+    match arg {
+        Some(arg) => Some(format!(
+            "Tool error: {tool} missing required argument {arg}."
+        )),
+        None => Some(format!("Tool error: {tool} call was malformed.")),
     }
 }
 
@@ -711,13 +777,19 @@ fn parse_provider_error(message: &str) -> Option<ProviderErrorParts<'_>> {
 
 #[cfg(test)]
 mod tests {
-    use elgar_core::event::{
-        ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
-        ErrorEvent, Event, ProviderFinished, ProviderOutput, ProviderStarted, UserMessage,
-        VerifiedActionResult,
+    use elgar_core::{
+        event::{
+            ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
+            ErrorEvent, Event, FileActionVerification, ProviderFinished, ProviderOutput,
+            ProviderStarted, UserMessage, VerifiedActionResult,
+        },
+        model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
     };
 
-    use super::{ConversationPane, CopyArea, InputArea, StatusLine};
+    use super::{
+        is_low_value_provider_tool_planning_thinking, ConversationLineStyle, ConversationPane,
+        CopyArea, InputArea, StatusLine,
+    };
 
     #[test]
     fn conversation_displays_user_assistant_provider_action_and_error_output() {
@@ -991,6 +1063,368 @@ mod tests {
         assert!(!rendered.contains("Answering succinctly"));
         assert!(!rendered.contains("Answering."));
         assert!(rendered.contains("final answer"));
+    }
+
+    #[test]
+    fn conversation_hides_provider_tool_planning_thinking_but_keeps_visible_results() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ProviderStarted(ProviderStarted::new(
+            "stub-provider",
+            "request-1",
+        )));
+        conversation.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "stub-provider",
+            "request-1",
+            ProviderOutput::new("Created the requested files.").with_thinking(
+                "Create directory. Use create_directory tool. Path? Desktop relative: Desktop/ElgarLiveE2E.\n\
+                 Create file plan.md in that folder. Use create_file.\n\
+                 Create files per plan. Use create_file calls for each file. Also need to initialise project?\n\
+                 Create files. Provide tool calls for each missing file.\n\
+                 Create files with content. Provide tool calls only, one per file.",
+            ),
+        )));
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "Created the requested files.",
+            AssistantMessageSource::Provider,
+        )));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "Desktop/ElgarLiveE2E/plan.md".to_string(),
+            },
+        )));
+
+        let rendered = conversation.render_body();
+
+        assert!(!rendered.contains("Create directory."));
+        assert!(!rendered.contains("Use create_directory tool"));
+        assert!(!rendered.contains("Desktop relative"));
+        assert!(!rendered.contains("Create file plan.md"));
+        assert!(!rendered.contains("Use create_file"));
+        assert!(!rendered.contains("Create files per plan"));
+        assert!(!rendered.contains("initialise project"));
+        assert!(!rendered.contains("Provide tool calls"));
+        assert!(rendered.contains("Created the requested files."));
+        assert!(rendered.contains("Wrote Desktop/ElgarLiveE2E/plan.md."));
+    }
+
+    #[test]
+    fn conversation_hides_provider_thinking_for_tool_call_turns() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ProviderStarted(ProviderStarted::new(
+            "stub-provider",
+            "request-1",
+        )));
+        conversation.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "stub-provider",
+            "request-1",
+            ProviderOutput::new("").with_thinking(
+                "We need to create folder ~/ElgarManualSmoke and set up a TS Next.js Tailwind project.\n\
+                 Use write tool for each file. Let's implement.",
+            )
+            .with_tool_calls(vec![RawModelToolCall {
+                id: "call-1".to_string(),
+                name: RawModelToolName::Known(ModelToolName::CreateFile),
+                arguments: serde_json::json!({
+                    "target_path": "package.json",
+                    "contents": "{}\n"
+                }),
+                assistant_summary: None,
+            }]),
+        )));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "/Users/yuval/ElgarManualSmoke/package.json".to_string(),
+            },
+        )));
+
+        let rendered = conversation.render_body();
+
+        assert!(!rendered.contains("We need to create folder"));
+        assert!(!rendered.contains("Use write tool"));
+        assert!(!rendered.contains("Let's implement"));
+        assert_eq!(
+            rendered,
+            "Wrote /Users/yuval/ElgarManualSmoke/package.json."
+        );
+    }
+
+    #[test]
+    fn conversation_summarizes_consecutive_project_create_results() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ActionApproved(
+            ActionEvent::new(
+                "action-1",
+                elgar_core::event::ActionKind::CreateDirectory,
+                "create next-tailwind-ts-project",
+            )
+            .with_approval_source(elgar_core::policy::ApprovalSource::policy(
+                elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify,
+                "safe create",
+            )),
+        ));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::CreateDirectory,
+            VerifiedActionResult::File(
+                elgar_core::event::FileActionVerification::DirectoryCreated {
+                    path: "/Users/yuval/next-tailwind-ts-project".to_string(),
+                },
+            ),
+        )));
+        conversation.push_event(&Event::ActionApproved(
+            ActionEvent::new(
+                "action-2",
+                elgar_core::event::ActionKind::CreateDirectory,
+                "create app",
+            )
+            .with_approval_source(elgar_core::policy::ApprovalSource::policy(
+                elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify,
+                "safe create",
+            )),
+        ));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-2",
+            elgar_core::event::ActionKind::CreateDirectory,
+            VerifiedActionResult::File(
+                elgar_core::event::FileActionVerification::DirectoryCreated {
+                    path: "/Users/yuval/next-tailwind-ts-project/app".to_string(),
+                },
+            ),
+        )));
+        conversation.push_event(&Event::ActionApproved(
+            ActionEvent::new(
+                "action-3",
+                elgar_core::event::ActionKind::CreateFile,
+                "create package.json",
+            )
+            .with_approval_source(elgar_core::policy::ApprovalSource::policy(
+                elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify,
+                "safe create",
+            )),
+        ));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-3",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "/Users/yuval/next-tailwind-ts-project/package.json".to_string(),
+            },
+        )));
+        conversation.push_event(&Event::ActionApproved(
+            ActionEvent::new(
+                "action-4",
+                elgar_core::event::ActionKind::CreateFile,
+                "create app/page.tsx",
+            )
+            .with_approval_source(elgar_core::policy::ApprovalSource::policy(
+                elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify,
+                "safe create",
+            )),
+        ));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-4",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "/Users/yuval/next-tailwind-ts-project/app/page.tsx".to_string(),
+            },
+        )));
+
+        let rendered = conversation.render_body();
+
+        assert_eq!(
+            rendered,
+            "Tool result\nCreated project: /Users/yuval/next-tailwind-ts-project\nVerified: 2 folders, 2 files"
+        );
+        assert!(rendered.contains("Tool result"));
+        assert!(rendered.contains("Verified: 2 folders, 2 files"));
+        assert_eq!(rendered.lines().count(), 3);
+        assert_eq!(
+            conversation
+                .render_lines_with_styles()
+                .into_iter()
+                .map(|(_line, style)| style)
+                .collect::<Vec<_>>(),
+            vec![
+                ConversationLineStyle::Tool,
+                ConversationLineStyle::Tool,
+                ConversationLineStyle::Tool
+            ]
+        );
+        assert!(!rendered.contains("Wrote /Users/yuval/next-tailwind-ts-project/package.json."));
+        assert!(!rendered.contains("Wrote /Users/yuval/next-tailwind-ts-project/app/page.tsx."));
+        assert!(!rendered.contains("Created /Users/yuval/next-tailwind-ts-project/app."));
+        assert_eq!(conversation.render_copy_body(), rendered);
+    }
+
+    #[test]
+    fn conversation_summarizes_project_create_results_across_interleaved_tool_error() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::CreateDirectory,
+            VerifiedActionResult::File(FileActionVerification::DirectoryCreated {
+                path: "/Users/yuval/__git/elgar/my-nextjs-app".to_string(),
+            }),
+        )));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-2",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "/Users/yuval/__git/elgar/my-nextjs-app/package.json".to_string(),
+            },
+        )));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-3",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "/Users/yuval/__git/elgar/my-nextjs-app/next-env.d.ts".to_string(),
+            },
+        )));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-4",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "/Users/yuval/__git/elgar/my-nextapp/next.config.js".to_string(),
+            },
+        )));
+        conversation.push_event(&Event::Error(ErrorEvent::new(
+            "model tool `patch_file` is missing required argument `target_path`",
+        )));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-5",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "/Users/yuval/__git/elgar/my-nextjs-app/tailwind.config.js".to_string(),
+            },
+        )));
+
+        let rendered = conversation.render_body();
+
+        assert_eq!(
+            rendered,
+            "Tool result\n\
+             Created project: /Users/yuval/__git/elgar/my-nextjs-app\n\
+             Verified: 1 folder, 4 files\n\
+             Outside project: 1 file\n\
+             Tool error: patch_file missing required argument target_path."
+        );
+        assert_eq!(rendered.matches("Tool result").count(), 1);
+        assert_eq!(rendered.matches("Tool error:").count(), 1);
+        assert!(!rendered.contains("Created /Users/yuval/__git/elgar/my-nextjs-app."));
+        assert!(!rendered.contains("Wrote /Users/yuval/__git/elgar/my-nextjs-app/package.json."));
+        assert!(!rendered.contains("Wrote /Users/yuval/__git/elgar/my-nextjs-app/next-env.d.ts."));
+        assert!(!rendered.contains("Wrote /Users/yuval/__git/elgar/my-nextapp/next.config.js."));
+        assert!(
+            !rendered.contains("Wrote /Users/yuval/__git/elgar/my-nextjs-app/tailwind.config.js.")
+        );
+        assert!(!rendered.contains("model tool `patch_file`"));
+        assert_eq!(
+            conversation
+                .render_lines_with_styles()
+                .into_iter()
+                .map(|(_line, style)| style)
+                .collect::<Vec<_>>(),
+            vec![
+                ConversationLineStyle::Tool,
+                ConversationLineStyle::Tool,
+                ConversationLineStyle::Tool,
+                ConversationLineStyle::Tool,
+                ConversationLineStyle::Plain
+            ]
+        );
+    }
+
+    #[test]
+    fn conversation_keeps_single_create_result_specific() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "Desktop/ElgarLiveE2E/plan.md".to_string(),
+            },
+        )));
+
+        assert_eq!(
+            conversation.render_body(),
+            "Wrote Desktop/ElgarLiveE2E/plan.md."
+        );
+    }
+
+    #[test]
+    fn provider_thinking_filter_catches_tool_planning_without_upstream_help() {
+        for hidden in [
+            "Use create_directory tool.",
+            "Use create_file calls for each file.",
+            "Use shellcommand.",
+            "Use shell command.",
+            "Use write_file tool.",
+            "Use planner tool call.",
+            "Next tool call: create_file.",
+        ] {
+            assert!(
+                is_low_value_provider_tool_planning_thinking(hidden),
+                "{hidden:?} should be hidden"
+            );
+        }
+
+        for visible in [
+            "Reviewing the existing panes tests.",
+            "Use clear wording in the final answer.",
+            "Checking that normal provider answers remain visible.",
+        ] {
+            assert!(
+                !is_low_value_provider_tool_planning_thinking(visible),
+                "{visible:?} should remain visible"
+            );
+        }
+    }
+
+    #[test]
+    fn conversation_copy_omits_provider_thinking_blocks_but_keeps_visible_results() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_line(
+            "> Create a folder on my Desktop called ElgarLiveE2E".to_string(),
+            ConversationLineStyle::User,
+        );
+        conversation.push_line(
+            "Create directory on Desktop.\n\
+             Create file plan.md in that directory.\n\
+             Create files per plan: package.json, tsconfig.json, vite.config.ts maybe...\n\
+             Create files. We don't have content. Should we ask guidance? Probably need to create files with...\n\
+             Call create_file for each target_path with contents. Provide minimal starter files."
+                .to_string(),
+            ConversationLineStyle::Thinking,
+        );
+        conversation.push_line("Done.".to_string(), ConversationLineStyle::Plain);
+        conversation.push_line(
+            "Created Desktop/ElgarLiveE2E.".to_string(),
+            ConversationLineStyle::Plain,
+        );
+
+        let rendered = conversation.render_body();
+        let copied = conversation.render_copy_body();
+
+        assert!(rendered.contains("Create directory on Desktop."));
+        assert!(copied.contains("> Create a folder on my Desktop called ElgarLiveE2E"));
+        assert!(copied.contains("Done."));
+        assert!(copied.contains("Created Desktop/ElgarLiveE2E."));
+        assert!(!copied.contains("Create directory on Desktop."));
+        assert!(!copied.contains("Create file plan.md in that directory."));
+        assert!(!copied.contains("Create files per plan"));
+        assert!(!copied.contains("We don't have content"));
+        assert!(!copied.contains("Should we ask guidance"));
+        assert!(!copied.contains("Call create_file for each target_path"));
+        assert!(!copied.contains("Provide minimal starter files"));
     }
 
     #[test]

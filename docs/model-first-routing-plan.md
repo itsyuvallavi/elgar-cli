@@ -2,6 +2,14 @@
 
 Linear issue: ELG-258
 
+Status note, May 24 2026: the live TUI runtime has moved past this
+controller-mediated model-first plan. Normal live TUI turns now use the
+Pi-style agent/tool loop from ELG-293. The controller model-first path described
+here is retained only as legacy/controller-review behavior while ELG-297
+quarantines remaining old-runtime coupling. Normal live TUI turns must continue
+to call `agent_loop::run_permissive_agent_turn`; controller-review model-first
+entry points are compatibility and smoke-test surfaces only.
+
 ## Purpose
 
 This document defines the target architecture for moving Elgar from

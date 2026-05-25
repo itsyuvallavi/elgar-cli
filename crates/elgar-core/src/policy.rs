@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::{fmt, str::FromStr};
 
 /// Controller-owned permission policy mode.
 ///
@@ -14,6 +15,61 @@ pub enum PermissionPolicyMode {
     WorkspaceWriteWithReview,
     FullAccess,
 }
+
+impl PermissionPolicyMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReviewAll => "review_all",
+            Self::AutoCreateReviewModify => "auto_create_review_modify",
+            Self::WorkspaceWriteWithReview => "workspace_write_with_review",
+            Self::FullAccess => "full_access",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, PermissionPolicyModeParseError> {
+        value.parse()
+    }
+}
+
+impl fmt::Display for PermissionPolicyMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PermissionPolicyMode {
+    type Err = PermissionPolicyModeParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let normalized = value.trim().replace('-', "_").to_ascii_lowercase();
+        match normalized.as_str() {
+            "review_all" => Ok(Self::ReviewAll),
+            "auto_create_review_modify" => Ok(Self::AutoCreateReviewModify),
+            "workspace_write_with_review" => Ok(Self::WorkspaceWriteWithReview),
+            "full_access" => Ok(Self::FullAccess),
+            _ => Err(PermissionPolicyModeParseError {
+                value: value.to_string(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionPolicyModeParseError {
+    pub value: String,
+}
+
+impl fmt::Display for PermissionPolicyModeParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "invalid permission policy mode `{}`; expected review_all, auto_create_review_modify, workspace_write_with_review, or full_access",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for PermissionPolicyModeParseError {}
 
 /// Policy decision outcome for a validated action or tool request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -176,6 +232,26 @@ mod tests {
                 PermissionPolicyMode::FullAccess
             ]
         );
+    }
+
+    #[test]
+    fn policy_mode_parses_display_names_and_cli_friendly_aliases() {
+        assert_eq!(
+            PermissionPolicyMode::parse("review_all").unwrap(),
+            PermissionPolicyMode::ReviewAll
+        );
+        assert_eq!(
+            PermissionPolicyMode::parse("auto-create-review-modify").unwrap(),
+            PermissionPolicyMode::AutoCreateReviewModify
+        );
+        assert_eq!(
+            PermissionPolicyMode::parse(" WORKSPACE_WRITE_WITH_REVIEW ").unwrap(),
+            PermissionPolicyMode::WorkspaceWriteWithReview
+        );
+        assert_eq!(PermissionPolicyMode::FullAccess.to_string(), "full_access");
+
+        let error = PermissionPolicyMode::parse("danger").unwrap_err();
+        assert!(error.to_string().contains("invalid permission policy mode"));
     }
 
     #[test]
