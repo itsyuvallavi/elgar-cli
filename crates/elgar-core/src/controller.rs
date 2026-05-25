@@ -1219,11 +1219,12 @@ where
             return;
         }
 
+        let allowed_root = policy_allowed_root_for_action(session, &approved);
         apply_approved_file_action_at_index(
             session,
             index,
             &approved,
-            &session.project_root.clone(),
+            &allowed_root,
             "Approved file action failed. No verified filesystem result was recorded.",
         );
     }

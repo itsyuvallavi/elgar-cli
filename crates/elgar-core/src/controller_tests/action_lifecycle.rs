@@ -117,6 +117,42 @@ fn approved_absolute_write_file_turn_fails_without_writing() {
 }
 
 #[test]
+fn approved_absolute_home_create_file_turn_writes_and_records_verified_result() {
+    let controller = Controller::default();
+    let (mut session, project_root) = rooted_session("absolute-home-project");
+    let home_root = std::env::temp_dir().join(format!(
+        "elgar-controller-{}-absolute-home",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&home_root);
+    std::fs::create_dir_all(home_root.join("ElgarPermissionTest")).unwrap();
+    let _home = EnvGuard::set_home(&home_root);
+    let path = home_root.join("ElgarPermissionTest").join("test.txt");
+
+    controller.turn(&mut session, &format!("create {}", path.display()));
+    controller.turn(&mut session, "approve");
+
+    assert!(path.exists());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert_eq!(
+        session.actions()[0].verified_result,
+        Some(VerifiedActionResult::FileWritten {
+            path: path.display().to_string()
+        })
+    );
+    assert!(session
+        .events()
+        .iter()
+        .any(|event| matches!(event, Event::ActionApplied(_))));
+
+    let _ = std::fs::remove_dir_all(&project_root);
+    let _ = std::fs::remove_dir_all(&home_root);
+}
+
+#[test]
 fn approved_parent_traversal_write_file_turn_fails_without_writing() {
     let controller = Controller::default();
     let (mut session, root) = rooted_session("traversal");
