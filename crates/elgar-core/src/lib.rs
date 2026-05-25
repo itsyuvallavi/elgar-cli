@@ -19,6 +19,7 @@ mod legacy_controller_model_first_continuation;
 mod legacy_controller_model_first_decision;
 mod legacy_controller_model_first_plan_completion;
 pub mod model_runtime;
+mod path_resolution;
 pub mod policy;
 pub mod provider;
 mod provider_visible;

@@ -14,15 +14,13 @@ use crate::{
         ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
         ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage, VerifiedActionResult,
     },
-    followup_action_paths::{
-        explicit_request_base, followup_base_path_for_request,
-        retarget_safe_create_to_followup_base,
-    },
+    followup_action_paths::{explicit_request_base, followup_base_path_for_request},
     fs::Filesystem,
     model_runtime::{
         elgar_model_tool_definitions, validate_model_tool_outputs, ModelToolValidationErrorKind,
-        RawModelToolCall, ValidatedModelToolAction, ValidatedModelToolOutput,
+        RawModelToolCall, ValidatedModelToolOutput,
     },
+    path_resolution::{allowed_root_for_action, resolve_agent_action_paths, AgentPathResolution},
     policy::{PermissionPolicyMode, PolicyDecision},
     provider::{ChatMessage, ChatRole, ChatToolCall, ChatToolCallFunction, ControllerProvider},
     provider_visible_text_from_text_only_output,
@@ -154,11 +152,9 @@ where
                     messages.push(ChatMessage::tool(guidance.tool_call_id, guidance.question));
                 }
                 ValidatedModelToolOutput::Action(action) => {
-                    let action = retarget_agent_action(
+                    let action = resolve_agent_action_paths(
                         action,
-                        agent_context.requested_project_base.as_deref(),
-                        agent_context.followup_base.as_deref(),
-                        &session.project_root,
+                        &agent_context.path_resolution(&session.project_root),
                     );
                     let result = apply_agent_action_with_policy(
                         session,
@@ -210,7 +206,7 @@ fn apply_agent_action_with_policy(
         ActionRequest::ShellCommand(shell) => {
             ShellExecutor::execute(shell).map_err(|error| error.to_string())
         }
-        _ => Filesystem::apply_file_action(&action, permissive_allowed_root(session, &action))
+        _ => Filesystem::apply_file_action(&action, allowed_root_for_action(session, &action))
             .map_err(|error| error.to_string()),
     };
 
@@ -322,38 +318,6 @@ fn record_agent_action_success(
     message
 }
 
-fn permissive_allowed_root(session: &Session, action: &Action) -> PathBuf {
-    let Some(target_path) = action_filesystem_target(action) else {
-        return session.cwd.clone();
-    };
-
-    if target_path.is_absolute() {
-        if let Some(home) = home_dir() {
-            if target_path.starts_with(&home) {
-                return home;
-            }
-        }
-        return target_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| session.cwd.clone());
-    }
-
-    session.cwd.clone()
-}
-
-fn action_filesystem_target(action: &Action) -> Option<&Path> {
-    match &action.request {
-        ActionRequest::CreateFile(create_file) => Some(&create_file.target_path),
-        ActionRequest::CreateDirectory(create_directory) => Some(&create_directory.target_path),
-        ActionRequest::PatchFile(patch_file) => Some(&patch_file.target_path),
-        ActionRequest::OverwriteFile(overwrite_file) => Some(&overwrite_file.target_path),
-        ActionRequest::DeleteFile(delete_file) => Some(&delete_file.target_path),
-        ActionRequest::MoveFile(move_file) => Some(&move_file.target_path),
-        ActionRequest::ShellCommand(_) => None,
-    }
-}
-
 fn chat_assistant_tool_call_message(
     content: String,
     tool_calls: &[RawModelToolCall],
@@ -399,6 +363,14 @@ impl AgentVerifiedMemoryContext {
         self.requested_project_base
             .clone()
             .or_else(|| self.followup_base.clone())
+    }
+
+    fn path_resolution(&self, workspace_root: &Path) -> AgentPathResolution {
+        AgentPathResolution::new(
+            self.requested_project_base.clone(),
+            self.followup_base.clone(),
+            workspace_root,
+        )
     }
 }
 
@@ -724,226 +696,6 @@ fn display_project_path(session: &Session, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
-}
-
-fn retarget_agent_action(
-    action: ValidatedModelToolAction,
-    requested_project_base: Option<&Path>,
-    followup_base: Option<&Path>,
-    workspace_root: &Path,
-) -> ValidatedModelToolAction {
-    if let Some(base) = requested_project_base {
-        return retarget_action_to_project_base(base, Some(workspace_root), action);
-    }
-
-    if let Some(base) = followup_base {
-        return retarget_action_to_project_base(base, Some(workspace_root), action);
-    }
-
-    retarget_safe_create_to_followup_base(followup_base, action)
-}
-
-fn retarget_action_to_project_base(
-    base: &Path,
-    workspace_root: Option<&Path>,
-    mut validated: ValidatedModelToolAction,
-) -> ValidatedModelToolAction {
-    match &mut validated.request {
-        ActionRequest::CreateFile(create_file) => {
-            if let Some(target_path) =
-                project_base_target_path(&create_file.target_path, base, workspace_root)
-            {
-                create_file.target_path = target_path;
-            }
-        }
-        ActionRequest::CreateDirectory(create_directory) => {
-            if let Some(target_path) =
-                project_base_target_path(&create_directory.target_path, base, workspace_root)
-            {
-                create_directory.target_path = target_path;
-            }
-        }
-        ActionRequest::PatchFile(patch_file) => {
-            if let Some(target_path) =
-                project_base_target_path(&patch_file.target_path, base, workspace_root)
-            {
-                patch_file.target_path = target_path;
-            }
-        }
-        ActionRequest::OverwriteFile(overwrite_file) => {
-            if let Some(target_path) =
-                project_base_target_path(&overwrite_file.target_path, base, workspace_root)
-            {
-                overwrite_file.target_path = target_path;
-            }
-        }
-        ActionRequest::DeleteFile(delete_file) => {
-            if let Some(target_path) =
-                project_base_target_path(&delete_file.target_path, base, workspace_root)
-            {
-                delete_file.target_path = target_path;
-            }
-        }
-        ActionRequest::MoveFile(move_file) => {
-            if let Some(source_path) =
-                project_base_target_path(&move_file.source_path, base, workspace_root)
-            {
-                move_file.source_path = source_path;
-            }
-            if let Some(target_path) =
-                project_base_target_path(&move_file.target_path, base, workspace_root)
-            {
-                move_file.target_path = target_path;
-            }
-        }
-        _ => return validated,
-    }
-
-    validated.target_label = validated.request.approval_target();
-    validated
-}
-
-fn project_base_target_path(
-    target_path: &Path,
-    base: &Path,
-    workspace_root: Option<&Path>,
-) -> Option<PathBuf> {
-    if target_path.starts_with(base) {
-        return None;
-    }
-
-    if target_path.is_absolute() {
-        if let Some(workspace_root) = workspace_root {
-            if let Ok(relative) = target_path.strip_prefix(workspace_root) {
-                return project_base_target_path(relative, base, None);
-            }
-        }
-        if let Some(target_path) = sibling_project_target_path(target_path, base) {
-            return Some(target_path);
-        }
-        return strip_base_suffix_prefix(target_path, base).map(|suffix| {
-            if suffix.as_os_str().is_empty() {
-                base.to_path_buf()
-            } else {
-                base.join(suffix)
-            }
-        });
-    }
-
-    if let Some(suffix) = strip_base_suffix_prefix(target_path, base) {
-        return Some(if suffix.as_os_str().is_empty() {
-            base.to_path_buf()
-        } else {
-            base.join(suffix)
-        });
-    }
-
-    if let Some(suffix) = strip_repeated_base_name_prefix_for_agent(target_path, base) {
-        return Some(if suffix.as_os_str().is_empty() {
-            base.to_path_buf()
-        } else {
-            base.join(suffix)
-        });
-    }
-
-    if let Some(suffix) = strip_generic_project_root_prefix(target_path) {
-        return Some(if suffix.as_os_str().is_empty() {
-            base.to_path_buf()
-        } else {
-            base.join(suffix)
-        });
-    }
-
-    Some(base.join(target_path))
-}
-
-fn sibling_project_target_path(target_path: &Path, base: &Path) -> Option<PathBuf> {
-    let parent = base.parent()?;
-    let relative = target_path.strip_prefix(parent).ok()?;
-    let mut components = relative.components();
-    let first = components.next()?;
-    let std::path::Component::Normal(first) = first else {
-        return None;
-    };
-    if Some(first) == base.file_name() || !is_generic_project_root_component(first) {
-        return None;
-    }
-    let suffix = components.as_path();
-    Some(if suffix.as_os_str().is_empty() {
-        base.to_path_buf()
-    } else {
-        base.join(suffix)
-    })
-}
-
-fn is_generic_project_root_component(value: &std::ffi::OsStr) -> bool {
-    let value = value.to_string_lossy().to_ascii_lowercase();
-    matches!(
-        value.as_str(),
-        "project"
-            | "app"
-            | "my-app"
-            | "my-next-app"
-            | "my-nextapp"
-            | "my-nextjs-app"
-            | "react-app"
-            | "react-project"
-            | "vite-project"
-    )
-}
-
-fn strip_base_suffix_prefix(target_path: &Path, base: &Path) -> Option<PathBuf> {
-    let target_components = normal_path_components(target_path);
-    let base_components = normal_path_components(base);
-    for start in 0..base_components.len() {
-        let base_suffix = &base_components[start..];
-        if base_suffix.is_empty() || target_components.len() < base_suffix.len() {
-            continue;
-        }
-        for target_start in 0..=target_components.len() - base_suffix.len() {
-            let target_end = target_start + base_suffix.len();
-            if target_components[target_start..target_end] == base_suffix[..] {
-                return Some(target_components[target_end..].iter().collect());
-            }
-        }
-    }
-    None
-}
-
-fn normal_path_components(path: &Path) -> Vec<std::ffi::OsString> {
-    path.components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(value) => Some(value.to_os_string()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn strip_repeated_base_name_prefix_for_agent(target_path: &Path, base: &Path) -> Option<PathBuf> {
-    let base_name = base.file_name()?;
-    let suffix = target_path.strip_prefix(Path::new(base_name)).ok()?;
-    Some(suffix.to_path_buf())
-}
-
-fn strip_generic_project_root_prefix(target_path: &Path) -> Option<PathBuf> {
-    let mut components = target_path.components();
-    let first = components.next()?;
-    let first = first.as_os_str().to_string_lossy().to_ascii_lowercase();
-    if matches!(
-        first.as_str(),
-        "project"
-            | "my-nextjs-app"
-            | "nextjs-app"
-            | "next-app"
-            | "nextjs-project"
-            | "next-tailwind-project"
-            | "next-tailwind-ts-project"
-            | "next-tailwind-app"
-    ) {
-        return Some(components.as_path().to_path_buf());
-    }
-
-    None
 }
 
 fn next_action_id(session: &Session) -> String {
@@ -1426,91 +1178,6 @@ mod tests {
         assert_eq!(
             requested_project_base("create a folder called notes on the desktop", None),
             None
-        );
-    }
-
-    #[test]
-    fn requested_project_target_path_retargets_generic_model_roots() {
-        let base = Path::new("FreshNextApp");
-
-        assert_eq!(
-            project_base_target_path(Path::new("project"), base, None),
-            Some(PathBuf::from("FreshNextApp"))
-        );
-        assert_eq!(
-            project_base_target_path(Path::new("project/package.json"), base, None),
-            Some(PathBuf::from("FreshNextApp/package.json"))
-        );
-        assert_eq!(
-            project_base_target_path(Path::new("my-nextjs-app/tsconfig.json"), base, None),
-            Some(PathBuf::from("FreshNextApp/tsconfig.json"))
-        );
-        assert_eq!(
-            project_base_target_path(Path::new("app/page.tsx"), base, None),
-            Some(PathBuf::from("FreshNextApp/app/page.tsx"))
-        );
-        assert_eq!(
-            project_base_target_path(Path::new("FreshNextApp/package.json"), base, None),
-            None
-        );
-    }
-
-    #[test]
-    fn requested_desktop_project_target_path_does_not_duplicate_desktop_or_folder() {
-        let base = Path::new("/Users/yuval/Desktop/TEST");
-        let workspace = Path::new("/Users/yuval/__git/elgar");
-
-        assert_eq!(
-            project_base_target_path(Path::new("Desktop/TEST"), base, Some(workspace)),
-            Some(PathBuf::from("/Users/yuval/Desktop/TEST"))
-        );
-        assert_eq!(
-            project_base_target_path(
-                Path::new("Desktop/TEST/package.json"),
-                base,
-                Some(workspace)
-            ),
-            Some(PathBuf::from("/Users/yuval/Desktop/TEST/package.json"))
-        );
-        assert_eq!(
-            project_base_target_path(
-                Path::new("/Users/yuval/Desktop/Desktop/TEST/tailwind.config.js"),
-                base,
-                Some(workspace),
-            ),
-            Some(PathBuf::from(
-                "/Users/yuval/Desktop/TEST/tailwind.config.js"
-            ))
-        );
-        assert_eq!(
-            project_base_target_path(
-                Path::new("/Users/yuval/Desktop/project/tailwind.config.js"),
-                base,
-                Some(workspace),
-            ),
-            Some(PathBuf::from(
-                "/Users/yuval/Desktop/TEST/tailwind.config.js"
-            ))
-        );
-        assert_eq!(
-            project_base_target_path(
-                Path::new("/Users/yuval/__git/elgar/tailwind.config.js"),
-                base,
-                Some(workspace),
-            ),
-            Some(PathBuf::from(
-                "/Users/yuval/Desktop/TEST/tailwind.config.js"
-            ))
-        );
-        assert_eq!(
-            project_base_target_path(
-                Path::new("/Users/yuval/__git/elgar/my-nextjs-app/tailwind.config.js"),
-                base,
-                Some(workspace),
-            ),
-            Some(PathBuf::from(
-                "/Users/yuval/Desktop/TEST/tailwind.config.js"
-            ))
         );
     }
 
