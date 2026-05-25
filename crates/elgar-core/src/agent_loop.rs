@@ -18,7 +18,8 @@ use crate::{
     fs::Filesystem,
     model_runtime::{
         elgar_model_tool_definitions, validate_model_tool_outputs, ModelToolValidationErrorKind,
-        RawModelToolCall, ValidatedModelToolOutput,
+        RawModelToolCall, ValidatedModelGuidanceRequest, ValidatedModelToolAction,
+        ValidatedModelToolOutput,
     },
     path_resolution::{allowed_root_for_action, resolve_agent_action_paths, AgentPathResolution},
     policy::{PermissionPolicyMode, PolicyDecision},
@@ -145,17 +146,32 @@ where
             }
         };
 
-        for output in outputs {
+        let path_resolution = agent_context.path_resolution(&session.project_root);
+        let resolved_outputs = resolve_agent_tool_outputs(outputs, &path_resolution);
+
+        if policy_mode == PermissionPolicyMode::ReviewAll {
+            if let Some(action) = review_required_action_to_propose(&resolved_outputs, policy_mode)
+            {
+                apply_agent_action_with_policy(
+                    session,
+                    action.request.clone(),
+                    action.summary.clone(),
+                    policy_mode,
+                );
+                return TurnResult {
+                    route: Route::AskModel,
+                    events: session.events()[start_index..].to_vec(),
+                };
+            }
+        }
+
+        for output in resolved_outputs {
             match output {
-                ValidatedModelToolOutput::Guidance(guidance) => {
+                ResolvedAgentToolOutput::Guidance(guidance) => {
                     push_provider_message_if_visible(session, guidance.question.clone());
                     messages.push(ChatMessage::tool(guidance.tool_call_id, guidance.question));
                 }
-                ValidatedModelToolOutput::Action(action) => {
-                    let action = resolve_agent_action_paths(
-                        action,
-                        &agent_context.path_resolution(&session.project_root),
-                    );
+                ResolvedAgentToolOutput::Action(action) => {
                     let result = apply_agent_action_with_policy(
                         session,
                         action.request,
@@ -163,6 +179,15 @@ where
                         policy_mode,
                     );
                     messages.push(ChatMessage::tool(action.tool_call_id, result));
+                    if !matches!(
+                        session.pending_action_selection(),
+                        PendingActionSelection::None
+                    ) {
+                        return TurnResult {
+                            route: Route::AskModel,
+                            events: session.events()[start_index..].to_vec(),
+                        };
+                    }
                 }
             }
         }
@@ -172,6 +197,64 @@ where
         route: Route::AskModel,
         events: session.events()[start_index..].to_vec(),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResolvedAgentToolOutput {
+    Guidance(ValidatedModelGuidanceRequest),
+    Action(ValidatedModelToolAction),
+}
+
+fn resolve_agent_tool_outputs(
+    outputs: Vec<ValidatedModelToolOutput>,
+    path_resolution: &AgentPathResolution,
+) -> Vec<ResolvedAgentToolOutput> {
+    outputs
+        .into_iter()
+        .map(|output| match output {
+            ValidatedModelToolOutput::Guidance(guidance) => {
+                ResolvedAgentToolOutput::Guidance(guidance)
+            }
+            ValidatedModelToolOutput::Action(action) => {
+                ResolvedAgentToolOutput::Action(resolve_agent_action_paths(action, path_resolution))
+            }
+        })
+        .collect()
+}
+
+fn review_required_action_to_propose(
+    outputs: &[ResolvedAgentToolOutput],
+    policy_mode: PermissionPolicyMode,
+) -> Option<&ValidatedModelToolAction> {
+    let reviewed_actions = outputs
+        .iter()
+        .filter_map(|output| match output {
+            ResolvedAgentToolOutput::Action(action)
+                if action_requires_review(policy_mode, action) =>
+            {
+                Some(action)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    reviewed_actions
+        .iter()
+        .copied()
+        .find(|action| !matches!(action.request, ActionRequest::CreateDirectory(_)))
+        .or_else(|| reviewed_actions.first().copied())
+}
+
+fn action_requires_review(
+    policy_mode: PermissionPolicyMode,
+    action: &ValidatedModelToolAction,
+) -> bool {
+    let proposed = Action::proposed(
+        "policy-preview",
+        action.request.clone(),
+        action.summary.clone(),
+    );
+    policy_decision_for_agent_action(policy_mode, &proposed).user_approval_required
 }
 
 fn apply_agent_action_with_policy(

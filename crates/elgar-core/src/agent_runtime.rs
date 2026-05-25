@@ -66,10 +66,16 @@ impl Default for AgentRuntime<ProviderStub> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        ffi::OsString,
+        fs,
+        path::Path,
+        sync::{Mutex, MutexGuard},
+    };
 
     use crate::{
-        action::ActionLifecycleState,
+        action::{ActionLifecycleState, ActionRequest},
+        action_gate::ActionGate,
         event::{Event, ProviderOutput},
         model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
         policy::{ApprovalSource, PermissionPolicyMode, PolicyDecisionKind},
@@ -87,6 +93,37 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        previous_home: Option<OsString>,
+        _home_lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn set_home(value: &Path) -> Self {
+            let home_lock = HOME_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous_home = std::env::var_os("HOME");
+            std::env::set_var("HOME", value);
+            Self {
+                previous_home,
+                _home_lock: home_lock,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous_home) = &self.previous_home {
+                std::env::set_var("HOME", previous_home);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
     }
 
     #[test]
@@ -267,6 +304,70 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn agent_runtime_review_all_prefers_file_action_from_directory_file_batch() {
+        let root = temp_root("review-all-file-batch");
+        let _home = EnvGuard::set_home(&root);
+        let target_dir = root.join("ElgarPermissionTest");
+        let target_file = target_dir.join("test.txt");
+        let provider = BatchToolProvider::new(vec![
+            RawModelToolCall {
+                id: "tool-dir".to_string(),
+                name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                arguments: serde_json::json!({
+                    "target_path": target_dir
+                }),
+                assistant_summary: Some("create parent directory".to_string()),
+            },
+            RawModelToolCall {
+                id: "tool-file".to_string(),
+                name: RawModelToolName::Known(ModelToolName::CreateFile),
+                arguments: serde_json::json!({
+                    "target_path": target_file,
+                    "contents": "hello"
+                }),
+                assistant_summary: Some("create test.txt".to_string()),
+            },
+        ]);
+        let runtime = AgentRuntime::new(provider.clone());
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.turn(
+            &mut session,
+            "create a file called test.txt inside ~/ElgarPermissionTest with hello",
+            PermissionPolicyMode::ReviewAll,
+        );
+
+        assert!(!target_file.exists());
+        assert_eq!(provider.call_count(), 1);
+        assert_eq!(session.actions().len(), 1);
+        let record = session.actions().last().expect("pending action");
+        assert_eq!(record.action.state, ActionLifecycleState::Proposed);
+        let ActionRequest::CreateFile(create_file) = &record.action.request else {
+            panic!("expected pending create file action");
+        };
+        assert_eq!(create_file.target_path, target_file);
+        assert!(result
+            .events
+            .iter()
+            .all(|event| !matches!(event, Event::AssistantMessage(message) if message.content.contains("approve"))));
+
+        ActionGate::new(ProviderStub::default()).approve(&mut session);
+
+        assert_eq!(
+            session.actions().last().unwrap().failure_reason,
+            None,
+            "approval should not fail"
+        );
+        assert_eq!(fs::read_to_string(&target_file).unwrap(), "hello");
+        assert_eq!(
+            session.actions().last().unwrap().action.state,
+            ActionLifecycleState::Applied
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[derive(Debug, Clone)]
     struct ToolProvider {
         call: RawModelToolCall,
@@ -301,6 +402,55 @@ mod tests {
             }
 
             Ok(ProviderOutput::new("Using a tool.").with_tool_calls(vec![self.call.clone()]))
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct BatchToolProvider {
+        calls: Vec<RawModelToolCall>,
+        call_count: std::sync::Arc<std::sync::Mutex<usize>>,
+    }
+
+    impl BatchToolProvider {
+        fn new(calls: Vec<RawModelToolCall>) -> Self {
+            Self {
+                calls,
+                call_count: std::sync::Arc::new(std::sync::Mutex::new(0)),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            *self.call_count.lock().unwrap()
+        }
+    }
+
+    impl ControllerProvider for BatchToolProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new("batch-tool-provider", None, "tool-request-1")
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("batch tool provider"))
+        }
+
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<ProviderOutput, ProviderError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count > 1 {
+                return Ok(ProviderOutput::new(
+                    "Do you approve creating the directory and file?",
+                ));
+            }
+
+            Ok(
+                ProviderOutput::new("Do you approve creating the directory and file?")
+                    .with_tool_calls(self.calls.clone()),
+            )
         }
     }
 }
