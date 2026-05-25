@@ -1342,6 +1342,43 @@ mod tests {
     }
 
     #[test]
+    fn conversation_summarizes_project_root_when_first_directory_is_child_folder() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::CreateDirectory,
+            VerifiedActionResult::File(FileActionVerification::DirectoryCreated {
+                path: "/Users/yuval/__git/elgar/demo/src".to_string(),
+            }),
+        )));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-2",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "/Users/yuval/__git/elgar/demo/package.json".to_string(),
+            },
+        )));
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-3",
+            elgar_core::event::ActionKind::CreateFile,
+            VerifiedActionResult::FileWritten {
+                path: "/Users/yuval/__git/elgar/demo/src/App.tsx".to_string(),
+            },
+        )));
+
+        let rendered = conversation.render_body();
+
+        assert_eq!(
+            rendered,
+            "Tool result\n\
+             Created project: /Users/yuval/__git/elgar/demo\n\
+             Verified: 1 folder, 2 files"
+        );
+        assert!(!rendered.contains("Outside project"));
+    }
+
+    #[test]
     fn conversation_keeps_single_create_result_specific() {
         let mut conversation = ConversationPane::default();
 

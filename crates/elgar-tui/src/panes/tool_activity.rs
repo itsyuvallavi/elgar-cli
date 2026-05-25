@@ -103,22 +103,26 @@ pub(super) fn create_write_tool_item(result: &VerifiedActionResult) -> Option<Cr
 }
 
 fn project_create_batch_root(items: &[CreateWriteToolItem]) -> Option<PathBuf> {
-    if let Some(CreateWriteToolItem::Directory(path)) = items
-        .iter()
-        .find(|item| matches!(item, CreateWriteToolItem::Directory(_)))
-    {
-        return non_empty_path(Path::new(path)).map(Path::to_path_buf);
+    let common_root = project_create_common_root(items)?;
+    for item in items {
+        let CreateWriteToolItem::Directory(path) = item else {
+            continue;
+        };
+        let directory = Path::new(path);
+        if directory == common_root || !is_generic_project_child_directory(directory) {
+            return Some(directory.to_path_buf());
+        }
     }
 
-    let first = batch_item_path(items.first()?)?;
-    let mut root = first.to_path_buf();
+    Some(common_root)
+}
 
-    if items.first().is_some_and(CreateWriteToolItem::is_file) {
-        root.pop();
-    }
+fn project_create_common_root(items: &[CreateWriteToolItem]) -> Option<PathBuf> {
+    let first = items.first()?;
+    let mut root = batch_item_project_anchor(first)?;
 
     for item in items.iter().skip(1) {
-        let path = batch_item_path(item)?;
+        let path = batch_item_project_anchor(item)?;
         while !path.starts_with(&root) {
             if !root.pop() {
                 return None;
@@ -131,6 +135,25 @@ fn project_create_batch_root(items: &[CreateWriteToolItem]) -> Option<PathBuf> {
     } else {
         Some(root)
     }
+}
+
+fn is_generic_project_child_directory(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "app" | "components" | "pages" | "public" | "src" | "styles"
+    )
+}
+
+fn batch_item_project_anchor(item: &CreateWriteToolItem) -> Option<PathBuf> {
+    let path = batch_item_path(item)?;
+    let mut anchor = path.to_path_buf();
+    if item.is_file() {
+        anchor.pop();
+    }
+    non_empty_path(&anchor).map(Path::to_path_buf)
 }
 
 fn project_outside_counts(items: &[CreateWriteToolItem]) -> Option<String> {

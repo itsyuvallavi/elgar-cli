@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 use elgar_core::{
+    agent_runtime::AgentRuntime,
     context::ContextAccounting,
     event::ProviderMetrics,
     policy::PermissionPolicyMode,
@@ -83,10 +84,10 @@ pub fn run_terminal_shell() -> io::Result<()> {
 pub fn run_terminal_shell_with_lm_studio_provider(config: ProviderConfig) -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let context_window_tokens = config.configured_context_window_tokens();
-    run_terminal_shell_with_controller(
+    run_terminal_shell_with_runtime(
         &cwd,
         &cwd,
-        Controller::with_lm_studio_provider(config),
+        AgentRuntime::with_lm_studio_provider(config),
         context_window_tokens,
         PermissionPolicyMode::AutoCreateReviewModify,
     )
@@ -112,10 +113,10 @@ pub fn run_terminal_shell_with_lm_studio_provider_at_with_policy(
     policy_mode: PermissionPolicyMode,
 ) -> io::Result<()> {
     let context_window_tokens = config.configured_context_window_tokens();
-    run_terminal_shell_with_controller(
+    run_terminal_shell_with_runtime(
         project_root,
         cwd,
-        Controller::with_lm_studio_provider(config),
+        AgentRuntime::with_lm_studio_provider(config),
         context_window_tokens,
         policy_mode,
     )
@@ -137,13 +138,19 @@ pub fn run_terminal_shell_at_with_policy(
     cwd: impl AsRef<Path>,
     policy_mode: PermissionPolicyMode,
 ) -> io::Result<()> {
-    run_terminal_shell_with_controller(project_root, cwd, Controller::default(), None, policy_mode)
+    run_terminal_shell_with_runtime(
+        project_root,
+        cwd,
+        AgentRuntime::default(),
+        None,
+        policy_mode,
+    )
 }
 
-fn run_terminal_shell_with_controller<P>(
+fn run_terminal_shell_with_runtime<P>(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
-    controller: Controller<P>,
+    runtime: AgentRuntime<P>,
     context_window_tokens: Option<u64>,
     policy_mode: PermissionPolicyMode,
 ) -> io::Result<()>
@@ -151,23 +158,24 @@ where
     P: ControllerProvider + Clone + Send + 'static,
 {
     let mut session = Session::new("terminal-tui-session", project_root.as_ref(), cwd.as_ref());
-    controller.refresh_context_accounting(&mut session, context_window_tokens);
+    runtime.refresh_context_accounting(&mut session, context_window_tokens);
+    let controller = Controller::new(runtime.provider.clone());
     let mut shell = TuiShell::with_policy_mode(policy_mode);
 
-    let mut context = terminal_context(&session, &controller, policy_mode);
+    let mut context = terminal_context(&session, &runtime, policy_mode);
     print_inline_startup(&context)?;
 
     let mut next_prompt_input = String::new();
     loop {
-        controller.refresh_context_accounting(&mut session, context_window_tokens);
-        context = terminal_context(&session, &controller, policy_mode);
+        runtime.refresh_context_accounting(&mut session, context_window_tokens);
+        context = terminal_context(&session, &runtime, policy_mode);
         let Some(input) = read_inline_prompt(&context, &next_prompt_input)? else {
             break;
         };
         next_prompt_input.clear();
 
         let (exit, preserved_input) =
-            handle_inline_submission(&input, &controller, &mut session, &mut shell)?;
+            handle_inline_submission(&input, &runtime, &controller, &mut session, &mut shell)?;
         if exit {
             break;
         }
@@ -179,7 +187,7 @@ where
 
 fn terminal_context<P>(
     session: &Session,
-    controller: &Controller<P>,
+    runtime: &AgentRuntime<P>,
     policy_mode: PermissionPolicyMode,
 ) -> TerminalShellContext
 where
@@ -188,7 +196,7 @@ where
     let mut context = TerminalShellContext::from_session(session);
     context.policy_mode = policy_mode;
     if context.provider.is_none() {
-        let request = controller.provider.request_metadata();
+        let request = runtime.provider.request_metadata();
         context.provider = Some(request.provider);
         context.model = request.model;
     }
@@ -245,6 +253,7 @@ fn read_inline_prompt(
 
 fn handle_inline_submission<P>(
     submitted: &str,
+    runtime: &AgentRuntime<P>,
     controller: &Controller<P>,
     session: &mut Session,
     shell: &mut TuiShell,
@@ -290,6 +299,7 @@ where
             let before = shell.conversation.render_lines_with_styles().len();
             let exit = handle_submitted_terminal_input(
                 submitted,
+                runtime,
                 controller,
                 session,
                 shell,
@@ -302,11 +312,11 @@ where
             if terminal_text_should_run_inline_model_first(text) {
                 let model_input = normalize_terminal_model_first_input(text);
                 let preserved_input =
-                    run_inline_model_first_turn(&model_input, controller, session, shell)?;
+                    run_inline_model_first_turn(&model_input, runtime, session, shell)?;
                 Ok((false, preserved_input))
             } else {
                 let before = shell.conversation.render_lines_with_styles().len();
-                handle_terminal_text_input(text, controller, session, shell);
+                handle_terminal_text_input(text, runtime, controller, session, shell);
                 print_new_conversation_lines(shell, before, false, false)?;
                 Ok((false, String::new()))
             }
@@ -316,7 +326,7 @@ where
 
 fn run_inline_model_first_turn<P>(
     text: &str,
-    controller: &Controller<P>,
+    runtime: &AgentRuntime<P>,
     session: &mut Session,
     shell: &mut TuiShell,
 ) -> io::Result<String>
@@ -328,14 +338,14 @@ where
     print_user_block(text)?;
 
     let task = start_model_first_turn(
-        controller.clone(),
+        runtime.clone(),
         session.clone(),
         text.to_string(),
         shell.policy_mode,
     );
     let guard = TerminalModeGuard::enter()?;
     let mut working =
-        InlineWorkingRenderer::new(terminal_context(session, controller, shell.policy_mode));
+        InlineWorkingRenderer::new(terminal_context(session, runtime, shell.policy_mode));
     let mut input = TerminalInput::default();
     let mut live_output = LiveProviderOutput::default();
     live_output.suppress_reasoning_preview();
@@ -813,7 +823,7 @@ fn handle_terminal_key<P>(
     shell: &mut TuiShell,
 ) -> bool
 where
-    P: ControllerProvider,
+    P: ControllerProvider + Clone,
 {
     handle_terminal_key_with_copy_writer(key, input, controller, session, shell, io::stdout())
 }
@@ -828,7 +838,7 @@ fn handle_terminal_key_with_copy_writer<P>(
     copy_writer: impl Write,
 ) -> bool
 where
-    P: ControllerProvider,
+    P: ControllerProvider + Clone,
 {
     if should_exit(key) {
         return true;
@@ -844,13 +854,22 @@ where
         TerminalInputAction::Submit => {
             let submitted = input.drain();
             shell.input.text.clear();
-            handle_submitted_terminal_input(&submitted, controller, session, shell, copy_writer)
+            let runtime = AgentRuntime::new(controller.provider.clone());
+            handle_submitted_terminal_input(
+                &submitted,
+                &runtime,
+                controller,
+                session,
+                shell,
+                copy_writer,
+            )
         }
     }
 }
 
 fn handle_submitted_terminal_input<P>(
     submitted: &str,
+    runtime: &AgentRuntime<P>,
     controller: &Controller<P>,
     session: &mut Session,
     shell: &mut TuiShell,
@@ -900,7 +919,7 @@ where
             shell.conversation.follow_latest();
         }
         TerminalCommand::Text(text) => {
-            handle_terminal_text_input(text, controller, session, shell);
+            handle_terminal_text_input(text, runtime, controller, session, shell);
         }
     }
     false
@@ -908,6 +927,7 @@ where
 
 fn handle_terminal_text_input<P>(
     text: &str,
+    runtime: &AgentRuntime<P>,
     controller: &Controller<P>,
     session: &mut Session,
     shell: &mut TuiShell,
@@ -948,7 +968,7 @@ fn handle_terminal_text_input<P>(
             shell.conversation.follow_latest();
         }
         _ => {
-            shell.submit_model_first_input(controller, session, text);
+            shell.submit_agent_input(runtime, session, text);
         }
     }
 }
@@ -994,19 +1014,30 @@ where
             false
         }
         TerminalCommand::Text(text) if terminal_text_should_run_inline_model_first(text) => {
+            let runtime = AgentRuntime::new(controller.provider.clone());
             let model_input = normalize_terminal_model_first_input(text);
             shell.conversation.push_pending_provider_turn(&model_input);
             shell.conversation.follow_latest();
             shell.status.start_thinking_pulse();
             *pending_turn = Some(start_model_first_turn(
-                controller.clone(),
+                runtime,
                 session.clone(),
                 model_input,
                 shell.policy_mode,
             ));
             false
         }
-        _ => handle_submitted_terminal_input(submitted, controller, session, shell, io::stdout()),
+        _ => {
+            let runtime = AgentRuntime::new(controller.provider.clone());
+            handle_submitted_terminal_input(
+                submitted,
+                &runtime,
+                controller,
+                session,
+                shell,
+                io::stdout(),
+            )
+        }
     }
 }
 

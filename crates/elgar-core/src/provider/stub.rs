@@ -635,6 +635,18 @@ fn clean_stub_target(value: &str) -> Option<String> {
         .split(" in desktop")
         .next()
         .unwrap_or(value)
+        .split(" in this repo")
+        .next()
+        .unwrap_or(value)
+        .split(" under this repo")
+        .next()
+        .unwrap_or(value)
+        .split(" inside this repo")
+        .next()
+        .unwrap_or(value)
+        .split(" in the repo")
+        .next()
+        .unwrap_or(value)
         .split(" in ~/")
         .next()
         .unwrap_or(value)
@@ -725,6 +737,14 @@ mod tests {
         assert_eq!(
             first_tool_target("create a folder called test in the desktop"),
             "test"
+        );
+    }
+
+    #[test]
+    fn stub_repo_folder_create_strips_repo_location_from_folder_name() {
+        assert_eq!(
+            first_tool_target("create a folder called demo in this repo"),
+            "demo"
         );
     }
 

@@ -5,6 +5,7 @@ use std::{
 };
 
 use elgar_core::{
+    agent_runtime::AgentRuntime,
     controller::Controller,
     policy::PermissionPolicyMode,
     provider::{
@@ -447,6 +448,7 @@ pub fn is_tui_cancel_command(input: &str) -> bool {
 
 fn submit_tui_input(
     shell: &mut elgar_tui::TuiShell,
+    runtime: &AgentRuntime,
     controller: &Controller,
     session: &mut Session,
     input: &str,
@@ -476,7 +478,7 @@ fn submit_tui_input(
             shell.push_local_message("Action commands must use /approve or /reject.");
         }
     } else {
-        shell.submit_model_first_input(controller, session, input);
+        shell.submit_agent_input(runtime, session, input);
     }
 }
 
@@ -507,6 +509,7 @@ where
     S: AsRef<str>,
 {
     let controller = Controller::default();
+    let runtime = AgentRuntime::default();
     let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
     let mut shell = elgar_tui::TuiShell::with_policy_mode(policy_mode);
     let mut rendered_turns = Vec::new();
@@ -530,7 +533,7 @@ where
         } else if is_tui_memory_command(input) {
             rendered_turns.push(elgar_tui::render_session_memory(&session));
         } else {
-            submit_tui_input(&mut shell, &controller, &mut session, input);
+            submit_tui_input(&mut shell, &runtime, &controller, &mut session, input);
             rendered_turns.push(shell.render());
         }
     }
@@ -569,6 +572,7 @@ where
     W: Write,
 {
     let controller = Controller::default();
+    let runtime = AgentRuntime::default();
     let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
     let mut shell = elgar_tui::TuiShell::with_policy_mode(policy_mode);
 
@@ -593,7 +597,7 @@ where
         } else if is_tui_memory_command(&input) {
             writeln!(writer, "{}", elgar_tui::render_session_memory(&session))?;
         } else {
-            submit_tui_input(&mut shell, &controller, &mut session, &input);
+            submit_tui_input(&mut shell, &runtime, &controller, &mut session, &input);
             writeln!(writer, "{}", shell.render())?;
         }
     }
@@ -1446,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn tui_loop_help_is_local_and_normal_text_still_uses_controller() {
+    fn tui_loop_help_is_local_and_normal_text_uses_agent_runtime() {
         let input = b"/help\nwhat does the harness do?\n/exit\n";
         let mut output = Vec::new();
 

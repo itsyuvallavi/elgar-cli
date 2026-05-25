@@ -7,10 +7,12 @@ use std::{
 };
 
 #[cfg(test)]
+use elgar_core::controller::Controller;
+#[cfg(test)]
 use elgar_core::provider::ProviderStreamChunk;
 use elgar_core::{
-    agent_loop::run_permissive_agent_turn, controller::Controller, event::Event,
-    policy::PermissionPolicyMode, provider::ControllerProvider, session::Session,
+    agent_runtime::AgentRuntime, event::Event, policy::PermissionPolicyMode,
+    provider::ControllerProvider, session::Session,
 };
 
 pub(super) struct ProviderTurnTask {
@@ -98,10 +100,10 @@ where
 }
 
 pub(super) fn start_model_first_turn<P>(
-    controller: Controller<P>,
+    runtime: AgentRuntime<P>,
     mut session: Session,
     input: String,
-    _policy_mode: PermissionPolicyMode,
+    policy_mode: PermissionPolicyMode,
 ) -> ProviderTurnTask
 where
     P: ControllerProvider + Send + 'static,
@@ -110,10 +112,10 @@ where
     let canceled = Arc::new(AtomicBool::new(false));
     let worker_canceled = Arc::clone(&canceled);
 
-    // Live TUI natural-language turns run through the Pi-style agent loop.
-    // The controller-review model-first runtime is legacy smoke coverage only.
+    // Live TUI natural-language turns run through the agent runtime. The
+    // controller-review model-first runtime is legacy smoke coverage only.
     thread::spawn(move || {
-        let result = run_permissive_agent_turn(&controller.provider, &mut session, &input);
+        let result = runtime.turn(&mut session, &input, policy_mode);
         if worker_canceled.load(Ordering::SeqCst) {
             return;
         }

@@ -1,5 +1,5 @@
 use elgar_core::{
-    agent_loop::run_permissive_agent_turn,
+    agent_runtime::AgentRuntime,
     controller::{Controller, TurnResult},
     event::Event,
     policy::PermissionPolicyMode,
@@ -117,18 +117,16 @@ impl TuiShell {
         result
     }
 
-    pub fn submit_model_first_input<P>(
+    pub fn submit_agent_input<P>(
         &mut self,
-        controller: &Controller<P>,
+        runtime: &AgentRuntime<P>,
         session: &mut Session,
         input: &str,
     ) -> TurnResult
     where
         P: ControllerProvider,
     {
-        // Live TUI natural-language input uses the agent loop. The legacy
-        // controller-review model-first runtime is compatibility/smoke only.
-        let result = run_permissive_agent_turn(&controller.provider, session, input);
+        let result = runtime.turn(session, input, self.policy_mode);
         self.consume_events(&result.events);
         self.conversation.follow_latest();
         result
