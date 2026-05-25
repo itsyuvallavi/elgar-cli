@@ -73,6 +73,7 @@ pub(crate) fn is_model_first_verified_plan_implementation_request(input: &str) -
             "make the files",
             "build",
             "scaffold",
+            "execute",
             "according to the plan",
         ],
     ) && VerifiedMemoryNeed::from_input(input).plan
@@ -141,7 +142,20 @@ pub(crate) fn trim_markdown_path_punctuation(value: &str) -> &str {
     value.trim_matches(|character: char| {
         matches!(
             character,
-            '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';' | ':'
+            '`' | '*'
+                | '"'
+                | '\''
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | ','
+                | ';'
+                | ':'
         )
     })
 }
@@ -150,6 +164,9 @@ pub(crate) fn looks_like_project_file_path(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
+    if matches!(file_name, ".env" | ".gitignore" | ".npmrc") {
+        return true;
+    }
     if !file_name.contains('.') {
         return false;
     }
@@ -288,4 +305,76 @@ fn truncate_line(line: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     format!("{}{}", &line[..end], suffix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expected_files_from_verified_plan;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn expected_files_include_bold_markdown_paths_and_dotfiles() {
+        let project_root = Path::new("/Users/yuval/Desktop/ElgarDesktopReactSmoke");
+        let plan_path = project_root.join("project_plan.md");
+        let plan = r#"
+# React TypeScript Tailwind Project Plan
+
+## Folder structure
+```
+ElgarDesktopReactSmoke/
+├─ public/
+│  └─ index.html
+├─ src/
+│  ├─ app/
+│  │  └─ page.tsx
+│  ├─ components/
+│  │  └─ Button.tsx
+│  ├─ styles/
+│  │  └─ globals.css
+│  ├─ main.tsx
+├─ .gitignore
+├─ package.json
+├─ tsconfig.json
+├─ tailwind.config.js
+├─ postcss.config.js
+├─ next.config.js
+├─ README.md
+```
+
+## Files to create
+1. **public/index.html** - HTML skeleton.
+2. **src/main.tsx** - React entry.
+3. **src/styles/globals.css** - Tailwind imports.
+4. **src/components/Button.tsx** - button component.
+5. **package.json** - dependencies.
+6. **tsconfig.json** - TypeScript config.
+7. **tailwind.config.js** - Tailwind config.
+8. **postcss.config.js** - PostCSS config.
+9. **next.config.js** - optional config.
+10. **README.md** - usage notes.
+11. **.gitignore** - ignored files.
+"#;
+
+        let expected = expected_files_from_verified_plan(plan, project_root, &plan_path);
+
+        for relative in [
+            "public/index.html",
+            "src/main.tsx",
+            "src/styles/globals.css",
+            "src/components/Button.tsx",
+            "package.json",
+            "tsconfig.json",
+            "tailwind.config.js",
+            "postcss.config.js",
+            "next.config.js",
+            "README.md",
+            ".gitignore",
+        ] {
+            assert!(
+                expected.contains(&PathBuf::from(relative)),
+                "missing expected file {relative}; got {expected:?}"
+            );
+        }
+        assert!(!expected.contains(&PathBuf::from("project_plan.md")));
+    }
 }

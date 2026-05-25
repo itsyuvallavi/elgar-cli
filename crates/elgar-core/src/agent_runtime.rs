@@ -273,6 +273,49 @@ mod tests {
     }
 
     #[test]
+    fn agent_runtime_auto_create_treats_missing_overwrite_as_safe_create() {
+        let root = temp_root("auto-create-missing-overwrite");
+        let target_file = root.join("plan.md");
+        let runtime = AgentRuntime::new(ToolProvider::new(RawModelToolCall {
+            id: "tool-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::OverwriteFile),
+            arguments: serde_json::json!({
+                "target_path": "plan.md",
+                "contents": "# Project Plan\n"
+            }),
+            assistant_summary: Some("write plan".to_string()),
+        }));
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.turn(
+            &mut session,
+            "create a project plan",
+            PermissionPolicyMode::AutoCreateReviewModify,
+        );
+
+        assert_eq!(
+            fs::read_to_string(&target_file).unwrap(),
+            "# Project Plan\n"
+        );
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+        assert!(result
+            .events
+            .iter()
+            .all(|event| !matches!(event, Event::ActionProposed(_))));
+        let record = session.actions().last().expect("applied action");
+        assert_eq!(record.action.state, ActionLifecycleState::Applied);
+        assert!(matches!(
+            record.action.request,
+            ActionRequest::CreateFile(_)
+        ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn agent_runtime_workspace_write_policy_applies_safe_overwrite() {
         let root = temp_root("workspace-overwrite");
         fs::write(root.join("demo.txt"), "old\n").unwrap();

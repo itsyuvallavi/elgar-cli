@@ -17,6 +17,10 @@ use crate::{
     },
     followup_action_paths::{explicit_request_base, followup_base_path_for_request},
     fs::Filesystem,
+    legacy_controller_model_first_plan_completion::{
+        expected_files_from_verified_plan, is_model_first_verified_plan_implementation_request,
+        missing_expected_verified_plan_files,
+    },
     model_runtime::{
         elgar_model_tool_definitions, validate_model_tool_outputs, ModelToolValidationErrorKind,
         RawModelToolCall, ValidatedModelGuidanceRequest, ValidatedModelToolAction,
@@ -79,6 +83,17 @@ where
         };
     }
 
+    if let Some(message) = read_existing_plan_response(session, input) {
+        session.push_event(Event::AssistantMessage(AssistantMessage::new(
+            message,
+            AssistantMessageSource::Controller,
+        )));
+        return TurnResult {
+            route: Route::AskModel,
+            events: session.events()[start_index..].to_vec(),
+        };
+    }
+
     let agent_context = agent_verified_memory_context(session, input);
     let mut messages = vec![ChatMessage::new(ChatRole::System, AGENT_SYSTEM_PROMPT)];
     if let Some(context) = agent_recent_conversation_context(session, start_index) {
@@ -122,6 +137,10 @@ where
         )));
 
         if tool_calls.is_empty() {
+            if let Some(message) = no_tool_verified_plan_retry_message(session, input) {
+                messages.push(ChatMessage::system(message));
+                continue;
+            }
             push_provider_message_if_visible(session, assistant_text);
             break;
         }
@@ -280,14 +299,20 @@ fn sanitize_plan_execution_outputs(
         })
         .collect::<Vec<_>>();
 
-    let has_project_file_action = filtered.iter().any(|output| {
-        matches!(
-            output,
-            ResolvedAgentToolOutput::Action(action)
-                if is_plan_execution_project_file_action(&action.request)
-        )
-    });
-    if has_project_file_action {
+    let resolved_actions = filtered
+        .iter()
+        .filter_map(|output| match output {
+            ResolvedAgentToolOutput::Action(action) => Some(action.clone()),
+            ResolvedAgentToolOutput::Guidance(_) => None,
+        })
+        .collect::<Vec<_>>();
+
+    let has_project_file_action = resolved_actions
+        .iter()
+        .any(|action| is_plan_execution_project_file_action(&action.request));
+    if has_project_file_action
+        && plan_expected_files_are_covered(&plan.path, &plan.project_root, &resolved_actions)
+    {
         return PlanExecutionSanitization::Outputs(filtered);
     }
 
@@ -331,6 +356,53 @@ fn is_plan_execution_project_file_action(request: &ActionRequest) -> bool {
             | ActionRequest::OverwriteFile(_)
             | ActionRequest::PatchFile(_)
     )
+}
+
+fn plan_expected_files_are_covered(
+    plan_path: &Path,
+    project_root: &Path,
+    actions: &[ValidatedModelToolAction],
+) -> bool {
+    let expected_files = std::fs::read_to_string(plan_path)
+        .ok()
+        .map(|contents| expected_files_from_verified_plan(&contents, project_root, plan_path))
+        .unwrap_or_default();
+
+    if expected_files.len() < 2 {
+        return true;
+    }
+
+    missing_expected_verified_plan_files(&expected_files, project_root, actions).is_empty()
+}
+
+fn no_tool_verified_plan_retry_message(session: &Session, input: &str) -> Option<String> {
+    if !is_model_first_verified_plan_implementation_request(input) {
+        return None;
+    }
+
+    let plan = session.project_memory().latest_verified_plan()?;
+    let contents = std::fs::read_to_string(&plan.path).ok()?;
+    let expected_files =
+        expected_files_from_verified_plan(&contents, &plan.project_root, &plan.path);
+    if expected_files.len() < 2 {
+        return None;
+    }
+
+    let missing_files =
+        missing_expected_verified_plan_files(&expected_files, &plan.project_root, &[]);
+    if missing_files.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "The user asked to execute the verified plan, but no filesystem tool calls were returned. Do not claim success. Return create_directory/create_file tool calls for the missing files under {}. Missing files: {}",
+        plan.project_root.display(),
+        missing_files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 fn repair_directory_only_file_request(
@@ -546,8 +618,22 @@ fn reconcile_create_file_target(
     session: &Session,
     request: ActionRequest,
 ) -> CreateFileReconciliation {
-    let ActionRequest::CreateFile(create_file) = request else {
-        return CreateFileReconciliation::Request(request);
+    let create_file = match request {
+        ActionRequest::CreateFile(create_file) => create_file,
+        ActionRequest::OverwriteFile(overwrite_file) => {
+            let target_path =
+                resolved_target_path_for_existing_check(session, &overwrite_file.target_path);
+            if target_path.is_file() {
+                return CreateFileReconciliation::Request(ActionRequest::OverwriteFile(
+                    overwrite_file,
+                ));
+            }
+            CreateFileAction {
+                target_path: overwrite_file.target_path,
+                contents: overwrite_file.contents,
+            }
+        }
+        _ => return CreateFileReconciliation::Request(request),
     };
 
     let target_path = resolved_target_path_for_existing_check(session, &create_file.target_path);
@@ -860,6 +946,9 @@ fn mentions_followup_plan(normalized: &str) -> bool {
         || normalized.contains("execute it")
         || normalized.contains("apply the plan")
         || normalized.contains("apply it")
+        || normalized.contains("create all the files")
+        || normalized.contains("files from the plan")
+        || normalized.contains("all the files from the plan")
         || normalized.contains("create project according")
         || normalized.contains("create the project")
 }
@@ -873,6 +962,9 @@ fn mentions_plan_execution_request(normalized: &str) -> bool {
         || normalized.contains("execute it")
         || normalized.contains("apply the plan")
         || normalized.contains("apply it")
+        || normalized.contains("create all the files")
+        || normalized.contains("files from the plan")
+        || normalized.contains("all the files from the plan")
 }
 
 fn repeated_plan_create_response(session: &Session, input: &str) -> Option<String> {
@@ -895,6 +987,32 @@ fn repeated_plan_create_response(session: &Session, input: &str) -> Option<Strin
         "The plan already exists at {}. I will use that plan unless you ask me to update or replace it.",
         display_project_path(session, &plan.path)
     ))
+}
+
+fn read_existing_plan_response(session: &Session, input: &str) -> Option<String> {
+    if !mentions_read_existing_plan(input) {
+        return None;
+    }
+
+    let plan = session.project_memory().latest_verified_plan()?;
+    let contents = verified_plan_excerpt(&plan.path)?;
+    Some(format!(
+        "Here is the plan from {}:\n\n{}",
+        display_project_path(session, &plan.path),
+        contents
+    ))
+}
+
+fn mentions_read_existing_plan(input: &str) -> bool {
+    let normalized = input.to_ascii_lowercase();
+    (normalized.contains("read") || normalized.contains("show"))
+        && normalized.contains("plan")
+        && !normalized.contains("create a plan")
+        && !normalized.contains("create the plan")
+        && !normalized.contains("write a plan")
+        && !normalized.contains("write the plan")
+        && !normalized.contains("make a plan")
+        && !normalized.contains("make the plan")
 }
 
 fn requested_project_base(input: &str, location_base: Option<&Path>) -> Option<PathBuf> {
@@ -1057,11 +1175,7 @@ fn verified_result_context(result: &VerifiedActionResult) -> String {
 fn compact_context_line(value: &str) -> String {
     let line = value.split_whitespace().collect::<Vec<_>>().join(" ");
     const LIMIT: usize = 260;
-    if line.len() <= LIMIT {
-        line
-    } else {
-        format!("{}...", &line[..LIMIT])
-    }
+    truncate_utf8(&line, LIMIT)
 }
 
 fn verified_plan_excerpt(path: &Path) -> Option<String> {
@@ -1072,11 +1186,21 @@ fn verified_plan_excerpt(path: &Path) -> Option<String> {
     }
 
     const LIMIT: usize = 1200;
-    if contents.len() <= LIMIT {
-        Some(contents.to_string())
-    } else {
-        Some(format!("{}...", &contents[..LIMIT]))
+    Some(truncate_utf8(contents, LIMIT))
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
     }
+
+    let suffix = "...";
+    let max_content = max_bytes.saturating_sub(suffix.len());
+    let mut end = max_content.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &value[..end], suffix)
 }
 
 fn display_project_path(session: &Session, path: &Path) -> String {
@@ -1663,6 +1787,256 @@ mod tests {
     }
 
     #[test]
+    fn permissive_agent_execute_it_retries_text_only_false_success_for_verified_plan() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-text-only-retry",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ReactProject3")).unwrap();
+        let plan_path = root.join("ReactProject3/plan.md");
+        std::fs::write(
+            &plan_path,
+            "# React TS Tailwind Plan\n\n- Create package.json.\n- Create src/main.tsx.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("All project folders and files have been created."),
+            crate::event::ProviderOutput::new("Creating files now.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "text-retry-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "package.json",
+                        "contents": "{\"scripts\":{\"dev\":\"vite\"}}\n"
+                    }),
+                    assistant_summary: Some("create package".to_string()),
+                },
+                RawModelToolCall {
+                    id: "text-retry-call-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.tsx",
+                        "contents": "console.log('hello');\n"
+                    }),
+                    assistant_summary: Some("create main".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: PathBuf::from("ReactProject3/plan.md"),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "ReactProject3/plan.md".to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(&provider, &mut session, "okay execute it");
+
+        assert!(root.join("ReactProject3/package.json").is_file());
+        assert!(root.join("ReactProject3/src/main.tsx").is_file());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.content.contains("All project folders and files have been created")
+        )));
+        let provider_requests = provider.messages.lock().unwrap();
+        assert!(provider_requests.len() >= 2);
+        assert!(provider_requests[1].iter().any(|message| {
+            matches!(message.role, ChatRole::System)
+                && message
+                    .content
+                    .contains("no filesystem tool calls were returned")
+        }));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_execute_it_retries_partial_plan_txt_execution_on_desktop() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-partial-plan-txt",
+            std::process::id()
+        ));
+        let desktop_project = root.join("Desktop/ElgarDesktopReactSmoke");
+        let plan_path = desktop_project.join("plan.txt");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&desktop_project).unwrap();
+        std::fs::write(
+            &plan_path,
+            "# React TypeScript Tailwind Plan\n\n- Create package.json.\n- Create tsconfig.json.\n- Create public/index.html.\n- Create src/main.tsx.\n- Create src/App.tsx.\n- Create src/styles/globals.css.\n- Create tailwind.config.js.\n- Create postcss.config.js.\n- Create README.md.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating core files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "partial-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "package.json",
+                        "contents": "{\"scripts\":{\"dev\":\"vite\"}}\n"
+                    }),
+                    assistant_summary: Some("create package".to_string()),
+                },
+                RawModelToolCall {
+                    id: "partial-call-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "tsconfig.json",
+                        "contents": "{}\n"
+                    }),
+                    assistant_summary: Some("create tsconfig".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Creating all files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "full-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "package.json",
+                        "contents": "{\"scripts\":{\"dev\":\"vite\"}}\n"
+                    }),
+                    assistant_summary: Some("create package".to_string()),
+                },
+                RawModelToolCall {
+                    id: "full-call-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "tsconfig.json",
+                        "contents": "{}\n"
+                    }),
+                    assistant_summary: Some("create tsconfig".to_string()),
+                },
+                RawModelToolCall {
+                    id: "full-call-3".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "public/index.html",
+                        "contents": "<div id=\"root\"></div><script type=\"module\" src=\"/src/main.tsx\"></script>\n"
+                    }),
+                    assistant_summary: Some("create html".to_string()),
+                },
+                RawModelToolCall {
+                    id: "full-call-4".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.tsx",
+                        "contents": "import App from './App';\n"
+                    }),
+                    assistant_summary: Some("create main".to_string()),
+                },
+                RawModelToolCall {
+                    id: "full-call-5".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/App.tsx",
+                        "contents": "export default function App() { return <h1>Hello</h1>; }\n"
+                    }),
+                    assistant_summary: Some("create app".to_string()),
+                },
+                RawModelToolCall {
+                    id: "full-call-6".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/styles/globals.css",
+                        "contents": "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n"
+                    }),
+                    assistant_summary: Some("create css".to_string()),
+                },
+                RawModelToolCall {
+                    id: "full-call-7".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "tailwind.config.js",
+                        "contents": "module.exports = { content: ['./index.html', './src/**/*.{ts,tsx}'], theme: { extend: {} }, plugins: [] };\n"
+                    }),
+                    assistant_summary: Some("create tailwind".to_string()),
+                },
+                RawModelToolCall {
+                    id: "full-call-8".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "postcss.config.js",
+                        "contents": "module.exports = { plugins: { tailwindcss: {}, autoprefixer: {} } };\n"
+                    }),
+                    assistant_summary: Some("create postcss".to_string()),
+                },
+                RawModelToolCall {
+                    id: "full-call-9".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "README.md",
+                        "contents": "# ElgarDesktopReactSmoke\n"
+                    }),
+                    assistant_summary: Some("create readme".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: plan_path.clone(),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: plan_path.display().to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "okay execute it, create all the files and folders in the project",
+        );
+
+        for path in [
+            "package.json",
+            "tsconfig.json",
+            "public/index.html",
+            "src/main.tsx",
+            "src/App.tsx",
+            "src/styles/globals.css",
+            "tailwind.config.js",
+            "postcss.config.js",
+            "README.md",
+        ] {
+            assert!(desktop_project.join(path).is_file(), "missing {path}");
+            assert!(!root.join(path).exists(), "created {path} in repo root");
+        }
+        assert!(session
+            .project_memory()
+            .latest_verified_plan()
+            .is_some_and(|plan| plan.path == plan_path));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn permissive_agent_repeated_create_plan_reports_existing_plan() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-repeat-plan",
@@ -1702,6 +2076,61 @@ mod tests {
         )));
         assert!(provider.messages.lock().unwrap().is_empty());
         assert_eq!(session.actions().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_read_plan_uses_verified_plan_without_shell_or_provider() {
+        let root =
+            std::env::temp_dir().join(format!("elgar-agent-loop-{}-read-plan", std::process::id()));
+        let project = root.join("Desktop/ElgarDesktopReactSmoke");
+        let plan_path = project.join("plan.txt");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            &plan_path,
+            "# Project Plan\n\n- Create package.json.\n- Create src/App.tsx.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
+            "provider should not be called",
+        )]);
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: plan_path.clone(),
+                contents: "# Project Plan".to_string(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: plan_path.display().to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(&provider, &mut session, "read the plan to me");
+
+        assert!(provider.messages.lock().unwrap().is_empty());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.content.contains("Here is the plan")
+                    && message.content.contains("Create package.json")
+                    && message.content.contains("src/App.tsx")
+        )));
+        assert!(session
+            .actions()
+            .iter()
+            .all(|record| !matches!(record.action.request, ActionRequest::ShellCommand(_))));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1937,6 +2366,34 @@ mod tests {
             .events()
             .iter()
             .any(|event| matches!(event, Event::Error(error) if error.message.contains("missing required argument"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compact_context_line_truncates_unicode_at_char_boundary() {
+        let input = format!("{} {}", "plan", "│".repeat(200));
+        let line = compact_context_line(&input);
+
+        assert!(line.ends_with("..."));
+        assert!(line.is_char_boundary(line.len()));
+    }
+
+    #[test]
+    fn verified_plan_excerpt_truncates_unicode_at_char_boundary() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-unicode-plan",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plan = root.join("plan.md");
+        std::fs::write(&plan, format!("# Plan\n\n{}\n", "├─ src/│".repeat(300))).unwrap();
+
+        let excerpt = verified_plan_excerpt(&plan).unwrap();
+
+        assert!(excerpt.ends_with("..."));
+        assert!(excerpt.is_char_boundary(excerpt.len()));
 
         let _ = std::fs::remove_dir_all(&root);
     }
