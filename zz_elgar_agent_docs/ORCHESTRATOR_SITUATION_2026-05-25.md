@@ -17,17 +17,9 @@ This is a planning/handoff note. It does not request implementation by itself.
 
 Elgar has moved beyond the original conservative Core Harness slice.
 
-The original planning docs still matter as the constitution:
-
-```text
-Controller owns truth.
-Model suggests.
-User approves.
-Filesystem confirms.
-UI reports.
-Tests protect.
-Extensions wait.
-```
+The original planning docs are historical background. They describe the old
+controller-first approval loop and should not override the current AgentRuntime
+architecture.
 
 The active implementation and Linear map now point toward a newer runtime shape:
 
@@ -70,7 +62,6 @@ Important current files:
 - `crates/elgar-tui/src/terminal/provider_task.rs`
 - `docs/codex-style-agent-runtime-plan.md`
 - `docs/elgar-product-architecture-plan.md`
-- `docs/model-first-routing-plan.md`
 - `docs/read-only-memory-context.md`
 
 Important Linear direction:
@@ -201,7 +192,6 @@ Read first:
 - zz_elgar_agent_docs/ORCHESTRATOR_SITUATION_2026-05-25.md
 - docs/codex-style-agent-runtime-plan.md
 - docs/elgar-product-architecture-plan.md
-- docs/model-first-routing-plan.md
 - docs/read-only-memory-context.md
 - docs/permissioned-actions-review.md
 
@@ -232,7 +222,8 @@ Please answer:
 
 Constraints:
 - Keep the worktree read-only for this review.
-- Do not create new standing agent roles.
+- Do not create new standing agent roles unless the user asks for a roster
+  update.
 - Do not start MCP, Skills, Obsidian integration, or parallel agents.
 - Treat Ralph as inspiration for a later Run Harness, not as a direct script to copy.
 - Keep the recommendation short, concrete, and mapped to Linear.

@@ -12,14 +12,15 @@ agent platform.
 
 Before committing TUI polish, use `docs/tui-visual-qa-checklist.md`.
 
-The controller boundary remains the product boundary:
+The runtime boundary is the product boundary:
 
 ```text
-Controller owns truth.
-Model suggests.
-User approves.
-Filesystem confirms.
+Model owns intent.
+Runtime validates.
+Policy decides.
+Executors verify.
 UI reports.
+Tests protect.
 ```
 
 ## Screen Shape
@@ -64,7 +65,7 @@ Startup should be short and factual:
 
 ```text
 Elgar
-Local controller TUI
+Local AgentRuntime TUI
 
 Commands
 /commands  Show commands
@@ -95,7 +96,7 @@ Use simple message blocks with minimal labels:
   label and without a visible `>` prompt marker in the transcript area.
 - Transient work renders as muted `thinking`, `thinking.`, `thinking..`, or
   `thinking...` inside the chat area.
-- Final provider responses render without a visible `Model:` label; controller
+- Final provider responses render without a visible `Model:` label; runtime
   messages may keep a light `Elgar:` label when the distinction matters.
 - `Action review` for pending permissioned actions
 
@@ -123,7 +124,7 @@ No file has been changed yet.
 /approve to apply, /reject to leave the filesystem unchanged.
 ```
 
-The TUI must never imply an action succeeded until controller/filesystem truth
+The TUI must never imply an action succeeded until runtime/executor truth
 confirms it.
 
 ## Footer
@@ -139,8 +140,8 @@ Rules:
 
 - first line left side: folder/repo and branch when known
 - first line right side: model when known, otherwise the provider if no model is known
-- second line: `context: TBD` until real controller-backed accounting exists
-- `context: TBD` is acceptable until controller-backed context accounting exists
+- second line: `context: TBD` until real runtime-backed accounting exists
+- `context: TBD` is acceptable until runtime-backed context accounting exists
 - do not fake `128k`, token counts, percentages, context budget bars, or max
   window size
 - omit unknown values or mark them plainly as `TBD`
@@ -168,6 +169,6 @@ Do not copy:
 - broad model/settings panels
 - token windows, percentages, or budget gauges not backed by Elgar data
 - hidden autonomy presented as smoothness
-- any UI claim that bypasses controller truth
+- any UI claim that bypasses runtime validation or executor verification
 
 Pi is an interaction reference for calmness and pacing only.

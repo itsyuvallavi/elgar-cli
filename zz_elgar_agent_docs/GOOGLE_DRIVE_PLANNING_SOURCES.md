@@ -8,6 +8,11 @@ Google Doc ID:
 
 ## Required Planning Documents
 
+These Google Docs are planning background. Some older docs still use
+controller-first language. If they conflict with
+`docs/elgar-product-architecture-plan.md`, follow the repo-local architecture
+plan and update Linear/docs with the discrepancy.
+
 ELGAR_V0_2_PLAN
 https://docs.google.com/document/d/1slBLXdC_el_lxUjvBGer0khCjVjWnGakfWjpqi5k6b0/edit
 

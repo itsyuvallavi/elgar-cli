@@ -1,6 +1,9 @@
 # Permissioned Shell Commands
 
-ELG-218 executes shell commands only after explicit controller approval.
+ELG-218 introduced shell commands behind explicit approval. Current
+AgentRuntime work keeps shell execution policy-owned: shell commands may run
+only when the selected permission mode allows them or the user explicitly
+approves them.
 
 ## Action Model
 
@@ -19,7 +22,7 @@ Default policy:
 - timeout: 30 seconds
 - stdout cap: 16 KiB
 - stderr cap: 16 KiB
-- environment: inherit the controller process environment
+- environment: inherit the Elgar process environment
 
 ## Routing
 
@@ -31,12 +34,11 @@ Explicit shell command prefixes create a proposed shell action:
 - `run shell command ...`
 - `shell command ...`
 
-Natural filesystem requests may also create a shell proposal when the requested
-target is outside the project-relative filesystem action boundary. For example,
-`create a folder at /tmp/demo` or `create a folder called demo in the desktop`
-becomes a controller-owned `mkdir -p ...` proposal. Approval is still required
-before execution, and the controller verifies the expected directory exists
-after the shell command finishes.
+Natural filesystem requests should prefer typed filesystem tools when possible.
+Shell-backed filesystem work is reserved for cases that cannot be represented
+as a safe typed file action under the active policy. Approval is required unless
+the selected policy mode explicitly allows the shell action, and the executor
+must verify any expected filesystem effect after the command finishes.
 
 Questions such as `can you run ...?` still go to the provider as model text.
 Bare shell syntax such as `bash -lc ...` is not a command proposal by itself.
@@ -45,7 +47,8 @@ Bare shell syntax such as `bash -lc ...` is not a command proposal by itself.
 
 Proposed shell commands do not execute.
 Rejected shell commands do not execute.
-Approved shell commands execute once through the controller-owned shell executor.
+Approved or policy-allowed shell commands execute once through the shell
+executor.
 
 Provider text never executes shell and never proves command truth.
 

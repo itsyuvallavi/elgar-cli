@@ -4,34 +4,54 @@
 
 This document defines how coding agents should work on Elgar v0.2.
 
-Elgar v0.2 is a clean restart. Do not preserve v0.1 architecture unless explicitly instructed.
+Elgar v0.2 is a clean restart. Do not preserve v0.1 architecture unless
+explicitly instructed.
 
-## Core Philosophy
+## Current Contract
+
+Use the repo-local architecture plan as the current source of truth:
 
 ```text
-Controller owns truth.
-Model suggests.
-User approves.
-Filesystem confirms.
+docs/elgar-product-architecture-plan.md
+```
+
+The active operating contract is:
+
+```text
+Model owns intent.
+Runtime validates.
+Policy decides.
+Executors verify.
 UI reports.
 Tests protect.
 Extensions wait.
 ```
 
+The controller is no longer the conversational brain for normal CLI/TUI chat.
+Normal user text should enter the AgentRuntime/model-tool path. Legacy
+controller paths may remain only when explicitly named as smoke, review, or
+compatibility surfaces.
+
 ## Agent Rules
 
-1. Do not copy old v0.1 implementation files blindly.
-2. Do not create a giant agent framework.
-3. Do not implement MCP, Skills, API, Parallel Agents, Auto Skill Learning, or Obsidian integration in the first slice.
-4. Do not implement a full TUI before the Core Harness works.
-5. Do not let provider/model text mutate files.
-6. Do not let UI code own routing, permissions, or file operations.
-7. Keep files small and responsibilities clear.
-8. Add tests before expanding behavior.
-9. Prefer explicit types over prompt-only behavior.
-10. Keep user-facing messages short and to the point while preserving all important details.
-11. After each implementation step, include a brief plain-English explanation of what changed and why.
-12. Report what was changed, what was tested, and what was intentionally deferred.
+1. Work only in the active repo unless the user explicitly says otherwise.
+2. Do not use old/archive folders as source of truth.
+3. Follow Linear as the execution map.
+4. Find or create the relevant Linear issue before implementation.
+5. Move the issue to In Progress before code changes.
+6. Add a completion comment with files changed, tests run, and known
+   limitations.
+7. Move the issue to Done only after verification passes.
+8. Do not commit `.DS_Store`.
+9. Do not revert unrelated dirty work.
+10. Keep files small and responsibilities narrow.
+11. Keep normal chat model-first; slash commands remain local and explicit.
+12. Keep permission, execution, and verification in runtime/core layers, not in
+    UI text or provider prose.
+13. Prefer explicit types, structured events, and tests over prompt-only
+    behavior.
+14. Add or update tests when behavior changes.
+15. Report what changed, what was tested, and what is intentionally deferred.
 
 ## Communication Style
 
@@ -54,11 +74,13 @@ Keep files small enough to audit quickly.
 
 Guidelines:
 
-- Keep CLI files thin: parse command, call core, print result.
-- Keep controller files focused on turn flow and truth recording.
-- Keep provider HTTP/client details out of controller code.
+- Keep CLI files thin: parse command, call runtime/core, print result.
+- Keep TUI files focused on input, rendering, and slash commands.
+- Keep provider HTTP/client details out of runtime policy code.
+- Keep filesystem and shell execution behind typed executors.
 - Split a module when it starts mixing unrelated responsibilities.
-- Prefer a small follow-up issue for module splitting over broad refactors inside feature work.
+- Prefer a small follow-up issue for module splitting over broad refactors
+  inside feature work.
 
 ## Agent Roster
 
@@ -68,82 +90,39 @@ Use the stable agent roster in:
 AGENT_ROSTER.md
 ```
 
-Default standing roles:
+Reuse standing roles rather than creating new ones. Use review agents at risk
+gates, especially after filesystem/shell changes, permission-policy changes,
+or live TUI path changes.
 
-- Core Harness Agent
-- Router/Session Agent
-- Action Lifecycle Agent
-- Filesystem Safety Agent
-- Harness/Test Agent
-- Simple TUI Agent
-- Provider / LM Studio Agent
-- Code Review Agent
+## Source Of Truth
 
-Prefer one implementation agent at a time. Reuse these roles rather than creating new standing agents. Use Code Review Agent at risk gates, especially after filesystem mutation work, before completing the Core Harness slice, and before live provider or TUI integration.
-
-## Source of Truth
-
-The canonical planning docs currently live in Google Drive.
-
-Use this exact planning index:
+Repo-local source of truth:
 
 ```text
-ELGAR_PLANNING_INDEX
-https://docs.google.com/document/d/1-V7QT5Au67g20pR5OAzh2_LpAZxIX0NLiUXsl2TW66c/edit
+docs/elgar-product-architecture-plan.md
 ```
 
-Planning index document ID:
+Supplemental current planning reference:
 
 ```text
-1-V7QT5Au67g20pR5OAzh2_LpAZxIX0NLiUXsl2TW66c
+docs/codex-style-agent-runtime-plan.md
 ```
 
-Also see:
+Google Drive planning docs remain useful background when available:
 
 ```text
 GOOGLE_DRIVE_PLANNING_SOURCES.md
 ```
 
-Before implementation, use either:
+If Google Drive docs conflict with the repo-local architecture plan, follow the
+repo-local plan and update Linear/docs with the discrepancy.
 
-1. the Google Drive planning index above, or
-2. exported Markdown copies under `docs/planning/` if they have been added to the repo.
-
-Do not proceed blindly if neither source is available.
-
-Minimum required planning docs:
-
-- `ELGAR_V0_2_PLAN`
-- `PRODUCT_PRINCIPLES`
-- `CONTROLLER_TRUTH_MODEL`
-- `RESPONSIBILITY_BOUNDARIES`
-- `CORE_HARNESS_ROADMAP`
-- `PERMISSIONED_ACTIONS_ROADMAP`
-- `HARNESS_REGRESSION_TESTS_ROADMAP`
-
-If working in the repo and `docs/planning/` is missing, either use the exact Google Drive links in `GOOGLE_DRIVE_PLANNING_SOURCES.md` or stop and report that the planning docs must be exported into the repo before implementation.
-
-## First Implementation Target
-
-Build the Core Harness.
-
-The first useful workflow is:
-
-```text
-User asks to create hello.py
-→ controller proposes WriteFile
-→ user approves or rejects
-→ only approved action writes the file
-→ filesystem confirms
-→ renderer reports truthfully
-```
-
-## What to Report Back
+## What To Report Back
 
 Every agent run should report:
 
 - Linear issue worked on
-- files created or modified
+- files created, modified, or deleted
 - architecture decisions made
 - tests added
 - commands run

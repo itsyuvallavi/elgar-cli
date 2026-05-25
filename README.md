@@ -120,7 +120,8 @@ Start with:
 docs/local-checks.md
 docs/live-provider-smoke.md
 docs/permissioned-shell-commands.md
-docs/v0.2-forward-plan.md
+docs/elgar-product-architecture-plan.md
+docs/codex-style-agent-runtime-plan.md
 zz_elgar_agent_docs/AGENTS.md
 zz_elgar_agent_docs/AGENT_ROSTER.md
 ```

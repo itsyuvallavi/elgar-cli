@@ -7,14 +7,15 @@ Linear issue: ELG-143
 Elgar's TUI should be Pi-like in calmness, pacing, and chat-first focus, not in
 identity, architecture, or feature set.
 
-Pi is inspiration, not something to copy. Elgar's center remains:
+Pi is inspiration, not something to copy. Elgar's current center is:
 
 ```text
-Controller owns truth.
-Model suggests.
-User approves.
-Filesystem confirms.
+Model owns intent.
+Runtime validates.
+Policy decides.
+Executors verify.
 UI reports.
+Tests protect.
 ```
 
 The TUI should make that loop feel quiet and understandable instead of turning
@@ -40,10 +41,10 @@ not like an IDE, observability tool, or workflow dashboard.
 Elgar must not copy:
 
 - Pi's identity, branding, or product voice
-- any architecture that weakens controller truth
+- any architecture that weakens runtime validation or executor verification
 - hidden autonomy presented as smoothness
 - broad extension/package concepts before the core is trusted
-- prompt-only safety in place of typed controller state
+- prompt-only safety in place of typed runtime state
 - dashboard-heavy navigation, model managers, plugin browsers, or diagnostics
   pages in the first TUI
 
@@ -70,7 +71,7 @@ phrasing in the main conversation. Prefer messages like:
 - `Provider error: model is not loaded.`
 
 Do not say a file was written, command ran, or action succeeded unless the
-controller recorded the verified result.
+runtime/executor recorded the verified result.
 
 ## Layout Direction
 
@@ -81,7 +82,7 @@ Keep the first layout small and stable:
 - Input: always available; one focused place to type a message or basic command.
 - Status: one compact line for current state, provider/model when known, cwd or
   project root, pending action count, and last error if present.
-- Approval panel: appears when a controller action is pending; shows action id,
+- Approval panel: appears when policy requires review; shows action id,
   action type, target, short summary, and approve/reject affordance.
 
 The approval panel should not become a side dashboard. It is a calm interruption:
@@ -96,11 +97,12 @@ Provider progress should be visible but quiet:
 - show provider/model identity when known
 - show errors in plain language with enough detail to act
 
-Provider text is suggestion only. The TUI may show provider output, but it must
-not convert provider claims into file, command, or action truth.
+Provider text is unverified until it becomes validated runtime events. The TUI
+may show provider output, but it must not convert provider claims into file,
+command, or action truth.
 
-Default TUI/controller behavior remains no-network/stub. Live provider paths must
-stay explicit.
+Default local checks remain no-network/stub. Live provider paths must stay
+explicit.
 
 ## Permissioned Actions
 
@@ -138,9 +140,9 @@ Defer:
 Diagnostics can exist later, but the main TUI should not make the user parse
 internal logs to understand what happened.
 
-## Keep Controller Truth Visible
+## Keep Runtime Truth Visible
 
-Controller truth should be visible through small, stable signals:
+Runtime truth should be visible through small, stable signals:
 
 - event-derived conversation lines
 - compact status text
@@ -148,26 +150,22 @@ Controller truth should be visible through small, stable signals:
 - verified result wording
 - clear error wording
 
-Do not expose every raw event by default. The TUI should summarize controller
+Do not expose every raw event by default. The TUI should summarize runtime
 truth without hiding it. A later diagnostics view can show raw event detail if
 needed.
 
 ## Next Implementation Direction
 
-First, split `crates/elgar-tui/src/shell.rs` into smaller modules before adding
-more behavior.
-
-After that split, the next TUI implementation issue should be:
+Next TUI implementation work should stay aligned with:
 
 ```text
-Add calm TUI copy and compact status rendering for controller events
+docs/elgar-product-architecture-plan.md
 ```
 
-Keep that issue small:
+Keep UI changes small:
 
 - refine user-facing text only where current event rendering is too log-like
-- preserve existing controller events and tests
-- do not add live provider mode
+- preserve existing runtime events and tests
 - do not add dashboards or diagnostics pages
 - add focused smoke tests for conversation, status, provider error, and pending
   action wording

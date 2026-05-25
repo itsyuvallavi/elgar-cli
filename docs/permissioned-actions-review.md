@@ -9,8 +9,11 @@ Scope reviewed: ELG-216 through ELG-219.
 The expanded permissioned action slice was originally reviewed against the v0.2 controller boundary. Current normal chat should enter through `AgentRuntime`; explicit approvals go through the action gate.
 
 - Core owns action lifecycle and verified truth.
-- Model/provider text can suggest but cannot approve, execute, mutate, or verify.
-- User approval is required before filesystem mutation or shell execution.
+- Model/provider text can suggest tool calls but cannot approve, execute,
+  mutate, or verify.
+- User approval is required when the selected policy mode requires review.
+- Policy-approved safe creates may auto-apply only after validation and
+  verification.
 - Filesystem confirms file truth for create, edit, overwrite, delete, move, and directory actions.
 - Shell executor confirms command truth for approved shell actions.
 - UI and CLI render core events and results without owning mutation or execution.
@@ -38,19 +41,20 @@ Provider boundary:
 
 - Provider prose cannot create, approve, reject, execute, apply, or verify
   pending file or shell actions.
-- Provider output remains suggestion text unless the controller records a
+- Provider output remains suggestion text unless the runtime records a
   separate action/result event.
 
 UI boundary:
 
-- TUI and CLI route approval/rejection through the narrow action gate.
+- TUI and CLI route explicit approval/rejection through the narrow action gate.
 - Rendering pending actions does not mutate files or run commands.
 - Shell results render as verified core results.
 
 ## Known Gaps
 
-- Shell commands run via opaque `sh -c` after approval.
-- Shell environment policy is inherited controller environment only.
+- Shell commands run via opaque `sh -c` after approval or explicit policy
+  allowance.
+- Shell environment policy is inherited process environment only.
 - Shell output stores capped text plus truncation flags, not full uncapped
   output.
 - Create-directory remains single-level, not recursive.
@@ -61,14 +65,13 @@ handled only by explicit follow-up issues.
 
 ## Recommended Next Slice
 
-Use `ELG-92` to define the Obsidian/read-first memory roadmap, then create a
-small implementation issue for read-only local memory ingestion once the scope
-is clear.
+Use the current Linear map and `docs/elgar-product-architecture-plan.md` for
+the next slice. Permission policy and AgentRuntime hardening should come before
+new memory features.
 
 Reasoning:
 
-- Permissioned mutation/execution boundaries are now covered.
-- Extensions still wait, so the next slice should be read-first and local.
-- Obsidian memory can build on core context accounting without
-  introducing write access, live provider requirements, or external network
-  dependencies.
+- Permissioned mutation/execution boundaries are covered for explicit action
+  paths.
+- Normal chat now needs policy-mode coverage in the AgentRuntime path.
+- Extensions still wait.

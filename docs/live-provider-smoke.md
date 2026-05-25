@@ -76,15 +76,11 @@ Smoke commands still support environment variables:
 - `ELGAR_LM_STUDIO_MODEL`: required loaded LM Studio model name
 - `ELGAR_LM_STUDIO_BASE_URL`: optional OpenAI-compatible base URL
 
-## Next Slice Decision
+## Local Check Boundary
 
-After the explicit TUI live smoke path, the next product slice should be the
-existing Harness issue `ELG-129 Create fast local check command`.
-
-This should come before deeper TUI polish, more provider commands, or new
-permissioned action types because the project now needs one repeatable
-no-network guardrail for controller truth, action lifecycle, renderer behavior,
-and CLI/TUI boundaries.
+Live provider smoke is optional. The default guardrail remains
+`./bin/check-local`, which is no-network and verifies runtime/action lifecycle,
+renderer behavior, and CLI/TUI boundaries without LM Studio.
 
 ## Provider Smoke
 
@@ -101,7 +97,11 @@ ELGAR_LM_STUDIO_BASE_URL="http://127.0.0.1:1234/v1" \
 cargo run -p elgar-cli -- provider-smoke "Say hello in one sentence."
 ```
 
-## Controller Smoke
+## Legacy Controller Smoke
+
+These commands exercise explicit legacy controller/provider surfaces. They are
+useful for compatibility comparison, but normal CLI/TUI chat should use the
+AgentRuntime path.
 
 ```sh
 ELGAR_LM_STUDIO_MODEL="actual-loaded-model-name" \
@@ -125,11 +125,10 @@ provider finished: lm-studio request lm-studio-request-1: Hello!
 assistant Provider: Hello!
 ```
 
-## TUI Controller Smoke
+## Legacy TUI Controller Smoke
 
 This renders the same explicit live controller path through `TuiShell`, so the
-output uses TUI conversation/status copy. The normal TUI smoke path remains
-stub/no-network.
+output uses TUI conversation/status copy. It is not the normal TUI chat path.
 
 ```sh
 ELGAR_LM_STUDIO_MODEL="actual-loaded-model-name" \
@@ -167,7 +166,7 @@ Use this short checklist:
 The latest local trace for a short `what can you do?` answer showed LM Studio
 reporting prompt cache reuse as `0/214` tokens and taking about five seconds.
 Treat that as provider-side behavior: `0/N` means LM Studio did not reuse a
-prompt prefix for that request, even though Elgar keeps the fixed controller
+prompt prefix for that request, even though Elgar keeps the fixed runtime
 system prompt compact.
 
 Elgar records no-network-safe request metadata and, on live calls, provider

@@ -1,6 +1,6 @@
 # Read-Only Local Memory Context
 
-ELG-225 adds a small local memory source to controller-owned context selection.
+ELG-225 adds a small local memory source to runtime context selection.
 
 ## Convention
 
@@ -22,10 +22,10 @@ Memory notes are prompt context only. They cannot:
 - execute shell commands,
 - mutate files,
 - verify filesystem truth,
-- override controller policy.
+- override runtime policy.
 
-The controller still owns truth. The model may use memory notes to suggest a
-response or a proposed action, but approval and verification remain unchanged.
+The runtime still owns validation and policy. The model may use memory notes to
+inform a response or tool call, but approval and verification remain unchanged.
 
 ## Budgeting
 

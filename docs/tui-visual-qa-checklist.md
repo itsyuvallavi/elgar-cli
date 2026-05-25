@@ -19,6 +19,8 @@ Review these states:
 - After one prompt.
 - While thinking or loading.
 - After response.
+- After a tool-backed create action.
+- After a failed tool action.
 - Narrow-ish terminal.
 - Wide terminal.
 - Long response with scrolling.
@@ -34,5 +36,7 @@ Before commit:
 - Reject noisy footer hints.
 - Reject a large empty fixed conversation panel between the transcript and footer.
 - Reject label-heavy chat transcripts.
+- Reject duplicate file-by-file tool spam when a concise summary is enough.
+- Reject raw tool-call syntax or internal reasoning in the normal transcript.
 - Reject fake Skills, MCP, Bash, API, settings, or unimplemented capability sections.
 - Confirm normal terminal text selection remains usable.

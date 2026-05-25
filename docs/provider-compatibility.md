@@ -32,7 +32,7 @@ All fields inside `compatibility` are optional:
 - `reasoning.response_fields`: response message fields known to contain reasoning summaries.
 - `reasoning.stream_fields`: streaming delta fields known to contain reasoning summaries.
 - `supports_streaming_usage`: whether streaming responses are expected to include usage data.
-- `supports_developer_role`: whether Elgar may send the controller instruction as a `developer` message instead of `system`.
+- `supports_developer_role`: whether Elgar may send its runtime instruction as a `developer` message instead of `system`.
 
 Compatibility metadata is intentionally inert unless code consumes a specific
 field. Existing top-level `context_window_tokens` remains supported for backward

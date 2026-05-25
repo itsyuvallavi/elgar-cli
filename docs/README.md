@@ -2,20 +2,43 @@
 
 ## Purpose
 
-Active project documentation for Elgar v0.2 design, checks, provider compatibility, TUI direction, and planning exports.
+Active project documentation for Elgar v0.2 architecture, local checks,
+provider behavior, permission policy, and TUI direction.
 
-## Important Files and Folders
+## Start Here
 
-- `local-checks.md` documents local verification commands.
-- `permissioned-actions-review.md` and `permissioned-shell-commands.md` document safety boundaries.
-- `provider-compatibility.md` and `live-provider-smoke.md` document provider behavior.
-- `planning/` contains exported planning docs when available.
+- `elgar-product-architecture-plan.md` is the current product/runtime contract.
+- `codex-style-agent-runtime-plan.md` is the current migration reference.
+- `local-checks.md` documents no-network verification commands.
+- `live-provider-smoke.md` documents optional LM Studio smoke commands.
+
+## Operational References
+
+- `permissioned-actions-review.md` documents action-gate and executor safety.
+- `permissioned-shell-commands.md` documents shell execution boundaries.
+- `provider-compatibility.md` documents optional provider metadata.
+- `performance-baselines.md` documents local timing baselines.
+- `read-only-memory-context.md` documents the current read-only memory source.
+- `tui-visual-qa-checklist.md` documents manual TUI visual checks.
+
+## TUI Direction
+
+- `pi-like-tui-direction.md` defines interaction tone and boundaries.
+- `pi-like-terminal-tui-visual-spec.md` defines terminal rendering direction.
+
+## Planning Exports
+
+`planning/` is reserved for exported planning docs when available. Linear is the
+execution map for current implementation work.
 
 ## Ownership
 
-Keep docs aligned with implemented behavior. Planning docs are references, not a substitute for tests.
+Keep docs aligned with implemented behavior. Delete or merge historical plans
+when they start competing with the active architecture contract.
 
 ## Checks
 
 - `./bin/check-local`
-- Review changed docs for stale command names and paths.
+- `git diff --check`
+- Review changed docs for stale command names, paths, and controller-first
+  normal-chat language.
