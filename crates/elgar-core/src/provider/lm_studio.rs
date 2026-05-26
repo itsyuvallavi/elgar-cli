@@ -367,8 +367,8 @@ mod tests {
     use super::{
         chat_lm_studio, chat_lm_studio_streaming, elgar_controller_messages,
         elgar_controller_messages_for_config, format_chat_request, format_chat_request_body,
-        format_chat_request_with_tools, parse_chat_response_json,
-        parse_chat_response_json_with_metrics, parse_chat_stream_chunks,
+        format_chat_request_body_with_tools, format_chat_request_with_tools,
+        parse_chat_response_json, parse_chat_response_json_with_metrics, parse_chat_stream_chunks,
         parse_chat_stream_response, parse_provider_error_json, ChatMessage, LmStudioProvider,
         ProviderConfig,
     };
@@ -457,6 +457,27 @@ mod tests {
         assert!(value["tools"][7]["function"]["parameters"]["properties"]
             .get("cwd")
             .is_some());
+    }
+
+    #[test]
+    fn serialized_plain_request_omits_tools_until_tool_request_path() {
+        let config = ProviderConfig::lm_studio("loaded-model");
+        let messages = vec![ChatMessage::user("create hello.py")];
+
+        let (_plain_request, plain_body) =
+            format_chat_request_body(&config, messages.clone()).unwrap();
+        let plain_value = serde_json::from_str::<serde_json::Value>(&plain_body).unwrap();
+
+        assert!(plain_value.get("tools").is_none());
+        assert!(plain_value.get("tool_choice").is_none());
+
+        let (_tool_request, tool_body) =
+            format_chat_request_body_with_tools(&config, messages, elgar_model_tool_definitions())
+                .unwrap();
+        let tool_value = serde_json::from_str::<serde_json::Value>(&tool_body).unwrap();
+
+        assert_eq!(tool_value["tool_choice"], "auto");
+        assert_eq!(tool_value["tools"].as_array().unwrap().len(), 8);
     }
 
     #[test]

@@ -217,6 +217,7 @@ pub(crate) fn expected_file_token_to_relative_path(
         || relative
             .components()
             .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || path_contains_version_placeholder(&relative)
     {
         return None;
     }
@@ -254,6 +255,7 @@ fn expected_tree_file_to_relative_path(
         || relative
             .components()
             .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || path_contains_version_placeholder(&relative)
     {
         return None;
     }
@@ -300,6 +302,13 @@ pub(crate) fn looks_like_project_file_path(path: &Path) -> bool {
         return true;
     }
     file_name.contains('.')
+}
+
+fn path_contains_version_placeholder(path: &Path) -> bool {
+    path.components().any(|component| {
+        let value = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        value.contains("x.y.z")
+    })
 }
 
 pub(crate) fn missing_expected_verified_plan_files(
@@ -571,5 +580,22 @@ Key files: src/index.ts, src/main.py, index.ts, main.py, package.json.
         assert!(is_model_first_verified_plan_implementation_request(
             "okay execute it"
         ));
+    }
+
+    #[test]
+    fn expected_files_ignore_version_placeholder_paths() {
+        let project_root = Path::new("/tmp/Demo");
+        let plan_path = project_root.join("plan.md");
+        let plan = r#"
+# Project Plan
+
+- Create package.json.
+- Document release tags like release/vX.Y.Z.
+"#;
+
+        let expected = expected_files_from_verified_plan(plan, project_root, &plan_path);
+
+        assert!(expected.contains(&PathBuf::from("package.json")));
+        assert!(!expected.contains(&PathBuf::from("release/vX.Y.Z")));
     }
 }

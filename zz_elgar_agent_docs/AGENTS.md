@@ -32,6 +32,31 @@ Normal user text should enter the AgentRuntime/model-tool path. Legacy
 controller paths may remain only when explicitly named as smoke, review, or
 compatibility surfaces.
 
+## Simple Chat Contract
+
+Plain/simple user messages must use a plain provider request first.
+
+For inputs like `hello`, `say hi`, `what are you?`, or `write a short
+sentence`, the first provider request must:
+
+- not attach tools
+- not send `tool_choice`
+- not inject latest-folder or project-plan memory
+- not run folder anchoring
+- not trigger workflow phrase handling
+- use the same documented provider/model/stream config source as normal
+  runtime
+
+Tools, project memory, folder anchoring, and workflow phrase handling are
+allowed only after explicit user intent or explicit runtime state requires
+them. Do not add hardcoded phrase lists, model names, provider hacks, or
+prompt-only routing to satisfy this contract.
+
+Tests must prove this behavior at the provider payload boundary. Any change to
+`AgentRuntime`, provider formatting, project memory, intent detection, or
+visible-response filtering must include a regression test showing plain chat
+remains plain.
+
 ## Agent Rules
 
 1. Work only in the active repo unless the user explicitly says otherwise.
@@ -45,7 +70,8 @@ compatibility surfaces.
 8. Do not commit `.DS_Store`.
 9. Do not revert unrelated dirty work.
 10. Keep files small and responsibilities narrow.
-11. Keep normal chat model-first; slash commands remain local and explicit.
+11. Keep normal chat model-first; plain chat must be plain first, and slash
+    commands remain local and explicit.
 12. Keep permission, execution, and verification in runtime/core layers, not in
     UI text or provider prose.
 13. Prefer explicit types, structured events, and tests over prompt-only

@@ -36,6 +36,32 @@ intent before the model. The controller can remain for legacy explicit smoke
 paths and compatibility tests, but it must not be the conversational brain for
 normal CLI/TUI chat.
 
+## Plain Chat Provider Boundary
+
+Plain/simple user messages must get a plain provider request before any
+tool-capable workflow is attempted.
+
+For inputs like `hello`, `say hi`, `what are you?`, or `write a short
+sentence`, the first provider request must:
+
+- omit tools
+- omit `tool_choice`
+- omit latest-folder and project-plan memory
+- avoid folder anchoring
+- avoid workflow phrase handling
+- use the same documented provider, model, and stream configuration source as
+  normal runtime
+
+Tool-capable turns are still part of the target product, but they must be gated
+by explicit user intent or explicit runtime state. Examples include direct file
+creation/editing requests, project inspection/modification requests, or an
+active confirmed plan state that requires file operations. Do not add new
+hardcoded phrase lists, model names, provider-specific hacks, or prompt-only
+routing to satisfy this boundary.
+
+The provider payload is the testable contract. Runtime and provider tests must
+assert the serialized request shape for both plain chat and tool-needed chat.
+
 ## Project Structure From Now On
 
 Keep the project organized by ownership boundaries, not by historical
@@ -60,6 +86,7 @@ Responsibilities:
 - Record policy decisions and action lifecycle events.
 - Never render UI.
 - Never silently bypass policy.
+- Keep plain chat plain on the first provider request.
 
 Near-term cleanup:
 
@@ -177,6 +204,8 @@ Files/modules:
 Responsibilities:
 
 - Prove the model-tool loop works without network where possible.
+- Prove the plain-chat provider payload has no tools, no `tool_choice`, and no
+  project/folder memory.
 - Prove real installed TUI smoke for high-risk flows.
 - Cover path targeting, permission modes, plan-followup memory, and ambiguity.
 - Keep legacy controller tests only where legacy compatibility still exists.
@@ -245,9 +274,14 @@ Implementation:
 
 Tests:
 
-- Normal greeting uses model/provider path.
+- Normal greeting uses a plain provider payload with no tools, no
+  `tool_choice`, and no latest-folder/project-plan context.
 - Capability question does not mutate files.
 - Natural creation request uses model tool path and policy.
+- Previous project memory followed by `hello` does not inject project/folder
+  context or trigger workflow handling.
+- Previous project/plan flow followed by `ok` does not create files unless an
+  explicit pending confirmation state exists.
 - Legacy controller smoke still works only through explicit commands.
 
 Done when:

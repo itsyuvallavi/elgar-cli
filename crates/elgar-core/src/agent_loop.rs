@@ -10,13 +10,16 @@ use crate::{
     action::{Action, ActionRequest, CreateFileAction, OverwriteFileAction},
     context::ContextBundle,
     controller::TurnResult,
-    controller_project_memory::record_verified_project_memory,
+    controller_project_memory::{is_plan_path_or_contents, record_verified_project_memory},
     controller_reporting::verified_action_success_message,
     event::{
         ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
         ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage, VerifiedActionResult,
     },
-    followup_action_paths::{explicit_request_base, followup_base_path_for_request},
+    followup_action_paths::{
+        explicit_request_base, followup_base_path_for_request,
+        retarget_safe_create_to_followup_base,
+    },
     fs::Filesystem,
     legacy_controller_model_first_plan_completion::{
         expected_files_from_verified_plan, is_model_first_verified_plan_implementation_request,
@@ -53,6 +56,10 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "If a verified plan already exists and the user gives a short choice follow-up, answer from that plan instead of recreating the same file. ",
     "When creating a framework project, infer the necessary starter files from the requested stack and create the complete runnable scaffold before the final answer. ",
     "After tools run, answer naturally and briefly with what happened."
+);
+const AGENT_PLAIN_CHAT_SYSTEM_PROMPT: &str = concat!(
+    "You are Elgar. Answer normal conversational messages directly in concise terminal-friendly prose. ",
+    "Do not claim filesystem or shell changes unless they were already reported by verified tool results."
 );
 const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
     "The previous tool-enabled provider request returned no usable response. ",
@@ -97,6 +104,14 @@ where
             message,
             AssistantMessageSource::Controller,
         )));
+        return TurnResult {
+            route: Route::AskModel,
+            events: session.events()[start_index..].to_vec(),
+        };
+    }
+
+    if should_use_plain_chat_first(session, input) {
+        run_plain_agent_chat(provider, session, input);
         return TurnResult {
             route: Route::AskModel,
             events: session.events()[start_index..].to_vec(),
@@ -264,7 +279,11 @@ where
         let resolved_outputs = sanitize_plan_execution_outputs(
             session,
             input,
-            resolve_agent_tool_outputs(outputs, &path_resolution),
+            anchor_unrooted_plan_creates_to_verified_folder(
+                session,
+                input,
+                resolve_agent_tool_outputs(outputs, &path_resolution),
+            ),
         );
         let resolved_outputs = match resolved_outputs {
             PlanExecutionSanitization::Outputs(outputs) => {
@@ -334,6 +353,168 @@ where
     }
 }
 
+fn run_plain_agent_chat<P>(provider: &P, session: &mut Session, input: &str)
+where
+    P: ControllerProvider,
+{
+    let request = provider.request_metadata();
+    session.push_event(Event::ProviderStarted(
+        ProviderStarted::new(request.provider.clone(), request.request_id.clone())
+            .with_request_details(request.model.clone(), "plain_chat", 0),
+    ));
+    let messages = vec![
+        ChatMessage::system(AGENT_PLAIN_CHAT_SYSTEM_PROMPT),
+        ChatMessage::user(input),
+    ];
+
+    match provider.chat_messages_with_metadata(messages, &request) {
+        Ok(output) => {
+            let assistant_text = output.text.clone();
+            session.push_event(Event::ProviderFinished(ProviderFinished::new(
+                request.provider,
+                request.request_id,
+                output,
+            )));
+            push_provider_message_if_visible(session, assistant_text);
+        }
+        Err(error) => {
+            session.push_event(Event::Error(ErrorEvent::new(format!(
+                "{} provider request {} failed: {error}",
+                request.provider, request.request_id
+            ))));
+        }
+    }
+}
+
+fn should_use_plain_chat_first(session: &Session, input: &str) -> bool {
+    !tool_enabled_turn_required(session, input)
+}
+
+fn tool_enabled_turn_required(session: &Session, input: &str) -> bool {
+    let normalized = input.to_ascii_lowercase();
+
+    explicit_user_tool_intent(input, &normalized)
+        || short_followup_continues_tool_workflow(session, &normalized)
+}
+
+fn explicit_user_tool_intent(input: &str, normalized: &str) -> bool {
+    let trimmed = normalized.trim();
+    starts_with_create_request(trimmed)
+        || mentions_explicit_file_create_request(normalized)
+        || mentions_project_action_request(normalized)
+        || mentions_project_repair_followup(normalized)
+        || mentions_file_edit_request(normalized)
+        || mentions_shell_request(normalized)
+        || mentions_existing_plan_question(normalized)
+        || mentions_plan_execution_request(normalized)
+        || is_model_first_verified_plan_implementation_request(input)
+}
+
+fn starts_with_create_request(normalized: &str) -> bool {
+    normalized.starts_with("create ")
+        || normalized.starts_with("make a folder")
+        || normalized.starts_with("make folder")
+        || normalized.starts_with("make a directory")
+        || normalized.starts_with("make directory")
+        || normalized.starts_with("make a project")
+        || normalized.starts_with("make project")
+        || normalized.starts_with("make an app")
+        || normalized.starts_with("make app")
+}
+
+fn mentions_project_action_request(normalized: &str) -> bool {
+    let project_target = normalized.contains("project")
+        || normalized.contains(" app")
+        || normalized.contains(" repo")
+        || normalized.contains("repository")
+        || normalized.contains("scaffold");
+    project_target
+        && (normalized.contains("create")
+            || normalized.contains("build")
+            || normalized.contains("plan")
+            || normalized.contains("set up")
+            || normalized.contains("setup")
+            || normalized.contains("scaffold")
+            || normalized.contains("implement"))
+}
+
+fn mentions_file_edit_request(normalized: &str) -> bool {
+    let file_target = normalized.contains(" file")
+        || normalized.contains(" files")
+        || normalized.contains(" folder")
+        || normalized.contains(" directory")
+        || normalized.contains(" path")
+        || normalized.contains(".rs")
+        || normalized.contains(".ts")
+        || normalized.contains(".tsx")
+        || normalized.contains(".js")
+        || normalized.contains(".jsx")
+        || normalized.contains(".json")
+        || normalized.contains(".md")
+        || normalized.contains(".txt")
+        || normalized.contains(".py")
+        || normalized.contains(".toml")
+        || normalized.contains(".yaml")
+        || normalized.contains(".yml");
+    file_target
+        && (normalized.contains("edit")
+            || normalized.contains("update")
+            || normalized.contains("modify")
+            || normalized.contains("patch")
+            || normalized.contains("overwrite")
+            || normalized.contains("delete")
+            || normalized.contains("remove")
+            || normalized.contains("move")
+            || normalized.contains("rename")
+            || normalized.contains("write"))
+}
+
+fn mentions_shell_request(normalized: &str) -> bool {
+    normalized.contains("run command")
+        || normalized.contains("run shell")
+        || normalized.contains("shell command")
+        || normalized.starts_with("run cargo ")
+        || normalized.starts_with("cargo ")
+        || normalized.starts_with("npm ")
+        || normalized.starts_with("pnpm ")
+        || normalized.starts_with("bun ")
+}
+
+fn mentions_existing_plan_question(normalized: &str) -> bool {
+    normalized.contains("plan")
+        && (normalized.contains("what is")
+            || normalized.contains("what's")
+            || normalized.contains("whats")
+            || normalized.contains("what was")
+            || normalized.contains("what did"))
+}
+
+fn short_followup_continues_tool_workflow(session: &Session, normalized: &str) -> bool {
+    if !mentions_short_followup(normalized) {
+        return false;
+    }
+
+    let mut saw_provider_question = false;
+    for event in session.events().iter().rev() {
+        match event {
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.trim_end().ends_with('?') =>
+            {
+                saw_provider_question = true;
+            }
+            Event::AssistantMessage(_) if !saw_provider_question => return false,
+            Event::UserMessage(message) if saw_provider_question => {
+                let previous = message.content.to_ascii_lowercase();
+                return explicit_user_tool_intent(&message.content, &previous);
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
 fn agent_local_runtime_context(session: &mut Session) -> Option<String> {
     let project_root = session.project_root.clone();
     let cwd = session.cwd.clone();
@@ -364,6 +545,55 @@ fn resolve_agent_tool_outputs(
             }
         })
         .collect()
+}
+
+fn anchor_unrooted_plan_creates_to_verified_folder(
+    session: &Session,
+    input: &str,
+    outputs: Vec<ResolvedAgentToolOutput>,
+) -> Vec<ResolvedAgentToolOutput> {
+    let Some(folder) = session.project_memory().latest_verified_folder() else {
+        return outputs;
+    };
+    if !should_anchor_unrooted_plan_creates(input) {
+        return outputs;
+    }
+    let base = match folder.path.strip_prefix(&session.project_root) {
+        Ok(relative) if !relative.as_os_str().is_empty() => relative.to_path_buf(),
+        _ => folder.path.clone(),
+    };
+
+    outputs
+        .into_iter()
+        .map(|output| match output {
+            ResolvedAgentToolOutput::Action(action)
+                if is_unrooted_plan_create_action(&action.request) =>
+            {
+                ResolvedAgentToolOutput::Action(retarget_safe_create_to_followup_base(
+                    Some(base.as_path()),
+                    action,
+                ))
+            }
+            output => output,
+        })
+        .collect()
+}
+
+fn is_unrooted_plan_create_action(request: &ActionRequest) -> bool {
+    let ActionRequest::CreateFile(create_file) = request else {
+        return false;
+    };
+    !create_file.target_path.is_absolute()
+        && is_plan_path_or_contents(&create_file.target_path, &create_file.contents)
+}
+
+fn should_anchor_unrooted_plan_creates(input: &str) -> bool {
+    let normalized = input.to_ascii_lowercase();
+    if mentions_followup_folder(&normalized) || mentions_short_followup(&normalized) {
+        return true;
+    }
+    mentions_project_plan_request(&normalized)
+        && !mentions_explicit_file_create_request(&normalized)
 }
 
 enum PlanExecutionSanitization {
@@ -1023,19 +1253,19 @@ fn agent_verified_memory_context(session: &mut Session, input: &str) -> AgentVer
 
     let mut selected = Vec::new();
     let mut lines = Vec::new();
-    if needs_folder || needs_plan {
-        if let Some(folder) = session.project_memory().latest_verified_folder() {
-            lines.push(format!(
-                "- latest verified folder: {}",
-                display_project_path(session, &folder.path)
-            ));
-            selected.push(ProviderPromptMemorySelectedFact::new(
-                "verified_folder",
-                folder.path.clone(),
-                None,
-                folder.source_action_id.clone(),
-            ));
-        }
+    if let Some(folder) = session.project_memory().latest_verified_folder() {
+        lines.push(format!(
+            "- latest verified folder: {}",
+            display_project_path(session, &folder.path)
+        ));
+        selected.push(ProviderPromptMemorySelectedFact::new(
+            "verified_folder",
+            folder.path.clone(),
+            None,
+            folder.source_action_id.clone(),
+        ));
+    }
+    if needs_plan {
         if let Some(plan) = session.project_memory().latest_verified_plan() {
             lines.push(format!(
                 "- latest verified plan: {}",
@@ -1066,7 +1296,7 @@ fn agent_verified_memory_context(session: &mut Session, input: &str) -> AgentVer
     } else {
         let mut context = vec![
             "Verified filesystem context for this session:".to_string(),
-            "Use these paths for references such as same folder, that folder, or the folder you created.".to_string(),
+            "Use these paths to resolve continuing workflow references. If the user continues after creating a folder and does not give a new location, keep related plans and project files in the latest verified folder.".to_string(),
         ];
         context.extend(lines);
         Some(context.join("\n"))
@@ -1115,6 +1345,20 @@ fn mentions_followup_plan(normalized: &str) -> bool {
         || normalized.contains("all the files from the plan")
         || normalized.contains("create project according")
         || normalized.contains("create the project")
+}
+
+fn mentions_project_plan_request(normalized: &str) -> bool {
+    normalized.contains("plan")
+        && (normalized.contains("project") || normalized.contains("app"))
+        && !normalized.contains(".md")
+        && !normalized.contains(".txt")
+}
+
+fn mentions_explicit_file_create_request(normalized: &str) -> bool {
+    normalized.contains("create file")
+        || normalized.contains("create a file")
+        || normalized.contains("write file")
+        || normalized.contains("write a file")
 }
 
 fn mentions_plan_execution_request(normalized: &str) -> bool {
@@ -1654,6 +1898,91 @@ mod tests {
             event,
             Event::AssistantMessage(message)
                 if message.content.contains("FastAPI backend plus a TypeScript CLI client")
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_anchors_unrooted_followup_plan_to_latest_verified_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-followup-plan-anchor",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating folder.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "anchor-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "helloworld123" }),
+                    assistant_summary: Some("create folder".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Folder created."),
+            crate::event::ProviderOutput::new("Creating plan.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "anchor-call-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "react_native_project_plan.md",
+                        "contents": "# React Native Project Plan\n\nhelloworld123/\n├── package.json\n└── App.tsx\n\nRelease tags may look like release/vX.Y.Z, but that is not a project file.\n"
+                    }),
+                    assistant_summary: Some("create React Native plan".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Plan created."),
+            crate::event::ProviderOutput::new("Creating project files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "anchor-call-3".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "package.json",
+                        "contents": "{\"scripts\":{\"start\":\"expo start\"}}\n"
+                    }),
+                    assistant_summary: Some("create package".to_string()),
+                },
+                RawModelToolCall {
+                    id: "anchor-call-4".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "App.tsx",
+                        "contents": "export default function App() { return null; }\n"
+                    }),
+                    assistant_summary: Some("create app".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a folder and call it helloworld123",
+        );
+        run_permissive_agent_turn(&provider, &mut session, "now plan a react native project");
+
+        let plan_path = root.join("helloworld123/react_native_project_plan.md");
+        assert!(plan_path.is_file());
+        assert!(!root.join("react_native_project_plan.md").exists());
+        let plan = session
+            .project_memory()
+            .latest_verified_plan()
+            .expect("anchored plan should be remembered");
+        assert_eq!(plan.path, plan_path);
+        assert_eq!(plan.project_root, root.join("helloworld123"));
+
+        run_permissive_agent_turn(&provider, &mut session, "okay implement the plan");
+
+        assert!(root.join("helloworld123/package.json").is_file());
+        assert!(root.join("helloworld123/App.tsx").is_file());
+        assert!(!root.join("package.json").exists());
+        assert!(!root.join("App.tsx").exists());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::Error(error) if error.message.contains("release/vX.Y.Z")
         )));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2975,28 +3304,61 @@ PlanNoTool/
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum CapturedProviderRequestMode {
+        Plain,
+        Tool,
+    }
+
+    #[derive(Debug, Clone)]
+    struct CapturedProviderRequest {
+        mode: CapturedProviderRequestMode,
+        messages: Vec<ChatMessage>,
+        tool_count: usize,
+    }
+
     #[derive(Debug, Clone)]
     struct CapturingProvider {
-        tool_messages: std::sync::Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
-        tool_counts: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<CapturedProviderRequest>>>,
+        plain_output: crate::event::ProviderOutput,
+        tool_output: crate::event::ProviderOutput,
     }
 
     impl CapturingProvider {
         fn new() -> Self {
             Self {
-                tool_messages: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                tool_counts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                plain_output: crate::event::ProviderOutput::new("Plain answer."),
+                tool_output: crate::event::ProviderOutput::new("I'll create it."),
             }
         }
+
+        fn with_tool_output(mut self, output: crate::event::ProviderOutput) -> Self {
+            self.tool_output = output;
+            self
+        }
+
+        fn requests(&self) -> Vec<CapturedProviderRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    fn joined_request_messages(request: &CapturedProviderRequest) -> String {
+        request
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     impl ControllerProvider for CapturingProvider {
         fn request_metadata(&self) -> ProviderRequestMetadata {
-            ProviderRequestMetadata::new("capture", None, "request")
+            ProviderRequestMetadata::new("capture", Some("test-model".to_string()), "request")
         }
 
         fn chat(&self, _prompt: &str) -> Result<crate::event::ProviderOutput, ProviderError> {
-            Err(ProviderError::configuration("unused"))
+            Ok(self.plain_output.clone())
         }
 
         fn chat_messages_with_tools_with_metadata(
@@ -3005,44 +3367,12 @@ PlanNoTool/
             _metadata: &ProviderRequestMetadata,
             tools: Vec<ChatToolDefinition>,
         ) -> Result<crate::event::ProviderOutput, ProviderError> {
-            self.tool_messages.lock().unwrap().push(messages);
-            self.tool_counts.lock().unwrap().push(tools.len());
-            Ok(crate::event::ProviderOutput::new("I'll create it."))
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    struct EmptyToolThenPlainProvider {
-        tool_messages: std::sync::Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
-        plain_messages: std::sync::Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
-    }
-
-    impl EmptyToolThenPlainProvider {
-        fn new() -> Self {
-            Self {
-                tool_messages: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                plain_messages: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            }
-        }
-    }
-
-    impl ControllerProvider for EmptyToolThenPlainProvider {
-        fn request_metadata(&self) -> ProviderRequestMetadata {
-            ProviderRequestMetadata::new("capture", Some("test-model".to_string()), "request")
-        }
-
-        fn chat(&self, _prompt: &str) -> Result<crate::event::ProviderOutput, ProviderError> {
-            Err(ProviderError::configuration("unused"))
-        }
-
-        fn chat_messages_with_tools_with_metadata(
-            &self,
-            messages: Vec<ChatMessage>,
-            _metadata: &ProviderRequestMetadata,
-            _tools: Vec<ChatToolDefinition>,
-        ) -> Result<crate::event::ProviderOutput, ProviderError> {
-            self.tool_messages.lock().unwrap().push(messages);
-            Err(ProviderError::empty_response("empty tool response"))
+            self.requests.lock().unwrap().push(CapturedProviderRequest {
+                mode: CapturedProviderRequestMode::Tool,
+                messages,
+                tool_count: tools.len(),
+            });
+            Ok(self.tool_output.clone())
         }
 
         fn chat_messages_with_metadata(
@@ -3050,81 +3380,162 @@ PlanNoTool/
             messages: Vec<ChatMessage>,
             _metadata: &ProviderRequestMetadata,
         ) -> Result<crate::event::ProviderOutput, ProviderError> {
-            self.plain_messages.lock().unwrap().push(messages);
-            Ok(crate::event::ProviderOutput::new("Plain fallback answer."))
+            self.requests.lock().unwrap().push(CapturedProviderRequest {
+                mode: CapturedProviderRequestMode::Plain,
+                messages,
+                tool_count: 0,
+            });
+            Ok(self.plain_output.clone())
         }
     }
 
     #[test]
-    fn permissive_agent_normal_text_still_uses_model_tool_runtime_entrypoint() {
+    fn permissive_agent_plain_text_uses_plain_provider_request_first() {
         let root = std::env::temp_dir().join(format!(
-            "elgar-agent-loop-{}-normal-text-tool-runtime",
+            "elgar-agent-loop-{}-plain-text-runtime",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let provider = CapturingProvider::new();
-        let mut session = Session::new("session", &root, &root);
 
-        run_permissive_agent_turn(&provider, &mut session, "hello!");
+        for input in ["hello", "say hi", "what are you?", "write a short sentence"] {
+            let provider = CapturingProvider::new();
+            let mut session = Session::new("session", &root, &root);
 
-        assert_eq!(provider.tool_messages.lock().unwrap().len(), 1);
-        assert!(provider.tool_counts.lock().unwrap()[0] > 0);
-        assert!(session.events().iter().any(|event| matches!(
-            event,
-            Event::ProviderStarted(started)
-                if started.request_mode.as_deref() == Some("tool_enabled")
-                    && started.tool_count.is_some_and(|count| count > 0)
-        )));
-        assert!(session.events().iter().any(|event| matches!(
-            event,
-            Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Provider
-                    && message.content == "I'll create it."
-        )));
+            run_permissive_agent_turn(&provider, &mut session, input);
+
+            let requests = provider.requests();
+            assert_eq!(requests.len(), 1, "unexpected request count for {input}");
+            assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+            assert_eq!(requests[0].tool_count, 0);
+            assert_eq!(requests[0].messages.last(), Some(&ChatMessage::user(input)));
+            let joined = joined_request_messages(&requests[0]);
+            assert!(!joined.contains("latest verified folder"));
+            assert!(!joined.contains("latest verified plan"));
+            assert!(!joined.contains("Verified filesystem context"));
+            assert!(session.events().iter().any(|event| matches!(
+                event,
+                Event::ProviderStarted(started)
+                    if started.request_mode.as_deref() == Some("plain_chat")
+                        && started.model.as_deref() == Some("test-model")
+                        && started.tool_count == Some(0)
+            )));
+            assert!(!session.events().iter().any(|event| matches!(
+                event,
+                Event::ProviderStarted(started)
+                    if started.request_mode.as_deref() == Some("tool_enabled")
+            )));
+        }
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn permissive_agent_empty_tool_response_uses_provider_fallback_not_keyword_routing() {
+    fn permissive_agent_hello_after_verified_folder_does_not_inject_folder_memory() {
         let root = std::env::temp_dir().join(format!(
-            "elgar-agent-loop-{}-empty-tool-plain-fallback",
+            "elgar-agent-loop-{}-hello-no-folder-memory",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let provider = EmptyToolThenPlainProvider::new();
+        std::fs::create_dir_all(root.join("remembered")).unwrap();
+        let provider = CapturingProvider::new();
         let mut session = Session::new("session", &root, &root);
+        let folder_action = Action::proposed(
+            "action-folder",
+            ActionRequest::CreateDirectory(crate::action::CreateDirectoryAction {
+                target_path: PathBuf::from("remembered"),
+            }),
+            "create remembered folder",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &folder_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::DirectoryCreated {
+                path: "remembered".to_string(),
+            }),
+        );
 
-        run_permissive_agent_turn(&provider, &mut session, "hello!");
+        run_permissive_agent_turn(&provider, &mut session, "hello");
 
-        assert_eq!(provider.tool_messages.lock().unwrap().len(), 1);
-        assert_eq!(provider.plain_messages.lock().unwrap().len(), 1);
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        let joined = joined_request_messages(&requests[0]);
+        assert!(!joined.contains("latest verified folder"));
+        assert!(!joined.contains("remembered"));
+        assert!(session.latest_provider_prompt_memory_selection().is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_ok_after_verified_plan_stays_plain_without_file_creation() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-ok-no-plan-execution",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        let plan_path = root.join("app/project-plan.md");
+        std::fs::write(
+            &plan_path,
+            "# Project Plan\n\n- Create package.json.\n- Create src/main.ts.\n",
+        )
+        .unwrap();
+        let provider = CapturingProvider::new().with_tool_output(
+            crate::event::ProviderOutput::new("Creating project files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "bad-ok-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "package.json",
+                        "contents": "{}\n"
+                    }),
+                    assistant_summary: Some("create package".to_string()),
+                },
+            ]),
+        );
+        let mut session = Session::new("session", &root, &root);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: PathBuf::from("app/project-plan.md"),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "app/project-plan.md".to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(&provider, &mut session, "ok");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert!(!root.join("app/package.json").exists());
+        assert!(!root.join("package.json").exists());
+        assert_eq!(session.actions().len(), 1);
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::ProviderStarted(started)
-                if started.request_mode.as_deref() == Some("tool_enabled")
-                    && started.model.as_deref() == Some("test-model")
-                    && started.tool_count.is_some_and(|count| count > 0)
-        )));
-        assert!(session.events().iter().any(|event| matches!(
-            event,
-            Event::ProviderStarted(started)
-                if started.request_mode.as_deref() == Some("plain_fallback")
+                if started.request_mode.as_deref() == Some("plain_chat")
                     && started.model.as_deref() == Some("test-model")
                     && started.tool_count == Some(0)
-        )));
-        assert!(session.events().iter().any(|event| matches!(
-            event,
-            Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Provider
-                    && message.content == "Plain fallback answer."
         )));
         assert!(!session.events().iter().any(|event| matches!(
             event,
             Event::ProviderStarted(started)
-                if started.request_mode.as_deref() == Some("plain_chat")
+                if started.request_mode.as_deref() == Some("tool_enabled")
         )));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -3141,8 +3552,10 @@ PlanNoTool/
 
         run_permissive_agent_turn(&provider, &mut session, "create a folder called Demo");
 
-        assert_eq!(provider.tool_messages.lock().unwrap().len(), 1);
-        assert!(provider.tool_counts.lock().unwrap()[0] > 0);
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Tool);
+        assert!(requests[0].tool_count > 0);
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::ProviderStarted(started)
@@ -3170,8 +3583,12 @@ PlanNoTool/
             "create a TS Next.js and Tailwind project in ~/next-tailwind-ts-project",
         );
 
-        let messages = provider.tool_messages.lock().unwrap();
-        let system_prompt = &messages[0][0].content;
+        let requests = provider.requests();
+        let tool_request = requests
+            .iter()
+            .find(|request| request.mode == CapturedProviderRequestMode::Tool)
+            .expect("project creation should use tool path");
+        let system_prompt = &tool_request.messages[0].content;
         assert!(system_prompt.contains("infer the necessary starter files"));
         assert!(system_prompt.contains("complete runnable scaffold"));
         assert!(!system_prompt.contains("next-env.d.ts"));

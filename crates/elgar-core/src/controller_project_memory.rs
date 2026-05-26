@@ -86,7 +86,7 @@ fn resolve_project_path(project_root: &Path, target_path: &Path) -> PathBuf {
     }
 }
 
-fn is_plan_path_or_contents(path: &Path, contents: &str) -> bool {
+pub(crate) fn is_plan_path_or_contents(path: &Path, contents: &str) -> bool {
     is_plan_path(path) || contents_looks_like_plan(contents)
 }
 
