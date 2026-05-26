@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     ffi::OsString,
     path::Path,
     sync::{
@@ -8,7 +9,7 @@ use std::{
 };
 
 use elgar_core::{
-    action::{ActionLifecycleState, ActionRequest},
+    action::ActionLifecycleState,
     context::{ContextAccounting, LoadedContextFile},
     controller::Controller,
     event::{
@@ -17,8 +18,8 @@ use elgar_core::{
     },
     model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
     provider::{
-        ChatToolDefinition, ControllerProvider, ProviderError, ProviderRequestMetadata,
-        ProviderStreamChunk,
+        ChatMessage, ChatRole, ChatToolDefinition, ControllerProvider, ProviderError,
+        ProviderRequestMetadata, ProviderStreamChunk,
     },
     session::Session,
 };
@@ -202,6 +203,108 @@ fn provider_event_count(session: &Session) -> usize {
             )
         })
         .count()
+}
+
+#[derive(Clone)]
+struct ScriptedToolProvider {
+    outputs: Arc<Mutex<VecDeque<ProviderOutput>>>,
+}
+
+impl ScriptedToolProvider {
+    fn new(outputs: Vec<ProviderOutput>) -> Self {
+        Self {
+            outputs: Arc::new(Mutex::new(outputs.into())),
+        }
+    }
+}
+
+impl ControllerProvider for ScriptedToolProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new(
+            "scripted-tool-provider",
+            Some("model-a".to_string()),
+            "scripted-tool-request-1",
+        )
+    }
+
+    fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new(format!(
+            "scripted provider response to: {}",
+            prompt.trim()
+        )))
+    }
+
+    fn chat_messages_with_metadata(
+        &self,
+        messages: Vec<ChatMessage>,
+        _metadata: &ProviderRequestMetadata,
+    ) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new(format!(
+            "scripted provider response to: {}",
+            latest_user_message(&messages).trim()
+        )))
+    }
+
+    fn chat_messages_with_tools_with_metadata(
+        &self,
+        messages: Vec<ChatMessage>,
+        _metadata: &ProviderRequestMetadata,
+        _tools: Vec<ChatToolDefinition>,
+    ) -> Result<ProviderOutput, ProviderError> {
+        if messages
+            .iter()
+            .any(|message| matches!(message.role, ChatRole::Tool))
+        {
+            return Ok(ProviderOutput::new("Done."));
+        }
+
+        Ok(self
+            .outputs
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| ProviderOutput::new("No scripted tool output.")))
+    }
+}
+
+fn scripted_tool_controller(outputs: Vec<ProviderOutput>) -> Controller<ScriptedToolProvider> {
+    Controller::new(ScriptedToolProvider::new(outputs))
+}
+
+fn scripted_create_directory_output(id: &str, target_path: &str) -> ProviderOutput {
+    ProviderOutput::new(format!("Creating {target_path}.")).with_tool_calls(vec![
+        RawModelToolCall {
+            id: id.to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+            arguments: serde_json::json!({
+                "target_path": target_path
+            }),
+            assistant_summary: Some(format!("create {target_path}")),
+        },
+    ])
+}
+
+fn scripted_create_file_output(id: &str, target_path: &str, contents: &str) -> ProviderOutput {
+    ProviderOutput::new(format!("Creating {target_path}.")).with_tool_calls(vec![
+        RawModelToolCall {
+            id: id.to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateFile),
+            arguments: serde_json::json!({
+                "target_path": target_path,
+                "contents": contents
+            }),
+            assistant_summary: Some(format!("write {target_path}")),
+        },
+    ])
+}
+
+fn latest_user_message(messages: &[ChatMessage]) -> &str {
+    messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message.role, ChatRole::User))
+        .map(|message| message.content.as_str())
+        .unwrap_or_default()
 }
 
 mod commands_and_input;

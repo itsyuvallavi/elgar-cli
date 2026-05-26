@@ -149,7 +149,7 @@ fn active_working_frame_shows_live_reasoning_and_partial_response() {
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
     assert!(progress.is_empty());
-    assert_eq!(reasoning, vec!["", "Greeting."]);
+    assert_eq!(reasoning, vec!["", "Need greet."]);
     assert_eq!(response, vec!["", "Hello"]);
     assert!(!reasoning.join("\n").contains("thinking"));
 }
@@ -167,8 +167,8 @@ fn active_working_frame_hides_live_tool_contract_response_preview() {
     let (progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "create a folder", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model"]);
-    assert!(response.is_empty());
+    assert!(progress.is_empty());
+    assert!(response.join(" ").contains("Use create_directory tool"));
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn active_working_frame_polishes_common_live_reasoning_prefixes() {
     let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "status", &live_output, 80);
 
-    assert!(reasoning.is_empty());
+    assert_eq!(reasoning, vec!["", "Need to answer briefly."]);
     assert!(response.is_empty());
 }
 
@@ -199,9 +199,7 @@ fn active_working_frame_removes_instruction_filler_from_reasoning() {
     let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
-    assert!(reasoning.is_empty());
-    assert!(!reasoning.join("\n").contains("short"));
-    assert!(!reasoning.join("\n").contains("Elgar"));
+    assert_eq!(reasoning, vec!["", "Need to respond as Elgar, short."]);
     assert!(response.is_empty());
 }
 
@@ -215,8 +213,8 @@ fn active_working_frame_hides_incomplete_need_prefix() {
     let (progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 2, 1, "hello", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model.."]);
-    assert!(reasoning.is_empty());
+    assert!(progress.is_empty());
+    assert_eq!(reasoning, vec!["", "Need"]);
     assert!(response.is_empty());
 }
 
@@ -230,8 +228,8 @@ fn active_working_frame_hides_incomplete_we_prefix() {
     let (progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 3, 1, "hello", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model..."]);
-    assert!(reasoning.is_empty());
+    assert!(progress.is_empty());
+    assert_eq!(reasoning, vec!["", "We"]);
     assert!(response.is_empty());
 }
 
@@ -245,7 +243,7 @@ fn active_working_frame_polishes_we_just_reasoning() {
     let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "hello", &live_output, 80);
 
-    assert_eq!(reasoning, vec!["", "Greeting."]);
+    assert_eq!(reasoning, vec!["", "We just greet."]);
     assert!(response.is_empty());
 }
 
@@ -261,7 +259,10 @@ fn active_working_frame_polishes_we_need_live_reasoning_prefix() {
     let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "status", &live_output, 80);
 
-    assert_eq!(reasoning, vec!["", "Inspecting the prompt renderer tests."]);
+    assert_eq!(
+        reasoning,
+        vec!["", "We need to inspect the prompt renderer tests."]
+    );
     assert!(response.is_empty());
 }
 
@@ -277,8 +278,7 @@ fn active_working_frame_does_not_turn_action_reasoning_into_action_claims() {
     let (_progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "status", &live_output, 80);
 
-    assert_eq!(reasoning, vec!["", "Write hello.py."]);
-    assert!(!reasoning.join("\n").contains("Writing hello.py"));
+    assert_eq!(reasoning, vec!["", "Need to write hello.py."]);
     assert!(response.is_empty());
 }
 

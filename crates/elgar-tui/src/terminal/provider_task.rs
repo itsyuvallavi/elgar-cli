@@ -130,6 +130,35 @@ where
     ProviderTurnTask { receiver, canceled }
 }
 
+pub(super) fn start_tool_turn<P>(
+    runtime: AgentRuntime<P>,
+    mut session: Session,
+    input: String,
+    policy_mode: PermissionPolicyMode,
+) -> ProviderTurnTask
+where
+    P: ControllerProvider + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+    let canceled = Arc::new(AtomicBool::new(false));
+    let worker_canceled = Arc::clone(&canceled);
+
+    thread::spawn(move || {
+        let result = runtime.tool_turn(&mut session, &input, policy_mode);
+        if worker_canceled.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = sender.send(ProviderTurnWorkerMessage::Complete(Ok(Box::new(
+            CompletedProviderTurn {
+                session,
+                events: result.events,
+            },
+        ))));
+    });
+
+    ProviderTurnTask { receiver, canceled }
+}
+
 enum ProviderTurnWorkerMessage {
     #[cfg(test)]
     Chunk(ProviderStreamChunk),

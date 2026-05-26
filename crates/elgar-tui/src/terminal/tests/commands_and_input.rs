@@ -33,6 +33,9 @@ fn terminal_commands_are_slash_only() {
     assert_eq!(parse_terminal_command("/approve"), TerminalCommand::Approve);
     assert_eq!(parse_terminal_command("/reject"), TerminalCommand::Reject);
     assert_eq!(parse_terminal_command("/cancel"), TerminalCommand::Cancel);
+    assert_eq!(parse_terminal_command("/status"), TerminalCommand::Status);
+    assert_eq!(parse_terminal_command("/pending"), TerminalCommand::Pending);
+    assert_eq!(parse_terminal_command("/created"), TerminalCommand::Created);
     assert_eq!(parse_terminal_command("/memory"), TerminalCommand::Memory);
     assert_eq!(parse_terminal_command("/copy"), TerminalCommand::Copy);
     assert_eq!(parse_terminal_command("/exit"), TerminalCommand::Exit);
@@ -68,6 +71,9 @@ fn terminal_commands_are_slash_only() {
     assert!(help.contains("/approve"));
     assert!(help.contains("/reject"));
     assert!(help.contains("/cancel"));
+    assert!(help.contains("/status"));
+    assert!(help.contains("/pending"));
+    assert!(help.contains("/created"));
     assert!(help.contains("/memory"));
     assert!(help.contains("/copy"));
     assert!(help.contains("/exit"));
@@ -81,7 +87,7 @@ fn terminal_commands_are_slash_only() {
 }
 
 #[test]
-fn terminal_plain_approval_words_do_not_apply_pending_actions() {
+fn terminal_plain_approval_words_go_to_model_path() {
     let controller = Controller::default();
     let root = temp_root("terminal-plain-approval-blocked");
     let target = root.join("approved.py");
@@ -95,14 +101,16 @@ fn terminal_plain_approval_words_do_not_apply_pending_actions() {
         &mut session,
         "create file approved.py",
     );
-    let before_session = session.clone();
+    let before_action_count = session.actions().len();
 
     let exited = submit_text("approve", &mut input, &controller, &mut session, &mut shell);
 
     assert!(!exited);
     assert!(!target.exists());
-    assert_eq!(session, before_session);
-    assert!(shell
+    assert_eq!(session.actions().len(), before_action_count);
+    assert!(shell.render().contains("> approve"));
+    assert!(shell.render().contains("stub provider response"));
+    assert!(!shell
         .render()
         .contains("Action commands must use /approve or /reject."));
     assert!(input.text().is_empty());
@@ -344,7 +352,6 @@ fn terminal_greeting_uses_stub_chat_with_live_path_guidance() {
     assert!(!rendered.contains("Model:"));
     assert!(rendered.contains("stub provider response (no-network) to: hello!"));
     assert!(rendered.contains("No live provider call was made"));
-    assert!(rendered.contains("tui-controller-smoke"));
     assert!(!rendered.contains("Input was not recognized"));
     assert!(session.actions().is_empty());
 }

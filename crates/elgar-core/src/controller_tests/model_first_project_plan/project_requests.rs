@@ -116,7 +116,7 @@ fn model_first_compound_folder_project_prose_only_creates_no_malformed_folder() 
 }
 
 #[test]
-fn model_first_provider_stub_compound_folder_project_emits_project_tool_calls() {
+fn model_first_provider_stub_compound_folder_project_does_not_infer_tool_calls() {
     let controller = Controller::default();
     let (mut session, root) = rooted_session("model-first-stub-compound-project-tools");
     let home = root.join("home");
@@ -131,9 +131,7 @@ fn model_first_provider_stub_compound_folder_project_emits_project_tool_calls() 
             PermissionPolicyMode::AutoCreateReviewModify,
         );
 
-    assert!(project_root.is_dir());
-    assert!(project_root.join("calculator.py").is_file());
-    assert!(project_root.join("README.md").is_file());
+    assert!(!project_root.exists());
     assert!(!desktop
         .join("Demo123, inside the folder create a python project of a calculator with UI")
         .exists());
@@ -141,10 +139,7 @@ fn model_first_provider_stub_compound_folder_project_emits_project_tool_calls() 
         .events()
         .iter()
         .any(|event| matches!(event, Event::ProviderStarted(_))));
-    assert!(session
-        .actions()
-        .iter()
-        .all(|record| record.action.state == ActionLifecycleState::Applied));
+    assert!(session.actions().is_empty());
 
     let _ = std::fs::remove_dir_all(root);
 }

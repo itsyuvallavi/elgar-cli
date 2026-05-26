@@ -758,9 +758,11 @@ fn render_model_tool_error(message: &str) -> Option<String> {
 
     match arg {
         Some(arg) => Some(format!(
-            "Tool error: {tool} missing required argument {arg}."
+            "Tool call incomplete: {tool} needs {arg}. No action was applied."
         )),
-        None => Some(format!("Tool error: {tool} call was malformed.")),
+        None => Some(format!(
+            "Tool call malformed: {tool}. No action was applied."
+        )),
     }
 }
 
@@ -1029,14 +1031,12 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        let thinking_index = rendered.find("Responding. Simple greeting.").unwrap();
+        let thinking_index = rendered.find("Need to respond as Elgar, short.").unwrap();
         let model_index = rendered.find("final answer").unwrap();
 
         assert!(!rendered.contains("Thinking\n"));
         assert!(!rendered.contains("thinking:"));
         assert!(thinking_index < model_index);
-        assert!(!rendered.contains("short"));
-        assert!(!rendered.contains("Need to"));
         assert!(!rendered.contains("request-1"));
     }
 
@@ -1060,8 +1060,7 @@ mod tests {
 
         let rendered = conversation.render_body();
 
-        assert!(!rendered.contains("Answering succinctly"));
-        assert!(!rendered.contains("Answering."));
+        assert!(rendered.contains("Answering succinctly"));
         assert!(rendered.contains("final answer"));
     }
 
@@ -1313,10 +1312,10 @@ mod tests {
              Created project: /Users/yuval/__git/elgar/my-nextjs-app\n\
              Verified: 1 folder, 4 files\n\
              Outside project: 1 file\n\
-             Tool error: patch_file missing required argument target_path."
+             Tool call incomplete: patch_file needs target_path. No action was applied."
         );
         assert_eq!(rendered.matches("Tool result").count(), 1);
-        assert_eq!(rendered.matches("Tool error:").count(), 1);
+        assert_eq!(rendered.matches("Tool call incomplete:").count(), 1);
         assert!(!rendered.contains("Created /Users/yuval/__git/elgar/my-nextjs-app."));
         assert!(!rendered.contains("Wrote /Users/yuval/__git/elgar/my-nextjs-app/package.json."));
         assert!(!rendered.contains("Wrote /Users/yuval/__git/elgar/my-nextjs-app/next-env.d.ts."));

@@ -57,6 +57,22 @@ Tests must prove this behavior at the provider payload boundary. Any change to
 visible-response filtering must include a regression test showing plain chat
 remains plain.
 
+## No Natural-Language Trigger Tables
+
+Do not add hardcoded natural-language words, phrases, or sentence lists to
+route normal user intent in the harness. Local deterministic commands must be
+slash commands, for example `/approve`, `/reject`, `/memory`, `/status`, or
+`/pending`.
+
+Normal user text belongs to the model path. The harness may validate typed
+tool calls, enforce policy, apply approved execution, and render verified
+state, but it must not infer local commands from ordinary words like approval
+synonyms, greetings, or state questions.
+
+Existing legacy phrase routing is debt, not precedent. Do not expand it while
+working on v0.2 runtime behavior; isolate or remove it in explicit cleanup
+slices.
+
 ## Agent Rules
 
 1. Work only in the active repo unless the user explicitly says otherwise.

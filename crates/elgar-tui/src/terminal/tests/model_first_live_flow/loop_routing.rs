@@ -82,16 +82,16 @@ fn terminal_loop_sends_unclassified_non_slash_text_to_provider() {
 }
 
 #[test]
-fn terminal_loop_normal_turn_uses_agent_loop_not_legacy_controller_model_first() {
+fn terminal_loop_normal_action_like_text_stays_plain_without_tools() {
     #[derive(Clone)]
-    struct MessageOnlyToolProvider;
+    struct PlainOnlyProvider;
 
-    impl ControllerProvider for MessageOnlyToolProvider {
+    impl ControllerProvider for PlainOnlyProvider {
         fn request_metadata(&self) -> ProviderRequestMetadata {
             ProviderRequestMetadata::new(
-                "message-only-tool-provider",
+                "plain-only-provider",
                 Some("model-a".to_string()),
-                "message-only-request-1",
+                "plain-only-request-1",
             )
         }
 
@@ -99,45 +99,26 @@ fn terminal_loop_normal_turn_uses_agent_loop_not_legacy_controller_model_first()
             Ok(ProviderOutput::new("unused chat response"))
         }
 
-        fn chat_with_tools_with_metadata(
+        fn chat_messages_with_metadata(
             &self,
-            _prompt: &str,
+            _messages: Vec<ChatMessage>,
             _metadata: &ProviderRequestMetadata,
-            _tools: Vec<ChatToolDefinition>,
         ) -> Result<ProviderOutput, ProviderError> {
-            panic!("live TUI normal turns must not use legacy controller model-first");
+            Ok(ProviderOutput::new("plain runtime response"))
         }
 
         fn chat_messages_with_tools_with_metadata(
             &self,
-            messages: Vec<elgar_core::provider::ChatMessage>,
+            _messages: Vec<ChatMessage>,
             _metadata: &ProviderRequestMetadata,
             _tools: Vec<ChatToolDefinition>,
         ) -> Result<ProviderOutput, ProviderError> {
-            if messages
-                .iter()
-                .any(|message| matches!(message.role, elgar_core::provider::ChatRole::Tool))
-            {
-                return Ok(ProviderOutput::new("Done."));
-            }
-
-            Ok(
-                ProviderOutput::new("Creating live-guard.").with_tool_calls(vec![
-                    RawModelToolCall {
-                        id: "message-only-tool-call-1".to_string(),
-                        name: RawModelToolName::Known(ModelToolName::CreateDirectory),
-                        arguments: serde_json::json!({
-                            "target_path": "live-guard"
-                        }),
-                        assistant_summary: Some("create live-guard".to_string()),
-                    },
-                ]),
-            )
+            panic!("normal TUI text must not use the tool-enabled provider path");
         }
     }
 
-    let controller = Controller::new(MessageOnlyToolProvider);
-    let root = temp_root("terminal-agent-loop-not-legacy-controller");
+    let controller = Controller::new(PlainOnlyProvider);
+    let root = temp_root("terminal-normal-text-plain");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
@@ -151,27 +132,27 @@ fn terminal_loop_normal_turn_uses_agent_loop_not_legacy_controller_model_first()
     ));
     finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
 
-    assert!(root.join("live-guard").is_dir());
-    assert_eq!(
-        session.actions()[0].action.state,
-        ActionLifecycleState::Applied
-    );
-    assert!(!shell.render().contains("Approve to"));
+    assert!(!root.join("live-guard").exists());
+    assert!(session.actions().is_empty());
+    assert!(shell.render().contains("plain runtime response"));
 
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn terminal_loop_keeps_prompt_marker_folder_plan_create_project_controller_owned() {
-    let controller = Controller::default();
-    let root = temp_root("terminal-folder-plan-execute-model-first");
+fn terminal_loop_explicit_tool_turn_creates_directory() {
+    let controller = scripted_tool_controller(vec![scripted_create_directory_output(
+        "create-helloworld",
+        "helloworld",
+    )]);
+    let root = temp_root("terminal-explicit-tool-create-directory");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
     let verified_folder = root.join("helloworld");
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "> create folder called helloworld",
+        "/tool create folder called helloworld",
         &controller,
         &mut session,
         &mut shell,
@@ -193,16 +174,43 @@ fn terminal_loop_keeps_prompt_marker_folder_plan_create_project_controller_owned
 }
 
 #[test]
-fn terminal_loop_model_first_same_folder_plan_uses_provider_tools_and_verified_folder() {
-    let controller = Controller::default();
-    let root = temp_root("terminal-same-folder-plan-model-first");
+fn terminal_loop_explicit_tool_turn_can_create_project_files() {
+    let controller = scripted_tool_controller(vec![ProviderOutput::new("Creating demo project.")
+        .with_tool_calls(vec![
+            RawModelToolCall {
+                id: "create-demo-dir".to_string(),
+                name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                arguments: serde_json::json!({
+                    "target_path": "demo"
+                }),
+                assistant_summary: Some("create demo".to_string()),
+            },
+            RawModelToolCall {
+                id: "create-demo-package".to_string(),
+                name: RawModelToolName::Known(ModelToolName::CreateFile),
+                arguments: serde_json::json!({
+                    "target_path": "demo/package.json",
+                    "contents": "{\"scripts\":{\"dev\":\"vite\"}}\n"
+                }),
+                assistant_summary: Some("write demo/package.json".to_string()),
+            },
+            RawModelToolCall {
+                id: "create-demo-app".to_string(),
+                name: RawModelToolName::Known(ModelToolName::CreateFile),
+                arguments: serde_json::json!({
+                    "target_path": "demo/src/App.tsx",
+                    "contents": "export function App() { return <main>Demo</main>; }\n"
+                }),
+                assistant_summary: Some("write demo/src/App.tsx".to_string()),
+            },
+        ])]);
+    let root = temp_root("terminal-explicit-tool-react-project");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
-    let verified_folder = root.join("helloworld");
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "create folder called helloworld",
+        "/tool create a react project called demo",
         &controller,
         &mut session,
         &mut shell,
@@ -211,103 +219,18 @@ fn terminal_loop_model_first_same_folder_plan_uses_provider_tools_and_verified_f
     assert!(pending_turn.is_some());
     let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
     assert!(chunks.is_empty());
-    assert!(verified_folder.is_dir());
-
-    let provider_events_before_plan = provider_event_count(&session);
-    assert!(!handle_submitted_terminal_input_for_loop(
-        "create a plan for a simple React TS project in the same folder",
-        &controller,
-        &mut session,
-        &mut shell,
-        &mut pending_turn,
-    ));
-    assert!(pending_turn.is_some());
-    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
-    assert!(chunks.is_empty());
-    assert!(provider_event_count(&session) > provider_events_before_plan);
-
-    let plan_path = verified_folder.join("react-ts-project-plan.md");
-    let applied_plan = session
-        .actions()
-        .iter()
-        .find(|record| {
-            record.action.state == ActionLifecycleState::Applied
-                && matches!(record.action.request, ActionRequest::CreateFile(_))
-        })
-        .expect("same-folder plan should be applied");
-    let ActionRequest::CreateFile(action) = &applied_plan.action.request else {
-        panic!("same-folder plan should create a Markdown file");
-    };
-    assert_eq!(
-        action.target_path,
-        std::path::PathBuf::from("helloworld/react-ts-project-plan.md")
-    );
-    assert!(applied_plan.verified_result.is_some());
-    assert!(plan_path.is_file());
-    assert!(!root.join("react-ts-project-plan.md").exists());
-    assert!(applied_plan
-        .policy_decision
-        .as_ref()
-        .is_some_and(|decision| decision.is_policy_approved()));
-    assert!(!shell.render().contains("Approved."));
-    assert!(!shell.render().contains("Creating the plan."));
-    assert!(shell.render().contains("Created"));
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn terminal_loop_implements_verified_plan_inside_same_folder_without_approval() {
-    let controller = Controller::default();
-    let root = temp_root("terminal-implement-plan-model-first");
-    let mut session = Session::new("session-1", root.clone(), root.clone());
-    let mut shell = TuiShell::new();
-    let mut pending_turn = None;
-    let verified_folder = root.join("helloworld");
-
-    assert!(!handle_submitted_terminal_input_for_loop(
-        "create folder called helloworld",
-        &controller,
-        &mut session,
-        &mut shell,
-        &mut pending_turn,
-    ));
-    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
-    assert!(verified_folder.is_dir());
-
-    assert!(!handle_submitted_terminal_input_for_loop(
-        "create a plan for a simple React TS project in the same folder",
-        &controller,
-        &mut session,
-        &mut shell,
-        &mut pending_turn,
-    ));
-    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
-    assert!(verified_folder.join("react-ts-project-plan.md").is_file());
-
-    assert!(!handle_submitted_terminal_input_for_loop(
-        "implement the plan",
-        &controller,
-        &mut session,
-        &mut shell,
-        &mut pending_turn,
-    ));
-    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
-
-    assert!(verified_folder.join("package.json").is_file());
-    assert!(verified_folder.join("src/App.tsx").is_file());
-    assert!(!root.join("package.json").exists());
+    assert!(provider_event_count(&session) > 0);
+    assert!(!session.actions().is_empty());
+    assert!(root.join("demo").is_dir());
+    assert!(root.join("demo/package.json").is_file());
+    assert!(root.join("demo/src/App.tsx").is_file());
     assert!(!shell.render().contains("Approve to"));
-    assert!(session.actions().iter().any(|record| {
-        record.action.state == ActionLifecycleState::Applied
-            && matches!(&record.action.request, ActionRequest::CreateFile(action) if action.target_path == std::path::PathBuf::from("helloworld/package.json"))
-    }));
 
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn terminal_loop_routes_unclassified_action_like_text_to_controller_not_provider() {
+fn terminal_loop_normal_action_like_text_goes_to_plain_provider() {
     let controller = Controller::default();
     let mut session = Session::new("session-1", "/repo", "/repo");
     let mut shell = TuiShell::new();
@@ -328,12 +251,16 @@ fn terminal_loop_routes_unclassified_action_like_text_to_controller_not_provider
     assert!(provider_event_count(&session) > 0);
     assert!(shell.render().contains("stub provider response"));
     assert!(!shell.render().contains("Input was not recognized"));
+    assert!(session.actions().is_empty());
 }
 
 #[test]
-fn terminal_loop_polite_folder_request_uses_model_tool_path() {
-    let controller = Controller::default();
-    let root = temp_root("terminal-polished-folder-request");
+fn terminal_loop_normal_file_request_does_not_create_without_tool_command() {
+    let controller = scripted_tool_controller(vec![scripted_create_directory_output(
+        "unexpected-tool-call",
+        "review-guard",
+    )]);
+    let root = temp_root("terminal-normal-file-request-no-tool");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
@@ -351,60 +278,16 @@ fn terminal_loop_polite_folder_request_uses_model_tool_path() {
     let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
     assert!(chunks.is_empty());
     assert!(provider_event_count(&session) > 0);
-    assert!(root.join("review-guard").is_dir());
-    assert_eq!(session.actions().len(), 1);
-    assert!(matches!(
-        &session.actions()[0].action.request,
-        ActionRequest::CreateDirectory(_)
-    ));
-    assert_eq!(
-        session.actions()[0].action.state,
-        ActionLifecycleState::Applied
-    );
-    assert!(session.actions()[0]
-        .policy_decision
-        .as_ref()
-        .is_some_and(|decision| decision.is_policy_approved()));
-    assert!(!shell.render().contains("Approved."));
-    assert!(!shell.render().contains("Creating review-guard."));
-    assert!(shell.render().contains("Created"));
+    assert!(!root.join("review-guard").exists());
+    assert!(session.actions().is_empty());
+    assert!(shell.render().contains("scripted provider response"));
     assert!(!shell.render().contains("Input was not recognized"));
 
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn terminal_loop_broad_react_project_request_creates_with_provider_tools() {
-    let controller = Controller::default();
-    let root = temp_root("terminal-polished-react-project-request");
-    let mut session = Session::new("session-1", root.clone(), root.clone());
-    let mut shell = TuiShell::new();
-    let mut pending_turn = None;
-
-    let exited = handle_submitted_terminal_input_for_loop(
-        "can you please create a react project called demo",
-        &controller,
-        &mut session,
-        &mut shell,
-        &mut pending_turn,
-    );
-
-    assert!(!exited);
-    assert!(pending_turn.is_some());
-    let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
-    assert!(chunks.is_empty());
-    assert!(provider_event_count(&session) > 0);
-    assert!(!session.actions().is_empty());
-    assert!(root.join("demo").is_dir());
-    assert!(root.join("demo/package.json").is_file());
-    assert!(root.join("demo/src/App.tsx").is_file());
-    assert!(!shell.render().contains("Approve to"));
-
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn terminal_loop_repair_followup_uses_latest_project_folder_without_tool_chatter() {
+fn terminal_loop_explicit_tool_turn_can_use_verified_project_memory() {
     #[derive(Clone)]
     struct RepairProvider;
 
@@ -445,7 +328,7 @@ fn terminal_loop_repair_followup_uses_latest_project_folder_without_tool_chatter
                     id: "repair-page".to_string(),
                     name: RawModelToolName::Known(ModelToolName::CreateFile),
                     arguments: serde_json::json!({
-                        "target_path": "./pages/index.tsx",
+                        "target_path": "demo/pages/index.tsx",
                         "contents": "export default function Home() { return <main>Hello</main>; }\n"
                     }),
                     assistant_summary: Some("create missing page".to_string()),
@@ -454,7 +337,7 @@ fn terminal_loop_repair_followup_uses_latest_project_folder_without_tool_chatter
                     id: "repair-css".to_string(),
                     name: RawModelToolName::Known(ModelToolName::CreateFile),
                     arguments: serde_json::json!({
-                        "target_path": "./styles/globals.css",
+                        "target_path": "demo/styles/globals.css",
                         "contents": "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n"
                     }),
                     assistant_summary: Some("create missing styles".to_string()),
@@ -463,7 +346,10 @@ fn terminal_loop_repair_followup_uses_latest_project_folder_without_tool_chatter
         }
     }
 
-    let setup_controller = Controller::default();
+    let setup_controller = scripted_tool_controller(vec![
+        scripted_create_directory_output("create-demo", "demo"),
+        scripted_create_file_output("create-plan", "demo/project-plan.md", "# Plan\n"),
+    ]);
     let controller = Controller::new(RepairProvider);
     let root = temp_root("terminal-repair-followup-project-folder");
     let project = root.join("demo");
@@ -472,7 +358,7 @@ fn terminal_loop_repair_followup_uses_latest_project_folder_without_tool_chatter
     let mut pending_turn = None;
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "create folder called demo",
+        "/tool create folder called demo",
         &setup_controller,
         &mut session,
         &mut shell,
@@ -482,7 +368,7 @@ fn terminal_loop_repair_followup_uses_latest_project_folder_without_tool_chatter
     assert!(project.is_dir());
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "create a plan for a project in the same folder",
+        "/tool create a plan for a project in the same folder",
         &setup_controller,
         &mut session,
         &mut shell,
@@ -492,7 +378,7 @@ fn terminal_loop_repair_followup_uses_latest_project_folder_without_tool_chatter
     assert!(project.join("project-plan.md").is_file());
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "i think you forgot some files",
+        "/tool i think you forgot some files",
         &controller,
         &mut session,
         &mut shell,
@@ -506,16 +392,16 @@ fn terminal_loop_repair_followup_uses_latest_project_folder_without_tool_chatter
     assert!(!root.join("pages/index.tsx").exists());
     assert!(!root.join("styles/globals.css").exists());
     assert!(!rendered.contains("We need create"));
-    assert!(!rendered.contains("Writing ./pages/index.tsx."));
+    assert!(!rendered.contains("Writing demo/pages/index.tsx."));
     assert!(rendered.contains("Created"));
 
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn terminal_loop_model_first_guidance_renders_naturally_without_creating_files() {
+fn terminal_loop_normal_project_request_does_not_create_files() {
     let controller = Controller::default();
-    let root = temp_root("terminal-model-first-guidance");
+    let root = temp_root("terminal-normal-project-request");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
@@ -534,9 +420,7 @@ fn terminal_loop_model_first_guidance_renders_naturally_without_creating_files()
     assert!(chunks.is_empty());
     assert!(session.actions().is_empty());
     assert!(!root.join("project").exists());
-    assert!(shell
-        .render()
-        .contains("Which folder should I use for the project?"));
+    assert!(shell.render().contains("stub provider response"));
     assert!(!shell.render().contains("Proposed action"));
     assert!(!shell.render().contains("Created"));
 

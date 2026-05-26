@@ -96,11 +96,11 @@ fn legacy_provider_tool_contract_prose_is_not_rendered_as_provider_chat() {
 
     assert!(provider_assistant_messages(&session)
         .iter()
-        .all(|message| !message.contains("create_directory tool")));
+        .any(|message| message.contains("create_directory tool")));
 }
 
 #[test]
-fn markdown_plan_provider_contract_line_is_removed_from_visible_provider_chat() {
+fn markdown_plan_provider_contract_line_remains_provider_text() {
     let controller = Controller::new(FakeProvider::success(
         "Output markdown content only.\n# Calculator Plan\n\n- Build a small UI.\n",
     ));
@@ -114,7 +114,7 @@ fn markdown_plan_provider_contract_line_is_removed_from_visible_provider_chat() 
     let messages = provider_assistant_messages(&session);
     assert!(messages
         .iter()
-        .all(|message| !message.contains("Output markdown content only")));
+        .any(|message| message.contains("Output markdown content only")));
     assert!(messages
         .iter()
         .any(|message| message.contains("# Calculator Plan")));
@@ -123,7 +123,7 @@ fn markdown_plan_provider_contract_line_is_removed_from_visible_provider_chat() 
 }
 
 #[test]
-fn text_only_provider_answer_drops_instruction_lines() {
+fn text_only_provider_answer_is_not_phrase_filtered() {
     let controller = Controller::new(FakeProvider::success(
         "Output markdown content only.\n# Plan\n\nUse create_file tool only after approval.",
     ));
@@ -131,7 +131,10 @@ fn text_only_provider_answer_drops_instruction_lines() {
 
     controller.model_turn(&mut session, "write a plan");
 
-    assert_eq!(provider_assistant_messages(&session), vec!["# Plan"]);
+    assert_eq!(
+        provider_assistant_messages(&session),
+        vec!["Output markdown content only.\n# Plan\n\nUse create_file tool only after approval."]
+    );
 }
 
 #[test]

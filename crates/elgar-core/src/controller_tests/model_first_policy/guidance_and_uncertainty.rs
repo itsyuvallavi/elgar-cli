@@ -153,7 +153,7 @@ fn model_first_uncertainty_text_with_action_blocks_mutation() {
 }
 
 #[test]
-fn model_first_stub_ambiguous_that_folder_request_asks_guidance_without_create() {
+fn model_first_stub_ambiguous_that_folder_request_does_not_fake_tool_guidance() {
     let controller = Controller::default();
     let (mut session, root) = rooted_session("model-first-that-folder-guidance");
 
@@ -169,8 +169,8 @@ fn model_first_stub_ambiguous_that_folder_request_asks_guidance_without_create()
         matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
-                    && message.content == "Which folder should I use for the project?"
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.contains("stub provider response")
         )
     }));
 

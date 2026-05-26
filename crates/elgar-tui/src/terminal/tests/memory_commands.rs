@@ -28,15 +28,79 @@ fn terminal_memory_command_is_local_and_empty_without_provider_call() {
 }
 
 #[test]
-fn terminal_memory_command_reports_verified_project_state() {
+fn terminal_state_commands_are_local_and_empty_without_provider_call() {
     let controller = Controller::default();
+    let root = temp_root("terminal-state-empty");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    for command in ["/status", "/pending", "/created"] {
+        assert!(!handle_submitted_terminal_input_for_loop(
+            command,
+            &controller,
+            &mut session,
+            &mut shell,
+            &mut pending_turn,
+        ));
+        assert!(pending_turn.is_none());
+    }
+
+    let rendered = shell.render();
+    assert!(rendered.contains("Status\nactions: 0\npending: none"));
+    assert!(rendered.contains("Pending\nnone"));
+    assert!(rendered.contains("Created\n(none)"));
+    assert!(!rendered.contains("stub provider response"));
+    assert!(!rendered.contains("lm-studio"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_pending_command_reports_pending_action_without_plain_words() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-pending-state");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    submit_legacy_controller_input(
+        &mut shell,
+        &controller,
+        &mut session,
+        "create file pending.py",
+    );
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/pending",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+
+    let rendered = shell.render();
+    assert!(rendered.contains("Pending\ncreate_file action-1 at pending.py"));
+    assert!(rendered.contains("write pending.py"));
+    assert!(!root.join("pending.py").exists());
+    assert!(pending_turn.is_none());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_memory_command_reports_verified_project_state() {
+    let controller = scripted_tool_controller(vec![
+        scripted_create_directory_output("create-src", "src"),
+        scripted_create_file_output("create-plan", "project-plan.md", "# Plan\n"),
+    ]);
     let root = temp_root("terminal-memory-project");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "create folder called src",
+        "/tool create folder called src",
         &controller,
         &mut session,
         &mut shell,
@@ -44,7 +108,7 @@ fn terminal_memory_command_reports_verified_project_state() {
     ));
     finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
     assert!(!handle_submitted_terminal_input_for_loop(
-        "create file project-plan.md",
+        "/tool create file project-plan.md",
         &controller,
         &mut session,
         &mut shell,
@@ -73,15 +137,16 @@ fn terminal_memory_command_reports_verified_project_state() {
 }
 
 #[test]
-fn terminal_memory_command_reports_latest_provider_prompt_memory_trace() {
-    let controller = Controller::default();
-    let root = temp_root("terminal-memory-provider-trace");
+fn terminal_created_command_reports_verified_creations() {
+    let controller =
+        scripted_tool_controller(vec![scripted_create_directory_output("create-src", "src")]);
+    let root = temp_root("terminal-created-state");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "create folder called workspace",
+        "/tool create folder called src",
         &controller,
         &mut session,
         &mut shell,
@@ -90,7 +155,43 @@ fn terminal_memory_command_reports_latest_provider_prompt_memory_trace() {
     finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "where did you put that folder?",
+        "/created",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+
+    let rendered = shell.render();
+    assert!(rendered.contains("Created\n- directory src"));
+    assert!(root.join("src").is_dir());
+    assert!(pending_turn.is_none());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_memory_command_reports_latest_provider_prompt_memory_trace() {
+    let controller = scripted_tool_controller(vec![
+        scripted_create_directory_output("create-workspace", "workspace"),
+        scripted_create_file_output("create-plan", "workspace/project-plan.md", "# Plan\n"),
+    ]);
+    let root = temp_root("terminal-memory-provider-trace");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/tool create folder called workspace",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/tool create a plan in that folder",
         &controller,
         &mut session,
         &mut shell,

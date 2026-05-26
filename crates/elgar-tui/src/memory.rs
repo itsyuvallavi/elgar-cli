@@ -1,6 +1,11 @@
-use elgar_core::session::{
-    ProjectMemory, ProviderPromptMemoryOmittedFact, ProviderPromptMemorySelectedFact,
-    ProviderPromptMemorySelection, Session, StructuredProjectPlanStatus,
+use elgar_core::{
+    action::{ActionKind, ActionLifecycleState},
+    event::{FileActionVerification, VerifiedActionResult},
+    session::{
+        PendingActionSelection, ProjectMemory, ProviderPromptMemoryOmittedFact,
+        ProviderPromptMemorySelectedFact, ProviderPromptMemorySelection, Session,
+        StructuredProjectPlanStatus,
+    },
 };
 use std::path::Path;
 
@@ -9,6 +14,135 @@ pub fn render_session_memory(session: &Session) -> String {
         session.project_memory(),
         session.latest_provider_prompt_memory_selection(),
     )
+}
+
+pub fn render_session_status(session: &Session) -> String {
+    let mut lines = vec!["Status".to_string()];
+    lines.push(format!("actions: {}", session.actions().len()));
+    lines.push(format!("pending: {}", pending_action_summary_line(session)));
+    lines.push(format!(
+        "applied: {}",
+        session
+            .actions()
+            .iter()
+            .filter(|record| record.action.state == ActionLifecycleState::Applied)
+            .count()
+    ));
+    lines.push(format!(
+        "failed: {}",
+        session
+            .actions()
+            .iter()
+            .filter(|record| record.action.state == ActionLifecycleState::Failed)
+            .count()
+    ));
+    lines.push(format!(
+        "rejected: {}",
+        session
+            .actions()
+            .iter()
+            .filter(|record| record.action.state == ActionLifecycleState::Rejected)
+            .count()
+    ));
+
+    if let Some(folder) = session.project_memory().latest_verified_folder() {
+        lines.push(format!(
+            "latest folder: {}",
+            display_session_path(session, folder.path.as_path())
+        ));
+    }
+    if let Some(plan) = session.project_memory().latest_verified_plan() {
+        lines.push(format!(
+            "latest plan: {}",
+            display_session_path(session, plan.path.as_path())
+        ));
+    }
+
+    lines.join("\n")
+}
+
+pub fn render_session_pending_action(session: &Session) -> String {
+    format!("Pending\n{}", pending_action_summary_line(session))
+}
+
+pub fn render_session_created_actions(session: &Session) -> String {
+    let lines = session
+        .actions()
+        .iter()
+        .filter_map(|record| record.verified_result.as_ref())
+        .filter_map(|result| verified_creation_line(session, result))
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        return "Created\n(none)".to_string();
+    }
+
+    format!("Created\n- {}", lines.join("\n- "))
+}
+
+fn pending_action_summary_line(session: &Session) -> String {
+    match session.pending_action_selection() {
+        PendingActionSelection::None => "none".to_string(),
+        PendingActionSelection::Ambiguous => {
+            "multiple actions waiting; use /approve or /reject after resolving the queue"
+                .to_string()
+        }
+        PendingActionSelection::Single(index) => {
+            let Some(record) = session.actions().get(index) else {
+                return "none".to_string();
+            };
+            format!(
+                "{} {} at {}; {}",
+                action_kind_label(record.action.kind()),
+                record.action.id,
+                record.action.request.approval_target(),
+                record.action.summary
+            )
+        }
+    }
+}
+
+fn verified_creation_line(session: &Session, result: &VerifiedActionResult) -> Option<String> {
+    match result {
+        VerifiedActionResult::FileWritten { path } => Some(format!(
+            "file {}",
+            display_session_path(session, Path::new(path))
+        )),
+        VerifiedActionResult::File(verification) => match verification {
+            FileActionVerification::FileCreated { path } => Some(format!(
+                "file {}",
+                display_session_path(session, Path::new(path))
+            )),
+            FileActionVerification::DirectoryCreated { path } => Some(format!(
+                "directory {}",
+                display_session_path(session, Path::new(path))
+            )),
+            FileActionVerification::FilePatched { .. }
+            | FileActionVerification::FileOverwritten { .. }
+            | FileActionVerification::FileDeleted { .. }
+            | FileActionVerification::FileMoved { .. } => None,
+        },
+        VerifiedActionResult::Shell(_) => None,
+    }
+}
+
+fn action_kind_label(kind: ActionKind) -> &'static str {
+    match kind {
+        ActionKind::CreateFile => "create_file",
+        ActionKind::PatchFile => "patch_file",
+        ActionKind::OverwriteFile => "overwrite_file",
+        ActionKind::DeleteFile => "delete_file",
+        ActionKind::MoveFile => "move_file",
+        ActionKind::CreateDirectory => "create_directory",
+        ActionKind::ShellCommand => "shell_command",
+    }
+}
+
+fn display_session_path(session: &Session, path: &Path) -> String {
+    path.strip_prefix(&session.project_root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 fn render_memory(

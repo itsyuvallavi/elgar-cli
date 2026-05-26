@@ -122,7 +122,6 @@ fn greeting_routes_to_stub_chat_with_no_network_guidance() {
     assert!(provider_message.is_some_and(|message| {
         message.contains("stub provider response (no-network) to: hello!")
             && message.contains("No live provider call was made")
-            && message.contains("tui-controller-smoke")
     }));
 }
 

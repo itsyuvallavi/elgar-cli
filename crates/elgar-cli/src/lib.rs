@@ -14,8 +14,7 @@ use elgar_core::{
         LM_STUDIO_DEFAULT_BASE_URL,
     },
     renderer::render_session,
-    router::{route_input, Route},
-    session::{PendingActionSelection, Session},
+    session::Session,
 };
 use serde::Deserialize;
 
@@ -443,6 +442,22 @@ pub fn is_tui_memory_command(input: &str) -> bool {
     input.trim() == "/memory"
 }
 
+pub fn is_tui_status_command(input: &str) -> bool {
+    input.trim() == "/status"
+}
+
+pub fn is_tui_pending_command(input: &str) -> bool {
+    input.trim() == "/pending"
+}
+
+pub fn is_tui_created_command(input: &str) -> bool {
+    input.trim() == "/created"
+}
+
+pub fn tui_tool_command_argument(input: &str) -> Option<&str> {
+    input.trim().strip_prefix("/tool ").map(str::trim)
+}
+
 pub fn tui_permission_command_argument(input: &str) -> Option<Option<&str>> {
     let trimmed = input.trim();
     if matches!(trimmed, "/permissions" | "/policy") {
@@ -485,31 +500,15 @@ fn submit_tui_input(
     } else if let Some(argument) = tui_permission_command_argument(input) {
         let message = shell.apply_permission_command(argument);
         shell.push_local_message(message);
-    } else if matches!(route_input(input), Route::ApproveAction) {
-        if matches!(
-            session.pending_action_selection(),
-            PendingActionSelection::None
-        ) {
-            shell.submit_approval(action_gate, session);
-        } else {
-            shell.push_local_message("Action commands must use /approve or /reject.");
-        }
-    } else if matches!(route_input(input), Route::RejectAction) {
-        if matches!(
-            session.pending_action_selection(),
-            PendingActionSelection::None
-        ) {
-            shell.submit_rejection(action_gate, session);
-        } else {
-            shell.push_local_message("Action commands must use /approve or /reject.");
-        }
+    } else if let Some(tool_request) = tui_tool_command_argument(input) {
+        shell.submit_agent_tool_input(runtime, session, tool_request);
     } else {
         shell.submit_agent_input(runtime, session, input);
     }
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/memory                Show verified memory\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
+    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/tool <request>        Run an explicit tool-enabled turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/status                Show session status\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
 }
 
 pub fn render_tui_script<I, S>(
@@ -556,6 +555,12 @@ where
             rendered_turns.push(shell.render());
         } else if is_tui_copy_command(input) {
             rendered_turns.push(shell.conversation_copy_text());
+        } else if is_tui_status_command(input) {
+            rendered_turns.push(elgar_tui::render_session_status(&session));
+        } else if is_tui_pending_command(input) {
+            rendered_turns.push(elgar_tui::render_session_pending_action(&session));
+        } else if is_tui_created_command(input) {
+            rendered_turns.push(elgar_tui::render_session_created_actions(&session));
         } else if is_tui_memory_command(input) {
             rendered_turns.push(elgar_tui::render_session_memory(&session));
         } else {
@@ -620,6 +625,20 @@ where
             writeln!(writer, "{}", shell.render())?;
         } else if is_tui_copy_command(&input) {
             writeln!(writer, "{}", shell.conversation_copy_text())?;
+        } else if is_tui_status_command(&input) {
+            writeln!(writer, "{}", elgar_tui::render_session_status(&session))?;
+        } else if is_tui_pending_command(&input) {
+            writeln!(
+                writer,
+                "{}",
+                elgar_tui::render_session_pending_action(&session)
+            )?;
+        } else if is_tui_created_command(&input) {
+            writeln!(
+                writer,
+                "{}",
+                elgar_tui::render_session_created_actions(&session)
+            )?;
         } else if is_tui_memory_command(&input) {
             writeln!(writer, "{}", elgar_tui::render_session_memory(&session))?;
         } else {
@@ -810,15 +829,15 @@ mod tests {
 
     use super::{
         default_permission_policy_mode, is_tui_approval_command, is_tui_clear_command,
-        is_tui_copy_command, is_tui_exit_command, is_tui_help_command, is_tui_memory_command,
-        is_tui_rejection_command, load_runtime_provider, provider_smoke_config,
-        provider_smoke_prompt, render_cli_turn_from_runtime_config, render_controller_smoke,
-        render_tui_controller_smoke, render_tui_help, render_tui_script,
-        render_tui_script_with_policy, resolve_runtime_project_root, run_tui_loop,
+        is_tui_copy_command, is_tui_created_command, is_tui_exit_command, is_tui_help_command,
+        is_tui_memory_command, is_tui_pending_command, is_tui_rejection_command,
+        is_tui_status_command, load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
+        render_cli_turn_from_runtime_config, render_controller_smoke, render_tui_controller_smoke,
+        render_tui_help, render_tui_script, resolve_runtime_project_root, run_tui_loop,
         runtime_permission_policy_mode, should_launch_terminal_tui_by_default,
-        tui_permission_command_argument, ProviderSmokeConfig, ProviderSmokeError, RuntimePaths,
-        RuntimeProviderConfigError, PROVIDER_CONFIG_FILE, PROVIDER_SMOKE_DEFAULT_PROMPT,
-        TUI_COMMAND, TUI_TERMINAL_COMMAND,
+        tui_permission_command_argument, tui_tool_command_argument, ProviderSmokeConfig,
+        ProviderSmokeError, RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
+        PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
     fn temp_root(name: &str) -> PathBuf {
@@ -1187,8 +1206,12 @@ mod tests {
         assert!(help.contains("/clear"));
         assert!(help.contains("/new"));
         assert!(help.contains("/cancel"));
+        assert!(help.contains("/tool <request>"));
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
+        assert!(help.contains("/status"));
+        assert!(help.contains("/pending"));
+        assert!(help.contains("/created"));
         assert!(help.contains("/memory"));
         assert!(help.contains("/permissions"));
         assert!(help.contains("/copy"));
@@ -1217,6 +1240,20 @@ mod tests {
             Some(Some("full-access"))
         );
         assert_eq!(tui_permission_command_argument("permissions"), None);
+    }
+
+    #[test]
+    fn tui_tool_command_is_explicit() {
+        assert_eq!(
+            tui_tool_command_argument("/tool create file hello.py"),
+            Some("create file hello.py")
+        );
+        assert_eq!(
+            tui_tool_command_argument(" /tool create folder demo "),
+            Some("create folder demo")
+        );
+        assert_eq!(tui_tool_command_argument("tool create file hello.py"), None);
+        assert_eq!(tui_tool_command_argument("create file hello.py"), None);
     }
 
     #[test]
@@ -1256,6 +1293,19 @@ mod tests {
         assert!(is_tui_memory_command(" /memory "));
         assert!(!is_tui_memory_command("memory"));
         assert!(!is_tui_memory_command("/mem"));
+    }
+
+    #[test]
+    fn tui_state_commands_are_explicit() {
+        assert!(is_tui_status_command("/status"));
+        assert!(is_tui_status_command(" /status "));
+        assert!(is_tui_pending_command("/pending"));
+        assert!(is_tui_created_command("/created"));
+
+        assert!(!is_tui_status_command("status"));
+        assert!(!is_tui_pending_command("pending"));
+        assert!(!is_tui_created_command("created"));
+        assert!(!is_tui_created_command("/create"));
     }
 
     #[test]
@@ -1299,6 +1349,9 @@ mod tests {
         assert!(rendered.contains("Commands\n/commands"));
         assert!(rendered.contains("/approve"));
         assert!(rendered.contains("/reject"));
+        assert!(rendered.contains("/status"));
+        assert!(rendered.contains("/pending"));
+        assert!(rendered.contains("/created"));
         assert!(rendered.contains("/memory"));
         assert!(rendered.contains("/copy"));
         assert!(!rendered.contains("> /help"));
@@ -1336,25 +1389,20 @@ mod tests {
     }
 
     #[test]
-    fn tui_script_memory_command_reports_verified_project_state() {
-        let root = temp_root("memory-project-command");
+    fn tui_script_state_commands_are_local_and_empty_without_provider_call() {
+        let root = temp_root("state-empty-command");
 
-        let rendered = render_tui_script(
-            [
-                "create folder called src".to_string(),
-                "create file project-plan.md".to_string(),
-                "/memory".to_string(),
-            ],
-            &root,
-            &root,
-        );
+        let rendered = render_tui_script(["/status", "/pending", "/created"], &root, &root);
 
-        assert!(root.join("src").is_dir());
-        assert!(root.join("project-plan.md").is_file());
-        assert!(rendered.contains("Memory"));
-        assert!(rendered.contains("folders\n- ok "));
-        assert!(rendered.contains("plans\n- ok "));
+        assert!(rendered.contains("Status\nactions: 0\npending: none"));
+        assert!(rendered.contains("Pending\nnone"));
+        assert!(rendered.contains("Created\n(none)"));
+        assert!(!rendered.contains("> /status"));
+        assert!(!rendered.contains("> /pending"));
+        assert!(!rendered.contains("> /created"));
+        assert!(!rendered.contains("stub provider response"));
         assert!(!rendered.contains("lm-studio"));
+        assert!(!rendered.contains("Input was not recognized"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1381,53 +1429,25 @@ mod tests {
     }
 
     #[test]
-    fn tui_script_approval_command_applies_pending_action() {
-        let root = temp_root("approve-command");
+    fn tui_script_tool_command_is_explicit_and_stub_does_not_infer_actions() {
+        let root = temp_root("explicit-tool-command");
         let target = root.join("hello.py");
 
-        let rendered = render_tui_script(["create file hello.py", "/approve"], &root, &root);
+        let rendered = render_tui_script(["/tool create file hello.py", "/status"], &root, &root);
 
-        assert!(target.exists());
+        assert!(!target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(!rendered.contains("Creating hello.py."));
-        assert!(rendered.contains("Wrote "));
-        assert!(rendered.contains("> approve"));
-        assert!(rendered.contains("No proposed action is waiting for approval."));
+        assert!(rendered.contains("stub provider response"));
+        assert!(rendered.contains("Status\nactions: 0\npending: none"));
+        assert!(!rendered.contains("Wrote "));
         assert!(rendered.contains("Pending Action\nnone"));
-        assert!(!rendered.contains("Status: applied and verified"));
-        assert!(!rendered.contains(&format!("Result: Wrote {}.", target.display())));
-        assert!(!rendered.contains("Action: action-1 CreateFile"));
-        assert!(!rendered.contains("Summary: write hello.py"));
         assert!(!rendered.contains("lm-studio"));
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn tui_script_selected_review_all_policy_gates_file_creates() {
-        let root = temp_root("review-all-policy-command");
-        let target = root.join("hello.py");
-
-        let rendered = render_tui_script_with_policy(
-            ["create file hello.py"],
-            &root,
-            &root,
-            PermissionPolicyMode::ReviewAll,
-        );
-
-        assert!(!target.exists());
-        assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("Pending Action"));
-        assert!(rendered.contains("hello.py"));
-        assert!(!rendered.contains("Status: applied and verified"));
-        assert!(!rendered.contains("Wrote "));
-        assert!(rendered.contains("Status: waiting for approval"));
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn tui_script_permission_command_changes_runtime_policy() {
+    fn tui_script_permission_command_changes_runtime_policy_without_phrase_trigger() {
         let root = temp_root("permission-toggle-command");
 
         let rendered = render_tui_script(
@@ -1443,50 +1463,33 @@ mod tests {
         );
 
         assert!(rendered.contains("Permission mode set to review_all"));
-        assert!(rendered.contains("Status: waiting for approval"));
         assert!(!root.join("gated.py").exists());
         assert!(rendered.contains("Permission mode set to auto_create_review_modify"));
-        assert!(root.join("allowed.py").is_file());
+        assert!(!root.join("allowed.py").exists());
+        assert!(rendered.contains("stub provider response"));
+        assert!(!rendered.contains("Status: waiting for approval"));
+        assert!(!rendered.contains("Wrote "));
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn tui_script_plain_approval_words_do_not_apply_pending_actions() {
+    fn tui_script_plain_approval_words_go_to_model_path() {
         let root = temp_root("plain-approval-command");
         let target = root.join("hello.py");
 
         let rendered =
             render_tui_script(["create file hello.py", "approve", "reject"], &root, &root);
 
-        assert!(target.exists());
-        assert!(rendered.contains("No proposed action is waiting for approval."));
-        assert!(rendered.contains("No proposed action is waiting for rejection."));
-        assert!(rendered.contains("Pending Action\nnone"));
+        assert!(!target.exists());
+        assert!(rendered.contains("> create file hello.py"));
+        assert!(rendered.contains("> approve"));
+        assert!(rendered.contains("> reject"));
+        assert!(rendered.contains("stub provider response"));
+        assert_eq!(rendered.matches("No proposed action is waiting").count(), 0);
+        assert!(rendered.contains("No live provider call was made"));
         assert!(!rendered.contains("Status: applied and verified"));
         assert!(!rendered.contains("Rejected. Nothing was changed."));
-        assert!(!rendered.contains("lm-studio"));
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn tui_script_rejection_command_rejects_pending_action_without_writing() {
-        let root = temp_root("reject-command");
-        let target = root.join("hello.py");
-
-        let rendered = render_tui_script(["create file hello.py", "/reject"], &root, &root);
-
-        assert!(target.exists());
-        assert!(rendered.contains("> create file hello.py"));
-        assert!(!rendered.contains("Creating hello.py."));
-        assert!(rendered.contains("Wrote "));
-        assert!(rendered.contains("> reject"));
-        assert!(rendered.contains("No proposed action is waiting for rejection."));
-        assert!(rendered.contains("Pending Action\nnone"));
-        assert!(!rendered.contains("Status: applied and verified"));
-        assert!(!rendered.contains("Action: action-1 CreateFile"));
-        assert!(!rendered.contains("Summary: write hello.py"));
         assert!(!rendered.contains("lm-studio"));
 
         let _ = fs::remove_dir_all(root);
@@ -1536,8 +1539,8 @@ mod tests {
     }
 
     #[test]
-    fn tui_loop_routes_approval_command_through_action_gate() {
-        let root = temp_root("loop-approve-command");
+    fn tui_loop_plain_text_and_approval_command_do_not_create_without_tool_result() {
+        let root = temp_root("loop-plain-approve-command");
         let target = root.join("hello.py");
         let input = b"create file hello.py\n/approve\n/exit\n";
         let mut output = Vec::new();
@@ -1545,12 +1548,12 @@ mod tests {
         run_tui_loop(&input[..], &mut output, &root, &root).unwrap();
 
         let rendered = String::from_utf8(output).unwrap();
-        assert!(target.exists());
+        assert!(!target.exists());
         assert!(rendered.contains("> create file hello.py"));
         assert!(rendered.contains("> approve"));
         assert!(!rendered.contains("Creating hello.py."));
         assert!(rendered.contains("No proposed action is waiting for approval."));
-        assert!(rendered.contains("Pending Action\nnone"));
+        assert!(rendered.contains("stub provider response"));
         assert!(!rendered.contains("Status: applied and verified"));
         assert!(!rendered.contains(&format!("Result: Wrote {}.", target.display())));
         assert!(!rendered.contains("Action: action-1 CreateFile"));

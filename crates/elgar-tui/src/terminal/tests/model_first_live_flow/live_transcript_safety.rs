@@ -148,7 +148,7 @@ fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_sa
     assert!(session.actions().is_empty());
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "create file rejected.py",
+        "/tool create file rejected.py",
         &controller,
         &mut session,
         &mut shell,
@@ -162,7 +162,7 @@ fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_sa
     );
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "create file approved.py",
+        "/tool create file approved.py",
         &controller,
         &mut session,
         &mut shell,
@@ -187,7 +187,7 @@ fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_sa
 }
 
 #[test]
-fn terminal_provider_visible_transcript_hides_tool_chatter_but_keeps_normal_answers() {
+fn terminal_provider_visible_transcript_keeps_plain_tool_like_prose_without_execution() {
     #[derive(Clone)]
     struct VisibleContractProvider {
         tool_turns: Arc<AtomicUsize>,
@@ -203,6 +203,21 @@ fn terminal_provider_visible_transcript_hides_tool_chatter_but_keeps_normal_answ
         }
 
         fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("Here is the useful provider answer."))
+        }
+
+        fn chat_messages_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+        ) -> Result<ProviderOutput, ProviderError> {
+            let user_request = latest_user_message(&messages);
+            if user_request.contains("show tool chatter") {
+                return Ok(ProviderOutput::new(
+                    "Use create_file tool. Provide tool calls. Create files: package.json?",
+                ));
+            }
+
             Ok(ProviderOutput::new("Here is the useful provider answer."))
         }
 
@@ -254,7 +269,7 @@ fn terminal_provider_visible_transcript_hides_tool_chatter_but_keeps_normal_answ
     let mut pending_turn = None;
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "create file protocol.py",
+        "/tool create file protocol.py",
         &controller,
         &mut session,
         &mut shell,
@@ -265,9 +280,6 @@ fn terminal_provider_visible_transcript_hides_tool_chatter_but_keeps_normal_answ
     let rendered = shell.conversation.render_body();
     assert!(target.exists());
     assert!(rendered.contains("Wrote "));
-    assert!(!rendered.contains("Use create_file tool"));
-    assert!(!rendered.contains("Output markdown content only"));
-    assert!(!rendered.contains("Creating protocol.py."));
 
     assert!(!handle_submitted_terminal_input_for_loop(
         "show tool chatter",
@@ -279,9 +291,10 @@ fn terminal_provider_visible_transcript_hides_tool_chatter_but_keeps_normal_answ
     finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
 
     let rendered = shell.conversation.render_body();
-    assert!(!rendered.contains("Use create_file tool"));
-    assert!(!rendered.contains("Provide tool calls"));
-    assert!(!rendered.contains("Create files: package.json?"));
+    assert!(rendered.contains("Use create_file tool"));
+    assert!(rendered.contains("Provide tool calls"));
+    assert!(rendered.contains("Create files: package.json?"));
+    assert_eq!(session.actions().len(), 1);
 
     assert!(!handle_submitted_terminal_input_for_loop(
         "what happened?",
@@ -294,8 +307,7 @@ fn terminal_provider_visible_transcript_hides_tool_chatter_but_keeps_normal_answ
 
     let rendered = shell.conversation.render_body();
     assert!(rendered.contains("Here is the useful provider answer."));
-    assert!(!rendered.contains("Use create_file tool"));
-    assert!(!rendered.contains("Output markdown content only"));
+    assert_eq!(session.actions().len(), 1);
 
     let _ = std::fs::remove_dir_all(root);
 }

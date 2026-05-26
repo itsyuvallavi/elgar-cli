@@ -119,6 +119,21 @@ impl TuiShell {
         result
     }
 
+    pub fn submit_agent_tool_input<P>(
+        &mut self,
+        runtime: &AgentRuntime<P>,
+        session: &mut Session,
+        input: &str,
+    ) -> TurnResult
+    where
+        P: ControllerProvider,
+    {
+        let result = runtime.tool_turn(session, input, self.policy_mode);
+        self.consume_events(&result.events);
+        self.conversation.follow_latest();
+        result
+    }
+
     pub fn conversation_copy_text(&self) -> String {
         self.conversation.render_copy_body()
     }

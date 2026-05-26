@@ -15,8 +15,8 @@ use elgar_core::{
     event::ProviderMetrics,
     policy::PermissionPolicyMode,
     provider::{ControllerProvider, ProviderConfig},
-    router::{normalize_pasted_transcript_input, route_input, Route},
-    session::{PendingActionSelection, Session},
+    router::normalize_pasted_transcript_input,
+    session::Session,
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -30,7 +30,10 @@ use elgar_core::controller::Controller;
 
 use crate::{
     input::{TerminalInput, TerminalInputAction},
-    memory::render_session_memory,
+    memory::{
+        render_session_created_actions, render_session_memory, render_session_pending_action,
+        render_session_status,
+    },
     panes::{ConversationLineStyle, ConversationPane},
     startup::StartupBlock,
     theme, TuiShell,
@@ -57,7 +60,9 @@ use prompt::{
 };
 #[cfg(test)]
 use provider_task::start_provider_turn;
-use provider_task::{start_model_first_turn, ProviderTurnTask, ProviderTurnUpdate};
+use provider_task::{
+    start_model_first_turn, start_tool_turn, ProviderTurnTask, ProviderTurnUpdate,
+};
 use text::{conversation_print_blocks, pad_line, plain_block_lines};
 
 #[cfg(test)]
@@ -291,9 +296,25 @@ where
             print_plain_block(&render_session_memory(session))?;
             Ok((false, String::new()))
         }
+        TerminalCommand::Status => {
+            print_plain_block(&render_session_status(session))?;
+            Ok((false, String::new()))
+        }
+        TerminalCommand::Pending => {
+            print_plain_block(&render_session_pending_action(session))?;
+            Ok((false, String::new()))
+        }
+        TerminalCommand::Created => {
+            print_plain_block(&render_session_created_actions(session))?;
+            Ok((false, String::new()))
+        }
         TerminalCommand::Permissions(argument) => {
             print_plain_block(&shell.apply_permission_command(argument))?;
             Ok((false, String::new()))
+        }
+        TerminalCommand::Tool(text) => {
+            let preserved_input = run_inline_tool_turn(text, runtime, session, shell)?;
+            Ok((false, preserved_input))
         }
         TerminalCommand::Unknown(command) => {
             print_plain_block(&format!(
@@ -330,6 +351,18 @@ where
     }
 }
 
+fn run_inline_tool_turn<P>(
+    text: &str,
+    runtime: &AgentRuntime<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+) -> io::Result<String>
+where
+    P: ControllerProvider + Clone + Send + 'static,
+{
+    run_inline_provider_turn(text, runtime, session, shell, true)
+}
+
 fn run_inline_model_first_turn<P>(
     text: &str,
     runtime: &AgentRuntime<P>,
@@ -339,16 +372,43 @@ fn run_inline_model_first_turn<P>(
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
+    run_inline_provider_turn(text, runtime, session, shell, false)
+}
+
+fn run_inline_provider_turn<P>(
+    text: &str,
+    runtime: &AgentRuntime<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+    tool_enabled: bool,
+) -> io::Result<String>
+where
+    P: ControllerProvider + Clone + Send + 'static,
+{
     let before = shell.conversation.render_lines_with_styles().len();
     print_spacer()?;
-    print_user_block(text)?;
+    let visible_input = if tool_enabled {
+        format!("/tool {text}")
+    } else {
+        text.to_string()
+    };
+    print_user_block(&visible_input)?;
 
-    let task = start_model_first_turn(
-        runtime.clone(),
-        session.clone(),
-        text.to_string(),
-        shell.policy_mode,
-    );
+    let task = if tool_enabled {
+        start_tool_turn(
+            runtime.clone(),
+            session.clone(),
+            text.to_string(),
+            shell.policy_mode,
+        )
+    } else {
+        start_model_first_turn(
+            runtime.clone(),
+            session.clone(),
+            text.to_string(),
+            shell.policy_mode,
+        )
+    };
     let guard = TerminalModeGuard::enter()?;
     let mut working =
         InlineWorkingRenderer::new(terminal_context(session, runtime, shell.policy_mode));
@@ -915,9 +975,30 @@ where
                 .push_local_message(render_session_memory(session));
             shell.conversation.follow_latest();
         }
+        TerminalCommand::Status => {
+            shell
+                .conversation
+                .push_local_message(render_session_status(session));
+            shell.conversation.follow_latest();
+        }
+        TerminalCommand::Pending => {
+            shell
+                .conversation
+                .push_local_message(render_session_pending_action(session));
+            shell.conversation.follow_latest();
+        }
+        TerminalCommand::Created => {
+            shell
+                .conversation
+                .push_local_message(render_session_created_actions(session));
+            shell.conversation.follow_latest();
+        }
         TerminalCommand::Permissions(argument) => {
             let message = shell.apply_permission_command(argument);
             shell.push_local_message(message);
+        }
+        TerminalCommand::Tool(text) => {
+            handle_terminal_tool_input(text, runtime, action_gate, session, shell);
         }
         TerminalCommand::Copy => {
             let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);
@@ -939,56 +1020,29 @@ where
 fn handle_terminal_text_input<P>(
     text: &str,
     runtime: &AgentRuntime<P>,
-    action_gate: &ActionGate<P>,
+    _action_gate: &ActionGate<P>,
     session: &mut Session,
     shell: &mut TuiShell,
 ) where
     P: ControllerProvider,
 {
-    match route_input(text) {
-        Route::ApproveAction => {
-            if matches!(
-                session.pending_action_selection(),
-                PendingActionSelection::None
-            ) {
-                shell.submit_approval(action_gate, session);
-            } else {
-                shell
-                    .conversation
-                    .push_local_message("Action commands must use /approve or /reject.");
-                shell.conversation.follow_latest();
-            }
-        }
-        Route::RejectAction => {
-            if matches!(
-                session.pending_action_selection(),
-                PendingActionSelection::None
-            ) {
-                shell.submit_rejection(action_gate, session);
-            } else {
-                shell
-                    .conversation
-                    .push_local_message("Action commands must use /approve or /reject.");
-                shell.conversation.follow_latest();
-            }
-        }
-        Route::Help => {
-            shell
-                .conversation
-                .push_local_message("Type /commands to show available commands.");
-            shell.conversation.follow_latest();
-        }
-        _ => {
-            shell.submit_agent_input(runtime, session, text);
-        }
-    }
+    shell.submit_agent_input(runtime, session, text);
 }
 
-fn terminal_text_should_run_inline_model_first(text: &str) -> bool {
-    !matches!(
-        route_input(text),
-        Route::ApproveAction | Route::RejectAction | Route::Help
-    )
+fn handle_terminal_tool_input<P>(
+    text: &str,
+    runtime: &AgentRuntime<P>,
+    _action_gate: &ActionGate<P>,
+    session: &mut Session,
+    shell: &mut TuiShell,
+) where
+    P: ControllerProvider,
+{
+    shell.submit_agent_tool_input(runtime, session, text);
+}
+
+fn terminal_text_should_run_inline_model_first(_text: &str) -> bool {
+    true
 }
 
 fn normalize_terminal_model_first_input(text: &str) -> String {
@@ -1034,6 +1088,21 @@ where
                 runtime,
                 session.clone(),
                 model_input,
+                shell.policy_mode,
+            ));
+            false
+        }
+        TerminalCommand::Tool(text) => {
+            let runtime = AgentRuntime::new(controller.provider.clone());
+            shell
+                .conversation
+                .push_pending_provider_turn(&format!("/tool {text}"));
+            shell.conversation.follow_latest();
+            shell.status.start_thinking_pulse();
+            *pending_turn = Some(start_tool_turn(
+                runtime,
+                session.clone(),
+                text.to_string(),
                 shell.policy_mode,
             ));
             false

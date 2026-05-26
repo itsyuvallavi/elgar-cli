@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    agent_loop::run_agent_turn_with_policy,
+    agent_loop::{run_agent_tool_turn_with_policy, run_agent_turn_with_policy},
     context::ContextAccounting,
     controller::TurnResult,
     policy::PermissionPolicyMode,
@@ -55,6 +55,15 @@ where
         policy_mode: PermissionPolicyMode,
     ) -> TurnResult {
         run_agent_turn_with_policy(&self.provider, session, input, policy_mode)
+    }
+
+    pub fn tool_turn(
+        &self,
+        session: &mut Session,
+        input: &str,
+        policy_mode: PermissionPolicyMode,
+    ) -> TurnResult {
+        run_agent_tool_turn_with_policy(&self.provider, session, input, policy_mode)
     }
 }
 
@@ -150,10 +159,10 @@ mod tests {
     #[test]
     fn agent_runtime_applies_verified_create_actions() {
         let root = temp_root("create-directory");
-        let runtime = AgentRuntime::new(ProviderStub::default());
+        let runtime = create_directory_runtime("agent-runtime-folder");
         let mut session = Session::new("session-1", &root, &root);
 
-        let result = runtime.turn(
+        let result = runtime.tool_turn(
             &mut session,
             "create a folder called agent-runtime-folder",
             PermissionPolicyMode::FullAccess,
@@ -171,10 +180,10 @@ mod tests {
     #[test]
     fn agent_runtime_review_all_proposes_create_without_mutating() {
         let root = temp_root("review-all-create");
-        let runtime = AgentRuntime::new(ProviderStub::default());
+        let runtime = create_directory_runtime("review-all-folder");
         let mut session = Session::new("session-1", &root, &root);
 
-        let result = runtime.turn(
+        let result = runtime.tool_turn(
             &mut session,
             "create a folder called review-all-folder",
             PermissionPolicyMode::ReviewAll,
@@ -205,10 +214,10 @@ mod tests {
     #[test]
     fn agent_runtime_auto_create_records_policy_approval_not_user_approval() {
         let root = temp_root("auto-create-policy-source");
-        let runtime = AgentRuntime::new(ProviderStub::default());
+        let runtime = create_directory_runtime("auto-folder");
         let mut session = Session::new("session-1", &root, &root);
 
-        let result = runtime.turn(
+        let result = runtime.tool_turn(
             &mut session,
             "create a folder called auto-folder",
             PermissionPolicyMode::AutoCreateReviewModify,
@@ -242,10 +251,10 @@ mod tests {
     #[test]
     fn agent_runtime_auto_create_gates_shell_commands() {
         let root = temp_root("auto-create-shell");
-        let runtime = AgentRuntime::new(ProviderStub::default());
+        let runtime = shell_command_runtime("echo hello");
         let mut session = Session::new("session-1", &root, &root);
 
-        let result = runtime.turn(
+        let result = runtime.tool_turn(
             &mut session,
             "run shell command echo hello",
             PermissionPolicyMode::AutoCreateReviewModify,
@@ -287,7 +296,7 @@ mod tests {
         }));
         let mut session = Session::new("session-1", &root, &root);
 
-        let result = runtime.turn(
+        let result = runtime.tool_turn(
             &mut session,
             "create a project plan",
             PermissionPolicyMode::AutoCreateReviewModify,
@@ -330,7 +339,7 @@ mod tests {
         }));
         let mut session = Session::new("session-1", &root, &root);
 
-        let result = runtime.turn(
+        let result = runtime.tool_turn(
             &mut session,
             "overwrite demo.txt",
             PermissionPolicyMode::WorkspaceWriteWithReview,
@@ -375,7 +384,7 @@ mod tests {
         let runtime = AgentRuntime::new(provider.clone());
         let mut session = Session::new("session-1", &root, &root);
 
-        let result = runtime.turn(
+        let result = runtime.tool_turn(
             &mut session,
             &format!(
                 "create a file called test.txt inside {} with hello",
@@ -415,63 +424,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_runtime_review_all_repairs_directory_only_tool_for_clear_file_request() {
-        let root = temp_root("review-all-directory-only-file");
-        let _home = EnvGuard::set_home(&root);
-        let target_dir = root.join("ElgarPermissionTest");
-        let target_file = target_dir.join("test.txt");
-        let provider = BatchToolProvider::new(vec![RawModelToolCall {
-            id: "tool-dir".to_string(),
-            name: RawModelToolName::Known(ModelToolName::CreateDirectory),
-            arguments: serde_json::json!({
-                "target_path": target_dir
-            }),
-            assistant_summary: Some("create parent directory".to_string()),
-        }]);
-        let runtime = AgentRuntime::new(provider.clone());
-        let mut session = Session::new("session-1", &root, &root);
-
-        let result = runtime.turn(
-            &mut session,
-            &format!(
-                "create a file called test.txt inside {} with hello",
-                target_dir.display()
-            ),
-            PermissionPolicyMode::ReviewAll,
-        );
-
-        assert!(!target_file.exists());
-        assert_eq!(provider.call_count(), 1);
-        assert_eq!(session.actions().len(), 1);
-        let record = session.actions().last().expect("pending action");
-        assert_eq!(record.action.state, ActionLifecycleState::Proposed);
-        let ActionRequest::CreateFile(create_file) = &record.action.request else {
-            panic!("expected repaired pending create file action");
-        };
-        assert_eq!(create_file.target_path, target_file);
-        assert_eq!(create_file.contents, "hello");
-        assert!(result
-            .events
-            .iter()
-            .all(|event| !matches!(event, Event::AssistantMessage(message) if message.content.contains("approve"))));
-
-        ActionGate::new(ProviderStub::default()).approve(&mut session);
-
-        assert_eq!(
-            session.actions().last().unwrap().failure_reason,
-            None,
-            "approval should not fail"
-        );
-        assert_eq!(fs::read_to_string(&target_file).unwrap(), "hello");
-        assert_eq!(
-            session.actions().last().unwrap().action.state,
-            ActionLifecycleState::Applied
-        );
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn agent_runtime_review_all_reports_existing_same_file_without_pending_action() {
         let root = temp_root("review-all-existing-same-file");
         let target_dir = root.join("ElgarPermissionTest");
@@ -479,17 +431,18 @@ mod tests {
         fs::create_dir_all(&target_dir).unwrap();
         fs::write(&target_file, "hello").unwrap();
         let provider = BatchToolProvider::new(vec![RawModelToolCall {
-            id: "tool-dir".to_string(),
-            name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+            id: "tool-file".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateFile),
             arguments: serde_json::json!({
-                "target_path": target_dir
+                "target_path": target_file,
+                "contents": "hello"
             }),
-            assistant_summary: Some("create parent directory".to_string()),
+            assistant_summary: Some("create test.txt".to_string()),
         }]);
         let runtime = AgentRuntime::new(provider.clone());
         let mut session = Session::new("session-1", &root, &root);
 
-        let result = runtime.turn(
+        let result = runtime.tool_turn(
             &mut session,
             &format!(
                 "create a file called test.txt inside {} with hello",
@@ -516,17 +469,18 @@ mod tests {
         fs::create_dir_all(&target_dir).unwrap();
         fs::write(&target_file, "old").unwrap();
         let provider = BatchToolProvider::new(vec![RawModelToolCall {
-            id: "tool-dir".to_string(),
-            name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+            id: "tool-file".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateFile),
             arguments: serde_json::json!({
-                "target_path": target_dir
+                "target_path": target_file,
+                "contents": "hello"
             }),
-            assistant_summary: Some("create parent directory".to_string()),
+            assistant_summary: Some("create test.txt".to_string()),
         }]);
         let runtime = AgentRuntime::new(provider.clone());
         let mut session = Session::new("session-1", &root, &root);
 
-        let result = runtime.turn(
+        let result = runtime.tool_turn(
             &mut session,
             &format!(
                 "create a file called test.txt inside {} with hello",
@@ -570,6 +524,29 @@ mod tests {
         fn new(call: RawModelToolCall) -> Self {
             Self { call }
         }
+    }
+
+    fn create_directory_runtime(target_path: &str) -> AgentRuntime<ToolProvider> {
+        AgentRuntime::new(ToolProvider::new(RawModelToolCall {
+            id: "tool-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+            arguments: serde_json::json!({
+                "target_path": target_path
+            }),
+            assistant_summary: Some(format!("create {target_path}")),
+        }))
+    }
+
+    fn shell_command_runtime(command: &str) -> AgentRuntime<ToolProvider> {
+        AgentRuntime::new(ToolProvider::new(RawModelToolCall {
+            id: "tool-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::ShellCommand),
+            arguments: serde_json::json!({
+                "command": command,
+                "cwd": "."
+            }),
+            assistant_summary: Some(format!("run {command}")),
+        }))
     }
 
     impl ControllerProvider for ToolProvider {
