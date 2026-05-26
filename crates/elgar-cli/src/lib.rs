@@ -175,10 +175,11 @@ pub fn render_cli_turn(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> String {
-    let controller = Controller::default();
+    let runtime = AgentRuntime::default();
     let mut session = Session::new("cli-smoke-session", project_root.as_ref(), cwd.as_ref());
 
-    controller.turn(&mut session, input);
+    runtime.refresh_context_accounting(&mut session, None);
+    runtime.turn(&mut session, input, default_permission_policy_mode());
     render_session(&session)
 }
 
@@ -189,14 +190,17 @@ pub fn render_cli_turn_from_runtime_config(
 ) -> Result<String, RuntimeProviderConfigError> {
     let project_root_ref = project_root.as_ref();
     let cwd_ref = cwd.as_ref();
-    let Some(runtime) = load_runtime_provider(project_root_ref)? else {
+    let Some(runtime_provider) = load_runtime_provider(project_root_ref)? else {
         return Ok(render_cli_turn(input, project_root_ref, cwd_ref));
     };
 
-    let controller = Controller::with_lm_studio_provider(runtime.config);
+    let policy_mode = runtime_permission_policy_mode(project_root_ref)?;
+    let context_window_tokens = runtime_provider.config.configured_context_window_tokens();
+    let runtime = AgentRuntime::with_lm_studio_provider(runtime_provider.config);
     let mut session = Session::new("cli-runtime-session", project_root_ref, cwd_ref);
 
-    controller.turn(&mut session, input);
+    runtime.refresh_context_accounting(&mut session, context_window_tokens);
+    runtime.turn(&mut session, input, policy_mode);
     Ok(render_session(&session))
 }
 

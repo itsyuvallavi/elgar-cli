@@ -280,6 +280,20 @@ pub trait ControllerProvider {
         self.chat_with_tools_with_metadata(prompt, metadata, tools)
     }
 
+    fn chat_messages_with_metadata(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+    ) -> Result<ProviderOutput, ProviderError> {
+        let prompt = messages
+            .iter()
+            .rev()
+            .find(|message| matches!(message.role, ChatRole::User))
+            .map(|message| message.content.as_str())
+            .unwrap_or_default();
+        self.chat_with_metadata(prompt, metadata)
+    }
+
     fn chat_stream(
         &self,
         prompt: &str,

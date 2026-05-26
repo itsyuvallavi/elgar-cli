@@ -302,6 +302,24 @@ impl ControllerProvider for LmStudioProvider {
         )
     }
 
+    fn chat_messages_with_metadata(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+    ) -> Result<ProviderOutput, ProviderError> {
+        if self.config.stream {
+            let mut ignore_chunks = |_chunk: ProviderStreamChunk| {};
+            chat_lm_studio_streaming_with_request_id(
+                &self.config,
+                messages,
+                &metadata.request_id,
+                &mut ignore_chunks,
+            )
+        } else {
+            chat_lm_studio_with_request_id(&self.config, messages, &metadata.request_id)
+        }
+    }
+
     fn chat_stream(
         &self,
         prompt: &str,

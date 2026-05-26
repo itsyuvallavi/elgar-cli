@@ -19,7 +19,7 @@ fn render(input: &str, root: &Path) -> String {
 }
 
 #[test]
-fn cli_renders_core_events_from_controller_output() {
+fn cli_renders_core_events_from_agent_runtime_output() {
     let root = smoke_root("core-events");
 
     let rendered = render("what does the harness do?", &root);
@@ -33,18 +33,17 @@ fn cli_renders_core_events_from_controller_output() {
 }
 
 #[test]
-fn cli_reports_controller_proposal_without_mutating_files() {
-    let root = smoke_root("proposal-no-write");
+fn cli_default_agent_runtime_auto_creates_safe_files() {
+    let root = smoke_root("auto-create-safe-file");
     let target = root.join("hello.py");
 
     let rendered = render("create file hello.py", &root);
 
     assert!(rendered.contains("user: create file hello.py"));
-    assert!(rendered.contains("action proposed: action-1 CreateFile write hello.py"));
-    assert!(rendered.contains(
-        "assistant Controller: Proposed CreateFile action. Approve or reject before any file is written."
-    ));
-    assert!(!target.exists());
+    assert!(rendered.contains("provider started: stub-provider request stub-request-1"));
+    assert!(rendered.contains("action approved: action-1 CreateFile create hello.py"));
+    assert!(rendered.contains("action applied: action-1 CreateFile file written:"));
+    assert!(target.exists());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -576,7 +575,7 @@ fn tui_command_line_loop_preserves_controller_backed_action_lifecycle() {
 }
 
 #[test]
-fn default_cli_path_uses_stub_controller_even_when_lm_studio_env_is_set() {
+fn default_cli_path_uses_stub_agent_runtime_even_when_lm_studio_env_is_set() {
     let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("what does the harness do?")
         .env("ELGAR_PROVIDER_CONFIG", "off")

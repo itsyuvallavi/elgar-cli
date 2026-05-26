@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::{
     action::{Action, ActionRequest, CreateFileAction, OverwriteFileAction},
+    context::ContextBundle,
     controller::TurnResult,
     controller_project_memory::record_verified_project_memory,
     controller_reporting::verified_action_success_message,
@@ -28,7 +29,10 @@ use crate::{
     },
     path_resolution::{allowed_root_for_action, resolve_agent_action_paths, AgentPathResolution},
     policy::{PermissionPolicyMode, PolicyDecision},
-    provider::{ChatMessage, ChatRole, ChatToolCall, ChatToolCallFunction, ControllerProvider},
+    provider::{
+        ChatMessage, ChatRole, ChatToolCall, ChatToolCallFunction, ControllerProvider,
+        ProviderErrorKind,
+    },
     provider_visible_text_from_text_only_output,
     router::Route,
     session::{
@@ -47,11 +51,16 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "If the user asks for a plan and says to share it before implementation, create or update a plan file and summarize it; do not implement project files until asked. ",
     "If the user asks what the plan is, summarize the existing plan; do not implement it. ",
     "If a verified plan already exists and the user gives a short choice follow-up, answer from that plan instead of recreating the same file. ",
-    "When creating a framework project, create every necessary starter file before the final answer. For a TypeScript Next.js Tailwind project, include package.json, tsconfig.json, next-env.d.ts, next.config, postcss.config, tailwind.config, app or pages entry files, global Tailwind CSS, and README. ",
+    "When creating a framework project, infer the necessary starter files from the requested stack and create the complete runnable scaffold before the final answer. ",
     "After tools run, answer naturally and briefly with what happened."
+);
+const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
+    "The previous tool-enabled provider request returned no usable response. ",
+    "Answer normally in prose. Do not claim filesystem or shell changes unless they were already reported by verified tool results."
 );
 
 const MAX_AGENT_TOOL_ROUNDS: usize = 6;
+const MAX_VERIFIED_PLAN_TOOL_RETRIES: usize = 2;
 
 pub fn run_permissive_agent_turn<P>(provider: &P, session: &mut Session, input: &str) -> TurnResult
 where
@@ -96,22 +105,30 @@ where
 
     let agent_context = agent_verified_memory_context(session, input);
     let mut messages = vec![ChatMessage::new(ChatRole::System, AGENT_SYSTEM_PROMPT)];
+    if let Some(context) = agent_local_runtime_context(session) {
+        messages.push(ChatMessage::system(context));
+    }
     if let Some(context) = agent_recent_conversation_context(session, start_index) {
         messages.push(ChatMessage::system(context));
     }
     if let Some(context) = agent_context.prompt_context.clone() {
         messages.push(ChatMessage::system(context));
     }
+    if let Some(context) = verified_plan_execution_request_context(session, input) {
+        messages.push(ChatMessage::system(context));
+    }
     messages.push(ChatMessage::user(input));
     let tools = elgar_model_tool_definitions();
     let mut handled_tool_call_ids = HashSet::new();
+    let mut verified_plan_retry_count = 0;
+    let mut reported_verified_plan_failure = false;
 
     for _round in 0..MAX_AGENT_TOOL_ROUNDS {
         let request = provider.request_metadata();
-        session.push_event(Event::ProviderStarted(ProviderStarted::new(
-            request.provider.clone(),
-            request.request_id.clone(),
-        )));
+        session.push_event(Event::ProviderStarted(
+            ProviderStarted::new(request.provider.clone(), request.request_id.clone())
+                .with_request_details(request.model.clone(), "tool_enabled", tools.len()),
+        ));
 
         let output = match provider.chat_messages_with_tools_with_metadata(
             messages.clone(),
@@ -120,6 +137,60 @@ where
         ) {
             Ok(output) => output,
             Err(error) => {
+                if let Some(message) = empty_verified_plan_retry_message(session, input, &error) {
+                    if verified_plan_retry_count < MAX_VERIFIED_PLAN_TOOL_RETRIES {
+                        verified_plan_retry_count += 1;
+                        messages.push(ChatMessage::system(message));
+                        continue;
+                    }
+
+                    session.push_event(Event::Error(ErrorEvent::new(
+                        verified_plan_retry_exhausted_message(session, input)
+                            .unwrap_or_else(|| error.to_string()),
+                    )));
+                    reported_verified_plan_failure = true;
+                    break;
+                }
+
+                if error.kind == ProviderErrorKind::EmptyResponse {
+                    let fallback_request = provider.request_metadata();
+                    session.push_event(Event::ProviderStarted(
+                        ProviderStarted::new(
+                            fallback_request.provider.clone(),
+                            fallback_request.request_id.clone(),
+                        )
+                        .with_request_details(
+                            fallback_request.model.clone(),
+                            "plain_fallback",
+                            0,
+                        ),
+                    ));
+                    let mut fallback_messages = messages.clone();
+                    fallback_messages.push(ChatMessage::system(AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT));
+                    match provider.chat_messages_with_metadata(fallback_messages, &fallback_request)
+                    {
+                        Ok(output) => {
+                            let assistant_text = output.text.clone();
+                            session.push_event(Event::ProviderFinished(ProviderFinished::new(
+                                fallback_request.provider,
+                                fallback_request.request_id,
+                                output,
+                            )));
+                            push_provider_message_if_visible(session, assistant_text);
+                            break;
+                        }
+                        Err(fallback_error) => {
+                            session.push_event(Event::Error(ErrorEvent::new(format!(
+                                "{} provider request {} failed: {error}; plain fallback request {} failed: {fallback_error}",
+                                request.provider,
+                                request.request_id,
+                                fallback_request.request_id
+                            ))));
+                            break;
+                        }
+                    }
+                }
+
                 session.push_event(Event::Error(ErrorEvent::new(format!(
                     "{} provider request {} failed: {error}",
                     request.provider, request.request_id
@@ -138,8 +209,20 @@ where
 
         if tool_calls.is_empty() {
             if let Some(message) = no_tool_verified_plan_retry_message(session, input) {
-                messages.push(ChatMessage::system(message));
-                continue;
+                if verified_plan_retry_count < MAX_VERIFIED_PLAN_TOOL_RETRIES {
+                    verified_plan_retry_count += 1;
+                    messages.push(ChatMessage::system(message));
+                    continue;
+                }
+
+                session.push_event(Event::Error(ErrorEvent::new(
+                    verified_plan_retry_exhausted_message(session, input).unwrap_or_else(|| {
+                        "Provider did not return filesystem tool calls for the verified plan."
+                            .to_string()
+                    }),
+                )));
+                reported_verified_plan_failure = true;
+                break;
             }
             push_provider_message_if_visible(session, assistant_text);
             break;
@@ -239,10 +322,25 @@ where
         }
     }
 
+    if !reported_verified_plan_failure {
+        if let Some(message) = verified_plan_retry_exhausted_message(session, input) {
+            session.push_event(Event::Error(ErrorEvent::new(message)));
+        }
+    }
+
     TurnResult {
         route: Route::AskModel,
         events: session.events()[start_index..].to_vec(),
     }
+}
+
+fn agent_local_runtime_context(session: &mut Session) -> Option<String> {
+    let project_root = session.project_root.clone();
+    let cwd = session.cwd.clone();
+    let max_window_tokens = session.context_accounting().max_window_tokens;
+    let bundle = ContextBundle::from_default_local_files(project_root, cwd, max_window_tokens);
+    session.set_context_accounting(bundle.accounting.clone());
+    bundle.system_context()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,6 +474,42 @@ fn plan_expected_files_are_covered(
 }
 
 fn no_tool_verified_plan_retry_message(session: &Session, input: &str) -> Option<String> {
+    verified_plan_tool_request_message(
+        session,
+        input,
+        "The provider returned no filesystem tool calls for the verified plan.",
+    )
+}
+
+fn empty_verified_plan_retry_message(
+    session: &Session,
+    input: &str,
+    error: &crate::provider::ProviderError,
+) -> Option<String> {
+    if error.kind != ProviderErrorKind::EmptyResponse {
+        return None;
+    }
+
+    verified_plan_tool_request_message(
+        session,
+        input,
+        "The provider returned an empty response instead of filesystem tool calls for the verified plan.",
+    )
+}
+
+fn verified_plan_execution_request_context(session: &Session, input: &str) -> Option<String> {
+    verified_plan_tool_request_message(
+        session,
+        input,
+        "The user is asking to execute the latest verified plan.",
+    )
+}
+
+fn verified_plan_tool_request_message(
+    session: &Session,
+    input: &str,
+    reason: &str,
+) -> Option<String> {
     if !is_model_first_verified_plan_implementation_request(input) {
         return None;
     }
@@ -395,7 +529,37 @@ fn no_tool_verified_plan_retry_message(session: &Session, input: &str) -> Option
     }
 
     Some(format!(
-        "The user asked to execute the verified plan, but no filesystem tool calls were returned. Do not claim success. Return create_directory/create_file tool calls for the missing files under {}. Missing files: {}",
+        "{reason} Do not claim success. Return create_file tool calls for the missing files under {}. Use create_directory only for required parent folders. Do not recreate or overwrite the plan file at {}. Missing files: {}",
+        plan.project_root.display(),
+        plan.path.display(),
+        missing_files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+fn verified_plan_retry_exhausted_message(session: &Session, input: &str) -> Option<String> {
+    let plan = session.project_memory().latest_verified_plan()?;
+    if !is_model_first_verified_plan_implementation_request(input) {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&plan.path).ok()?;
+    let expected_files =
+        expected_files_from_verified_plan(&contents, &plan.project_root, &plan.path);
+    if expected_files.len() < 2 {
+        return None;
+    }
+    let missing_files =
+        missing_expected_verified_plan_files(&expected_files, &plan.project_root, &[]);
+    if missing_files.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "Provider did not return the required filesystem tool calls for the verified plan at {}. No unverified success was recorded; the project still needs implementation under {}. Missing files: {}",
+        plan.path.display(),
         plan.project_root.display(),
         missing_files
             .iter()
@@ -1263,6 +1427,43 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct ResultSequenceProvider {
+        outputs: std::sync::Arc<
+            std::sync::Mutex<Vec<Result<crate::event::ProviderOutput, ProviderError>>>,
+        >,
+        messages: std::sync::Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
+    }
+
+    impl ResultSequenceProvider {
+        fn new(outputs: Vec<Result<crate::event::ProviderOutput, ProviderError>>) -> Self {
+            Self {
+                outputs: std::sync::Arc::new(std::sync::Mutex::new(outputs)),
+                messages: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl ControllerProvider for ResultSequenceProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new("result-sequence", None, "request")
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<crate::event::ProviderOutput, ProviderError> {
+            Err(ProviderError::configuration("unused"))
+        }
+
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<crate::event::ProviderOutput, ProviderError> {
+            self.messages.lock().unwrap().push(messages);
+            self.outputs.lock().unwrap().remove(0)
+        }
+    }
+
     #[test]
     fn permissive_agent_turn_executes_tool_call_and_continues() {
         let root =
@@ -1860,8 +2061,384 @@ mod tests {
             matches!(message.role, ChatRole::System)
                 && message
                     .content
-                    .contains("no filesystem tool calls were returned")
+                    .contains("no filesystem tool calls for the verified plan")
         }));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_execute_it_retries_empty_provider_response_for_verified_plan() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-empty-response-retry",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ReactProjectEmpty")).unwrap();
+        let plan_path = root.join("ReactProjectEmpty/plan.md");
+        std::fs::write(
+            &plan_path,
+            "# React TS Tailwind Plan\n\n- Create package.json.\n- Create src/main.tsx.\n",
+        )
+        .unwrap();
+        let provider = ResultSequenceProvider::new(vec![
+            Err(ProviderError::empty_response(
+                "provider response contained no text",
+            )),
+            Ok(
+                crate::event::ProviderOutput::new("Creating files now.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "empty-retry-call-1".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "package.json",
+                            "contents": "{\"scripts\":{\"dev\":\"vite\"}}\n"
+                        }),
+                        assistant_summary: Some("create package".to_string()),
+                    },
+                    RawModelToolCall {
+                        id: "empty-retry-call-2".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "src/main.tsx",
+                            "contents": "console.log('hello');\n"
+                        }),
+                        assistant_summary: Some("create main".to_string()),
+                    },
+                ]),
+            ),
+            Ok(crate::event::ProviderOutput::new("Done.")),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: PathBuf::from("ReactProjectEmpty/plan.md"),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "ReactProjectEmpty/plan.md".to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(&provider, &mut session, "okay execute it");
+
+        assert!(root.join("ReactProjectEmpty/package.json").is_file());
+        assert!(root.join("ReactProjectEmpty/src/main.tsx").is_file());
+        assert!(!session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::Error(_))));
+
+        let provider_requests = provider.messages.lock().unwrap();
+        assert!(provider_requests.len() >= 2);
+        assert!(provider_requests[0].iter().any(|message| {
+            matches!(message.role, ChatRole::System)
+                && message.content.contains("The user is asking to execute")
+                && message.content.contains("ReactProjectEmpty")
+                && message.content.contains("package.json")
+        }));
+        assert!(provider_requests[1].iter().any(|message| {
+            matches!(message.role, ChatRole::System)
+                && message.content.contains("empty response")
+                && message.content.contains("ReactProjectEmpty")
+                && message.content.contains("src/main.tsx")
+        }));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_execute_it_reports_repeated_empty_provider_responses() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-empty-response-stop",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ReactProjectStop")).unwrap();
+        let plan_path = root.join("ReactProjectStop/plan.md");
+        std::fs::write(
+            &plan_path,
+            "# React TS Tailwind Plan\n\n- Create package.json.\n- Create src/main.tsx.\n",
+        )
+        .unwrap();
+        let provider = ResultSequenceProvider::new(vec![
+            Err(ProviderError::empty_response("empty first")),
+            Err(ProviderError::empty_response("empty second")),
+            Err(ProviderError::empty_response("empty third")),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: PathBuf::from("ReactProjectStop/plan.md"),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "ReactProjectStop/plan.md".to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(&provider, &mut session, "okay execute it");
+
+        assert!(!root.join("ReactProjectStop/package.json").exists());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::Error(error)
+                if error.message.contains("Provider did not return the required filesystem tool calls")
+                    && error.message.contains("ReactProjectStop")
+        )));
+        assert_eq!(provider.messages.lock().unwrap().len(), 3);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_execute_project_files_reports_repeated_no_tool_responses() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-no-tool-stop",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Desktop/PlanNoTool")).unwrap();
+        let plan_path = root.join("Desktop/PlanNoTool/plan.txt");
+        std::fs::write(
+            &plan_path,
+            r#"# Simple TypeScript and Python Demo Project Plan
+
+PlanNoTool/
+├── ts-demo/
+│   ├── src/
+│   │   └── index.ts
+│   ├── package.json
+│   └── tsconfig.json
+├── py-demo/
+│   ├── src/
+│   │   └── main.py
+│   ├── requirements.txt
+│   └── setup.py
+└── README.md
+"#,
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("I'll create the files."),
+            crate::event::ProviderOutput::new("Still working."),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: PathBuf::from("Desktop/PlanNoTool/plan.txt"),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "Desktop/PlanNoTool/plan.txt".to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "okay execute it, create all the files and folders in the project",
+        );
+
+        let error_message = session
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                Event::Error(error)
+                    if error
+                        .message
+                        .contains("Provider did not return the required filesystem tool calls") =>
+                {
+                    Some(error.message.clone())
+                }
+                _ => None,
+            })
+            .expect("expected verified-plan no-tool error");
+        for expected in [
+            "PlanNoTool",
+            "ts-demo/src/index.ts",
+            "ts-demo/package.json",
+            "ts-demo/tsconfig.json",
+            "py-demo/src/main.py",
+            "py-demo/requirements.txt",
+            "py-demo/setup.py",
+            "README.md",
+        ] {
+            assert!(
+                error_message.contains(expected),
+                "missing {expected} in error: {error_message}"
+            );
+        }
+        for duplicate in [
+            "Missing files: src/index.ts",
+            "Missing files: src/main.py",
+            "Missing files: index.ts",
+            "Missing files: main.py",
+            ", src/index.ts",
+            ", src/main.py",
+            ", index.ts",
+            ", main.py",
+        ] {
+            assert!(
+                !error_message.contains(duplicate),
+                "unexpected duplicate {duplicate} in error: {error_message}"
+            );
+        }
+        assert_eq!(provider.messages.lock().unwrap().len(), 3);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_execute_project_files_reports_exhausted_recoverable_tool_errors() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-recoverable-tool-stop",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Desktop/PlanBadTool")).unwrap();
+        let plan_path = root.join("Desktop/PlanBadTool/plan.txt");
+        std::fs::write(
+            &plan_path,
+            "# Project Plan\n\n- Create package.json.\n- Create src/main.ts.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(
+            (0..MAX_AGENT_TOOL_ROUNDS)
+                .map(|index| {
+                    crate::event::ProviderOutput::new("Patching a missing file.").with_tool_calls(
+                        vec![RawModelToolCall {
+                            id: format!("bad-tool-{index}"),
+                            name: RawModelToolName::Known(ModelToolName::PatchFile),
+                            arguments: json!({
+                                "find": "x",
+                                "replace": "y"
+                            }),
+                            assistant_summary: None,
+                        }],
+                    )
+                })
+                .collect(),
+        );
+        let mut session = Session::new("session", &root, &root);
+
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(crate::action::CreateFileAction {
+                target_path: PathBuf::from("Desktop/PlanBadTool/plan.txt"),
+                contents: String::new(),
+            }),
+            "create project plan",
+        )
+        .approve()
+        .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "Desktop/PlanBadTool/plan.txt".to_string(),
+            });
+        let mut plan_record = ActionRecord::new(plan_action.clone());
+        plan_record.verified_result = Some(result.clone());
+        session.push_action(plan_record);
+        record_verified_project_memory(&mut session, &plan_action, &result);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "okay execute it, create all the files and folders in the project",
+        );
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::Error(error)
+                if error.message.contains("Provider did not return the required filesystem tool calls")
+                    && error.message.contains("package.json")
+                    && error.message.contains("src/main.ts")
+        )));
+        assert_eq!(
+            provider.messages.lock().unwrap().len(),
+            MAX_AGENT_TOOL_ROUNDS
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_plan_only_request_does_not_retry_as_implementation() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-only-no-implementation",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating folder and plan.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "plan-only-call-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "ReactPlanOnly" }),
+                    assistant_summary: Some("create folder".to_string()),
+                },
+                RawModelToolCall {
+                    id: "plan-only-call-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "ReactPlanOnly/plan.md",
+                        "contents": "# React TS Tailwind Plan\n\n- Create package.json.\n- Create src/main.tsx.\n"
+                    }),
+                    assistant_summary: Some("create plan".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Plan created. I have not implemented it yet."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a folder called ReactPlanOnly, then create a plan for a simple React TypeScript Tailwind project inside it. The plan should include all necessary files, but do not implement yet.",
+        );
+
+        assert!(root.join("ReactPlanOnly/plan.md").is_file());
+        assert!(!root.join("ReactPlanOnly/package.json").exists());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::Error(error)
+                if error
+                    .message
+                    .contains("Provider did not return the required filesystem tool calls")
+        )));
+        assert_eq!(provider.messages.lock().unwrap().len(), 2);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2400,13 +2977,15 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct CapturingProvider {
-        messages: std::sync::Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
+        tool_messages: std::sync::Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
+        tool_counts: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
     }
 
     impl CapturingProvider {
         fn new() -> Self {
             Self {
-                messages: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                tool_messages: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                tool_counts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
     }
@@ -2424,15 +3003,158 @@ mod tests {
             &self,
             messages: Vec<ChatMessage>,
             _metadata: &ProviderRequestMetadata,
-            _tools: Vec<ChatToolDefinition>,
+            tools: Vec<ChatToolDefinition>,
         ) -> Result<crate::event::ProviderOutput, ProviderError> {
-            self.messages.lock().unwrap().push(messages);
+            self.tool_messages.lock().unwrap().push(messages);
+            self.tool_counts.lock().unwrap().push(tools.len());
             Ok(crate::event::ProviderOutput::new("I'll create it."))
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct EmptyToolThenPlainProvider {
+        tool_messages: std::sync::Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
+        plain_messages: std::sync::Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
+    }
+
+    impl EmptyToolThenPlainProvider {
+        fn new() -> Self {
+            Self {
+                tool_messages: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                plain_messages: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl ControllerProvider for EmptyToolThenPlainProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new("capture", Some("test-model".to_string()), "request")
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<crate::event::ProviderOutput, ProviderError> {
+            Err(ProviderError::configuration("unused"))
+        }
+
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<crate::event::ProviderOutput, ProviderError> {
+            self.tool_messages.lock().unwrap().push(messages);
+            Err(ProviderError::empty_response("empty tool response"))
+        }
+
+        fn chat_messages_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+        ) -> Result<crate::event::ProviderOutput, ProviderError> {
+            self.plain_messages.lock().unwrap().push(messages);
+            Ok(crate::event::ProviderOutput::new("Plain fallback answer."))
+        }
+    }
+
     #[test]
-    fn permissive_agent_prompt_names_complete_next_tailwind_scaffold_files() {
+    fn permissive_agent_normal_text_still_uses_model_tool_runtime_entrypoint() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-normal-text-tool-runtime",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new();
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "hello!");
+
+        assert_eq!(provider.tool_messages.lock().unwrap().len(), 1);
+        assert!(provider.tool_counts.lock().unwrap()[0] > 0);
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ProviderStarted(started)
+                if started.request_mode.as_deref() == Some("tool_enabled")
+                    && started.tool_count.is_some_and(|count| count > 0)
+        )));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content == "I'll create it."
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_empty_tool_response_uses_provider_fallback_not_keyword_routing() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-empty-tool-plain-fallback",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = EmptyToolThenPlainProvider::new();
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "hello!");
+
+        assert_eq!(provider.tool_messages.lock().unwrap().len(), 1);
+        assert_eq!(provider.plain_messages.lock().unwrap().len(), 1);
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ProviderStarted(started)
+                if started.request_mode.as_deref() == Some("tool_enabled")
+                    && started.model.as_deref() == Some("test-model")
+                    && started.tool_count.is_some_and(|count| count > 0)
+        )));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ProviderStarted(started)
+                if started.request_mode.as_deref() == Some("plain_fallback")
+                    && started.model.as_deref() == Some("test-model")
+                    && started.tool_count == Some(0)
+        )));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content == "Plain fallback answer."
+        )));
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::ProviderStarted(started)
+                if started.request_mode.as_deref() == Some("plain_chat")
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_action_request_uses_tool_enabled_provider_request() {
+        let root =
+            std::env::temp_dir().join(format!("elgar-agent-loop-{}-tool-chat", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new();
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "create a folder called Demo");
+
+        assert_eq!(provider.tool_messages.lock().unwrap().len(), 1);
+        assert!(provider.tool_counts.lock().unwrap()[0] > 0);
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ProviderStarted(started)
+                if started.request_mode.as_deref() == Some("tool_enabled")
+                    && started.tool_count.is_some_and(|count| count > 0)
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_prompt_requests_complete_scaffold_without_stack_specific_template() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-next-tailwind-prompt",
             std::process::id()
@@ -2448,20 +3170,12 @@ mod tests {
             "create a TS Next.js and Tailwind project in ~/next-tailwind-ts-project",
         );
 
-        let messages = provider.messages.lock().unwrap();
+        let messages = provider.tool_messages.lock().unwrap();
         let system_prompt = &messages[0][0].content;
-        for expected in [
-            "TypeScript Next.js Tailwind",
-            "package.json",
-            "tsconfig.json",
-            "next-env.d.ts",
-            "postcss.config",
-            "tailwind.config",
-            "global Tailwind CSS",
-            "README",
-        ] {
-            assert!(system_prompt.contains(expected), "missing {expected}");
-        }
+        assert!(system_prompt.contains("infer the necessary starter files"));
+        assert!(system_prompt.contains("complete runnable scaffold"));
+        assert!(!system_prompt.contains("next-env.d.ts"));
+        assert!(!system_prompt.contains("tailwind.config"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

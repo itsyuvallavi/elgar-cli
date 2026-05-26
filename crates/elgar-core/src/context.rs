@@ -115,6 +115,22 @@ impl ContextBundle {
         self.prompt_for_with_recent_conversation(None, input)
     }
 
+    pub fn system_context(&self) -> Option<String> {
+        if self.sections.is_empty() {
+            return None;
+        }
+
+        let sections = self
+            .sections
+            .iter()
+            .map(ContextSection::render)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Some(format!(
+            "Local context selected by Elgar runtime:\n{sections}"
+        ))
+    }
+
     pub fn prompt_for_with_recent_conversation(
         &self,
         recent_conversation: Option<&str>,

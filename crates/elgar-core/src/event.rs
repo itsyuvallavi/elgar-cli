@@ -76,6 +76,12 @@ pub enum AssistantMessageSource {
 pub struct ProviderStarted {
     pub provider: String,
     pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_count: Option<usize>,
 }
 
 impl ProviderStarted {
@@ -83,7 +89,22 @@ impl ProviderStarted {
         Self {
             provider: provider.into(),
             request_id: request_id.into(),
+            model: None,
+            request_mode: None,
+            tool_count: None,
         }
+    }
+
+    pub fn with_request_details(
+        mut self,
+        model: Option<String>,
+        request_mode: impl Into<String>,
+        tool_count: usize,
+    ) -> Self {
+        self.model = model;
+        self.request_mode = Some(request_mode.into());
+        self.tool_count = Some(tool_count);
+        self
     }
 }
 

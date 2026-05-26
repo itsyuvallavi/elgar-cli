@@ -23,10 +23,20 @@ pub fn render_event(event: &Event) -> String {
             format!("assistant {:?}: {}", message.source, message.content)
         }
         Event::ProviderStarted(started) => {
-            format!(
+            let mut rendered = format!(
                 "provider started: {} request {}",
                 started.provider, started.request_id
-            )
+            );
+            if let Some(model) = started.model.as_deref() {
+                rendered.push_str(&format!(" model {model}"));
+            }
+            if let Some(mode) = started.request_mode.as_deref() {
+                rendered.push_str(&format!(" mode {mode}"));
+            }
+            if let Some(tool_count) = started.tool_count {
+                rendered.push_str(&format!(" tools {tool_count}"));
+            }
+            rendered
         }
         Event::ProviderFinished(finished) => {
             format!(

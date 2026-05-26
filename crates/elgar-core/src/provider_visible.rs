@@ -100,7 +100,6 @@ fn is_provider_tool_planning_sentence(sentence: &str) -> bool {
         || normalized.starts_with("need to create ")
         || normalized == "create directory"
         || normalized == "create file"
-        || normalized.starts_with("creating ")
         || normalized.starts_with("create directory on desktop")
         || normalized.starts_with("create directory on the desktop")
         || normalized.starts_with("create directory on my desktop")
@@ -211,6 +210,14 @@ mod tests {
                 " Tool-call mode may use create_file tool in an explanation. \n".to_string()
             ),
             Some("Tool-call mode may use create_file tool in an explanation.".to_string())
+        );
+        assert_eq!(
+            provider_visible_text_from_text_only_output(
+                "Creating a plan first is useful when the requirements are still open.".to_string()
+            ),
+            Some(
+                "Creating a plan first is useful when the requirements are still open.".to_string()
+            )
         );
     }
 

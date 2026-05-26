@@ -62,6 +62,26 @@ pub(crate) fn model_first_verified_plan_completion_need(
 
 pub(crate) fn is_model_first_verified_plan_implementation_request(input: &str) -> bool {
     let lower = input.to_ascii_lowercase();
+    if contains_any(
+        &lower,
+        &[
+            "do not implement",
+            "don't implement",
+            "dont implement",
+            "do not execute",
+            "don't execute",
+            "dont execute",
+            "do not create the files",
+            "don't create the files",
+            "dont create the files",
+            "do not build",
+            "don't build",
+            "dont build",
+        ],
+    ) {
+        return false;
+    }
+
     contains_any(
         &lower,
         &[
@@ -85,16 +105,91 @@ pub(crate) fn expected_files_from_verified_plan(
     plan_path: &Path,
 ) -> Vec<PathBuf> {
     let mut files = Vec::new();
+    let tree_files = expected_files_from_tree_lines(contents, project_root, plan_path);
+    for path in &tree_files {
+        push_unique_path(&mut files, path.clone());
+    }
     for token in contents.split_whitespace() {
         let Some(path) = expected_file_token_to_relative_path(token, project_root, plan_path)
         else {
             continue;
         };
-        if !files.contains(&path) {
-            files.push(path);
+        if tree_files
+            .iter()
+            .any(|tree_file| tree_file != &path && tree_file.ends_with(&path))
+        {
+            continue;
         }
+        push_unique_path(&mut files, path);
     }
     files
+}
+
+fn expected_files_from_tree_lines(
+    contents: &str,
+    project_root: &Path,
+    plan_path: &Path,
+) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut directory_stack: Vec<String> = Vec::new();
+    let entries: Vec<(usize, &str)> = contents.lines().filter_map(tree_line_entry).collect();
+
+    for (index, (depth, entry)) in entries.iter().enumerate() {
+        let entry = clean_tree_entry(entry);
+        if entry.is_empty() {
+            continue;
+        }
+
+        directory_stack.truncate(*depth);
+        let has_child = entries
+            .get(index + 1)
+            .is_some_and(|(next_depth, _)| next_depth > depth);
+        if entry.ends_with('/') || has_child {
+            directory_stack.push(entry.trim_end_matches('/').to_string());
+            continue;
+        }
+
+        let mut path = PathBuf::new();
+        for directory in directory_stack.iter().take(*depth) {
+            path.push(directory);
+        }
+        path.push(entry);
+        if let Some(path) = expected_tree_file_to_relative_path(
+            &path.display().to_string(),
+            project_root,
+            plan_path,
+        ) {
+            push_unique_path(&mut files, path);
+        }
+    }
+
+    files
+}
+
+fn tree_line_entry(line: &str) -> Option<(usize, &str)> {
+    let marker_text = ["├── ", "└── ", "├─ ", "└─ "]
+        .iter()
+        .find(|marker| line.contains(**marker))?;
+    let marker = line.find(marker_text)?;
+    let prefix = &line[..marker];
+    let depth = prefix.chars().filter(|character| *character == '│').count();
+    line.get(marker + marker_text.len()..)
+        .map(|entry| (depth, entry))
+}
+
+fn clean_tree_entry(entry: &str) -> &str {
+    entry
+        .split(" # ")
+        .next()
+        .unwrap_or(entry)
+        .trim()
+        .trim_matches('`')
+}
+
+fn push_unique_path(files: &mut Vec<PathBuf>, path: PathBuf) {
+    if !files.contains(&path) {
+        files.push(path);
+    }
 }
 
 pub(crate) fn expected_file_token_to_relative_path(
@@ -113,6 +208,43 @@ pub(crate) fn expected_file_token_to_relative_path(
         return None;
     }
 
+    let relative = if path.is_absolute() {
+        path.strip_prefix(project_root).ok()?.to_path_buf()
+    } else {
+        path
+    };
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+
+    let plan_relative = plan_path
+        .strip_prefix(project_root)
+        .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| plan_path.file_name().map(PathBuf::from));
+    if plan_relative.as_ref() == Some(&relative) {
+        return None;
+    }
+
+    Some(relative)
+}
+
+fn expected_tree_file_to_relative_path(
+    token: &str,
+    project_root: &Path,
+    plan_path: &Path,
+) -> Option<PathBuf> {
+    let token = trim_markdown_path_punctuation(token);
+    let token = trim_markdown_path_punctuation(token.trim_end_matches('.'));
+    if token.is_empty() || token.contains("://") || token.ends_with('/') {
+        return None;
+    }
+
+    let path = PathBuf::from(token.trim_start_matches("./"));
     let relative = if path.is_absolute() {
         path.strip_prefix(project_root).ok()?.to_path_buf()
     } else {
@@ -164,32 +296,10 @@ pub(crate) fn looks_like_project_file_path(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    if matches!(file_name, ".env" | ".gitignore" | ".npmrc") {
+    if file_name.starts_with('.') && file_name.len() > 1 {
         return true;
     }
-    if !file_name.contains('.') {
-        return false;
-    }
-    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-        return false;
-    };
-    matches!(
-        extension.to_ascii_lowercase().as_str(),
-        "css"
-            | "html"
-            | "js"
-            | "jsx"
-            | "json"
-            | "md"
-            | "py"
-            | "toml"
-            | "ts"
-            | "tsx"
-            | "txt"
-            | "vite"
-            | "yaml"
-            | "yml"
-    )
+    file_name.contains('.')
 }
 
 pub(crate) fn missing_expected_verified_plan_files(
@@ -309,7 +419,9 @@ fn truncate_line(line: &str, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::expected_files_from_verified_plan;
+    use super::{
+        expected_files_from_verified_plan, is_model_first_verified_plan_implementation_request,
+    };
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -376,5 +488,88 @@ ElgarDesktopReactSmoke/
             );
         }
         assert!(!expected.contains(&PathBuf::from("project_plan.md")));
+    }
+
+    #[test]
+    fn expected_files_include_nested_tree_paths_without_bare_duplicates() {
+        let project_root = Path::new("/tmp/Demo");
+        let plan_path = project_root.join("plan.txt");
+        let plan = r#"
+# Demo Plan
+
+Demo/
+├── package.json
+├── ts-demo/
+│   ├── src/
+│   │   └── index.ts    # Main TS file
+│   ├── package.json
+│   └── tsconfig.json
+├── py-demo/
+│   ├── src/
+│   │   └── main.py    # Main Python file
+│   └── requirements.txt
+└── README.md
+
+Key files: src/index.ts, src/main.py, index.ts, main.py, package.json.
+"#;
+
+        let expected = expected_files_from_verified_plan(plan, project_root, &plan_path);
+
+        for relative in [
+            "package.json",
+            "ts-demo/src/index.ts",
+            "ts-demo/package.json",
+            "ts-demo/tsconfig.json",
+            "py-demo/src/main.py",
+            "py-demo/requirements.txt",
+            "README.md",
+        ] {
+            assert!(
+                expected.contains(&PathBuf::from(relative)),
+                "missing expected file {relative}; got {expected:?}"
+            );
+        }
+        for duplicate in ["src/index.ts", "src/main.py", "index.ts", "main.py"] {
+            assert!(!expected.contains(&PathBuf::from(duplicate)));
+        }
+    }
+
+    #[test]
+    fn expected_files_include_extensionless_tree_files_without_code_block_indent_nesting() {
+        let project_root = Path::new("/tmp/Demo");
+        let plan_path = project_root.join("plan.md");
+        let plan = r#"
+```text
+    Demo/
+    ├── Dockerfile
+    ├── Makefile
+    ├── cmd/
+    │   └── main.go
+    └── README
+```
+"#;
+
+        let expected = expected_files_from_verified_plan(plan, project_root, &plan_path);
+
+        for relative in ["Dockerfile", "Makefile", "cmd/main.go", "README"] {
+            assert!(
+                expected.contains(&PathBuf::from(relative)),
+                "missing expected file {relative}; got {expected:?}"
+            );
+        }
+        assert!(!expected.contains(&PathBuf::from("cmd/README")));
+    }
+
+    #[test]
+    fn implementation_request_ignores_explicit_do_not_implement_plan_prompt() {
+        assert!(!is_model_first_verified_plan_implementation_request(
+            "create a plan for a React TypeScript Tailwind project, but do not implement yet"
+        ));
+        assert!(!is_model_first_verified_plan_implementation_request(
+            "create a plan and don't create the files yet"
+        ));
+        assert!(is_model_first_verified_plan_implementation_request(
+            "okay execute it"
+        ));
     }
 }
