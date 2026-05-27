@@ -145,9 +145,56 @@ fn normal_cli_uses_project_root_override_when_launched_outside_repo() {
 }
 
 #[test]
+fn tui_command_line_loop_uses_repo_provider_config_when_present() {
+    let root = smoke_root("runtime-config-tui-loop");
+    fs::write(
+        root.join("elgar-provider.json"),
+        r#"{
+          "provider": "lm-studio",
+          "base_url": "https://127.0.0.1:1234/v1",
+          "default_model": "openai/gpt-oss-20b",
+          "mode": "live"
+        }"#,
+    )
+    .unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
+        .current_dir(&root)
+        .arg("tui")
+        .env_remove("ELGAR_PROVIDER_CONFIG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"Say hello in one sentence.\n/exit\n")
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("> Say hello in one sentence."));
+    assert!(stdout.contains("only http:// provider URLs are supported"));
+    assert!(!stdout.contains("stub provider response"));
+    assert!(!stdout.contains("No live provider call was made"));
+    assert!(stdout.contains("Exiting Elgar TUI."));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn tui_command_reads_stdin_renders_stub_turn_and_exits() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
+        .env("ELGAR_PROVIDER_CONFIG", "off")
         .env(
             "ELGAR_LM_STUDIO_MODEL",
             "loaded-model-that-must-not-be-used",
@@ -185,6 +232,7 @@ fn tui_command_reads_stdin_renders_stub_turn_and_exits() {
 fn tui_command_greeting_gets_stub_guidance_without_live_provider() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
+        .env("ELGAR_PROVIDER_CONFIG", "off")
         .env(
             "ELGAR_LM_STUDIO_MODEL",
             "loaded-model-that-must-not-be-used",
@@ -220,6 +268,7 @@ fn tui_command_greeting_gets_stub_guidance_without_live_provider() {
 fn tui_command_help_is_local_and_does_not_call_provider() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
+        .env("ELGAR_PROVIDER_CONFIG", "off")
         .env(
             "ELGAR_LM_STUDIO_MODEL",
             "loaded-model-that-must-not-be-used",
@@ -275,6 +324,7 @@ fn tui_command_plain_file_request_and_reject_do_not_write_without_tool_result() 
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
         .current_dir(&root)
+        .env("ELGAR_PROVIDER_CONFIG", "off")
         .env(
             "ELGAR_LM_STUDIO_MODEL",
             "loaded-model-that-must-not-be-used",
@@ -320,6 +370,7 @@ fn tui_command_plain_file_request_and_approve_do_not_write_without_tool_result()
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
         .current_dir(&root)
+        .env("ELGAR_PROVIDER_CONFIG", "off")
         .env(
             "ELGAR_LM_STUDIO_MODEL",
             "loaded-model-that-must-not-be-used",
@@ -369,6 +420,7 @@ fn tui_command_plain_shell_text_and_approve_do_not_execute_without_tool_result()
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
         .current_dir(&root)
+        .env("ELGAR_PROVIDER_CONFIG", "off")
         .env(
             "ELGAR_LM_STUDIO_MODEL",
             "loaded-model-that-must-not-be-used",
@@ -418,6 +470,7 @@ fn tui_command_plain_shell_text_and_reject_do_not_execute_without_tool_result() 
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
         .current_dir(&root)
+        .env("ELGAR_PROVIDER_CONFIG", "off")
         .env(
             "ELGAR_LM_STUDIO_MODEL",
             "loaded-model-that-must-not-be-used",
@@ -464,6 +517,7 @@ fn tui_command_line_loop_keeps_plain_requests_non_mutating() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_elgar"))
         .arg("tui")
         .current_dir(&root)
+        .env("ELGAR_PROVIDER_CONFIG", "off")
         .env(
             "ELGAR_LM_STUDIO_MODEL",
             "loaded-model-that-must-not-be-used",

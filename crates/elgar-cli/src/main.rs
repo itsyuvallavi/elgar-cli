@@ -45,7 +45,7 @@ fn main() {
         };
         let stdin = std::io::stdin();
         let stdout = std::io::stdout();
-        if let Err(error) = elgar_cli::run_tui_loop_with_policy(
+        if let Err(error) = elgar_cli::run_tui_loop_from_runtime_config_with_policy(
             stdin.lock(),
             stdout.lock(),
             &paths.project_root,

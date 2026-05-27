@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+plain_dir="should-not-create-$stamp"
+project_dir="tui-flow-$stamp"
+unrelated_dir="unrelated-after-plan-$stamp"
+input_file="$playground/.dogfood-tui-flow-$stamp.in"
+output_file="$playground/.dogfood-tui-flow-$stamp.out"
+
+cat >"$input_file" <<EOF
+hello!
+create a folder named $plain_dir
+/tool create a folder named $project_dir
+what folder did you create?
+/state
+/tool create a markdown project plan inside $project_dir/plan.md for a tiny Python CLI app. Only create the plan file. The fenced file tree must contain exactly these files and no others: src/main.py and requirements.txt.
+/plan
+/tool execute the plan
+/tool create a folder named $unrelated_dir
+what folder did you create?
+/exit
+EOF
+
+echo "==> running live scripted TUI dogfood"
+(
+  cd "$playground"
+  elgar tui <"$input_file"
+) | tee "$output_file"
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+
+[[ -e "$playground/$plain_dir" ]] && fail "plain text created $plain_dir"
+[[ -d "$playground/$project_dir" ]] || fail "missing project directory $project_dir"
+[[ -f "$playground/$project_dir/plan.md" ]] || fail "missing plan.md"
+[[ -f "$playground/$project_dir/src/main.py" ]] || fail "missing src/main.py"
+[[ -f "$playground/$project_dir/requirements.txt" ]] || fail "missing requirements.txt"
+[[ -d "$playground/$unrelated_dir" ]] || fail "missing unrelated directory $unrelated_dir"
+
+grep -q "$project_dir" "$output_file" || fail "transcript did not mention project directory"
+grep -q "$unrelated_dir" "$output_file" || fail "transcript did not mention unrelated directory"
+
+echo "==> dogfood passed"
+echo "project: $playground/$project_dir"
+echo "transcript: $output_file"

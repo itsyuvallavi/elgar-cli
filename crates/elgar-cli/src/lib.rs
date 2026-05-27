@@ -9,8 +9,8 @@ use elgar_core::{
     agent_runtime::AgentRuntime,
     policy::PermissionPolicyMode,
     provider::{
-        chat_lm_studio, ChatMessage, ProviderCompatibility, ProviderConfig, ProviderError,
-        LM_STUDIO_DEFAULT_BASE_URL,
+        chat_lm_studio, ChatMessage, ControllerProvider, ProviderCompatibility, ProviderConfig,
+        ProviderError, LM_STUDIO_DEFAULT_BASE_URL,
     },
     renderer::render_session,
     session::Session,
@@ -489,13 +489,15 @@ pub fn is_tui_cancel_command(input: &str) -> bool {
     input.trim() == "/cancel"
 }
 
-fn submit_tui_input(
+fn submit_tui_input<P>(
     shell: &mut elgar_tui::TuiShell,
-    runtime: &AgentRuntime,
-    action_gate: &ActionGate,
+    runtime: &AgentRuntime<P>,
+    action_gate: &ActionGate<P>,
     session: &mut Session,
     input: &str,
-) {
+) where
+    P: ControllerProvider,
+{
     if is_tui_approval_command(input) {
         shell.submit_approval(action_gate, session);
     } else if is_tui_rejection_command(input) {
@@ -602,7 +604,7 @@ where
 
 pub fn run_tui_loop_with_policy<R, W>(
     reader: R,
-    mut writer: W,
+    writer: W,
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
     policy_mode: PermissionPolicyMode,
@@ -611,9 +613,76 @@ where
     R: BufRead,
     W: Write,
 {
-    let action_gate = ActionGate::default();
-    let runtime = AgentRuntime::default();
+    run_tui_loop_with_runtime(
+        reader,
+        writer,
+        project_root,
+        cwd,
+        AgentRuntime::default(),
+        None,
+        policy_mode,
+    )
+}
+
+pub fn run_tui_loop_from_runtime_config_with_policy<R, W>(
+    reader: R,
+    writer: W,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    policy_mode: PermissionPolicyMode,
+) -> io::Result<()>
+where
+    R: BufRead,
+    W: Write,
+{
+    let project_root_ref = project_root.as_ref();
+    let cwd_ref = cwd.as_ref();
+    match load_runtime_provider(project_root_ref).map_err(runtime_provider_config_io_error)? {
+        Some(runtime_provider) => {
+            let context_window_tokens = runtime_provider.config.configured_context_window_tokens();
+            run_tui_loop_with_runtime(
+                reader,
+                writer,
+                project_root_ref,
+                cwd_ref,
+                AgentRuntime::with_lm_studio_provider(runtime_provider.config),
+                context_window_tokens,
+                policy_mode,
+            )
+        }
+        None => run_tui_loop_with_runtime(
+            reader,
+            writer,
+            project_root_ref,
+            cwd_ref,
+            AgentRuntime::default(),
+            None,
+            policy_mode,
+        ),
+    }
+}
+
+fn runtime_provider_config_io_error(error: RuntimeProviderConfigError) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, error)
+}
+
+fn run_tui_loop_with_runtime<R, W, P>(
+    reader: R,
+    mut writer: W,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    runtime: AgentRuntime<P>,
+    context_window_tokens: Option<u64>,
+    policy_mode: PermissionPolicyMode,
+) -> io::Result<()>
+where
+    R: BufRead,
+    W: Write,
+    P: ControllerProvider + Clone,
+{
+    let action_gate = ActionGate::new(runtime.provider.clone());
     let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
+    runtime.refresh_context_accounting(&mut session, context_window_tokens);
     let mut shell = elgar_tui::TuiShell::with_policy_mode(policy_mode);
 
     writeln!(writer, "Elgar TUI. Type /exit, /quit, or /q to leave.")?;
@@ -663,6 +732,7 @@ where
                 elgar_tui::render_session_plan_preview(&session)
             )?;
         } else {
+            runtime.refresh_context_accounting(&mut session, context_window_tokens);
             submit_tui_input(&mut shell, &runtime, &action_gate, &mut session, &input);
             writeln!(writer, "{}", shell.render())?;
         }
