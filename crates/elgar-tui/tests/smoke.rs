@@ -135,7 +135,7 @@ fn explicit_tool_turn_can_be_rejected_without_writing() {
 }
 
 #[test]
-fn invalid_tool_call_renders_guidance_without_action_truth() {
+fn invalid_tool_call_repairs_without_raw_validation_text() {
     let root = smoke_root("invalid-tool-guidance");
     let runtime = AgentRuntime::new(ScriptedToolProvider {
         output: ProviderOutput::new("Creating file.").with_tool_calls(vec![RawModelToolCall {
@@ -152,7 +152,8 @@ fn invalid_tool_call_renders_guidance_without_action_truth() {
 
     let rendered = shell.render();
     assert!(session.actions().is_empty());
-    assert!(rendered.contains("I need a concrete target path before I can create the file"));
+    assert!(rendered.contains("Done."));
+    assert!(!rendered.contains("I need a concrete target path before I can create the file"));
     assert!(!rendered.contains("missing required argument"));
     assert!(!rendered.contains("Tool call incomplete"));
 
