@@ -255,7 +255,10 @@ where
         };
 
         let path_resolution = AgentPathResolution::new(None, None, &session.project_root);
-        let resolved_outputs = resolve_agent_tool_outputs(outputs, &path_resolution);
+        let resolved_outputs = anchor_verified_plan_tool_outputs(
+            session,
+            resolve_agent_tool_outputs(outputs, &path_resolution),
+        );
 
         if let Err(message) = preflight_verified_plan_tool_outputs(session, &resolved_outputs) {
             session.push_event(Event::AssistantMessage(AssistantMessage::new(
@@ -552,6 +555,91 @@ fn resolve_agent_tool_outputs(
             }
         })
         .collect()
+}
+
+fn anchor_verified_plan_tool_outputs(
+    session: &Session,
+    outputs: Vec<ResolvedAgentToolOutput>,
+) -> Vec<ResolvedAgentToolOutput> {
+    outputs
+        .into_iter()
+        .map(|output| match output {
+            ResolvedAgentToolOutput::Guidance(guidance) => {
+                ResolvedAgentToolOutput::Guidance(guidance)
+            }
+            ResolvedAgentToolOutput::Action(mut action) => {
+                action.request = anchor_verified_plan_action_request(session, action.request);
+                action.target_label = action.request.approval_target();
+                ResolvedAgentToolOutput::Action(action)
+            }
+        })
+        .collect()
+}
+
+fn anchor_verified_plan_action_request(session: &Session, request: ActionRequest) -> ActionRequest {
+    match request {
+        ActionRequest::CreateFile(mut action) => {
+            action.target_path = anchor_verified_plan_path(session, &action.target_path);
+            ActionRequest::CreateFile(action)
+        }
+        ActionRequest::CreateDirectory(mut action) => {
+            action.target_path = anchor_verified_plan_path(session, &action.target_path);
+            ActionRequest::CreateDirectory(action)
+        }
+        ActionRequest::PatchFile(mut action) => {
+            action.target_path = anchor_verified_plan_path(session, &action.target_path);
+            ActionRequest::PatchFile(action)
+        }
+        ActionRequest::OverwriteFile(mut action) => {
+            action.target_path = anchor_verified_plan_path(session, &action.target_path);
+            ActionRequest::OverwriteFile(action)
+        }
+        ActionRequest::DeleteFile(mut action) => {
+            action.target_path = anchor_verified_plan_path(session, &action.target_path);
+            ActionRequest::DeleteFile(action)
+        }
+        ActionRequest::MoveFile(mut action) => {
+            action.source_path = anchor_verified_plan_path(session, &action.source_path);
+            action.target_path = anchor_verified_plan_path(session, &action.target_path);
+            ActionRequest::MoveFile(action)
+        }
+        ActionRequest::ShellCommand(action) => ActionRequest::ShellCommand(action),
+    }
+}
+
+fn anchor_verified_plan_path(session: &Session, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let current_target = absolute_session_path(session, path);
+    let Some(plan) = session.project_memory().latest_structured_plan() else {
+        return path.to_path_buf();
+    };
+    if path_is_within(&current_target, &plan.project_root) {
+        return path.to_path_buf();
+    }
+
+    let anchored_target = normalize_path(plan.project_root.join(path));
+    if !structured_plan_expects_path(plan, &anchored_target) {
+        return path.to_path_buf();
+    }
+
+    cwd_relative_path(session, &anchored_target)
+}
+
+fn structured_plan_expects_path(plan: &crate::session::StructuredProjectPlan, path: &Path) -> bool {
+    let path = normalize_path(path);
+    plan.expected_files
+        .iter()
+        .chain(plan.expected_directories.iter())
+        .any(|expected| normalize_path(expected) == path)
+}
+
+fn cwd_relative_path(session: &Session, path: &Path) -> PathBuf {
+    path.strip_prefix(&session.cwd)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn preflight_verified_plan_tool_outputs(
@@ -1542,6 +1630,81 @@ mod tests {
             .events()
             .iter()
             .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_execution_anchors_expected_unrooted_paths_under_plan_root() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-anchor-expected-paths",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("tui-state-memory-test")).unwrap();
+        std::fs::write(
+            cwd.join("tui-state-memory-test/PLAN.md"),
+            "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating missing files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "anchor-expected-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("tui-state-memory-test/PLAN.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "tui-state-memory-test/PLAN.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("tui-state-memory-test/src/main.py")).unwrap(),
+            "print('hello')\n"
+        );
+        assert!(!cwd.join("src/main.py").exists());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ActionApplied(applied)
+                if matches!(
+                    &applied.result,
+                    VerifiedActionResult::FileWritten { path }
+                        if path == &cwd
+                            .join("tui-state-memory-test/src/main.py")
+                            .display()
+                            .to_string()
+                )
+        )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
