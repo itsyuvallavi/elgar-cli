@@ -285,7 +285,7 @@ pub(super) fn active_working_frame_lines(
         .map(|text| with_leading_spacer(rendered_preview_lines(&text, drawable_width(width))))
         .unwrap_or_default();
     let progress_lines = if reasoning_lines.is_empty() && response_lines.is_empty() {
-        with_leading_spacer(vec![provider_progress_line(input, tick).to_string()])
+        with_leading_spacer(vec![provider_progress_line(tick).to_string()])
     } else {
         Vec::new()
     };
@@ -302,42 +302,12 @@ pub(super) fn active_working_frame_lines(
     )
 }
 
-fn provider_progress_line(input: &str, tick: usize) -> &'static str {
-    if is_project_creation_prompt(input) {
-        return project_creation_progress_line(tick);
-    }
-
+fn provider_progress_line(tick: usize) -> &'static str {
     match tick % 4 {
         0 => "Working with local model",
         1 => "Working with local model.",
         2 => "Working with local model..",
         _ => "Working with local model...",
-    }
-}
-
-fn is_project_creation_prompt(input: &str) -> bool {
-    let normalized = input.to_ascii_lowercase();
-    let asks_for_creation = normalized.contains("create")
-        || normalized.contains("make")
-        || normalized.contains("set up")
-        || normalized.contains("setup")
-        || normalized.contains("scaffold");
-    let project_target = normalized.contains("project")
-        || normalized.contains("next")
-        || normalized.contains("react")
-        || normalized.contains("tailwind")
-        || normalized.contains("typescript")
-        || normalized.contains(" ts ");
-
-    asks_for_creation && project_target
-}
-
-fn project_creation_progress_line(tick: usize) -> &'static str {
-    match tick % 4 {
-        0 => "I'm setting up the project",
-        1 => "I'm creating the project files.",
-        2 => "I'm wiring the project structure..",
-        _ => "I'm finishing the setup...",
     }
 }
 

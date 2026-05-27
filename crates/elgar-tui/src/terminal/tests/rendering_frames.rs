@@ -117,7 +117,7 @@ fn active_working_frame_shows_initial_progress_before_provider_chunks() {
 }
 
 #[test]
-fn active_working_frame_uses_natural_project_creation_progress() {
+fn active_working_frame_uses_neutral_provider_progress_for_project_requests() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
     let live_output = LiveProviderOutput::default();
@@ -132,7 +132,7 @@ fn active_working_frame_uses_natural_project_creation_progress() {
             80,
         );
 
-    assert_eq!(progress, vec!["", "I'm creating the project files."]);
+    assert_eq!(progress, vec!["", "Working with local model."]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
@@ -350,7 +350,7 @@ fn active_working_frame_can_suppress_provider_turn_reasoning_preview() {
 }
 
 #[test]
-fn active_working_frame_suppresses_provider_turn_tool_stream_for_project_creation() {
+fn active_working_frame_suppresses_provider_turn_tool_stream_with_neutral_progress() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
     let mut live_output = LiveProviderOutput::default();
@@ -377,13 +377,14 @@ fn active_working_frame_suppresses_provider_turn_tool_stream_for_project_creatio
         .concat()
         .join("\n");
 
-    assert_eq!(progress, vec!["", "I'm setting up the project"]);
+    assert_eq!(progress, vec!["", "Working with local model"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
     assert!(!rendered.contains("to=functions"));
     assert!(!rendered.contains("write ~/"));
     assert!(!rendered.contains("package.json"));
     assert!(!rendered.contains("\"name\""));
+    assert!(!rendered.contains("setup"));
 }
 
 #[test]
