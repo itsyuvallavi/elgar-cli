@@ -55,6 +55,12 @@ const AGENT_PLAIN_CHAT_SYSTEM_PROMPT: &str = concat!(
     "If the user asks you to create, edit, move, delete, or run something, say you need a tool-enabled turn instead of claiming it was done. ",
     "Do not output tool-call markup. Do not claim filesystem or shell changes unless they were already reported by verified tool results."
 );
+const AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT: &str = concat!(
+    "Classify whether answering the user requires verified runtime state from this current session. ",
+    "Return only JSON with this exact shape: {\"needs_verified_state\":true} or {\"needs_verified_state\":false}. ",
+    "Use true for questions about prior actions, verified filesystem changes, pending approvals, known project folders or plans, or current session status. ",
+    "Use false for greetings, general questions, content generation, or requests to perform new work."
+);
 const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
     "The previous tool-enabled provider request returned no usable response. ",
     "Answer normally in prose. Do not claim filesystem or shell changes unless they were already reported by verified tool results."
@@ -325,6 +331,16 @@ fn run_plain_agent_chat<P>(provider: &P, session: &mut Session, input: &str)
 where
     P: ControllerProvider,
 {
+    if has_verified_session_state(session)
+        && classify_verified_state_need(provider, session, input).unwrap_or(false)
+    {
+        session.push_event(Event::AssistantMessage(AssistantMessage::new(
+            verified_session_state_answer(session),
+            AssistantMessageSource::Controller,
+        )));
+        return;
+    }
+
     let request = provider.request_metadata();
     session.push_event(Event::ProviderStarted(
         ProviderStarted::new(request.provider.clone(), request.request_id.clone())
@@ -351,6 +367,158 @@ where
                 request.provider, request.request_id
             ))));
         }
+    }
+}
+
+fn classify_verified_state_need<P>(provider: &P, session: &mut Session, input: &str) -> Option<bool>
+where
+    P: ControllerProvider,
+{
+    let request = provider.request_metadata();
+    session.push_event(Event::ProviderStarted(
+        ProviderStarted::new(request.provider.clone(), request.request_id.clone())
+            .with_request_details(request.model.clone(), "plain_state_classifier", 0),
+    ));
+    let messages = vec![
+        ChatMessage::system(AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT),
+        ChatMessage::user(input),
+    ];
+
+    match provider.chat_messages_with_metadata(messages, &request) {
+        Ok(output) => {
+            let decision = parse_verified_state_classifier_output(&output.text);
+            session.push_event(Event::ProviderFinished(ProviderFinished::new(
+                request.provider,
+                request.request_id,
+                output,
+            )));
+            decision
+        }
+        Err(error) => {
+            session.push_event(Event::Error(ErrorEvent::new(format!(
+                "{} provider state classification request {} failed: {error}",
+                request.provider, request.request_id
+            ))));
+            None
+        }
+    }
+}
+
+fn parse_verified_state_classifier_output(message: &str) -> Option<bool> {
+    parse_json_value(message)?
+        .get("needs_verified_state")?
+        .as_bool()
+}
+
+fn parse_json_value(message: &str) -> Option<Value> {
+    serde_json::from_str::<Value>(message.trim())
+        .ok()
+        .or_else(|| {
+            let start = message.find('{')?;
+            let end = message.rfind('}')?;
+            (start < end)
+                .then(|| serde_json::from_str::<Value>(&message[start..=end]).ok())
+                .flatten()
+        })
+}
+
+fn has_verified_session_state(session: &Session) -> bool {
+    session
+        .actions()
+        .iter()
+        .any(|record| record.verified_result.is_some())
+        || !matches!(
+            session.pending_action_selection(),
+            PendingActionSelection::None
+        )
+        || session.project_memory().latest_verified_folder().is_some()
+        || session.project_memory().latest_verified_plan().is_some()
+        || session.project_memory().latest_structured_plan().is_some()
+}
+
+fn verified_session_state_answer(session: &Session) -> String {
+    let mut lines = vec!["Verified session state:".to_string()];
+    let verified_actions = verified_action_state_lines(session);
+    if verified_actions.is_empty() {
+        lines.push("verified actions: (none)".to_string());
+    } else {
+        lines.push("verified actions:".to_string());
+        lines.extend(verified_actions);
+    }
+
+    match session.pending_action_selection() {
+        PendingActionSelection::None => lines.push("pending: none".to_string()),
+        PendingActionSelection::Single(_) => lines.push("pending: one action".to_string()),
+        PendingActionSelection::Ambiguous => lines.push("pending: multiple actions".to_string()),
+    }
+
+    if let Some(folder) = session.project_memory().latest_verified_folder() {
+        lines.push(format!(
+            "latest verified folder: {}",
+            display_agent_context_path(session, &folder.path)
+        ));
+    }
+    if let Some(plan) = session.project_memory().latest_verified_plan() {
+        lines.push(format!(
+            "latest verified plan: {}",
+            display_agent_context_path(session, &plan.path)
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn verified_action_state_lines(session: &Session) -> Vec<String> {
+    session
+        .actions()
+        .iter()
+        .filter_map(|record| verified_action_state_line(session, record.verified_result.as_ref()?))
+        .collect()
+}
+
+fn verified_action_state_line(session: &Session, result: &VerifiedActionResult) -> Option<String> {
+    match result {
+        VerifiedActionResult::FileWritten { path } => Some(format!(
+            "- wrote file {}",
+            display_agent_context_path(session, Path::new(path))
+        )),
+        VerifiedActionResult::File(file) => match file {
+            crate::event::FileActionVerification::FileCreated { path } => Some(format!(
+                "- created file {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+            crate::event::FileActionVerification::FilePatched { path } => Some(format!(
+                "- patched file {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+            crate::event::FileActionVerification::FileOverwritten { path } => Some(format!(
+                "- overwrote file {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+            crate::event::FileActionVerification::FileDeleted { path } => Some(format!(
+                "- deleted file {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+            crate::event::FileActionVerification::FileMoved {
+                source_path,
+                target_path,
+            } => Some(format!(
+                "- moved file {} to {}",
+                display_agent_context_path(session, Path::new(source_path)),
+                display_agent_context_path(session, Path::new(target_path))
+            )),
+            crate::event::FileActionVerification::DirectoryCreated { path } => Some(format!(
+                "- created directory {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+        },
+        VerifiedActionResult::Shell(shell) => Some(
+            shell
+                .verified_effect
+                .as_ref()
+                .map(|effect| format!("- shell: {effect}"))
+                .unwrap_or_else(|| format!("- shell command completed in {}", shell.cwd)),
+        ),
     }
 }
 
@@ -1626,6 +1794,18 @@ mod tests {
     }
 
     #[test]
+    fn verified_state_classifier_parser_accepts_wrapped_json() {
+        assert_eq!(
+            parse_verified_state_classifier_output("```json\n{\"needs_verified_state\":true}\n```"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_verified_state_classifier_output("{\"needs_verified_state\":false}"),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn verified_plan_excerpt_truncates_unicode_at_char_boundary() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-unicode-plan",
@@ -1660,7 +1840,7 @@ mod tests {
     #[derive(Debug, Clone)]
     struct CapturingProvider {
         requests: std::sync::Arc<std::sync::Mutex<Vec<CapturedProviderRequest>>>,
-        plain_output: crate::event::ProviderOutput,
+        plain_outputs: std::sync::Arc<std::sync::Mutex<Vec<crate::event::ProviderOutput>>>,
         tool_output: crate::event::ProviderOutput,
     }
 
@@ -1668,7 +1848,9 @@ mod tests {
         fn new() -> Self {
             Self {
                 requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                plain_output: crate::event::ProviderOutput::new("Plain answer."),
+                plain_outputs: std::sync::Arc::new(std::sync::Mutex::new(vec![
+                    crate::event::ProviderOutput::new("Plain answer."),
+                ])),
                 tool_output: crate::event::ProviderOutput::new("I'll create it."),
             }
         }
@@ -1679,12 +1861,29 @@ mod tests {
         }
 
         fn with_plain_output(mut self, output: crate::event::ProviderOutput) -> Self {
-            self.plain_output = output;
+            self.plain_outputs = std::sync::Arc::new(std::sync::Mutex::new(vec![output]));
+            self
+        }
+
+        fn with_plain_outputs(mut self, outputs: Vec<crate::event::ProviderOutput>) -> Self {
+            self.plain_outputs = std::sync::Arc::new(std::sync::Mutex::new(outputs));
             self
         }
 
         fn requests(&self) -> Vec<CapturedProviderRequest> {
             self.requests.lock().unwrap().clone()
+        }
+
+        fn next_plain_output(&self) -> crate::event::ProviderOutput {
+            let mut outputs = self.plain_outputs.lock().unwrap();
+            if outputs.len() > 1 {
+                outputs.remove(0)
+            } else {
+                outputs
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| crate::event::ProviderOutput::new("Plain answer."))
+            }
         }
     }
 
@@ -1703,7 +1902,7 @@ mod tests {
         }
 
         fn chat(&self, _prompt: &str) -> Result<crate::event::ProviderOutput, ProviderError> {
-            Ok(self.plain_output.clone())
+            Ok(self.next_plain_output())
         }
 
         fn chat_messages_with_tools_with_metadata(
@@ -1730,7 +1929,7 @@ mod tests {
                 messages,
                 tool_count: 0,
             });
-            Ok(self.plain_output.clone())
+            Ok(self.next_plain_output())
         }
     }
 
@@ -1783,7 +1982,10 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("remembered")).unwrap();
-        let provider = CapturingProvider::new();
+        let provider = CapturingProvider::new().with_plain_outputs(vec![
+            crate::event::ProviderOutput::new("{\"needs_verified_state\":false}"),
+            crate::event::ProviderOutput::new("Hello."),
+        ]);
         let mut session = Session::new("session", &root, &root);
         let folder_action = Action::proposed(
             "action-folder",
@@ -1794,36 +1996,49 @@ mod tests {
         )
         .approve()
         .mark_applied();
-        record_verified_project_memory(
-            &mut session,
-            &folder_action,
-            &VerifiedActionResult::File(crate::event::FileActionVerification::DirectoryCreated {
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::DirectoryCreated {
                 path: "remembered".to_string(),
-            }),
-        );
+            });
+        let mut record = ActionRecord::new(folder_action.clone());
+        record.verified_result = Some(result.clone());
+        session.push_action(record);
+        record_verified_project_memory(&mut session, &folder_action, &result);
 
         run_permissive_agent_turn(&provider, &mut session, "hello");
 
         let requests = provider.requests();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
-        let joined = joined_request_messages(&requests[0]);
-        assert!(!joined.contains("latest verified folder"));
-        assert!(!joined.contains("remembered"));
+        assert_eq!(requests.len(), 2);
+        for request in &requests {
+            assert_eq!(request.mode, CapturedProviderRequestMode::Plain);
+            assert_eq!(request.tool_count, 0);
+            let joined = joined_request_messages(request);
+            assert!(!joined.contains("latest verified folder"));
+            assert!(!joined.contains("remembered"));
+            assert!(!joined.contains("Verified filesystem context"));
+        }
         assert!(session.latest_provider_prompt_memory_selection().is_none());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content == "Hello."
+        )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn permissive_agent_state_question_is_not_a_controller_phrase_trigger() {
+    fn permissive_agent_state_question_uses_model_classifier_then_verified_state() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-state-question-model",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("remembered")).unwrap();
-        let provider = CapturingProvider::new();
+        let provider = CapturingProvider::new().with_plain_output(
+            crate::event::ProviderOutput::new("{\"needs_verified_state\":true}"),
+        );
         let mut session = Session::new("session", &root, &root);
         let folder_action = Action::proposed(
             "action-folder",
@@ -1834,13 +2049,14 @@ mod tests {
         )
         .approve()
         .mark_applied();
-        record_verified_project_memory(
-            &mut session,
-            &folder_action,
-            &VerifiedActionResult::File(crate::event::FileActionVerification::DirectoryCreated {
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::DirectoryCreated {
                 path: "remembered".to_string(),
-            }),
-        );
+            });
+        let mut record = ActionRecord::new(folder_action.clone());
+        record.verified_result = Some(result.clone());
+        session.push_action(record);
+        record_verified_project_memory(&mut session, &folder_action, &result);
 
         run_permissive_agent_turn(&provider, &mut session, "what did you create?");
 
@@ -1855,11 +2071,17 @@ mod tests {
         let joined = joined_request_messages(&requests[0]);
         assert!(!joined.contains("latest verified folder"));
         assert!(!joined.contains("remembered"));
-        assert!(!session.events().iter().any(|event| matches!(
+        assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
                 if message.source == AssistantMessageSource::Controller
-                    && message.content.contains("created")
+                    && message.content.contains("Verified session state:")
+                    && message.content.contains("- created directory remembered")
+        )));
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::ProviderStarted(started)
+                if started.request_mode.as_deref() == Some("tool_enabled")
         )));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1917,19 +2139,24 @@ mod tests {
             "# Project Plan\n\n- Create package.json.\n- Create src/main.ts.\n",
         )
         .unwrap();
-        let provider = CapturingProvider::new().with_tool_output(
-            crate::event::ProviderOutput::new("Creating project files.").with_tool_calls(vec![
-                RawModelToolCall {
-                    id: "bad-ok-call-1".to_string(),
-                    name: RawModelToolName::Known(ModelToolName::CreateFile),
-                    arguments: json!({
-                        "target_path": "package.json",
-                        "contents": "{}\n"
-                    }),
-                    assistant_summary: Some("create package".to_string()),
-                },
-            ]),
-        );
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new("{\"needs_verified_state\":false}"),
+                crate::event::ProviderOutput::new("Ok."),
+            ])
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating project files.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "bad-ok-call-1".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "package.json",
+                            "contents": "{}\n"
+                        }),
+                        assistant_summary: Some("create package".to_string()),
+                    },
+                ]),
+            );
         let mut session = Session::new("session", &root, &root);
         let plan_action = Action::proposed(
             "action-plan",
@@ -1953,8 +2180,11 @@ mod tests {
         run_permissive_agent_turn(&provider, &mut session, "ok");
 
         let requests = provider.requests();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests.len(), 2);
+        for request in &requests {
+            assert_eq!(request.mode, CapturedProviderRequestMode::Plain);
+            assert_eq!(request.tool_count, 0);
+        }
         assert!(!root.join("app/package.json").exists());
         assert!(!root.join("package.json").exists());
         assert_eq!(session.actions().len(), 1);
