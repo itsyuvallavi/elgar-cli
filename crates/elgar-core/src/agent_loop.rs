@@ -462,8 +462,8 @@ fn plan_preflight_outside_root_message(
 ) -> String {
     format!(
         "The verified plan is rooted at {}, but the tool call targets {} outside that project. No filesystem action was applied.",
-        display_project_path(session, &plan.project_root),
-        display_project_path(session, target_path)
+        display_agent_context_path(session, &plan.project_root),
+        display_agent_context_path(session, target_path)
     )
 }
 
@@ -885,7 +885,7 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
     if let Some(folder) = session.project_memory().latest_verified_folder() {
         lines.push(format!(
             "- latest verified folder: {}",
-            display_project_path(session, &folder.path)
+            display_agent_context_path(session, &folder.path)
         ));
         selected.push(ProviderPromptMemorySelectedFact::new(
             "verified_folder",
@@ -897,7 +897,7 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
     if let Some(plan) = session.project_memory().latest_verified_plan() {
         lines.push(format!(
             "- latest verified plan: {}",
-            display_project_path(session, &plan.path)
+            display_agent_context_path(session, &plan.path)
         ));
         if let Some(excerpt) = verified_plan_excerpt(&plan.path) {
             lines.push(format!("- latest verified plan excerpt:\n{excerpt}"));
@@ -924,6 +924,8 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
         let mut context = vec![
             "Verified filesystem context for this session:".to_string(),
             "Use these verified paths only when the explicit tool request refers to prior work."
+                .to_string(),
+            "Displayed paths are relative to the current working directory when possible."
                 .to_string(),
         ];
         context.extend(lines);
@@ -1036,11 +1038,16 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
     format!("{}{}", &value[..end], suffix)
 }
 
-fn display_project_path(session: &Session, path: &Path) -> String {
-    path.strip_prefix(&session.project_root)
-        .unwrap_or(path)
-        .display()
-        .to_string()
+fn display_agent_context_path(session: &Session, path: &Path) -> String {
+    let display_path = path
+        .strip_prefix(&session.cwd)
+        .or_else(|_| path.strip_prefix(&session.project_root))
+        .unwrap_or(path);
+    if display_path.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        display_path.display().to_string()
+    }
 }
 
 fn next_action_id(session: &Session) -> String {
@@ -1367,6 +1374,108 @@ mod tests {
             .events()
             .iter()
             .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_context_uses_cwd_relative_paths_for_tool_turns() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-context-cwd-relative",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("tui-state-test")).unwrap();
+        std::fs::write(
+            cwd.join("tui-state-test/PLAN.md"),
+            "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
+            "I found the verified plan.",
+        )]);
+        let mut session = Session::new("session", &root, &cwd);
+        session.record_verified_folder_reference(crate::session::VerifiedFolderReference {
+            path: cwd.join("tui-state-test"),
+            source_action_id: "action-folder".to_string(),
+        });
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: cwd.join("tui-state-test/PLAN.md"),
+            project_root: cwd.join("tui-state-test"),
+            source_action_id: "action-plan".to_string(),
+        });
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let messages = provider.messages.lock().unwrap();
+        let verified_context = messages[0]
+            .iter()
+            .find(|message| message.content.contains("Verified filesystem context"))
+            .expect("tool turn should include verified memory context");
+        assert!(verified_context
+            .content
+            .contains("- latest verified folder: tui-state-test"));
+        assert!(verified_context
+            .content
+            .contains("- latest verified plan: tui-state-test/PLAN.md"));
+        assert!(!verified_context
+            .content
+            .contains("playground/tui-state-test"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_preflight_blocks_duplicated_cwd_prefix_target() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-preflight-duplicate-prefix",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("demo")).unwrap();
+        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
+            "Creating missing files.",
+        )
+        .with_tool_calls(vec![RawModelToolCall {
+            id: "duplicate-prefix-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateFile),
+            arguments: json!({
+                "target_path": "playground/demo/index.tsx",
+                "contents": "export default function Home() {}\n"
+            }),
+            assistant_summary: None,
+        }])]);
+        let mut session = Session::new("session", &root, &cwd);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: cwd.join("demo/project-plan.md"),
+            project_root: cwd.join("demo"),
+            source_action_id: "action-plan".to_string(),
+        });
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "continue from the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(!cwd.join("playground/demo/index.tsx").exists());
+        assert!(session.actions().is_empty());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("verified plan is rooted at demo")
+                    && message.content.contains("targets playground/demo/index.tsx")
+                    && message.content.contains("outside that project")
+        )));
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -115,8 +115,9 @@ fn extract_expected_plan_paths(
     let mut expected_directories = Vec::new();
     let mut expected_files = Vec::new();
     let mut tree_stack: Vec<PathBuf> = Vec::new();
+    let lines = contents.lines().collect::<Vec<_>>();
 
-    for line in contents.lines() {
+    for (index, line) in lines.iter().enumerate() {
         if let Some(root_path) = tree_root_path_from_line(line) {
             tree_stack.clear();
             tree_stack.push(root_path.clone());
@@ -130,7 +131,9 @@ fn extract_expected_plan_paths(
             continue;
         }
 
-        if let Some((path, kind)) = tree_path_from_line(line, &mut tree_stack) {
+        let infer_directory =
+            tree_line_depth(line).is_some_and(|depth| next_tree_depth(&lines, index) > Some(depth));
+        if let Some((path, kind)) = tree_path_from_line(line, &mut tree_stack, infer_directory) {
             push_plan_path(
                 project_root,
                 path,
@@ -181,11 +184,15 @@ fn push_plan_path(
     }
 }
 
-fn tree_path_from_line(line: &str, stack: &mut Vec<PathBuf>) -> Option<(PathBuf, PlanPathKind)> {
-    let marker_index = line.find("├──").or_else(|| line.find("└──"))?;
+fn tree_path_from_line(
+    line: &str,
+    stack: &mut Vec<PathBuf>,
+    infer_directory: bool,
+) -> Option<(PathBuf, PlanPathKind)> {
+    let marker_index = tree_marker_index(line)?;
     let depth = tree_depth(&line[..marker_index]);
     let name = line[marker_index + "├──".len()..].trim();
-    let (name, kind) = clean_plan_path_token(name)?;
+    let (name, kind) = clean_plan_path_token_with_inference(name, infer_directory)?;
     let parent = stack.get(depth).cloned().unwrap_or_default();
     let path = parent.join(&name);
 
@@ -198,6 +205,19 @@ fn tree_path_from_line(line: &str, stack: &mut Vec<PathBuf>) -> Option<(PathBuf,
     }
 
     Some((path, kind))
+}
+
+fn tree_marker_index(line: &str) -> Option<usize> {
+    line.find("├──").or_else(|| line.find("└──"))
+}
+
+fn tree_line_depth(line: &str) -> Option<usize> {
+    let marker_index = tree_marker_index(line)?;
+    Some(tree_depth(&line[..marker_index]))
+}
+
+fn next_tree_depth(lines: &[&str], index: usize) -> Option<usize> {
+    lines.get(index + 1).and_then(|line| tree_line_depth(line))
 }
 
 fn tree_root_path_from_line(line: &str) -> Option<PathBuf> {
@@ -246,6 +266,13 @@ fn inline_path_from_line(line: &str) -> Option<(PathBuf, PlanPathKind)> {
 }
 
 fn clean_plan_path_token(token: &str) -> Option<(PathBuf, PlanPathKind)> {
+    clean_plan_path_token_with_inference(token, false)
+}
+
+fn clean_plan_path_token_with_inference(
+    token: &str,
+    infer_directory: bool,
+) -> Option<(PathBuf, PlanPathKind)> {
     let token = token
         .trim()
         .trim_matches('`')
@@ -265,6 +292,8 @@ fn clean_plan_path_token(token: &str) -> Option<(PathBuf, PlanPathKind)> {
         PlanPathKind::Directory
     } else if path_has_file_extension(Path::new(token)) {
         PlanPathKind::File
+    } else if infer_directory {
+        PlanPathKind::Directory
     } else {
         return None;
     };
@@ -568,6 +597,56 @@ mod tests {
         assert!(structured
             .expected_files
             .contains(&root.join("DemoApp/src/package/module.py")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn records_extensionless_tree_directories_when_child_paths_exist() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-extensionless-structured-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("tui-state-test")).unwrap();
+        fs::write(
+            root.join("tui-state-test/PLAN.md"),
+            "# Project Plan\n\nThis document outlines the plan for a tiny Python CLI application.\n\n## File Tree\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("tui-state-test/PLAN.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("tui-state-test/PLAN.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified live plan should create structured plan state");
+        assert!(structured
+            .expected_directories
+            .contains(&root.join("tui-state-test/src")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("tui-state-test/src/main.py")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("tui-state-test/requirements.txt")));
+        assert!(!structured
+            .expected_files
+            .contains(&root.join("tui-state-test/main.py")));
 
         let _ = fs::remove_dir_all(&root);
     }
