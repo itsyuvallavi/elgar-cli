@@ -273,7 +273,7 @@ fn policy_allowed_root_for_action(session: &Session, action: &Action) -> PathBuf
     };
 
     if !target_path.is_absolute() {
-        return session.project_root.clone();
+        return session.cwd.clone();
     }
 
     if let Some(desktop) = home_dir().map(|home| home.join("Desktop")) {
@@ -330,8 +330,8 @@ mod tests {
     use std::fs;
 
     use crate::{
-        action::{Action, ActionRequest, CreateDirectoryAction},
-        event::{Event, UserMessage},
+        action::{Action, ActionRequest, CreateDirectoryAction, OverwriteFileAction},
+        event::{Event, FileActionVerification, UserMessage, VerifiedActionResult},
         router::Route,
         session::{ActionRecord, Session},
     };
@@ -371,6 +371,43 @@ mod tests {
             .events
             .iter()
             .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn action_gate_approval_applies_relative_file_action_under_session_cwd() {
+        let root = temp_root("approve-relative-cwd");
+        let cwd = root.join("playground");
+        fs::create_dir_all(cwd.join("demo")).unwrap();
+        fs::write(cwd.join("demo/PLAN.md"), "# Old\n").unwrap();
+        let gate = ActionGate::default();
+        let mut session = Session::new("session-1", &root, &cwd);
+        session.push_action(ActionRecord::new(Action::proposed(
+            "action-1",
+            ActionRequest::OverwriteFile(OverwriteFileAction {
+                target_path: "demo/PLAN.md".into(),
+                contents: "# New\n".to_string(),
+            }),
+            "overwrite plan",
+        )));
+
+        let result = gate.approve(&mut session);
+
+        assert_eq!(result.route, Route::ApproveAction);
+        assert_eq!(
+            fs::read_to_string(cwd.join("demo/PLAN.md")).unwrap(),
+            "# New\n"
+        );
+        assert!(!root.join("demo/PLAN.md").exists());
+        assert!(session.actions()[0]
+            .verified_result
+            .as_ref()
+            .is_some_and(|verified| matches!(
+                verified,
+                VerifiedActionResult::File(FileActionVerification::FileOverwritten { path })
+                    if path == &cwd.join("demo/PLAN.md").display().to_string()
+            )));
 
         let _ = fs::remove_dir_all(root);
     }
