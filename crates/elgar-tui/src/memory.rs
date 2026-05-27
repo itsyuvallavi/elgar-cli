@@ -69,6 +69,95 @@ pub fn render_session_status(session: &Session) -> String {
     lines.join("\n")
 }
 
+pub fn render_session_state_snapshot(session: &Session) -> String {
+    let mut lines = vec!["State".to_string()];
+    lines.push(format!("pending: {}", pending_action_summary_line(session)));
+    lines.push(format!(
+        "applied actions: {}",
+        session
+            .actions()
+            .iter()
+            .filter(|record| record.action.state == ActionLifecycleState::Applied)
+            .count()
+    ));
+
+    let created = session
+        .actions()
+        .iter()
+        .filter_map(|record| record.verified_result.as_ref())
+        .filter_map(|result| verified_creation_line(session, result))
+        .collect::<Vec<_>>();
+    if created.is_empty() {
+        lines.push("created: (none)".to_string());
+    } else {
+        lines.push("created:".to_string());
+        for line in created {
+            lines.push(format!("- {line}"));
+        }
+    }
+
+    let memory = session.project_memory();
+    if memory.verified_folders.is_empty()
+        && memory.verified_plans.is_empty()
+        && memory.structured_plans.is_empty()
+    {
+        lines.push("memory: (none)".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push("memory:".to_string());
+    if !memory.verified_folders.is_empty() {
+        lines.push("verified folders:".to_string());
+        for reference in memory.verified_folders.iter().rev() {
+            lines.push(format!(
+                "- {} {} ({})",
+                path_state(&reference.path, PathKind::Directory),
+                display_session_path(session, &reference.path),
+                reference.source_action_id
+            ));
+        }
+    }
+    if !memory.verified_plans.is_empty() {
+        lines.push("verified plans:".to_string());
+        for reference in memory.verified_plans.iter().rev() {
+            lines.push(format!(
+                "- {} {} ({})",
+                path_state(&reference.path, PathKind::File),
+                display_session_path(session, &reference.path),
+                reference.source_action_id
+            ));
+            lines.push(format!(
+                "  root {} {}",
+                path_state(&reference.project_root, PathKind::Directory),
+                display_session_path(session, &reference.project_root)
+            ));
+        }
+    }
+    if let Some(plan) = memory.latest_structured_plan() {
+        lines.push("latest structured plan:".to_string());
+        lines.push(format!(
+            "- {} {}",
+            structured_status(plan.status),
+            display_session_path(session, &plan.source_plan_path)
+        ));
+        lines.push(format!(
+            "  root {} {}",
+            path_state(&plan.project_root, PathKind::Directory),
+            display_session_path(session, &plan.project_root)
+        ));
+        lines.push(format!(
+            "  dirs {}",
+            path_count(&plan.expected_directories, PathKind::Directory)
+        ));
+        lines.push(format!(
+            "  files {}",
+            path_count(&plan.expected_files, PathKind::File)
+        ));
+    }
+
+    lines.join("\n")
+}
+
 fn render_structured_plan_preview(session: &Session, plan: &StructuredProjectPlan) -> String {
     let mut lines = vec!["Plan Preview".to_string()];
     lines.push(format!("status: {}", structured_status(plan.status)));

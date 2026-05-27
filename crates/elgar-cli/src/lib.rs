@@ -439,6 +439,10 @@ pub fn is_tui_memory_command(input: &str) -> bool {
     input.trim() == "/memory"
 }
 
+pub fn is_tui_state_snapshot_command(input: &str) -> bool {
+    input.trim() == "/state"
+}
+
 pub fn is_tui_status_command(input: &str) -> bool {
     input.trim() == "/status"
 }
@@ -509,7 +513,7 @@ fn submit_tui_input(
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/tool <request>        Run an explicit tool-enabled turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/status                Show session status\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
+    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/tool <request>        Run an explicit tool-enabled turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/state                 Show verified state snapshot\n/status                Show session status\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
 }
 
 pub fn render_tui_script<I, S>(
@@ -556,6 +560,8 @@ where
             rendered_turns.push(shell.render());
         } else if is_tui_copy_command(input) {
             rendered_turns.push(shell.conversation_copy_text());
+        } else if is_tui_state_snapshot_command(input) {
+            rendered_turns.push(elgar_tui::render_session_state_snapshot(&session));
         } else if is_tui_status_command(input) {
             rendered_turns.push(elgar_tui::render_session_status(&session));
         } else if is_tui_pending_command(input) {
@@ -628,6 +634,12 @@ where
             writeln!(writer, "{}", shell.render())?;
         } else if is_tui_copy_command(&input) {
             writeln!(writer, "{}", shell.conversation_copy_text())?;
+        } else if is_tui_state_snapshot_command(&input) {
+            writeln!(
+                writer,
+                "{}",
+                elgar_tui::render_session_state_snapshot(&session)
+            )?;
         } else if is_tui_status_command(&input) {
             writeln!(writer, "{}", elgar_tui::render_session_status(&session))?;
         } else if is_tui_pending_command(&input) {
@@ -795,13 +807,13 @@ mod tests {
         default_permission_policy_mode, is_tui_approval_command, is_tui_clear_command,
         is_tui_copy_command, is_tui_created_command, is_tui_exit_command, is_tui_help_command,
         is_tui_memory_command, is_tui_pending_command, is_tui_plan_preview_command,
-        is_tui_rejection_command, is_tui_status_command, load_runtime_provider,
-        provider_smoke_config, provider_smoke_prompt, render_cli_turn_from_runtime_config,
-        render_tui_help, render_tui_script, resolve_runtime_project_root, run_tui_loop,
-        runtime_permission_policy_mode, should_launch_terminal_tui_by_default,
-        tui_permission_command_argument, tui_tool_command_argument, ProviderSmokeError,
-        RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
-        PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
+        is_tui_rejection_command, is_tui_state_snapshot_command, is_tui_status_command,
+        load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
+        render_cli_turn_from_runtime_config, render_tui_help, render_tui_script,
+        resolve_runtime_project_root, run_tui_loop, runtime_permission_policy_mode,
+        should_launch_terminal_tui_by_default, tui_permission_command_argument,
+        tui_tool_command_argument, ProviderSmokeError, RuntimePaths, RuntimeProviderConfigError,
+        PROVIDER_CONFIG_FILE, PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
     fn temp_root(name: &str) -> PathBuf {
@@ -1131,6 +1143,7 @@ mod tests {
         assert!(help.contains("/tool <request>"));
         assert!(help.contains("/approve"));
         assert!(help.contains("/reject"));
+        assert!(help.contains("/state"));
         assert!(help.contains("/status"));
         assert!(help.contains("/pending"));
         assert!(help.contains("/created"));
@@ -1220,6 +1233,15 @@ mod tests {
     }
 
     #[test]
+    fn tui_state_snapshot_command_is_explicit() {
+        assert!(is_tui_state_snapshot_command("/state"));
+        assert!(is_tui_state_snapshot_command(" /state "));
+        assert!(!is_tui_state_snapshot_command("state"));
+        assert!(!is_tui_state_snapshot_command("what did you create?"));
+        assert!(!is_tui_state_snapshot_command("/states"));
+    }
+
+    #[test]
     fn tui_plan_preview_command_is_explicit() {
         assert!(is_tui_plan_preview_command("/plan"));
         assert!(is_tui_plan_preview_command(" /plan preview "));
@@ -1232,10 +1254,12 @@ mod tests {
     fn tui_state_commands_are_explicit() {
         assert!(is_tui_status_command("/status"));
         assert!(is_tui_status_command(" /status "));
+        assert!(is_tui_state_snapshot_command("/state"));
         assert!(is_tui_pending_command("/pending"));
         assert!(is_tui_created_command("/created"));
 
         assert!(!is_tui_status_command("status"));
+        assert!(!is_tui_state_snapshot_command("state"));
         assert!(!is_tui_pending_command("pending"));
         assert!(!is_tui_created_command("created"));
         assert!(!is_tui_created_command("/create"));
@@ -1282,6 +1306,7 @@ mod tests {
         assert!(rendered.contains("Commands\n/commands"));
         assert!(rendered.contains("/approve"));
         assert!(rendered.contains("/reject"));
+        assert!(rendered.contains("/state"));
         assert!(rendered.contains("/status"));
         assert!(rendered.contains("/pending"));
         assert!(rendered.contains("/created"));
@@ -1329,11 +1354,15 @@ mod tests {
     fn tui_script_state_commands_are_local_and_empty_without_provider_call() {
         let root = temp_root("state-empty-command");
 
-        let rendered = render_tui_script(["/status", "/pending", "/created"], &root, &root);
+        let rendered =
+            render_tui_script(["/state", "/status", "/pending", "/created"], &root, &root);
 
+        assert!(rendered.contains("State\npending: none\napplied actions: 0\ncreated: (none)"));
+        assert!(rendered.contains("memory: (none)"));
         assert!(rendered.contains("Status\nactions: 0\npending: none"));
         assert!(rendered.contains("Pending\nnone"));
         assert!(rendered.contains("Created\n(none)"));
+        assert!(!rendered.contains("> /state"));
         assert!(!rendered.contains("> /status"));
         assert!(!rendered.contains("> /pending"));
         assert!(!rendered.contains("> /created"));

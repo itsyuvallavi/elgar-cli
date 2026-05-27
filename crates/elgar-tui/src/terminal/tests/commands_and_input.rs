@@ -33,6 +33,7 @@ fn terminal_commands_are_slash_only() {
     assert_eq!(parse_terminal_command("/approve"), TerminalCommand::Approve);
     assert_eq!(parse_terminal_command("/reject"), TerminalCommand::Reject);
     assert_eq!(parse_terminal_command("/cancel"), TerminalCommand::Cancel);
+    assert_eq!(parse_terminal_command("/state"), TerminalCommand::State);
     assert_eq!(parse_terminal_command("/status"), TerminalCommand::Status);
     assert_eq!(parse_terminal_command("/pending"), TerminalCommand::Pending);
     assert_eq!(parse_terminal_command("/created"), TerminalCommand::Created);
@@ -62,6 +63,14 @@ fn terminal_commands_are_slash_only() {
         TerminalCommand::Text("plan")
     );
     assert_eq!(
+        parse_terminal_command("state"),
+        TerminalCommand::Text("state")
+    );
+    assert_eq!(
+        parse_terminal_command("what did you create?"),
+        TerminalCommand::Text("what did you create?")
+    );
+    assert_eq!(
         parse_terminal_command("preview plan"),
         TerminalCommand::Text("preview plan")
     );
@@ -87,6 +96,7 @@ fn terminal_commands_are_slash_only() {
     assert!(help.contains("/approve"));
     assert!(help.contains("/reject"));
     assert!(help.contains("/cancel"));
+    assert!(help.contains("/state"));
     assert!(help.contains("/status"));
     assert!(help.contains("/pending"));
     assert!(help.contains("/created"));

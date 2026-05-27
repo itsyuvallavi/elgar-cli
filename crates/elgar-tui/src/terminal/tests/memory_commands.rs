@@ -35,7 +35,7 @@ fn terminal_state_commands_are_local_and_empty_without_provider_call() {
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
 
-    for command in ["/status", "/pending", "/created", "/plan"] {
+    for command in ["/state", "/status", "/pending", "/created", "/plan"] {
         assert!(!handle_submitted_terminal_input_for_loop(
             command,
             &controller,
@@ -47,6 +47,8 @@ fn terminal_state_commands_are_local_and_empty_without_provider_call() {
     }
 
     let rendered = shell.render();
+    assert!(rendered.contains("State\npending: none\napplied actions: 0\ncreated: (none)"));
+    assert!(rendered.contains("memory: (none)"));
     assert!(rendered.contains("Status\nactions: 0\npending: none"));
     assert!(rendered.contains("Pending\nnone"));
     assert!(rendered.contains("Created\n(none)"));
@@ -217,6 +219,63 @@ fn terminal_created_command_reports_verified_creations() {
     let rendered = shell.render();
     assert!(rendered.contains("Created\n- directory src"));
     assert!(root.join("src").is_dir());
+    assert!(pending_turn.is_none());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_state_command_reports_verified_creations_and_memory() {
+    let controller = scripted_tool_controller(vec![
+        scripted_create_directory_output("create-app", "tui-capability-test"),
+        scripted_create_file_output(
+            "create-plan",
+            "tui-capability-test/PROJECT_PLAN.md",
+            "# Project Plan\n\n```text\ntui-capability-test/\n├── src/\n│   └── main.py\n└── requirements.txt\n```\n",
+        ),
+    ]);
+    let root = temp_root("terminal-state-verified-memory");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/tool create folder called tui-capability-test",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/tool create project plan",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/state",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+
+    let rendered = shell.render();
+    assert!(rendered.contains("State"));
+    assert!(rendered.contains("applied actions: 2"));
+    assert!(rendered.contains("created:\n- directory tui-capability-test"));
+    assert!(rendered.contains("- file tui-capability-test/PROJECT_PLAN.md"));
+    assert!(rendered.contains("verified folders:"));
+    assert!(rendered.contains("- ok tui-capability-test ("));
+    assert!(rendered.contains("verified plans:"));
+    assert!(rendered.contains("- ok tui-capability-test/PROJECT_PLAN.md ("));
+    assert!(rendered.contains("latest structured plan:"));
+    assert!(rendered.contains("files 0/2"));
+    assert!(!rendered.contains("stub provider response"));
     assert!(pending_turn.is_none());
 
     let _ = std::fs::remove_dir_all(root);
