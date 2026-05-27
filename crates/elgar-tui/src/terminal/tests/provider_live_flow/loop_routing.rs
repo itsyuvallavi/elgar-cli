@@ -399,6 +399,91 @@ fn terminal_loop_explicit_tool_turn_can_use_verified_project_memory() {
 }
 
 #[test]
+fn terminal_loop_verified_plan_preflight_blocks_wrong_project_root() {
+    #[derive(Clone)]
+    struct WrongProjectProvider;
+
+    impl ControllerProvider for WrongProjectProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "wrong-project-provider",
+                Some("model-a".to_string()),
+                "wrong",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("unused"))
+        }
+
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            _messages: Vec<elgar_core::provider::ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("Creating missing file.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "wrong-project-file".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: serde_json::json!({
+                        "target_path": "other/pages/index.tsx",
+                        "contents": "export default function Home() { return <main>Wrong</main>; }\n"
+                    }),
+                    assistant_summary: Some("create missing page".to_string()),
+                },
+            ]))
+        }
+    }
+
+    let setup_controller = scripted_tool_controller(vec![
+        scripted_create_directory_output("create-demo", "demo"),
+        scripted_create_file_output("create-plan", "demo/project-plan.md", "# Plan\n"),
+    ]);
+    let controller = Controller::new(WrongProjectProvider);
+    let root = temp_root("terminal-plan-preflight-wrong-root");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/tool create folder called demo",
+        &setup_controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/tool create a plan in demo",
+        &setup_controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    let action_count_after_plan = session.actions().len();
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/tool continue from the verified plan",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+
+    let rendered = shell.render();
+    assert_eq!(session.actions().len(), action_count_after_plan);
+    assert!(!root.join("other/pages/index.tsx").exists());
+    assert!(rendered.contains("verified plan is rooted at demo"));
+    assert!(rendered.contains("outside that project"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn terminal_loop_normal_project_request_does_not_create_files() {
     let controller = Controller::default();
     let root = temp_root("terminal-normal-project-request");

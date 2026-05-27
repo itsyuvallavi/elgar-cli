@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use serde_json::Value;
@@ -32,7 +32,7 @@ use crate::{
     router::Route,
     session::{
         ActionRecord, PendingActionSelection, ProviderPromptMemorySelectedFact,
-        ProviderPromptMemorySelection, Session,
+        ProviderPromptMemorySelection, Session, VerifiedPlanReference,
     },
     shell::ShellExecutor,
 };
@@ -251,6 +251,14 @@ where
         let path_resolution = AgentPathResolution::new(None, None, &session.project_root);
         let resolved_outputs = resolve_agent_tool_outputs(outputs, &path_resolution);
 
+        if let Err(message) = preflight_verified_plan_tool_outputs(session, &resolved_outputs) {
+            session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                message,
+                AssistantMessageSource::Controller,
+            )));
+            break;
+        }
+
         if policy_mode == PermissionPolicyMode::ReviewAll {
             if let Some(action) = review_required_action_to_propose(&resolved_outputs, policy_mode)
             {
@@ -376,6 +384,87 @@ fn resolve_agent_tool_outputs(
             }
         })
         .collect()
+}
+
+fn preflight_verified_plan_tool_outputs(
+    session: &Session,
+    outputs: &[ResolvedAgentToolOutput],
+) -> Result<(), String> {
+    let Some(plan) = session.project_memory().latest_verified_plan() else {
+        return Ok(());
+    };
+
+    for target_path in outputs
+        .iter()
+        .filter_map(|output| match output {
+            ResolvedAgentToolOutput::Action(action) => Some(action),
+            ResolvedAgentToolOutput::Guidance(_) => None,
+        })
+        .flat_map(|action| plan_preflight_paths(&action.request))
+    {
+        let target_path = absolute_session_path(session, target_path);
+        if !path_is_within(&target_path, &plan.project_root) {
+            return Err(plan_preflight_outside_root_message(
+                session,
+                plan,
+                &target_path,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn plan_preflight_paths(request: &ActionRequest) -> Vec<&Path> {
+    match request {
+        ActionRequest::CreateFile(action) => vec![&action.target_path],
+        ActionRequest::CreateDirectory(action) => vec![&action.target_path],
+        ActionRequest::PatchFile(action) => vec![&action.target_path],
+        ActionRequest::OverwriteFile(action) => vec![&action.target_path],
+        ActionRequest::DeleteFile(action) => vec![&action.target_path],
+        ActionRequest::MoveFile(action) => vec![&action.source_path, &action.target_path],
+        ActionRequest::ShellCommand(_) => Vec::new(),
+    }
+}
+
+fn absolute_session_path(session: &Session, path: &Path) -> PathBuf {
+    normalize_path(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        session.cwd.join(path)
+    })
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    normalize_path(path).starts_with(normalize_path(root))
+}
+
+fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.as_ref().components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
+fn plan_preflight_outside_root_message(
+    session: &Session,
+    plan: &VerifiedPlanReference,
+    target_path: &Path,
+) -> String {
+    format!(
+        "The verified plan is rooted at {}, but the tool call targets {} outside that project. No filesystem action was applied.",
+        display_project_path(session, &plan.project_root),
+        display_project_path(session, target_path)
+    )
 }
 
 fn review_required_action_to_propose(
@@ -1181,6 +1270,103 @@ mod tests {
                     || error.message.contains("missing required argument")
                     || error.message.contains("Tool error")
         )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_preflight_blocks_file_actions_outside_plan_root() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-preflight-outside",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("demo")).unwrap();
+        std::fs::create_dir_all(root.join("other")).unwrap();
+        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
+            "Creating missing files.",
+        )
+        .with_tool_calls(vec![RawModelToolCall {
+            id: "outside-plan-root-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateFile),
+            arguments: json!({
+                "target_path": "other/index.tsx",
+                "contents": "export default function Home() {}\n"
+            }),
+            assistant_summary: None,
+        }])]);
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: root.join("demo/project-plan.md"),
+            project_root: root.join("demo"),
+            source_action_id: "action-plan".to_string(),
+        });
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "continue from the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(!root.join("other/index.tsx").exists());
+        assert!(session.actions().is_empty());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("verified plan is rooted at demo")
+                    && message.content.contains("outside that project")
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_preflight_allows_file_actions_inside_plan_root() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-preflight-inside",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("demo")).unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating missing files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "inside-plan-root-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "demo/index.tsx",
+                        "contents": "export default function Home() {}\n"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: cwd.join("demo/project-plan.md"),
+            project_root: cwd.join("demo"),
+            source_action_id: "action-plan".to_string(),
+        });
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "continue from the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("demo/index.tsx")).unwrap(),
+            "export default function Home() {}\n"
+        );
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
 
         let _ = std::fs::remove_dir_all(&root);
     }
