@@ -4,7 +4,7 @@ use elgar_core::{
     session::{
         PendingActionSelection, ProjectMemory, ProviderPromptMemoryOmittedFact,
         ProviderPromptMemorySelectedFact, ProviderPromptMemorySelection, Session,
-        StructuredProjectPlanStatus,
+        StructuredProjectPlan, StructuredProjectPlanStatus,
     },
 };
 use std::path::Path;
@@ -14,6 +14,14 @@ pub fn render_session_memory(session: &Session) -> String {
         session.project_memory(),
         session.latest_provider_prompt_memory_selection(),
     )
+}
+
+pub fn render_session_plan_preview(session: &Session) -> String {
+    let Some(plan) = session.project_memory().latest_structured_plan() else {
+        return "Plan Preview\n(none)".to_string();
+    };
+
+    render_structured_plan_preview(session, plan)
 }
 
 pub fn render_session_status(session: &Session) -> String {
@@ -56,6 +64,47 @@ pub fn render_session_status(session: &Session) -> String {
             "latest plan: {}",
             display_session_path(session, plan.path.as_path())
         ));
+    }
+
+    lines.join("\n")
+}
+
+fn render_structured_plan_preview(session: &Session, plan: &StructuredProjectPlan) -> String {
+    let mut lines = vec!["Plan Preview".to_string()];
+    lines.push(format!("status: {}", structured_status(plan.status)));
+    lines.push(format!(
+        "plan: {}",
+        display_session_path(session, &plan.source_plan_path)
+    ));
+    lines.push(format!(
+        "root: {}",
+        display_session_path(session, &plan.project_root)
+    ));
+
+    if plan.expected_directories.is_empty() {
+        lines.push("directories: (none listed)".to_string());
+    } else {
+        lines.push(format!("directories: {}", plan.expected_directories.len()));
+        for path in &plan.expected_directories {
+            lines.push(format!(
+                "- {} {}",
+                path_state(path, PathKind::Directory),
+                display_session_path(session, path)
+            ));
+        }
+    }
+
+    if plan.expected_files.is_empty() {
+        lines.push("files: (none listed)".to_string());
+    } else {
+        lines.push(format!("files: {}", plan.expected_files.len()));
+        for path in &plan.expected_files {
+            lines.push(format!(
+                "- {} {}",
+                path_state(path, PathKind::File),
+                display_session_path(session, path)
+            ));
+        }
     }
 
     lines.join("\n")

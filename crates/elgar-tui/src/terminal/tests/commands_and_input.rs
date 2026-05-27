@@ -37,6 +37,14 @@ fn terminal_commands_are_slash_only() {
     assert_eq!(parse_terminal_command("/pending"), TerminalCommand::Pending);
     assert_eq!(parse_terminal_command("/created"), TerminalCommand::Created);
     assert_eq!(parse_terminal_command("/memory"), TerminalCommand::Memory);
+    assert_eq!(
+        parse_terminal_command("/plan"),
+        TerminalCommand::PlanPreview
+    );
+    assert_eq!(
+        parse_terminal_command("/plan preview"),
+        TerminalCommand::PlanPreview
+    );
     assert_eq!(parse_terminal_command("/copy"), TerminalCommand::Copy);
     assert_eq!(parse_terminal_command("/exit"), TerminalCommand::Exit);
     assert_eq!(parse_terminal_command("/quit"), TerminalCommand::Exit);
@@ -48,6 +56,14 @@ fn terminal_commands_are_slash_only() {
     assert_eq!(
         parse_terminal_command("clear"),
         TerminalCommand::Text("clear")
+    );
+    assert_eq!(
+        parse_terminal_command("plan"),
+        TerminalCommand::Text("plan")
+    );
+    assert_eq!(
+        parse_terminal_command("preview plan"),
+        TerminalCommand::Text("preview plan")
     );
     assert_eq!(parse_terminal_command("new"), TerminalCommand::Text("new"));
     assert_eq!(parse_terminal_command("q"), TerminalCommand::Text("q"));
@@ -75,6 +91,8 @@ fn terminal_commands_are_slash_only() {
     assert!(help.contains("/pending"));
     assert!(help.contains("/created"));
     assert!(help.contains("/memory"));
+    assert!(help.contains("/plan"));
+    assert!(help.contains("/plan preview"));
     assert!(help.contains("/copy"));
     assert!(help.contains("/exit"));
     assert!(help.contains("/quit"));

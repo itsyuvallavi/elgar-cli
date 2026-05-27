@@ -32,7 +32,7 @@ use crate::{
     input::{TerminalInput, TerminalInputAction},
     memory::{
         render_session_created_actions, render_session_memory, render_session_pending_action,
-        render_session_status,
+        render_session_plan_preview, render_session_status,
     },
     panes::{ConversationLineStyle, ConversationPane},
     startup::StartupBlock,
@@ -294,6 +294,10 @@ where
         }
         TerminalCommand::Memory => {
             print_plain_block(&render_session_memory(session))?;
+            Ok((false, String::new()))
+        }
+        TerminalCommand::PlanPreview => {
+            print_plain_block(&render_session_plan_preview(session))?;
             Ok((false, String::new()))
         }
         TerminalCommand::Status => {
@@ -973,6 +977,12 @@ where
             shell
                 .conversation
                 .push_local_message(render_session_memory(session));
+            shell.conversation.follow_latest();
+        }
+        TerminalCommand::PlanPreview => {
+            shell
+                .conversation
+                .push_local_message(render_session_plan_preview(session));
             shell.conversation.follow_latest();
         }
         TerminalCommand::Status => {

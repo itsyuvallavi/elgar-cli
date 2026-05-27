@@ -35,7 +35,7 @@ fn terminal_state_commands_are_local_and_empty_without_provider_call() {
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
 
-    for command in ["/status", "/pending", "/created"] {
+    for command in ["/status", "/pending", "/created", "/plan"] {
         assert!(!handle_submitted_terminal_input_for_loop(
             command,
             &controller,
@@ -50,6 +50,7 @@ fn terminal_state_commands_are_local_and_empty_without_provider_call() {
     assert!(rendered.contains("Status\nactions: 0\npending: none"));
     assert!(rendered.contains("Pending\nnone"));
     assert!(rendered.contains("Created\n(none)"));
+    assert!(rendered.contains("Plan Preview\n(none)"));
     assert!(!rendered.contains("stub provider response"));
     assert!(!rendered.contains("lm-studio"));
 
@@ -136,6 +137,53 @@ fn terminal_memory_command_reports_verified_project_state() {
     assert!(rendered.contains("folders\n- ok "));
     assert!(rendered.contains("plans\n- ok "));
     assert!(!rendered.contains("lm-studio"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_plan_preview_command_reports_structured_plan_state() {
+    let plan =
+        "# Plan\n\n```text\nDemoApp/\n├── src/\n│   └── main.py\n└── requirements.txt\n```\n";
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-plan",
+        "DemoApp/project-plan.md",
+        plan,
+    )]);
+    let root = temp_root("terminal-plan-preview");
+    std::fs::create_dir_all(root.join("DemoApp")).unwrap();
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/tool create project plan",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+    assert!(session.project_memory().latest_structured_plan().is_some());
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "/plan preview",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+
+    let rendered = shell.render();
+    assert!(rendered.contains("Plan Preview"));
+    assert!(rendered.contains("status: proposed"));
+    assert!(rendered.contains("plan: DemoApp/project-plan.md"));
+    assert!(rendered.contains("root: DemoApp"));
+    assert!(rendered.contains("directories: 2"));
+    assert!(rendered.contains("files: 2"));
+    assert!(rendered.contains("- missing DemoApp/src/main.py"));
+    assert!(!rendered.contains("stub provider response"));
+    assert!(pending_turn.is_none());
 
     let _ = std::fs::remove_dir_all(root);
 }

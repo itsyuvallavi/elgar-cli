@@ -1,10 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 use crate::{
     action::{Action, ActionRequest, FileActionVerification},
     controller_reporting::verified_shell_expected_directories,
     event::VerifiedActionResult,
-    session::{Session, VerifiedFolderReference, VerifiedPlanReference},
+    session::{Session, StructuredProjectPlan, VerifiedFolderReference, VerifiedPlanReference},
 };
 
 pub(crate) fn record_verified_project_memory(
@@ -58,14 +61,17 @@ pub(crate) fn record_verified_project_memory(
                         .cloned()
                 })
             {
-                session.record_verified_plan_reference(VerifiedPlanReference {
+                let reference = VerifiedPlanReference {
                     project_root: path
                         .parent()
                         .map(Path::to_path_buf)
                         .unwrap_or_else(|| session.project_root.clone()),
                     path,
                     source_action_id: action_id,
-                });
+                };
+                session.record_verified_plan_reference(reference.clone());
+                session
+                    .record_structured_project_plan(structured_plan_from_verified_plan(&reference));
             }
         }
         _ => {}
@@ -77,11 +83,239 @@ fn record_verified_plan_memory(session: &mut Session, action_id: &str, path: Pat
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| session.project_root.clone());
-    session.record_verified_plan_reference(VerifiedPlanReference {
+    let reference = VerifiedPlanReference {
         path,
         project_root,
         source_action_id: action_id.to_string(),
-    });
+    };
+    session.record_verified_plan_reference(reference.clone());
+    session.record_structured_project_plan(structured_plan_from_verified_plan(&reference));
+}
+
+fn structured_plan_from_verified_plan(reference: &VerifiedPlanReference) -> StructuredProjectPlan {
+    let (expected_directories, expected_files) = fs::read_to_string(&reference.path)
+        .map(|contents| extract_expected_plan_paths(&contents, &reference.project_root))
+        .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+
+    StructuredProjectPlan {
+        source_action_id: Some(reference.source_action_id.clone()),
+        source_plan_path: reference.path.clone(),
+        project_root: reference.project_root.clone(),
+        stage: "verified-plan".to_string(),
+        status: Default::default(),
+        expected_directories,
+        expected_files,
+    }
+}
+
+fn extract_expected_plan_paths(
+    contents: &str,
+    project_root: &Path,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut expected_directories = Vec::new();
+    let mut expected_files = Vec::new();
+    let mut tree_stack: Vec<PathBuf> = Vec::new();
+
+    for line in contents.lines() {
+        if let Some(root_path) = tree_root_path_from_line(line) {
+            tree_stack.clear();
+            tree_stack.push(root_path.clone());
+            push_plan_path(
+                project_root,
+                root_path,
+                PlanPathKind::Directory,
+                &mut expected_directories,
+                &mut expected_files,
+            );
+            continue;
+        }
+
+        if let Some((path, kind)) = tree_path_from_line(line, &mut tree_stack) {
+            push_plan_path(
+                project_root,
+                path,
+                kind,
+                &mut expected_directories,
+                &mut expected_files,
+            );
+            continue;
+        }
+
+        if let Some((path, kind)) = inline_path_from_line(line) {
+            push_plan_path(
+                project_root,
+                path,
+                kind,
+                &mut expected_directories,
+                &mut expected_files,
+            );
+        }
+    }
+
+    (expected_directories, expected_files)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PlanPathKind {
+    Directory,
+    File,
+}
+
+fn push_plan_path(
+    project_root: &Path,
+    path: PathBuf,
+    kind: PlanPathKind,
+    expected_directories: &mut Vec<PathBuf>,
+    expected_files: &mut Vec<PathBuf>,
+) {
+    let Some(path) = resolve_plan_path(project_root, &path) else {
+        return;
+    };
+
+    let bucket = match kind {
+        PlanPathKind::Directory => expected_directories,
+        PlanPathKind::File => expected_files,
+    };
+    if !bucket.contains(&path) {
+        bucket.push(path);
+    }
+}
+
+fn tree_path_from_line(line: &str, stack: &mut Vec<PathBuf>) -> Option<(PathBuf, PlanPathKind)> {
+    let marker_index = line.find("├──").or_else(|| line.find("└──"))?;
+    let depth = tree_depth(&line[..marker_index]);
+    let name = line[marker_index + "├──".len()..].trim();
+    let (name, kind) = clean_plan_path_token(name)?;
+    let parent = stack.get(depth).cloned().unwrap_or_default();
+    let path = parent.join(&name);
+
+    if matches!(kind, PlanPathKind::Directory) {
+        if stack.len() <= depth + 1 {
+            stack.resize(depth + 2, PathBuf::new());
+        }
+        stack[depth + 1] = path.clone();
+        stack.truncate(depth + 2);
+    }
+
+    Some((path, kind))
+}
+
+fn tree_root_path_from_line(line: &str) -> Option<PathBuf> {
+    let trimmed = line.trim();
+    if trimmed.chars().any(char::is_whitespace) || trimmed.contains("──") {
+        return None;
+    }
+    let (path, kind) = clean_plan_path_token(trimmed)?;
+    matches!(kind, PlanPathKind::Directory).then_some(path)
+}
+
+fn tree_depth(prefix: &str) -> usize {
+    prefix
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(4)
+        .filter(|chunk| chunk.iter().any(|ch| !ch.is_whitespace()))
+        .count()
+}
+
+fn inline_path_from_line(line: &str) -> Option<(PathBuf, PlanPathKind)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || trimmed.starts_with('|')
+        || trimmed.starts_with("```")
+    {
+        return None;
+    }
+
+    let token = trimmed
+        .trim_start_matches(|ch: char| {
+            ch.is_ascii_whitespace() || ch == '-' || ch == '*' || ch == '+' || ch.is_ascii_digit()
+        })
+        .trim_start_matches("[ ]")
+        .trim_start_matches("[x]")
+        .trim_start_matches("[X]")
+        .trim();
+    let token = token
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(|ch: char| matches!(ch, ',' | ';' | ':' | ')'));
+
+    clean_plan_path_token(token)
+}
+
+fn clean_plan_path_token(token: &str) -> Option<(PathBuf, PlanPathKind)> {
+    let token = token
+        .trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('\'');
+    if token.is_empty()
+        || token == "."
+        || token.contains("://")
+        || token.contains("...")
+        || token.starts_with('$')
+        || token.starts_with('~')
+    {
+        return None;
+    }
+
+    let kind = if token.ends_with('/') {
+        PlanPathKind::Directory
+    } else if path_has_file_extension(Path::new(token)) {
+        PlanPathKind::File
+    } else {
+        return None;
+    };
+
+    Some((PathBuf::from(token.trim_end_matches('/')), kind))
+}
+
+fn path_has_file_extension(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with('.')
+                || path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        !extension.is_empty()
+                            && extension.len() <= 12
+                            && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
+                    })
+        })
+}
+
+fn resolve_plan_path(project_root: &Path, path: &Path) -> Option<PathBuf> {
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+        )
+    }) {
+        return None;
+    }
+
+    let path = if path
+        .components()
+        .next()
+        .and_then(|component| match component {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        == project_root.file_name()
+    {
+        project_root
+            .parent()
+            .map(|parent| parent.join(path))
+            .unwrap_or_else(|| project_root.join(path))
+    } else {
+        project_root.join(path)
+    };
+
+    Some(path)
 }
 
 fn verified_directory_path(session: &Session, result: &VerifiedActionResult) -> Option<PathBuf> {
@@ -139,7 +373,7 @@ fn contents_looks_like_plan(contents: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
 
     use crate::{
         action::{Action, ActionRequest, CreateDirectoryAction, CreateFileAction},
@@ -234,6 +468,108 @@ mod tests {
             plan.project_root,
             PathBuf::from("/repo/playground/WeatherApp")
         );
+    }
+
+    #[test]
+    fn records_structured_plan_contract_from_verified_plan_file() {
+        let root =
+            std::env::temp_dir().join(format!("elgar-structured-plan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("DemoApp")).unwrap();
+        fs::write(
+            root.join("DemoApp/project-plan.md"),
+            "# Plan\n\n```text\nDemoApp/\n├── src/\n│   └── main.py\n├── requirements.txt\n└── .gitignore\n```\n\n- docs/usage.md\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("DemoApp/project-plan.md"),
+                contents: "# Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("DemoApp/project-plan.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified plan file should create structured plan state");
+        assert_eq!(structured.source_action_id.as_deref(), Some("action-plan"));
+        assert_eq!(structured.project_root, root.join("DemoApp"));
+        assert_eq!(
+            structured.source_plan_path,
+            root.join("DemoApp/project-plan.md")
+        );
+        assert!(structured
+            .expected_directories
+            .contains(&root.join("DemoApp")));
+        assert!(structured
+            .expected_directories
+            .contains(&root.join("DemoApp/src")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("DemoApp/src/main.py")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("DemoApp/requirements.txt")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("DemoApp/.gitignore")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("DemoApp/docs/usage.md")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn records_deeper_unicode_tree_prefixes_under_expected_parent() {
+        let root =
+            std::env::temp_dir().join(format!("elgar-deep-structured-plan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("DemoApp")).unwrap();
+        fs::write(
+            root.join("DemoApp/project-plan.md"),
+            "# Plan\n\n```text\nDemoApp/\n├── src/\n│   ├── package/\n│   │   └── module.py\n└── requirements.txt\n```\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("DemoApp/project-plan.md"),
+                contents: "# Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("DemoApp/project-plan.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified plan file should create structured plan state");
+        assert!(structured
+            .expected_directories
+            .contains(&root.join("DemoApp/src/package")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("DemoApp/src/package/module.py")));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
