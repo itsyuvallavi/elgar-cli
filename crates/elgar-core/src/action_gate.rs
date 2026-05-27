@@ -1,9 +1,26 @@
+use std::{
+    marker::PhantomData,
+    path::{Path, PathBuf},
+};
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    controller::{Controller, TurnResult},
-    provider::{ControllerProvider, ProviderStub},
-    session::Session,
+    action::{Action, ActionRequest},
+    controller::TurnResult,
+    controller_project_memory::record_verified_project_memory,
+    controller_reporting::{truth_guard_visible_message, verified_action_success_message},
+    controller_shell_verify::verify_expected_shell_effect,
+    event::{
+        ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource, Event,
+        UserMessage,
+    },
+    fs::Filesystem,
+    policy::ApprovalSource,
+    provider::ProviderStub,
+    router::Route,
+    session::{PendingActionSelection, Session},
+    shell::ShellExecutor,
 };
 
 /// Narrow approval/rejection gate used after the model/runtime proposes work.
@@ -12,27 +29,33 @@ use crate::{
 /// only for explicit action lifecycle commands such as `/approve` and `/reject`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionGate<P = ProviderStub> {
-    legacy_controller: Controller<P>,
+    #[serde(skip)]
+    _provider: PhantomData<P>,
 }
 
 impl<P> ActionGate<P> {
-    pub fn new(provider: P) -> Self {
+    pub fn new(_provider: P) -> Self {
         Self {
-            legacy_controller: Controller::new(provider),
+            _provider: PhantomData,
         }
     }
-}
 
-impl<P> ActionGate<P>
-where
-    P: ControllerProvider,
-{
     pub fn approve(&self, session: &mut Session) -> TurnResult {
-        self.legacy_controller.turn(session, "approve")
+        run_lifecycle_turn(
+            session,
+            "/approve",
+            Route::ApproveAction,
+            handle_approve_action,
+        )
     }
 
     pub fn reject(&self, session: &mut Session) -> TurnResult {
-        self.legacy_controller.turn(session, "reject")
+        run_lifecycle_turn(
+            session,
+            "/reject",
+            Route::RejectAction,
+            handle_reject_action,
+        )
     }
 }
 
@@ -42,13 +65,274 @@ impl Default for ActionGate<ProviderStub> {
     }
 }
 
+fn run_lifecycle_turn(
+    session: &mut Session,
+    command: &'static str,
+    route: Route,
+    handler: fn(&mut Session),
+) -> TurnResult {
+    let start_index = session.events().len();
+    session.push_event(Event::UserMessage(UserMessage::new(command)));
+    handler(session);
+    TurnResult {
+        route,
+        events: session.events()[start_index..].to_vec(),
+    }
+}
+
+fn handle_reject_action(session: &mut Session) {
+    let index = match session.pending_action_selection() {
+        PendingActionSelection::Single(index) => index,
+        PendingActionSelection::None => {
+            push_action_gate_message(session, "No proposed action is waiting for rejection.");
+            return;
+        }
+        PendingActionSelection::Ambiguous => {
+            push_ambiguous_pending_action_message(session);
+            return;
+        }
+    };
+
+    let rejected = session.actions()[index].action.reject();
+    session.remove_structured_project_plan_for_action(&rejected.id);
+    let record = session
+        .action_mut(index)
+        .expect("latest proposed action index must reference an action record");
+    record.action = rejected.clone();
+    session.push_event(Event::ActionRejected(
+        ActionEvent::new(
+            rejected.id.clone(),
+            rejected.kind(),
+            rejected.summary.clone(),
+        )
+        .with_target(action_target_label(&rejected)),
+    ));
+    push_action_gate_message(session, "Rejected action. No filesystem change was made.");
+}
+
+fn handle_approve_action(session: &mut Session) {
+    let index = match session.pending_action_selection() {
+        PendingActionSelection::Single(index) => index,
+        PendingActionSelection::None => {
+            push_action_gate_message(session, "No proposed action is waiting for approval.");
+            return;
+        }
+        PendingActionSelection::Ambiguous => {
+            push_ambiguous_pending_action_message(session);
+            return;
+        }
+    };
+
+    let approved = session.actions()[index].action.approve();
+    let record = session
+        .action_mut(index)
+        .expect("latest proposed action index must reference an action record");
+    record.action = approved.clone();
+    session.push_event(Event::ActionApproved(
+        ActionEvent::new(
+            approved.id.clone(),
+            approved.kind(),
+            approved.summary.clone(),
+        )
+        .with_target(action_target_label(&approved))
+        .with_approval_source(ApprovalSource::user()),
+    ));
+
+    if let ActionRequest::ShellCommand(shell_command) = &approved.request {
+        match ShellExecutor::execute(shell_command) {
+            Ok(result) => match verify_expected_shell_effect(shell_command, result) {
+                Ok(result) => {
+                    let message = verified_action_success_message(session, &approved, &result);
+                    let record = session
+                        .action_mut(index)
+                        .expect("approved action index must reference an action record");
+                    record.verified_result = Some(result.clone());
+                    record.failure_reason = None;
+                    record.action = approved.mark_applied();
+                    record_verified_project_memory(session, &approved, &result);
+                    session.mark_structured_project_plan_executed(&approved.id);
+                    session.push_event(Event::ActionApplied(ActionApplied::new(
+                        approved.id.clone(),
+                        approved.kind(),
+                        result,
+                    )));
+                    push_action_gate_message(session, message);
+                }
+                Err(reason) => {
+                    let record = session
+                        .action_mut(index)
+                        .expect("approved action index must reference an action record");
+                    record.verified_result = None;
+                    record.failure_reason = Some(reason.clone());
+                    record.action = approved.mark_failed();
+                    session.remove_structured_project_plan_for_action(&approved.id);
+                    session.push_event(Event::ActionFailed(ActionFailed::new(
+                        approved.id.clone(),
+                        approved.kind(),
+                        reason,
+                    )));
+                    push_action_gate_message(
+                        session,
+                        "Approved shell command ran, but expected filesystem verification failed.",
+                    );
+                }
+            },
+            Err(error) => {
+                let reason = error.to_string();
+                let record = session
+                    .action_mut(index)
+                    .expect("approved action index must reference an action record");
+                record.verified_result = None;
+                record.failure_reason = Some(reason.clone());
+                record.action = approved.mark_failed();
+                session.remove_structured_project_plan_for_action(&approved.id);
+                session.push_event(Event::ActionFailed(ActionFailed::new(
+                    approved.id.clone(),
+                    approved.kind(),
+                    reason,
+                )));
+                push_action_gate_message(
+                    session,
+                    "Approved shell command failed before a shell result could be recorded.",
+                );
+            }
+        }
+        return;
+    }
+
+    let allowed_root = policy_allowed_root_for_action(session, &approved);
+    apply_approved_file_action_at_index(
+        session,
+        index,
+        &approved,
+        &allowed_root,
+        "Approved file action failed. No verified filesystem result was recorded.",
+    );
+}
+
+fn apply_approved_file_action_at_index(
+    session: &mut Session,
+    index: usize,
+    approved: &Action,
+    allowed_root: &Path,
+    failure_message: &'static str,
+) {
+    match Filesystem::apply_file_action(approved, allowed_root) {
+        Ok(result) => {
+            let message = verified_action_success_message(session, approved, &result);
+            let record = session
+                .action_mut(index)
+                .expect("approved action index must reference an action record");
+            record.verified_result = Some(result.clone());
+            record.failure_reason = None;
+            record.action = approved.mark_applied();
+            record_verified_project_memory(session, approved, &result);
+            session.push_event(Event::ActionApplied(ActionApplied::new(
+                approved.id.clone(),
+                approved.kind(),
+                result,
+            )));
+            push_action_gate_message(session, message);
+        }
+        Err(error) => {
+            let reason = error.to_string();
+            let record = session
+                .action_mut(index)
+                .expect("approved action index must reference an action record");
+            record.verified_result = None;
+            record.failure_reason = Some(reason.clone());
+            record.action = approved.mark_failed();
+            session.push_event(Event::ActionFailed(ActionFailed::new(
+                approved.id.clone(),
+                approved.kind(),
+                reason,
+            )));
+            push_action_gate_message(session, failure_message);
+        }
+    }
+}
+
+fn push_action_gate_message(session: &mut Session, message: impl Into<String>) {
+    let message = truth_guard_visible_message(session, message.into());
+    session.push_event(Event::AssistantMessage(AssistantMessage::new(
+        message,
+        AssistantMessageSource::Controller,
+    )));
+}
+
+fn push_ambiguous_pending_action_message(session: &mut Session) {
+    push_action_gate_message(
+        session,
+        "Multiple proposed actions are waiting. Elgar will not approve, reject, or create another action until this session is repaired.",
+    );
+}
+
+fn policy_allowed_root_for_action(session: &Session, action: &Action) -> PathBuf {
+    let Some(target_path) = action_filesystem_target(action) else {
+        return session.project_root.clone();
+    };
+
+    if !target_path.is_absolute() {
+        return session.project_root.clone();
+    }
+
+    if let Some(desktop) = home_dir().map(|home| home.join("Desktop")) {
+        if target_path.starts_with(&desktop) {
+            return desktop;
+        }
+    }
+
+    if matches!(
+        action.request,
+        ActionRequest::CreateFile(_) | ActionRequest::CreateDirectory(_)
+    ) {
+        if let Some(home) = home_dir() {
+            if target_path.starts_with(&home) {
+                return home;
+            }
+        }
+    }
+
+    if target_path.starts_with(&session.project_root) {
+        return session.project_root.clone();
+    }
+
+    session.project_root.clone()
+}
+
+fn action_filesystem_target(action: &Action) -> Option<&Path> {
+    match &action.request {
+        ActionRequest::CreateFile(create_file) => Some(&create_file.target_path),
+        ActionRequest::CreateDirectory(create_directory) => Some(&create_directory.target_path),
+        ActionRequest::PatchFile(patch_file) => Some(&patch_file.target_path),
+        ActionRequest::OverwriteFile(overwrite_file) => Some(&overwrite_file.target_path),
+        ActionRequest::DeleteFile(delete_file) => Some(&delete_file.target_path),
+        ActionRequest::MoveFile(move_file) => Some(&move_file.target_path),
+        ActionRequest::ShellCommand(_) => None,
+    }
+}
+
+fn action_target_label(action: &Action) -> String {
+    match &action.request {
+        ActionRequest::CreateFile(create_file) => create_file.target_path.display().to_string(),
+        request => request.approval_target(),
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use crate::{
         action::{Action, ActionRequest, CreateDirectoryAction},
-        event::Event,
+        event::{Event, UserMessage},
+        router::Route,
         session::{ActionRecord, Session},
     };
 
@@ -77,6 +361,11 @@ mod tests {
 
         let result = gate.approve(&mut session);
 
+        assert_eq!(result.route, Route::ApproveAction);
+        assert!(matches!(
+            result.events.first(),
+            Some(Event::UserMessage(UserMessage { content })) if content == "/approve"
+        ));
         assert!(root.join("demo").is_dir());
         assert!(result
             .events
@@ -101,6 +390,11 @@ mod tests {
 
         let result = gate.reject(&mut session);
 
+        assert_eq!(result.route, Route::RejectAction);
+        assert!(matches!(
+            result.events.first(),
+            Some(Event::UserMessage(UserMessage { content })) if content == "/reject"
+        ));
         assert!(!root.join("demo").exists());
         assert!(result
             .events

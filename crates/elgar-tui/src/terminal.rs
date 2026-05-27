@@ -61,7 +61,7 @@ use prompt::{
 #[cfg(test)]
 use provider_task::start_provider_turn;
 use provider_task::{
-    start_model_first_turn, start_tool_turn, ProviderTurnTask, ProviderTurnUpdate,
+    start_provider_text_turn, start_tool_turn, ProviderTurnTask, ProviderTurnUpdate,
 };
 use text::{conversation_print_blocks, pad_line, plain_block_lines};
 
@@ -336,10 +336,10 @@ where
             Ok((exit, String::new()))
         }
         TerminalCommand::Text(text) => {
-            if terminal_text_should_run_inline_model_first(text) {
-                let model_input = normalize_terminal_model_first_input(text);
+            if terminal_text_should_run_inline_provider_text(text) {
+                let provider_input = normalize_terminal_provider_text_input(text);
                 let preserved_input =
-                    run_inline_model_first_turn(&model_input, runtime, session, shell)?;
+                    run_inline_provider_text_turn(&provider_input, runtime, session, shell)?;
                 Ok((false, preserved_input))
             } else {
                 let before = shell.conversation.render_lines_with_styles().len();
@@ -363,7 +363,7 @@ where
     run_inline_provider_turn(text, runtime, session, shell, true)
 }
 
-fn run_inline_model_first_turn<P>(
+fn run_inline_provider_text_turn<P>(
     text: &str,
     runtime: &AgentRuntime<P>,
     session: &mut Session,
@@ -402,7 +402,7 @@ where
             shell.policy_mode,
         )
     } else {
-        start_model_first_turn(
+        start_provider_text_turn(
             runtime.clone(),
             session.clone(),
             text.to_string(),
@@ -1041,11 +1041,11 @@ fn handle_terminal_tool_input<P>(
     shell.submit_agent_tool_input(runtime, session, text);
 }
 
-fn terminal_text_should_run_inline_model_first(_text: &str) -> bool {
+fn terminal_text_should_run_inline_provider_text(_text: &str) -> bool {
     true
 }
 
-fn normalize_terminal_model_first_input(text: &str) -> String {
+fn normalize_terminal_provider_text_input(text: &str) -> String {
     normalize_pasted_transcript_input(text).trim().to_string()
 }
 
@@ -1078,16 +1078,18 @@ where
             }
             false
         }
-        TerminalCommand::Text(text) if terminal_text_should_run_inline_model_first(text) => {
+        TerminalCommand::Text(text) if terminal_text_should_run_inline_provider_text(text) => {
             let runtime = AgentRuntime::new(controller.provider.clone());
-            let model_input = normalize_terminal_model_first_input(text);
-            shell.conversation.push_pending_provider_turn(&model_input);
+            let provider_input = normalize_terminal_provider_text_input(text);
+            shell
+                .conversation
+                .push_pending_provider_turn(&provider_input);
             shell.conversation.follow_latest();
             shell.status.start_thinking_pulse();
-            *pending_turn = Some(start_model_first_turn(
+            *pending_turn = Some(start_provider_text_turn(
                 runtime,
                 session.clone(),
-                model_input,
+                provider_input,
                 shell.policy_mode,
             ));
             false

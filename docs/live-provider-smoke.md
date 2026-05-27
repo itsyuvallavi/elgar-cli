@@ -97,52 +97,6 @@ ELGAR_LM_STUDIO_BASE_URL="http://127.0.0.1:1234/v1" \
 cargo run -p elgar-cli -- provider-smoke "Say hello in one sentence."
 ```
 
-## Legacy Controller Smoke
-
-These commands exercise explicit legacy controller/provider surfaces. They are
-useful for compatibility comparison, but normal CLI/TUI chat should use the
-AgentRuntime path.
-
-```sh
-ELGAR_LM_STUDIO_MODEL="actual-loaded-model-name" \
-cargo run -p elgar-cli -- controller-smoke "Say hello in one sentence."
-```
-
-With a custom LM Studio base URL:
-
-```sh
-ELGAR_LM_STUDIO_MODEL="actual-loaded-model-name" \
-ELGAR_LM_STUDIO_BASE_URL="http://127.0.0.1:1234/v1" \
-cargo run -p elgar-cli -- controller-smoke "Say hello in one sentence."
-```
-
-Expected successful controller smoke shape:
-
-```text
-user: Say hello in one sentence.
-provider started: lm-studio request lm-studio-request-1
-provider finished: lm-studio request lm-studio-request-1: Hello!
-assistant Provider: Hello!
-```
-
-## Legacy TUI Controller Smoke
-
-This renders the same explicit live controller path through `TuiShell`, so the
-output uses TUI conversation/status copy. It is not the normal TUI chat path.
-
-```sh
-ELGAR_LM_STUDIO_MODEL="actual-loaded-model-name" \
-cargo run -p elgar-cli -- tui-controller-smoke "Say hello in one sentence."
-```
-
-With a custom LM Studio base URL:
-
-```sh
-ELGAR_LM_STUDIO_MODEL="actual-loaded-model-name" \
-ELGAR_LM_STUDIO_BASE_URL="http://127.0.0.1:1234/v1" \
-cargo run -p elgar-cli -- tui-controller-smoke "Say hello in one sentence."
-```
-
 ## Manual Terminal TUI Dogfood
 
 This is optional and live. It is not part of `./bin/check-local`.

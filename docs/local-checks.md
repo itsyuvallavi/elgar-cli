@@ -16,7 +16,7 @@ It runs:
 - `cargo test --workspace`
 
 It does not require LM Studio and does not run live provider smoke commands such
-as `provider-smoke`, `controller-smoke`, or `tui-controller-smoke`.
+as `provider-smoke`.
 
 ## Performance Baseline
 

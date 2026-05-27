@@ -10,6 +10,7 @@ use std::{
 
 use elgar_core::{
     action::ActionLifecycleState,
+    agent_runtime::AgentRuntime,
     context::{ContextAccounting, LoadedContextFile},
     controller::Controller,
     event::{
@@ -17,6 +18,7 @@ use elgar_core::{
         ProviderOutput, ProviderStarted, ProviderTokenUsage,
     },
     model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
+    policy::PermissionPolicyMode,
     provider::{
         ChatMessage, ChatRole, ChatToolDefinition, ControllerProvider, ProviderError,
         ProviderRequestMetadata, ProviderStreamChunk,
@@ -91,13 +93,16 @@ fn draw_to_text(shell: &TuiShell, context: &TerminalShellContext) -> String {
         .collect::<String>()
 }
 
-fn submit_text(
+fn submit_text<P>(
     text: &str,
     input: &mut TerminalInput,
-    controller: &Controller,
+    controller: &Controller<P>,
     session: &mut Session,
     shell: &mut TuiShell,
-) -> bool {
+) -> bool
+where
+    P: ControllerProvider + Clone,
+{
     for character in text.chars() {
         let exited = handle_terminal_key(
             crossterm::event::KeyEvent::new(
@@ -124,13 +129,17 @@ fn submit_text(
     )
 }
 
-fn submit_legacy_controller_input(
+fn submit_review_tool_input<P>(
     shell: &mut TuiShell,
-    controller: &Controller,
+    controller: &Controller<P>,
     session: &mut Session,
     input: &str,
-) -> elgar_core::controller::TurnResult {
-    let result = controller.turn(session, input);
+) -> elgar_core::controller::TurnResult
+where
+    P: ControllerProvider + Clone,
+{
+    let runtime = AgentRuntime::new(controller.provider.clone());
+    let result = runtime.tool_turn(session, input, PermissionPolicyMode::ReviewAll);
     shell.consume_events(&result.events);
     result
 }
@@ -310,6 +319,6 @@ fn latest_user_message(messages: &[ChatMessage]) -> &str {
 mod commands_and_input;
 mod copy_clipboard;
 mod memory_commands;
-mod model_first_live_flow;
+mod provider_live_flow;
 mod rendering_frames;
 mod startup_footer_layout;

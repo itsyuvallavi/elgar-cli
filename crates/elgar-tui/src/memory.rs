@@ -348,7 +348,16 @@ fn provider_memory_path_state(kind: &str, path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use elgar_core::controller::Controller;
+    use elgar_core::{
+        agent_runtime::AgentRuntime,
+        event::ProviderOutput,
+        model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
+        policy::PermissionPolicyMode,
+        provider::{
+            ChatMessage, ChatRole, ChatToolDefinition, ControllerProvider, ProviderError,
+            ProviderRequestMetadata,
+        },
+    };
     use std::fs;
 
     fn temp_root(name: &str) -> std::path::PathBuf {
@@ -370,21 +379,29 @@ mod tests {
     fn renders_verified_and_stale_memory_without_provider_calls() {
         let root = temp_root("verified-stale");
         let folder = root.join("project");
-        let controller = Controller::default();
         let mut session = Session::new("memory-session", &root, &root);
 
-        controller.turn(
+        tool_runtime(
+            ModelToolName::CreateDirectory,
+            serde_json::json!({"target_path": "project"}),
+        )
+        .tool_turn(
             &mut session,
-            &format!("create a folder at {}", folder.display()),
+            "create folder project",
+            PermissionPolicyMode::FullAccess,
         );
-        controller.turn(&mut session, "approve");
-        controller.turn(
+        tool_runtime(
+            ModelToolName::CreateFile,
+            serde_json::json!({
+                "target_path": "project/small-python-project-plan.md",
+                "contents": "# Project Plan\n",
+            }),
+        )
+        .tool_turn(
             &mut session,
-            "create a plan for a small python project inside that folder",
+            "create project plan",
+            PermissionPolicyMode::FullAccess,
         );
-        controller.turn(&mut session, "approve");
-        controller.turn(&mut session, "execute the plan inside that folder");
-        controller.turn(&mut session, "approve");
 
         let plan_path = folder.join("small-python-project-plan.md");
         assert!(plan_path.is_file());
@@ -392,78 +409,60 @@ mod tests {
         let rendered = render_session_memory(&session);
         assert!(rendered.contains("folders\n- ok "));
         assert!(rendered.contains("plans\n- ok "));
-        assert!(rendered.contains("structured plans\n- executed"));
-        assert!(rendered.contains("dirs 2/2"));
-        assert!(rendered.contains("files 5/5"));
 
         fs::remove_file(&plan_path).unwrap();
         let rendered = render_session_memory(&session);
         assert!(rendered.contains("- missing "));
-        assert!(rendered.contains("plan missing "));
 
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn renders_latest_provider_prompt_selected_memory_trace() {
-        let root = temp_root("provider-selected");
-        let folder = root.join("project");
-        let controller = Controller::default();
-        let mut session = Session::new("memory-session", &root, &root);
-
-        controller.turn(
-            &mut session,
-            &format!("create a folder at {}", folder.display()),
-        );
-        controller.turn(&mut session, "approve");
-        controller.turn(
-            &mut session,
-            "create a plan for a small python project inside that folder",
-        );
-        controller.turn(&mut session, "approve");
-
-        controller.model_turn(&mut session, "what path is the plan for that project?");
-
-        let rendered = render_session_memory(&session);
-        assert!(rendered.contains("provider prompt memory\nselected"));
-        assert!(rendered.contains("verified folder ok "));
-        assert!(rendered.contains("verified plan ok "));
-        assert!(rendered.contains("root ok "));
-        assert!(!rendered.contains("Verified memory selected by Elgar controller:"));
-        assert!(!rendered.contains("User request:"));
-
-        let _ = fs::remove_dir_all(root);
+    fn tool_runtime(
+        name: ModelToolName,
+        arguments: serde_json::Value,
+    ) -> AgentRuntime<ScriptedToolProvider> {
+        AgentRuntime::new(ScriptedToolProvider {
+            output: ProviderOutput::new("tool output").with_tool_calls(vec![RawModelToolCall {
+                id: "call-tool".to_string(),
+                name: RawModelToolName::Known(name),
+                arguments,
+                assistant_summary: Some("tool action".to_string()),
+            }]),
+        })
     }
 
-    #[test]
-    fn renders_latest_provider_prompt_omitted_memory_trace() {
-        let root = temp_root("provider-omitted");
-        let folder = root.join("project");
-        let controller = Controller::default();
-        let mut session = Session::new("memory-session", &root, &root);
+    #[derive(Debug, Clone)]
+    struct ScriptedToolProvider {
+        output: ProviderOutput,
+    }
 
-        controller.turn(
-            &mut session,
-            &format!("create a folder at {}", folder.display()),
-        );
-        controller.turn(&mut session, "approve");
-        controller.turn(
-            &mut session,
-            "create a plan for a small python project inside that folder",
-        );
-        controller.turn(&mut session, "approve");
-        fs::remove_dir_all(&folder).unwrap();
+    impl ControllerProvider for ScriptedToolProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "tool-provider",
+                Some("tool-model".to_string()),
+                "request-1",
+            )
+        }
 
-        controller.model_turn(&mut session, "what path is the plan for that project?");
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("plain response"))
+        }
 
-        let rendered = render_session_memory(&session);
-        assert!(rendered.contains("provider prompt memory\nomitted"));
-        assert!(rendered.contains("verified folder missing "));
-        assert!(rendered.contains("verified plan missing "));
-        assert!(rendered.contains("; missing)"));
-        assert!(!rendered.contains("Verified memory selected by Elgar controller:"));
-        assert!(!rendered.contains("User request:"));
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<ProviderOutput, ProviderError> {
+            if messages
+                .iter()
+                .any(|message| matches!(message.role, ChatRole::Tool))
+            {
+                return Ok(ProviderOutput::new("Done."));
+            }
 
-        let _ = fs::remove_dir_all(root);
+            Ok(self.output.clone())
+        }
     }
 }

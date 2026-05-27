@@ -315,7 +315,7 @@ fn active_working_frame_reveals_response_before_completion() {
 }
 
 #[test]
-fn active_working_frame_can_suppress_model_first_response_preview() {
+fn active_working_frame_can_suppress_provider_turn_response_preview() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
     let mut live_output = LiveProviderOutput::default();
@@ -332,7 +332,7 @@ fn active_working_frame_can_suppress_model_first_response_preview() {
 }
 
 #[test]
-fn active_working_frame_can_suppress_model_first_reasoning_preview() {
+fn active_working_frame_can_suppress_provider_turn_reasoning_preview() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
     let mut live_output = LiveProviderOutput::default();
@@ -350,7 +350,7 @@ fn active_working_frame_can_suppress_model_first_reasoning_preview() {
 }
 
 #[test]
-fn active_working_frame_suppresses_model_first_tool_stream_for_project_creation() {
+fn active_working_frame_suppresses_provider_turn_tool_stream_for_project_creation() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
     let mut live_output = LiveProviderOutput::default();
@@ -461,7 +461,7 @@ fn completed_terminal_transcript_groups_plain_lines_into_one_print_block() {
 }
 
 #[test]
-fn completed_model_first_transcript_can_skip_provider_thinking_block() {
+fn completed_provider_turn_transcript_can_skip_provider_thinking_block() {
     let blocks = conversation_print_blocks(
         vec![
             (

@@ -135,10 +135,6 @@ impl Session {
         self.project_memory.remember_verified_plan(reference);
     }
 
-    pub(crate) fn record_structured_project_plan(&mut self, plan: StructuredProjectPlan) {
-        self.project_memory.remember_structured_plan(plan);
-    }
-
     pub(crate) fn set_latest_provider_prompt_memory_selection(
         &mut self,
         selection: Option<ProviderPromptMemorySelection>,
@@ -314,22 +310,6 @@ impl ProjectMemory {
             .retain(|existing| existing.path != reference.path);
         self.verified_plans.push(reference);
         trim_to_memory_limit(&mut self.verified_plans);
-    }
-
-    fn remember_structured_plan(&mut self, plan: StructuredProjectPlan) {
-        if let Some(source_action_id) = plan.source_action_id.as_ref() {
-            self.structured_plans.retain(|existing| {
-                existing.source_action_id.as_deref() != Some(source_action_id.as_str())
-            });
-        } else {
-            self.structured_plans.retain(|existing| {
-                existing.source_plan_path != plan.source_plan_path
-                    || existing.project_root != plan.project_root
-                    || existing.stage != plan.stage
-            });
-        }
-        self.structured_plans.push(plan);
-        trim_to_memory_limit(&mut self.structured_plans);
     }
 
     fn mark_structured_plan_executed(&mut self, action_id: &str) {

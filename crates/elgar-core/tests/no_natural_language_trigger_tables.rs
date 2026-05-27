@@ -92,3 +92,28 @@ fn active_runtime_does_not_reintroduce_phrase_trigger_helpers() {
         }
     }
 }
+
+#[test]
+fn legacy_controller_phrase_surfaces_stay_deleted() {
+    let root = repo_root();
+
+    for relative_path in [
+        "crates/elgar-core/src/controller/legacy_controller_model_first.rs",
+        "crates/elgar-core/src/controller_prompt.rs",
+        "crates/elgar-core/src/controller_scaffold.rs",
+        "crates/elgar-core/src/controller_shell_commands.rs",
+        "crates/elgar-core/src/followup_action_paths.rs",
+        "crates/elgar-core/src/legacy_controller_model_first_apply.rs",
+        "crates/elgar-core/src/legacy_controller_model_first_continuation.rs",
+        "crates/elgar-core/src/legacy_controller_model_first_decision.rs",
+        "crates/elgar-core/src/legacy_controller_model_first_plan_completion.rs",
+        "crates/elgar-core/src/controller_tests/model_first_policy.rs",
+        "crates/elgar-core/src/controller_tests/model_first_project_plan.rs",
+        "crates/elgar-core/src/controller_tests/provider_prompt_memory.rs",
+    ] {
+        assert!(
+            !root.join(relative_path).exists(),
+            "{relative_path} must stay deleted; normal words belong to the provider path"
+        );
+    }
+}

@@ -130,7 +130,7 @@ fn non_provider_routes_do_not_call_provider() {
     let controller = Controller::default();
     let mut session = session();
 
-    for input in ["help", "approve", "reject", "create hello.py"] {
+    for input in ["/help", "/approve", "/reject"] {
         let result = controller.turn(&mut session, input);
         assert_ne!(result.route, Route::AskModel);
     }

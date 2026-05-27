@@ -2,17 +2,12 @@
 
 ## Purpose
 
-Legacy controller submodules for explicit review, approval, and compatibility behavior that is too large for `controller.rs`.
+Reserved for small controller-adjacent modules.
 
-## Important Files
-
-- `legacy_controller_model_first.rs` supports old model-first controller paths while normal chat migrates to `agent_runtime.rs`.
-
-## Ownership
-
-Controller modules are not the normal conversational brain. Keep them isolated to explicit review/approval and legacy smoke paths while the agent runtime owns normal chat.
+The legacy model-first controller has been removed. Normal chat and tool use
+belong to `agent_runtime.rs`; explicit approval and rejection belong to
+`action_gate.rs`.
 
 ## Checks
 
-- `cargo test -p elgar-core controller`
-- `cargo test -p elgar-core model_first`
+- `cargo test -p elgar-core --lib`

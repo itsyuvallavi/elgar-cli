@@ -1,15 +1,59 @@
 use super::*;
 
+fn push_proposed_action(session: &mut Session, request: ActionRequest, summary: &str) {
+    let action_id = format!("action-{}", session.actions().len() + 1);
+    session.push_action(ActionRecord::new(Action::proposed(
+        action_id, request, summary,
+    )));
+}
+
+fn propose_create_file(session: &mut Session, target_path: impl Into<PathBuf>, contents: &str) {
+    push_proposed_action(
+        session,
+        ActionRequest::CreateFile(CreateFileAction {
+            target_path: target_path.into(),
+            contents: contents.to_string(),
+        }),
+        "create file",
+    );
+}
+
+fn propose_patch_file(
+    session: &mut Session,
+    target_path: impl Into<PathBuf>,
+    find: &str,
+    replace: &str,
+) {
+    push_proposed_action(
+        session,
+        ActionRequest::PatchFile(PatchFileAction {
+            target_path: target_path.into(),
+            find: find.to_string(),
+            replace: replace.to_string(),
+        }),
+        "patch file",
+    );
+}
+
+fn propose_overwrite_file(session: &mut Session, target_path: impl Into<PathBuf>, contents: &str) {
+    push_proposed_action(
+        session,
+        ActionRequest::OverwriteFile(OverwriteFileAction {
+            target_path: target_path.into(),
+            contents: contents.to_string(),
+        }),
+        "overwrite file",
+    );
+}
+
 #[test]
-fn proposed_write_file_turn_records_action_without_creating_file() {
-    let controller = Controller::default();
+fn typed_proposed_write_file_records_action_without_creating_file() {
     let (mut session, root) = rooted_session("proposed");
     let path = root.join("hello.py");
     let _ = std::fs::remove_file(&path);
 
-    let result = controller.turn(&mut session, "create hello.py");
+    propose_create_file(&mut session, "hello.py", "");
 
-    assert_eq!(result.route, Route::ProposeWriteFile);
     assert!(!path.exists());
     assert_eq!(session.actions().len(), 1);
     assert_eq!(
@@ -17,23 +61,23 @@ fn proposed_write_file_turn_records_action_without_creating_file() {
         ActionLifecycleState::Proposed
     );
     assert_eq!(session.actions()[0].verified_result, None);
-    assert!(result
-        .events
-        .iter()
-        .any(|event| matches!(event, Event::ActionProposed(_))));
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
-fn rejected_write_file_turn_does_not_create_file_and_is_terminal() {
-    let controller = Controller::default();
+fn rejected_write_file_action_does_not_create_file_and_is_terminal() {
+    let gate = ActionGate::default();
     let (mut session, root) = rooted_session("rejected");
     let path = root.join("hello.py");
     let _ = std::fs::remove_file(&path);
 
-    controller.turn(&mut session, "create hello.py");
-    controller.turn(&mut session, "reject");
-    controller.turn(&mut session, "approve");
+    propose_create_file(&mut session, "hello.py", "");
+    let rejected = gate.reject(&mut session);
+    let approved_after_rejection = gate.approve(&mut session);
 
+    assert_eq!(rejected.route, Route::RejectAction);
+    assert_eq!(approved_after_rejection.route, Route::ApproveAction);
     assert!(!path.exists());
     assert_eq!(session.actions().len(), 1);
     assert_eq!(
@@ -49,18 +93,21 @@ fn rejected_write_file_turn_does_not_create_file_and_is_terminal() {
         .events()
         .iter()
         .all(|event| !matches!(event, Event::ActionApplied(_))));
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
-fn approved_write_file_turn_writes_target_and_records_verified_result() {
-    let controller = Controller::default();
+fn approved_write_file_action_writes_target_and_records_verified_result() {
+    let gate = ActionGate::default();
     let (mut session, root) = rooted_session("approved");
     let path = root.join("hello.py");
     let _ = std::fs::remove_file(&path);
 
-    controller.turn(&mut session, "create hello.py");
-    controller.turn(&mut session, "approve");
+    propose_create_file(&mut session, "hello.py", "");
+    let approved = gate.approve(&mut session);
 
+    assert_eq!(approved.route, Route::ApproveAction);
     assert!(path.exists());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
     assert_eq!(
@@ -86,8 +133,8 @@ fn approved_write_file_turn_writes_target_and_records_verified_result() {
 }
 
 #[test]
-fn approved_absolute_write_file_turn_fails_without_writing() {
-    let controller = Controller::default();
+fn approved_absolute_write_file_action_fails_without_writing() {
+    let gate = ActionGate::default();
     let (mut session, root) = rooted_session("absolute");
     let path = std::env::temp_dir().join(format!(
         "elgar-controller-{}-absolute.py",
@@ -95,8 +142,8 @@ fn approved_absolute_write_file_turn_fails_without_writing() {
     ));
     let _ = std::fs::remove_file(&path);
 
-    controller.turn(&mut session, &format!("create {}", path.display()));
-    controller.turn(&mut session, "approve");
+    propose_create_file(&mut session, &path, "");
+    gate.approve(&mut session);
 
     assert!(!path.exists());
     assert_eq!(
@@ -117,8 +164,8 @@ fn approved_absolute_write_file_turn_fails_without_writing() {
 }
 
 #[test]
-fn approved_absolute_home_create_file_turn_writes_and_records_verified_result() {
-    let controller = Controller::default();
+fn approved_absolute_home_create_file_action_writes_and_records_verified_result() {
+    let gate = ActionGate::default();
     let (mut session, project_root) = rooted_session("absolute-home-project");
     let home_root = std::env::temp_dir().join(format!(
         "elgar-controller-{}-absolute-home",
@@ -129,8 +176,8 @@ fn approved_absolute_home_create_file_turn_writes_and_records_verified_result() 
     let _home = EnvGuard::set_home(&home_root);
     let path = home_root.join("ElgarPermissionTest").join("test.txt");
 
-    controller.turn(&mut session, &format!("create {}", path.display()));
-    controller.turn(&mut session, "approve");
+    propose_create_file(&mut session, &path, "");
+    gate.approve(&mut session);
 
     assert!(path.exists());
     assert_eq!(
@@ -153,8 +200,8 @@ fn approved_absolute_home_create_file_turn_writes_and_records_verified_result() 
 }
 
 #[test]
-fn approved_parent_traversal_write_file_turn_fails_without_writing() {
-    let controller = Controller::default();
+fn approved_parent_traversal_write_file_action_fails_without_writing() {
+    let gate = ActionGate::default();
     let (mut session, root) = rooted_session("traversal");
     let outside = root.parent().unwrap().join(format!(
         "elgar-controller-{}-outside.py",
@@ -162,14 +209,12 @@ fn approved_parent_traversal_write_file_turn_fails_without_writing() {
     ));
     let _ = std::fs::remove_file(&outside);
 
-    controller.turn(
+    propose_create_file(
         &mut session,
-        &format!(
-            "create ../{}",
-            outside.file_name().unwrap().to_string_lossy()
-        ),
+        format!("../{}", outside.file_name().unwrap().to_string_lossy()),
+        "",
     );
-    controller.turn(&mut session, "approve");
+    gate.approve(&mut session);
 
     assert!(!outside.exists());
     assert_eq!(
@@ -191,12 +236,12 @@ fn approved_parent_traversal_write_file_turn_fails_without_writing() {
 
 #[test]
 fn approved_write_file_creates_missing_parent_and_records_verified_result() {
-    let controller = Controller::default();
+    let gate = ActionGate::default();
     let (mut session, root) = rooted_session("missing-parent");
     let path = root.join("missing").join("hello.py");
 
-    controller.turn(&mut session, "create missing/hello.py");
-    controller.turn(&mut session, "approve");
+    propose_create_file(&mut session, "missing/hello.py", "");
+    gate.approve(&mut session);
 
     assert!(path.exists());
     assert_eq!(
@@ -214,15 +259,13 @@ fn approved_write_file_creates_missing_parent_and_records_verified_result() {
 }
 
 #[test]
-fn proposed_patch_file_turn_records_action_without_changing_file() {
-    let controller = Controller::default();
+fn typed_proposed_patch_file_records_action_without_changing_file() {
     let (mut session, root) = rooted_session("proposed-patch");
     let path = root.join("notes.txt");
     std::fs::write(&path, "old contents").unwrap();
 
-    let result = controller.turn(&mut session, "edit file notes.txt replace old with new");
+    propose_patch_file(&mut session, "notes.txt", "old", "new");
 
-    assert_eq!(result.route, Route::ProposePatchFile);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "old contents");
     assert_eq!(session.actions().len(), 1);
     assert_eq!(
@@ -230,23 +273,19 @@ fn proposed_patch_file_turn_records_action_without_changing_file() {
         ActionLifecycleState::Proposed
     );
     assert_eq!(session.actions()[0].verified_result, None);
-    assert!(result
-        .events
-        .iter()
-        .any(|event| matches!(event, Event::ActionProposed(_))));
 
     let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
-fn approved_patch_file_turn_updates_target_and_records_verified_result() {
-    let controller = Controller::default();
+fn approved_patch_file_action_updates_target_and_records_verified_result() {
+    let gate = ActionGate::default();
     let (mut session, root) = rooted_session("approved-patch");
     let path = root.join("notes.txt");
     std::fs::write(&path, "old contents").unwrap();
 
-    controller.turn(&mut session, "edit file notes.txt replace old with new");
-    controller.turn(&mut session, "approve");
+    propose_patch_file(&mut session, "notes.txt", "old", "new");
+    gate.approve(&mut session);
 
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "new contents");
     assert_eq!(
@@ -270,15 +309,15 @@ fn approved_patch_file_turn_updates_target_and_records_verified_result() {
 }
 
 #[test]
-fn rejected_overwrite_file_turn_does_not_change_file() {
-    let controller = Controller::default();
+fn rejected_overwrite_file_action_does_not_change_file() {
+    let gate = ActionGate::default();
     let (mut session, root) = rooted_session("rejected-overwrite");
     let path = root.join("notes.txt");
     std::fs::write(&path, "original").unwrap();
 
-    controller.turn(&mut session, "overwrite file notes.txt with replacement");
-    controller.turn(&mut session, "reject");
-    controller.turn(&mut session, "approve");
+    propose_overwrite_file(&mut session, "notes.txt", "replacement");
+    gate.reject(&mut session);
+    gate.approve(&mut session);
 
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
     assert_eq!(
@@ -295,16 +334,15 @@ fn rejected_overwrite_file_turn_does_not_change_file() {
 }
 
 #[test]
-fn approved_overwrite_file_turn_replaces_target_and_records_verified_result() {
-    let controller = Controller::default();
+fn approved_overwrite_file_action_replaces_target_and_records_verified_result() {
+    let gate = ActionGate::default();
     let (mut session, root) = rooted_session("approved-overwrite");
     let path = root.join("notes.txt");
     std::fs::write(&path, "original").unwrap();
 
-    let proposed = controller.turn(&mut session, "overwrite file notes.txt with replacement");
-    controller.turn(&mut session, "approve");
+    propose_overwrite_file(&mut session, "notes.txt", "replacement");
+    gate.approve(&mut session);
 
-    assert_eq!(proposed.route, Route::ProposeOverwriteFile);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "replacement");
     assert_eq!(
         session.actions()[0].action.state,
@@ -325,12 +363,12 @@ fn approved_overwrite_file_turn_replaces_target_and_records_verified_result() {
 #[test]
 fn provider_text_cannot_apply_existing_action_or_create_file() {
     let controller = Controller::default();
-    let (mut session, _root) = rooted_session("provider");
+    let (mut session, root) = rooted_session("provider");
     let path = session.project_root.join("hello.py");
     let _ = std::fs::remove_file(&path);
 
-    controller.turn(&mut session, "create hello.py");
-    controller.turn(&mut session, "explain how to write the file");
+    propose_create_file(&mut session, "hello.py", "");
+    controller.model_turn(&mut session, "explain how to write the file");
 
     assert!(!path.exists());
     assert_eq!(
@@ -338,4 +376,6 @@ fn provider_text_cannot_apply_existing_action_or_create_file() {
         ActionLifecycleState::Proposed
     );
     assert_eq!(session.actions()[0].verified_result, None);
+
+    let _ = std::fs::remove_dir_all(&root);
 }

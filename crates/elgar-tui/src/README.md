@@ -9,7 +9,6 @@ Source modules for the terminal UI shell and renderable TUI surfaces.
 - `layout.rs`, `theme.rs`, and `markdown.rs` shape visual output.
 - `action_panel.rs`, `panes.rs`, and `panes/` render session areas.
 - `terminal.rs` and `terminal/` own the interactive terminal loop.
-- `smoke.rs` supports deterministic smoke rendering.
 - `lib.rs` exports the public TUI surface.
 
 ## Ownership

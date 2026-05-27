@@ -7,7 +7,6 @@ use std::{
 use elgar_core::{
     action_gate::ActionGate,
     agent_runtime::AgentRuntime,
-    controller::Controller,
     policy::PermissionPolicyMode,
     provider::{
         chat_lm_studio, ChatMessage, ProviderCompatibility, ProviderConfig, ProviderError,
@@ -21,8 +20,6 @@ use serde::Deserialize;
 pub mod perf;
 
 pub const PROVIDER_SMOKE_COMMAND: &str = "provider-smoke";
-pub const CONTROLLER_SMOKE_COMMAND: &str = "controller-smoke";
-pub const TUI_CONTROLLER_SMOKE_COMMAND: &str = "tui-controller-smoke";
 pub const TUI_COMMAND: &str = "tui";
 pub const TUI_TERMINAL_COMMAND: &str = "tui-terminal";
 pub const PERF_BASELINE_COMMAND: &str = "perf-baseline";
@@ -749,51 +746,6 @@ pub fn run_provider_smoke(config: ProviderSmokeConfig) -> Result<String, Provide
         .map_err(ProviderSmokeError::Provider)
 }
 
-pub fn render_controller_smoke_from_env(
-    prompt: &str,
-    project_root: impl AsRef<Path>,
-    cwd: impl AsRef<Path>,
-) -> Result<String, ProviderSmokeError> {
-    let config = provider_smoke_config_from_env(prompt)?;
-    Ok(render_controller_smoke(config, project_root, cwd))
-}
-
-pub fn render_controller_smoke(
-    config: ProviderSmokeConfig,
-    project_root: impl AsRef<Path>,
-    cwd: impl AsRef<Path>,
-) -> String {
-    let provider_config = provider_config_from_smoke_config(&config);
-    let controller = Controller::with_lm_studio_provider(provider_config);
-    let mut session = Session::new(
-        "cli-controller-smoke-session",
-        project_root.as_ref(),
-        cwd.as_ref(),
-    );
-
-    controller.turn(&mut session, &config.prompt);
-    render_session(&session)
-}
-
-pub fn render_tui_controller_smoke_from_env(
-    prompt: &str,
-    project_root: impl AsRef<Path>,
-    cwd: impl AsRef<Path>,
-) -> Result<String, ProviderSmokeError> {
-    let config = provider_smoke_config_from_env(prompt)?;
-    Ok(render_tui_controller_smoke(config, project_root, cwd))
-}
-
-pub fn render_tui_controller_smoke(
-    config: ProviderSmokeConfig,
-    project_root: impl AsRef<Path>,
-    cwd: impl AsRef<Path>,
-) -> String {
-    let provider_config = provider_config_from_smoke_config(&config);
-    elgar_tui::run_lm_studio_controller_smoke(provider_config, &config.prompt, project_root, cwd)
-        .rendered
-}
-
 fn provider_config_from_smoke_config(config: &ProviderSmokeConfig) -> ProviderConfig {
     ProviderConfig {
         base_url: config.base_url.clone(),
@@ -832,12 +784,11 @@ mod tests {
         is_tui_copy_command, is_tui_created_command, is_tui_exit_command, is_tui_help_command,
         is_tui_memory_command, is_tui_pending_command, is_tui_rejection_command,
         is_tui_status_command, load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
-        render_cli_turn_from_runtime_config, render_controller_smoke, render_tui_controller_smoke,
-        render_tui_help, render_tui_script, resolve_runtime_project_root, run_tui_loop,
-        runtime_permission_policy_mode, should_launch_terminal_tui_by_default,
-        tui_permission_command_argument, tui_tool_command_argument, ProviderSmokeConfig,
-        ProviderSmokeError, RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
-        PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
+        render_cli_turn_from_runtime_config, render_tui_help, render_tui_script,
+        resolve_runtime_project_root, run_tui_loop, runtime_permission_policy_mode,
+        should_launch_terminal_tui_by_default, tui_permission_command_argument,
+        tui_tool_command_argument, ProviderSmokeError, RuntimePaths, RuntimeProviderConfigError,
+        PROVIDER_CONFIG_FILE, PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
     fn temp_root(name: &str) -> PathBuf {
@@ -1133,48 +1084,6 @@ mod tests {
         assert_eq!(error, RuntimeProviderConfigError::MissingModel { path });
 
         let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn controller_smoke_renders_live_provider_error_event_without_network() {
-        let rendered = render_controller_smoke(
-            ProviderSmokeConfig {
-                model: "local-model".to_string(),
-                base_url: "https://127.0.0.1:1234/v1".to_string(),
-                prompt: "Say hello in one sentence.".to_string(),
-            },
-            ".",
-            ".",
-        );
-
-        assert!(rendered.contains("user: Say hello in one sentence."));
-        assert!(rendered.contains("provider started: lm-studio request lm-studio-request-"));
-        assert!(rendered.contains("error: lm-studio provider request lm-studio-request-"));
-        assert!(rendered.contains("failed"));
-        assert!(rendered.contains("only http:// provider URLs are supported"));
-        assert!(!rendered.contains("action proposed"));
-        assert!(!rendered.contains("action applied"));
-    }
-
-    #[test]
-    fn tui_controller_smoke_renders_live_provider_error_with_tui_copy_without_network() {
-        let rendered = render_tui_controller_smoke(
-            ProviderSmokeConfig {
-                model: "local-model".to_string(),
-                base_url: "https://127.0.0.1:1234/v1".to_string(),
-                prompt: "Say hello in one sentence.".to_string(),
-            },
-            ".",
-            ".",
-        );
-
-        assert!(rendered.contains("> Say hello in one sentence."));
-        assert!(!rendered.contains("lm-studio-request-1"));
-        assert!(rendered.contains(
-            "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
-        ));
-        assert!(rendered.contains("Status\nprovider error"));
-        assert!(!rendered.contains("stub-provider"));
     }
 
     #[test]
@@ -1499,9 +1408,9 @@ mod tests {
     fn tui_script_no_pending_approval_gets_controller_feedback() {
         let rendered = render_tui_script(["/approve", "/reject"], ".", ".");
 
-        assert!(rendered.contains("> approve"));
+        assert!(rendered.contains("> /approve"));
         assert!(rendered.contains("No proposed action is waiting for approval."));
-        assert!(rendered.contains("> reject"));
+        assert!(rendered.contains("> /reject"));
         assert!(rendered.contains("No proposed action is waiting for rejection."));
         assert!(!rendered.contains("lm-studio"));
     }
@@ -1550,7 +1459,7 @@ mod tests {
         let rendered = String::from_utf8(output).unwrap();
         assert!(!target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("> approve"));
+        assert!(rendered.contains("> /approve"));
         assert!(!rendered.contains("Creating hello.py."));
         assert!(rendered.contains("No proposed action is waiting for approval."));
         assert!(rendered.contains("stub provider response"));

@@ -93,12 +93,20 @@ fn terminal_layout_renders_default_shell_regions() {
 
 #[test]
 fn terminal_layout_renders_pending_action_only_when_present() {
-    let controller = Controller::default();
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-hello",
+        "hello.py",
+        "",
+    )]);
     let mut session = Session::new("session-1", "/repo", "/repo");
     let mut shell = TuiShell::new();
 
-    let result = controller.turn(&mut session, "create file hello.py");
-    shell.consume_events(&result.events);
+    submit_review_tool_input(
+        &mut shell,
+        &controller,
+        &mut session,
+        "create file hello.py",
+    );
 
     let text = draw_to_text(&shell, &TerminalShellContext::from_session(&session));
 
@@ -353,13 +361,21 @@ fn terminal_footer_shows_lm_studio_provider_and_model_without_usage_claims() {
 
 #[test]
 fn terminal_conversation_scrollback_keeps_input_status_and_pending_visible() {
-    let controller = Controller::default();
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-hello",
+        "hello.py",
+        "",
+    )]);
     let mut session = Session::new("session-1", "/repo", "/repo");
     let mut shell = TuiShell::new();
 
     shell.conversation.lines = (0..20).map(|index| format!("line {index}")).collect();
-    let result = controller.turn(&mut session, "create file hello.py");
-    shell.consume_events(&result.events);
+    submit_review_tool_input(
+        &mut shell,
+        &controller,
+        &mut session,
+        "create file hello.py",
+    );
     shell.conversation.scroll_up(100);
 
     let text = draw_to_text(&shell, &TerminalShellContext::from_session(&session));

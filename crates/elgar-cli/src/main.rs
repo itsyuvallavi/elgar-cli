@@ -33,41 +33,6 @@ fn main() {
     }
     if args
         .first()
-        .is_some_and(|arg| arg == elgar_cli::CONTROLLER_SMOKE_COMMAND)
-    {
-        let prompt = elgar_cli::provider_smoke_prompt(&args[1..]);
-        let paths = elgar_cli::RuntimePaths::from_current_dir();
-        match elgar_cli::render_controller_smoke_from_env(&prompt, &paths.project_root, &paths.cwd)
-        {
-            Ok(rendered) => println!("{rendered}"),
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-    if args
-        .first()
-        .is_some_and(|arg| arg == elgar_cli::TUI_CONTROLLER_SMOKE_COMMAND)
-    {
-        let prompt = elgar_cli::provider_smoke_prompt(&args[1..]);
-        let paths = elgar_cli::RuntimePaths::from_current_dir();
-        match elgar_cli::render_tui_controller_smoke_from_env(
-            &prompt,
-            &paths.project_root,
-            &paths.cwd,
-        ) {
-            Ok(rendered) => println!("{rendered}"),
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-    if args
-        .first()
         .is_some_and(|arg| arg == elgar_cli::TUI_COMMAND)
     {
         let paths = elgar_cli::RuntimePaths::from_current_dir();

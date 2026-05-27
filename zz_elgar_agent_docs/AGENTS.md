@@ -69,9 +69,9 @@ tool calls, enforce policy, apply approved execution, and render verified
 state, but it must not infer local commands from ordinary words like approval
 synonyms, greetings, or state questions.
 
-Existing legacy phrase routing is debt, not precedent. Do not expand it while
-working on v0.2 runtime behavior; isolate or remove it in explicit cleanup
-slices.
+Legacy phrase routing has been removed from the active runtime. Do not
+reintroduce it: ordinary text belongs to the provider path, and local control
+belongs to slash commands.
 
 ## Agent Rules
 
@@ -86,7 +86,7 @@ slices.
 8. Do not commit `.DS_Store`.
 9. Do not revert unrelated dirty work.
 10. Keep files small and responsibilities narrow.
-11. Keep normal chat model-first; plain chat must be plain first, and slash
+11. Keep normal chat provider-first; plain chat must be plain first, and slash
     commands remain local and explicit.
 12. Keep permission, execution, and verification in runtime/core layers, not in
     UI text or provider prose.

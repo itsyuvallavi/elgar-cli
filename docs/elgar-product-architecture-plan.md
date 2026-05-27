@@ -208,7 +208,8 @@ Responsibilities:
   project/folder memory.
 - Prove real installed TUI smoke for high-risk flows.
 - Cover path targeting, permission modes, plan-followup memory, and ambiguity.
-- Keep legacy controller tests only where legacy compatibility still exists.
+- Keep only focused compatibility tests for the remaining small controller
+  wrapper.
 
 ## Step-by-Step Plan
 
@@ -267,7 +268,7 @@ Linear:
 Implementation:
 
 - Ensure normal CLI/TUI text enters `AgentRuntime`.
-- Keep legacy controller smoke paths explicitly named.
+- Delete legacy controller smoke paths after AgentRuntime owns normal chat.
 - Remove or quarantine normal-chat helper paths that still call controller
   routing.
 - Update names/comments that imply controller owns normal chat.

@@ -1,5 +1,17 @@
 use super::*;
 
+fn push_proposed_create_file(session: &mut Session, target_path: impl Into<PathBuf>) {
+    let action_id = format!("action-{}", session.actions().len() + 1);
+    session.push_action(ActionRecord::new(Action::proposed(
+        action_id,
+        ActionRequest::CreateFile(CreateFileAction {
+            target_path: target_path.into(),
+            contents: String::new(),
+        }),
+        "create file",
+    )));
+}
+
 #[test]
 fn provider_metrics_are_recorded_in_output_and_session_metadata() {
     let mut metrics = ProviderMetrics::new(
@@ -49,7 +61,7 @@ data: [DONE]
     let path = session.project_root.join("hello.py");
     let _ = std::fs::remove_file(&path);
 
-    controller.turn(&mut session, "create hello.py");
+    push_proposed_create_file(&mut session, "hello.py");
     controller.turn(&mut session, "what if you approve and write hello.py?");
 
     assert!(!path.exists());
@@ -76,7 +88,7 @@ fn streaming_controller_chunks_do_not_mutate_action_or_filesystem_truth() {
     let path = session.project_root.join("hello.py");
     let _ = std::fs::remove_file(&path);
 
-    controller.turn(&mut session, "create hello.py");
+    push_proposed_create_file(&mut session, "hello.py");
     let mut chunks = Vec::new();
     controller.model_turn_streaming(
         &mut session,

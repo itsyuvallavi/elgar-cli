@@ -76,58 +76,6 @@ fn zero_arg_elgar_non_interactive_keeps_placeholder_without_hanging() {
 }
 
 #[test]
-fn controller_smoke_command_requires_model_env_without_network() {
-    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
-        .arg("controller-smoke")
-        .arg("Say hello.")
-        .env_remove("ELGAR_LM_STUDIO_MODEL")
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("ELGAR_LM_STUDIO_MODEL"));
-    assert!(output.stdout.is_empty());
-}
-
-#[test]
-fn tui_controller_smoke_command_requires_model_env_without_network() {
-    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
-        .arg("tui-controller-smoke")
-        .arg("Say hello.")
-        .env_remove("ELGAR_LM_STUDIO_MODEL")
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("ELGAR_LM_STUDIO_MODEL"));
-    assert!(output.stdout.is_empty());
-}
-
-#[test]
-fn tui_controller_smoke_command_renders_tui_provider_error_without_network() {
-    let output = Command::new(env!("CARGO_BIN_EXE_elgar"))
-        .arg("tui-controller-smoke")
-        .arg("Say hello.")
-        .env("ELGAR_LM_STUDIO_MODEL", "local-model")
-        .env("ELGAR_LM_STUDIO_BASE_URL", "https://127.0.0.1:1234/v1")
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Conversation\n"));
-    assert!(stdout.contains("> Say hello."));
-    assert!(!stdout.contains("lm-studio-request-1"));
-    assert!(stdout.contains(
-        "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
-    ));
-    assert!(stdout.contains("Status\nprovider error"));
-    assert!(!stdout.contains("stub-provider"));
-}
-
-#[test]
 fn normal_cli_uses_repo_provider_config_when_present() {
     let root = smoke_root("runtime-config-cli");
     fs::write(

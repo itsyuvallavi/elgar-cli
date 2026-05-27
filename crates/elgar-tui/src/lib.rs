@@ -6,7 +6,6 @@ mod memory;
 pub mod panes;
 mod reasoning;
 pub mod shell;
-pub mod smoke;
 mod startup;
 pub mod terminal;
 mod theme;
@@ -19,10 +18,6 @@ pub use memory::{
 };
 pub use panes::{ConversationPane, InputArea, StatusLine};
 pub use shell::TuiShell;
-pub use smoke::{
-    run_controller_smoke, run_default_controller_smoke, run_lm_studio_controller_smoke,
-    TuiControllerSmoke,
-};
 pub use terminal::{
     default_shell_text, run_terminal_shell, run_terminal_shell_at,
     run_terminal_shell_at_with_policy, run_terminal_shell_with_lm_studio_provider,

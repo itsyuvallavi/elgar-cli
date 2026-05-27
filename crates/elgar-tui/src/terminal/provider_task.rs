@@ -99,7 +99,7 @@ where
     ProviderTurnTask { receiver, canceled }
 }
 
-pub(super) fn start_model_first_turn<P>(
+pub(super) fn start_provider_text_turn<P>(
     runtime: AgentRuntime<P>,
     mut session: Session,
     input: String,
@@ -112,8 +112,7 @@ where
     let canceled = Arc::new(AtomicBool::new(false));
     let worker_canceled = Arc::clone(&canceled);
 
-    // Live TUI natural-language turns run through the agent runtime. The
-    // controller-review model-first runtime is legacy smoke coverage only.
+    // Plain terminal text runs through the normal agent runtime provider path.
     thread::spawn(move || {
         let result = runtime.turn(&mut session, &input, policy_mode);
         if worker_canceled.load(Ordering::SeqCst) {

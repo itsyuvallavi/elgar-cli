@@ -1,24 +1,23 @@
 use std::{
-    ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
 
 use elgar_core::{
-    action::{ActionLifecycleState, ActionRequest},
+    action::ActionLifecycleState,
     action_gate::ActionGate,
     agent_runtime::AgentRuntime,
-    controller::{Controller, TurnResult},
+    controller::Controller,
     event::{Event, ProviderOutput, VerifiedActionResult},
+    model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
+    policy::PermissionPolicyMode,
     provider::{
-        ControllerProvider, ProviderConfig, ProviderError, ProviderRequestMetadata, ProviderStub,
+        ChatMessage, ChatRole, ChatToolDefinition, ControllerProvider, ProviderError,
+        ProviderRequestMetadata, ProviderStub,
     },
-    router::Route,
     session::Session,
 };
-use elgar_tui::{
-    run_controller_smoke, run_default_controller_smoke, run_lm_studio_controller_smoke, TuiShell,
-};
+use elgar_tui::TuiShell;
 
 fn smoke_root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("elgar-tui-smoke-{}-{name}", std::process::id()));
@@ -31,28 +30,174 @@ fn session_at(root: &Path) -> Session {
     Session::new("tui-smoke-session", root, root)
 }
 
-fn submit_legacy_controller_input<P>(
-    shell: &mut TuiShell,
-    controller: &Controller<P>,
-    session: &mut Session,
-    input: &str,
-) -> TurnResult
-where
-    P: ControllerProvider,
-{
-    let result = controller.turn(session, input);
+#[test]
+fn renders_initial_state() {
+    let rendered = TuiShell::new().render();
+
+    assert!(rendered.contains("Conversation\n(empty conversation)"));
+    assert!(rendered.contains("Pending Action\nnone"));
+    assert!(rendered.contains("Status\nready"));
+}
+
+#[test]
+fn renders_core_chat_events_without_action_truth() {
+    let controller = Controller::new(ProviderStub::default());
+    let root = smoke_root("chat-events");
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::new();
+
+    let result = controller.turn(&mut session, "what does the harness do?");
     shell.consume_events(&result.events);
-    result
+
+    let rendered = shell.render();
+    assert!(rendered.contains("> what does the harness do?"));
+    assert!(rendered.contains("stub provider response"));
+    assert!(session.actions().is_empty());
+
+    let _ = fs::remove_dir_all(root);
 }
 
-fn submit_action_gate_approval(shell: &mut TuiShell, session: &mut Session) -> TurnResult {
-    let action_gate = ActionGate::default();
-    shell.submit_approval(&action_gate, session)
+#[test]
+fn plain_agent_input_renders_provider_text_without_mutating_files() {
+    let root = smoke_root("plain-agent-input");
+    let runtime = AgentRuntime::new(ProviderStub::default());
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::new();
+
+    shell.submit_agent_input(&runtime, &mut session, "create file hello.py");
+
+    assert!(!root.join("hello.py").exists());
+    assert!(session.actions().is_empty());
+    assert!(shell.render().contains("stub provider response"));
+
+    let _ = fs::remove_dir_all(root);
 }
 
-fn submit_action_gate_rejection(shell: &mut TuiShell, session: &mut Session) -> TurnResult {
-    let action_gate = ActionGate::default();
-    shell.submit_rejection(&action_gate, session)
+#[test]
+fn explicit_tool_turn_can_be_approved_through_action_gate() {
+    let root = smoke_root("approve-tool");
+    let runtime = create_file_runtime("hello.py", "hello\n");
+    let gate = ActionGate::default();
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::with_policy_mode(PermissionPolicyMode::ReviewAll);
+
+    shell.submit_agent_tool_input(&runtime, &mut session, "create file hello.py");
+
+    assert!(!root.join("hello.py").exists());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Proposed
+    );
+    assert!(shell.render().contains("Status: waiting for approval"));
+
+    shell.submit_approval(&gate, &mut session);
+
+    assert_eq!(
+        fs::read_to_string(root.join("hello.py")).unwrap(),
+        "hello\n"
+    );
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Applied
+    );
+    assert!(matches!(
+        session.actions()[0].verified_result,
+        Some(VerifiedActionResult::FileWritten { .. })
+    ));
+    assert!(shell.render().contains("Status: applied and verified"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn explicit_tool_turn_can_be_rejected_without_writing() {
+    let root = smoke_root("reject-tool");
+    let runtime = create_file_runtime("rejected.py", "");
+    let gate = ActionGate::default();
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::with_policy_mode(PermissionPolicyMode::ReviewAll);
+
+    shell.submit_agent_tool_input(&runtime, &mut session, "create file rejected.py");
+    shell.submit_rejection(&gate, &mut session);
+
+    assert!(!root.join("rejected.py").exists());
+    assert_eq!(
+        session.actions()[0].action.state,
+        ActionLifecycleState::Rejected
+    );
+    assert!(session
+        .events()
+        .iter()
+        .all(|event| !matches!(event, Event::ActionApplied(_))));
+    assert!(shell.render().contains("Status: rejected"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_error_renders_without_mutating_action_truth() {
+    let root = smoke_root("provider-error");
+    let controller = Controller::new(FailingProvider);
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::new();
+
+    let result = controller.turn(&mut session, "what happened?");
+    shell.consume_events(&result.events);
+
+    let rendered = shell.render();
+    assert!(rendered.contains("fake-provider request fake-request-1 failed"));
+    assert!(rendered.contains("model missing"));
+    assert!(session.actions().is_empty());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+fn create_file_runtime(
+    target_path: impl Into<String>,
+    contents: impl Into<String>,
+) -> AgentRuntime<ScriptedToolProvider> {
+    AgentRuntime::new(ScriptedToolProvider {
+        output: ProviderOutput::new("Creating file.").with_tool_calls(vec![RawModelToolCall {
+            id: "call-create-file".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateFile),
+            arguments: serde_json::json!({
+                "target_path": target_path.into(),
+                "contents": contents.into(),
+            }),
+            assistant_summary: Some("create file".to_string()),
+        }]),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ScriptedToolProvider {
+    output: ProviderOutput,
+}
+
+impl ControllerProvider for ScriptedToolProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new("tool-provider", Some("tool-model".to_string()), "request-1")
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new("plain response"))
+    }
+
+    fn chat_messages_with_tools_with_metadata(
+        &self,
+        messages: Vec<ChatMessage>,
+        _metadata: &ProviderRequestMetadata,
+        _tools: Vec<ChatToolDefinition>,
+    ) -> Result<ProviderOutput, ProviderError> {
+        if messages
+            .iter()
+            .any(|message| matches!(message.role, ChatRole::Tool))
+        {
+            return Ok(ProviderOutput::new("Done."));
+        }
+
+        Ok(self.output.clone())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -70,663 +215,4 @@ impl ControllerProvider for FailingProvider {
     fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
         Err(ProviderError::provider("model missing", Some(404), None))
     }
-}
-
-#[derive(Debug, Clone)]
-struct ClaimingProvider;
-
-impl ControllerProvider for ClaimingProvider {
-    fn request_metadata(&self) -> ProviderRequestMetadata {
-        ProviderRequestMetadata::new(
-            "claiming-provider",
-            Some("claiming-model".to_string()),
-            "claiming-request-1",
-        )
-    }
-
-    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
-        Ok(ProviderOutput::new(
-            "I wrote hello.py and applied the action successfully.",
-        ))
-    }
-}
-
-#[derive(Debug, Clone)]
-struct FolderPlanProvider;
-
-impl ControllerProvider for FolderPlanProvider {
-    fn request_metadata(&self) -> ProviderRequestMetadata {
-        ProviderRequestMetadata::new(
-            "folder-plan-provider",
-            Some("folder-plan-model".to_string()),
-            "folder-plan-1",
-        )
-    }
-
-    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
-        Ok(ProviderOutput::new(
-            "Sure! Let me suggest a small, clean folder structure.\n\
-             code:\n\
-                 project/\n\
-                 ├─ src/          # all source files\n\
-                 ├─ tests/        # unit- and integration-tests\n\
-                 ├─ docs/         # documentation\n\
-                 └─ data/         # data files\n\
-             Once you approve, I can generate the shell commands.",
-        ))
-    }
-}
-
-struct EnvGuard {
-    name: &'static str,
-    previous: Option<OsString>,
-}
-
-impl EnvGuard {
-    fn set(name: &'static str, value: &str) -> Self {
-        let previous = std::env::var_os(name);
-        std::env::set_var(name, value);
-        Self { name, previous }
-    }
-
-    fn set_path(name: &'static str, value: &Path) -> Self {
-        let previous = std::env::var_os(name);
-        std::env::set_var(name, value);
-        Self { name, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        if let Some(previous) = &self.previous {
-            std::env::set_var(self.name, previous);
-        } else {
-            std::env::remove_var(self.name);
-        }
-    }
-}
-
-#[test]
-fn renders_initial_state() {
-    let shell = TuiShell::new();
-    let rendered = shell.render();
-
-    assert!(rendered.contains("Conversation\n(empty conversation)"));
-    assert!(rendered.contains("Pending Action\nnone"));
-    assert!(rendered.contains("Status\nready"));
-    assert!(rendered.contains("Input\n> "));
-}
-
-#[test]
-fn renders_core_events_from_controller_turns() {
-    let controller = Controller::default();
-    let root = smoke_root("render-core-events");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-
-    let result = controller.turn(&mut session, "what does the harness do?");
-    shell.consume_events(&result.events);
-
-    let rendered = shell.render();
-    assert!(rendered.contains("> what does the harness do?"));
-    assert!(rendered.contains("stub provider response"));
-    assert!(!rendered.contains("Model:"));
-    assert!(!rendered.contains("stub-request-1"));
-    assert!(!rendered.contains("Provider text is suggestion only."));
-    assert!(rendered.contains("Status\nreply ready"));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn default_controller_smoke_uses_stub_even_when_lm_studio_env_is_set() {
-    let _model = EnvGuard::set(
-        "ELGAR_LM_STUDIO_MODEL",
-        "loaded-model-that-must-not-be-used",
-    );
-    let _base_url = EnvGuard::set("ELGAR_LM_STUDIO_BASE_URL", "https://127.0.0.1:1234/v1");
-    let root = smoke_root("default-smoke-env");
-
-    let smoke = run_default_controller_smoke("what does the harness do?", &root, &root);
-
-    assert_eq!(smoke.turn.route, Route::AskModel);
-    assert_eq!(
-        smoke
-            .session
-            .provider_metadata()
-            .map(|metadata| metadata.provider.as_str()),
-        Some("stub-provider")
-    );
-    assert_eq!(
-        smoke
-            .session
-            .provider_metadata()
-            .and_then(|metadata| metadata.request_id.as_deref()),
-        Some("stub-request-1")
-    );
-    assert!(!smoke.rendered.contains("stub-request-1"));
-    assert!(!smoke.rendered.contains("Provider text is suggestion only."));
-    assert!(smoke.rendered.contains("stub provider response"));
-    assert!(!smoke.rendered.contains("Model:"));
-    assert!(!smoke.rendered.contains("lm-studio"));
-    assert!(!smoke
-        .rendered
-        .contains("only http:// provider URLs are supported"));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn explicit_controller_smoke_uses_the_passed_controller() {
-    let controller = Controller::new(ProviderStub::new("tui-smoke-provider").with_model("model-a"));
-    let root = smoke_root("explicit-smoke-controller");
-
-    let smoke = run_controller_smoke(&controller, "what does this do?", &root, &root);
-
-    assert_eq!(smoke.turn.route, Route::AskModel);
-    assert_eq!(
-        smoke
-            .session
-            .provider_metadata()
-            .map(|metadata| metadata.provider.as_str()),
-        Some("tui-smoke-provider")
-    );
-    assert_eq!(
-        smoke
-            .session
-            .provider_metadata()
-            .and_then(|metadata| metadata.model.as_deref()),
-        Some("model-a")
-    );
-    assert!(smoke.rendered.contains("> what does this do?"));
-    assert!(smoke.rendered.contains("stub provider response"));
-    assert!(!smoke.rendered.contains("Model:"));
-    assert!(!smoke.rendered.contains("stub-request-1"));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn explicit_lm_studio_tui_smoke_renders_through_tui_shell_without_network() {
-    let root = smoke_root("explicit-lm-studio-no-network");
-
-    let smoke = run_lm_studio_controller_smoke(
-        ProviderConfig {
-            model: Some("local-model".to_string()),
-            base_url: "https://127.0.0.1:1234/v1".to_string(),
-            ..ProviderConfig::default()
-        },
-        "Say hello in one sentence.",
-        &root,
-        &root,
-    );
-
-    assert_eq!(smoke.turn.route, Route::AskModel);
-    assert_eq!(
-        smoke
-            .session
-            .provider_metadata()
-            .map(|metadata| metadata.provider.as_str()),
-        Some("lm-studio")
-    );
-    assert!(smoke.rendered.contains("> Say hello in one sentence."));
-    assert!(!smoke.rendered.contains("lm-studio-request-1"));
-    assert!(smoke.rendered.contains(
-        "Provider error from lm-studio: Configuration provider error: only http:// provider URLs are supported"
-    ));
-    assert!(smoke.rendered.contains("Status\nprovider error"));
-    assert!(!smoke.rendered.contains("stub-provider"));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn submits_user_input_through_shared_agent_runtime() {
-    let runtime = AgentRuntime::new(ProviderStub::new("smoke-provider").with_model("smoke-model"));
-    let root = smoke_root("submit-input");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-
-    let result = shell.submit_agent_input(&runtime, &mut session, "what does this do?");
-
-    assert_eq!(result.route, Route::AskModel);
-    assert!(session
-        .events()
-        .iter()
-        .any(|event| matches!(event, Event::ProviderStarted(started) if started.provider == "smoke-provider")));
-    assert!(shell.render().contains("> what does this do?"));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn renders_provider_error_events_without_network() {
-    let controller = Controller::new(FailingProvider);
-    let root = smoke_root("provider-error");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-
-    let result =
-        submit_legacy_controller_input(&mut shell, &controller, &mut session, "what does this do?");
-
-    assert_eq!(result.route, Route::AskModel);
-    assert!(session.actions().is_empty());
-    assert!(session.events().iter().any(|event| match event {
-        Event::Error(error) => error.message.contains("model missing"),
-        _ => false,
-    }));
-    assert!(session
-        .events()
-        .iter()
-        .all(|event| !matches!(event, Event::ProviderFinished(_))));
-
-    let rendered = shell.render();
-    assert!(rendered.contains(
-        "Provider error from fake-provider: Provider provider error (404): model missing"
-    ));
-    assert!(rendered.contains("Status\nprovider error"));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn provider_progress_and_text_remain_separate_from_verified_action_truth() {
-    let controller = Controller::new(ClaimingProvider);
-    let root = smoke_root("provider-progress-boundary");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-    let target = root.join("hello.py");
-
-    let result =
-        submit_legacy_controller_input(&mut shell, &controller, &mut session, "what happened?");
-
-    assert_eq!(result.route, Route::AskModel);
-    assert!(!target.exists());
-    assert!(session.actions().is_empty());
-    assert!(session.events().iter().all(|event| {
-        !matches!(
-            event,
-            Event::ActionProposed(_) | Event::ActionApproved(_) | Event::ActionApplied(_)
-        )
-    }));
-
-    let rendered = shell.render();
-    assert!(rendered.contains("I wrote hello.py and applied the action successfully."));
-    assert!(!rendered.contains("Model:"));
-    assert!(!rendered.contains("claiming-request-1"));
-    assert!(!rendered.contains("Provider text is suggestion only."));
-    assert!(!rendered.contains("Applied and verified"));
-    assert!(!rendered.contains("file written:"));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn displays_proposed_write_file_action_without_writing() {
-    let controller = Controller::default();
-    let root = smoke_root("proposed-write-file");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-    let target = root.join("hello.py");
-
-    let result = submit_legacy_controller_input(
-        &mut shell,
-        &controller,
-        &mut session,
-        "create file hello.py",
-    );
-
-    assert_eq!(result.route, Route::ProposeWriteFile);
-    assert!(!target.exists());
-    assert_eq!(
-        session.actions()[0].action.state,
-        ActionLifecycleState::Proposed
-    );
-
-    let rendered = shell.render();
-    assert!(rendered.contains("Pending Action\nStatus: waiting for approval"));
-    assert!(rendered.contains("File: hello.py"));
-    assert!(rendered.contains("No changes have been made yet."));
-    assert!(rendered.contains("Use /approve to apply or /reject"));
-    assert!(!rendered.contains("Action: action-1 CreateFile"));
-    assert!(!rendered.contains("Summary: write hello.py"));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn approves_write_file_through_action_gate_and_renders_verified_result() {
-    let controller = Controller::default();
-    let root = smoke_root("approve-write-file");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-    let target = root.join("hello.py");
-
-    submit_legacy_controller_input(
-        &mut shell,
-        &controller,
-        &mut session,
-        "create file hello.py",
-    );
-    let result = submit_action_gate_approval(&mut shell, &mut session);
-
-    assert_eq!(result.route, Route::ApproveAction);
-    assert!(target.exists());
-    assert_eq!(
-        session.actions()[0].action.state,
-        ActionLifecycleState::Applied
-    );
-    assert_eq!(
-        session.actions()[0].verified_result,
-        Some(VerifiedActionResult::FileWritten {
-            path: target.display().to_string()
-        })
-    );
-
-    let rendered = shell.render();
-    assert!(rendered.contains("Status: applied and verified"));
-    assert!(rendered.contains(&format!("Result: Wrote {}.", target.display())));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn rejects_write_file_through_action_gate_without_writing() {
-    let controller = Controller::default();
-    let root = smoke_root("reject-write-file");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-    let target = root.join("hello.py");
-
-    submit_legacy_controller_input(
-        &mut shell,
-        &controller,
-        &mut session,
-        "create file hello.py",
-    );
-    let result = submit_action_gate_rejection(&mut shell, &mut session);
-
-    assert_eq!(result.route, Route::RejectAction);
-    assert!(!target.exists());
-    assert_eq!(
-        session.actions()[0].action.state,
-        ActionLifecycleState::Rejected
-    );
-    assert_eq!(session.actions()[0].verified_result, None);
-
-    let rendered = shell.render();
-    assert!(rendered.contains("Status: rejected"));
-    assert!(rendered.contains("Result: Rejected. No file was changed."));
-    assert!(rendered.contains("Rejected. Nothing was changed."));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn approves_shell_command_through_action_gate_and_renders_shell_result() {
-    let controller = Controller::default();
-    let root = smoke_root("approve-shell-command");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-    let target = root.join("shell-ran.txt");
-
-    submit_legacy_controller_input(
-        &mut shell,
-        &controller,
-        &mut session,
-        &format!("run command printf ok > {}", target.display()),
-    );
-    let result = submit_action_gate_approval(&mut shell, &mut session);
-
-    assert_eq!(result.route, Route::ApproveAction);
-    assert_eq!(fs::read_to_string(&target).unwrap(), "ok");
-    assert_eq!(
-        session.actions()[0].action.state,
-        ActionLifecycleState::Applied
-    );
-    assert!(matches!(
-        session.actions()[0].verified_result,
-        Some(VerifiedActionResult::Shell(_))
-    ));
-
-    let rendered = shell.render();
-    assert!(rendered.contains("Status: applied and verified"));
-    assert!(rendered.contains("Result: Shell command finished and verification was recorded."));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn followup_folder_plan_creates_pending_action_and_approval_verifies_directories() {
-    let controller = Controller::new(FolderPlanProvider);
-    let root = smoke_root("followup-folder-plan");
-    let desktop = root.join("Desktop");
-    fs::create_dir_all(&desktop).unwrap();
-    let plan_path = desktop.join("folder-plan.md");
-    let expected_dirs = ["src", "tests", "docs", "data"]
-        .map(|name| desktop.join("project").join(name))
-        .to_vec();
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-
-    submit_legacy_controller_input(
-        &mut shell,
-        &controller,
-        &mut session,
-        "what folder structure should I use?",
-    );
-    assert!(session.actions().is_empty());
-    assert!(expected_dirs.iter().all(|path| !path.exists()));
-
-    submit_legacy_controller_input(
-        &mut shell,
-        &controller,
-        &mut session,
-        &format!("please create a plan at {}", plan_path.display()),
-    );
-    submit_action_gate_approval(&mut shell, &mut session);
-    assert!(plan_path.is_file());
-
-    submit_legacy_controller_input(
-        &mut shell,
-        &controller,
-        &mut session,
-        &format!("okay create this plan under {}", desktop.display()),
-    );
-
-    assert_eq!(session.actions().len(), 2);
-    assert!(expected_dirs.iter().all(|path| !path.exists()));
-    let rendered = shell.render();
-    assert!(rendered.contains("Pending Action"));
-    assert!(rendered.contains("Command: mkdir -p"));
-    assert!(!rendered.contains("ShellCommand"));
-    assert!(rendered.contains("mkdir -p"));
-    assert!(rendered.contains("Use /approve to apply or /reject"));
-
-    let result = submit_action_gate_approval(&mut shell, &mut session);
-
-    assert_eq!(result.route, Route::ApproveAction);
-    assert!(expected_dirs.iter().all(|path| path.is_dir()));
-    assert_eq!(
-        session.actions()[1].action.state,
-        ActionLifecycleState::Applied
-    );
-    match session.actions()[1].verified_result.as_ref() {
-        Some(VerifiedActionResult::Shell(shell_result)) => {
-            assert_eq!(shell_result.exit_code, Some(0));
-            assert!(shell_result
-                .verified_effect
-                .as_deref()
-                .is_some_and(|effect| effect.contains("verified directories exist")));
-        }
-        other => panic!("expected verified shell result, got {other:?}"),
-    }
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn natural_desktop_folder_request_renders_specific_review_and_verified_copy() {
-    let controller = Controller::default();
-    let root = smoke_root("desktop-folder-copy");
-    let home = root.join("home");
-    let desktop = home.join("Desktop");
-    fs::create_dir_all(&desktop).unwrap();
-    let _home = EnvGuard::set_path("HOME", &home);
-    let project = root.join("project");
-    fs::create_dir_all(&project).unwrap();
-    let target = desktop.join("helloworld");
-    let mut session = session_at(&project);
-    let mut shell = TuiShell::new();
-
-    let propose_result = submit_legacy_controller_input(
-        &mut shell,
-        &controller,
-        &mut session,
-        "create a folder in desktop and call it helloworld",
-    );
-
-    assert_eq!(propose_result.route, Route::ProposeCreateDirectory);
-    assert_eq!(session.actions().len(), 1);
-    assert!(!target.exists());
-    match &session.actions()[0].action.request {
-        ActionRequest::ShellCommand(action) => {
-            assert_eq!(action.expected_directory.as_ref(), Some(&target));
-            assert_eq!(action.cwd, project);
-            assert!(action.command.starts_with("mkdir -p "));
-        }
-        other => panic!("expected ShellCommand action, got {other:?}"),
-    }
-
-    let rendered = shell.render();
-    assert!(rendered.contains("I can create Desktop/helloworld. Approve to create it."));
-    assert!(rendered.contains("Status: waiting for approval"));
-    assert!(rendered.contains("Folder: Desktop/helloworld"));
-    assert!(rendered.contains("No changes have been made yet."));
-    assert!(!rendered.contains("Review needed:"));
-    assert!(!rendered.contains("Proposed ShellCommand action"));
-    assert!(!rendered.contains("Action: action-1 ShellCommand"));
-    assert!(!rendered.contains("Target: mkdir -p "));
-
-    let approve_result = submit_action_gate_approval(&mut shell, &mut session);
-
-    assert_eq!(approve_result.route, Route::ApproveAction);
-    assert!(target.is_dir());
-    let rendered = shell.render();
-    assert!(rendered.contains("Created Desktop/helloworld."));
-    assert!(!rendered.contains("Applied approved file action"));
-    assert!(!rendered.contains("Executed approved shell command"));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn rejects_shell_command_through_action_gate_without_execution() {
-    let controller = Controller::default();
-    let root = smoke_root("reject-shell-command");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-    let target = root.join("shell-ran.txt");
-
-    submit_legacy_controller_input(
-        &mut shell,
-        &controller,
-        &mut session,
-        &format!("run command printf no > {}", target.display()),
-    );
-    let result = submit_action_gate_rejection(&mut shell, &mut session);
-
-    assert_eq!(result.route, Route::RejectAction);
-    assert!(!target.exists());
-    assert_eq!(
-        session.actions()[0].action.state,
-        ActionLifecycleState::Rejected
-    );
-    assert_eq!(session.actions()[0].verified_result, None);
-
-    let rendered = shell.render();
-    assert!(rendered.contains("Status: rejected"));
-    assert!(rendered.contains("Rejected. Nothing was changed."));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn renders_delete_move_directory_actions_without_mutating_on_render() {
-    let controller = Controller::default();
-    let root = smoke_root("render-expanded-actions");
-    let delete_target = root.join("delete-me.txt");
-    fs::write(&delete_target, "keep").unwrap();
-
-    let mut delete_session = session_at(&root);
-    let mut delete_shell = TuiShell::new();
-    let result = controller.turn(&mut delete_session, "delete file delete-me.txt");
-    delete_shell.consume_events(&result.events);
-    let before_render = delete_session.clone();
-    let rendered = delete_shell.render();
-
-    assert!(rendered.contains("Pending Action"));
-    assert!(rendered.contains("File: delete-me.txt"));
-    assert!(!rendered.contains("DeleteFile"));
-    assert_eq!(delete_session, before_render);
-    assert_eq!(fs::read_to_string(&delete_target).unwrap(), "keep");
-
-    let mut move_session = session_at(&root);
-    let mut move_shell = TuiShell::new();
-    let source = root.join("old-name.txt");
-    let target = root.join("new-name.txt");
-    fs::write(&source, "move me").unwrap();
-    let result = controller.turn(&mut move_session, "move file old-name.txt to new-name.txt");
-    move_shell.consume_events(&result.events);
-    let _ = move_shell.render();
-
-    assert_eq!(fs::read_to_string(&source).unwrap(), "move me");
-    assert!(!target.exists());
-
-    let mut directory_session = session_at(&root);
-    let mut directory_shell = TuiShell::new();
-    let directory = root.join("generated");
-    let result = controller.turn(&mut directory_session, "create directory generated");
-    directory_shell.consume_events(&result.events);
-    let _ = directory_shell.render();
-
-    assert!(!directory.exists());
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn rendering_and_rejection_do_not_call_provider_or_mutate_files_directly() {
-    let controller =
-        Controller::new(ProviderStub::new("should-not-be-called").with_model("unused-model"));
-    let root = smoke_root("surface-boundaries");
-    let mut session = session_at(&root);
-    let mut shell = TuiShell::new();
-    let target = root.join("hello.py");
-
-    let proposed = controller.turn(&mut session, "create file hello.py");
-    shell.consume_events(&proposed.events);
-    let before_render = session.clone();
-    let rendered = shell.render();
-
-    assert!(rendered.contains("Status: waiting for approval"));
-    assert_eq!(session, before_render);
-    assert!(!target.exists());
-    assert_eq!(session.provider_metadata(), None);
-    assert!(session.events().iter().all(|event| !matches!(
-        event,
-        Event::ProviderStarted(_) | Event::ProviderFinished(_)
-    )));
-
-    let rejected = submit_action_gate_rejection(&mut shell, &mut session);
-
-    assert_eq!(rejected.route, Route::RejectAction);
-    assert!(!target.exists());
-    assert_eq!(session.provider_metadata(), None);
-    assert!(session.events().iter().all(|event| !matches!(
-        event,
-        Event::ProviderStarted(_) | Event::ProviderFinished(_)
-    )));
-
-    let _ = fs::remove_dir_all(root);
 }

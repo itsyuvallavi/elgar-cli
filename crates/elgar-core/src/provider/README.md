@@ -15,7 +15,9 @@ Provider boundary for LM Studio and OpenAI-compatible chat behavior.
 
 ## Ownership
 
-Keep HTTP and provider compatibility details here. Runtime and legacy controller code should consume typed provider results instead of parsing raw provider text.
+Keep HTTP and provider compatibility details here. Runtime and controller
+compatibility code should consume typed provider results instead of parsing raw
+provider text.
 
 ## Checks
 

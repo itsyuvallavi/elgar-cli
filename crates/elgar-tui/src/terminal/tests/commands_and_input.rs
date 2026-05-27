@@ -88,14 +88,18 @@ fn terminal_commands_are_slash_only() {
 
 #[test]
 fn terminal_plain_approval_words_go_to_model_path() {
-    let controller = Controller::default();
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-approved",
+        "approved.py",
+        "",
+    )]);
     let root = temp_root("terminal-plain-approval-blocked");
     let target = root.join("approved.py");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    submit_legacy_controller_input(
+    submit_review_tool_input(
         &mut shell,
         &controller,
         &mut session,
@@ -109,7 +113,7 @@ fn terminal_plain_approval_words_go_to_model_path() {
     assert!(!target.exists());
     assert_eq!(session.actions().len(), before_action_count);
     assert!(shell.render().contains("> approve"));
-    assert!(shell.render().contains("stub provider response"));
+    assert!(shell.render().contains("scripted provider response"));
     assert!(!shell
         .render()
         .contains("Action commands must use /approve or /reject."));
@@ -120,14 +124,18 @@ fn terminal_plain_approval_words_go_to_model_path() {
 
 #[test]
 fn terminal_clear_slash_commands_clear_only_local_conversation() {
-    let controller = Controller::default();
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-clear",
+        "clear.py",
+        "",
+    )]);
     let root = temp_root("terminal-clear-local");
     let target = root.join("clear.py");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    submit_legacy_controller_input(
+    submit_review_tool_input(
         &mut shell,
         &controller,
         &mut session,
@@ -391,14 +399,18 @@ fn terminal_enter_ignores_empty_input_without_controller_turn() {
 
 #[test]
 fn terminal_approve_slash_command_approves_pending_action_through_shell() {
-    let controller = Controller::default();
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-approved",
+        "approved.py",
+        "",
+    )]);
     let root = temp_root("terminal-slash-approve");
     let target = root.join("approved.py");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    submit_legacy_controller_input(
+    submit_review_tool_input(
         &mut shell,
         &controller,
         &mut session,
@@ -428,14 +440,18 @@ fn terminal_approve_slash_command_approves_pending_action_through_shell() {
 
 #[test]
 fn terminal_reject_slash_command_rejects_pending_action_through_shell() {
-    let controller = Controller::default();
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-rejected",
+        "rejected.py",
+        "",
+    )]);
     let root = temp_root("terminal-slash-reject");
     let target = root.join("rejected.py");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    submit_legacy_controller_input(
+    submit_review_tool_input(
         &mut shell,
         &controller,
         &mut session,
@@ -483,14 +499,18 @@ fn terminal_approval_slash_commands_show_no_pending_feedback() {
 
 #[test]
 fn terminal_function_keys_and_ctrl_y_are_not_command_actions() {
-    let controller = Controller::default();
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-approved",
+        "approved.py",
+        "",
+    )]);
     let root = temp_root("terminal-no-key-commands");
     let target = root.join("approved.py");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut input = TerminalInput::default();
 
-    submit_legacy_controller_input(
+    submit_review_tool_input(
         &mut shell,
         &controller,
         &mut session,

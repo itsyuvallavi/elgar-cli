@@ -41,7 +41,7 @@ Normal live TUI is improved but still structurally wrong:
 
 - `crates/elgar-tui/src/terminal.rs` still accepts `Controller<P>` for normal chat.
 - `crates/elgar-tui/src/terminal/provider_task.rs` calls `run_permissive_agent_turn`, but only by pulling `controller.provider`.
-- `crates/elgar-tui/src/shell.rs` still has `submit_model_first_input(controller, ...)`.
+- `crates/elgar-tui/src/shell.rs` still has `submit_provider_turn_input(controller, ...)`.
 - `crates/elgar-cli/src/lib.rs` creates a `Controller::default()` for TUI script mode and passes it into normal chat.
 - `crates/elgar-core/src/controller.rs` still owns legacy natural-language routing and approval behavior.
 
@@ -131,7 +131,7 @@ Memory should help the model understand context, not override routing:
 
 ### Phase 0: Checkpoint
 
-Done in commit `ecfa4cc` (`Checkpoint model-first TUI runtime fixes`).
+Done in commit `ecfa4cc` (`Checkpoint provider-text TUI runtime fixes`).
 
 ### Phase 1: Introduce AgentRuntime And Move Live TUI To It
 
@@ -148,7 +148,8 @@ Done in commit `ecfa4cc` (`Checkpoint model-first TUI runtime fixes`).
 1. Change `run_tui_loop_with_policy` to construct `AgentRuntime`.
 2. Change `submit_tui_input` to submit normal text through runtime.
 3. Keep slash commands local.
-4. Leave `controller-smoke` command as explicitly legacy.
+4. Remove legacy controller smoke commands after AgentRuntime owns the normal
+   provider path.
 
 ### Phase 3: Centralize Path Resolution
 
@@ -170,12 +171,12 @@ Done in commit `ecfa4cc` (`Checkpoint model-first TUI runtime fixes`).
 3. Keep detailed event data available for debug/copy mode.
 4. Add golden transcript tests.
 
-### Phase 6: Quarantine Legacy Controller
+### Phase 6: Remove Legacy Controller
 
-1. Rename legacy controller paths/tests to make their status explicit.
-2. Remove normal-chat imports of `Controller`.
-3. Keep old controller smoke commands only while useful for regression comparison.
-4. Delete or archive unused legacy controller modules after parity tests pass.
+1. Replace approval/rejection with `ActionGate`.
+2. Delete legacy controller modules and phrase-routing tests.
+3. Remove controller smoke commands.
+4. Keep only the small provider-chat compatibility wrapper.
 
 ### Phase 7: Harness And E2E
 

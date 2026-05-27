@@ -205,8 +205,18 @@ impl Default for TuiShell {
 #[cfg(test)]
 mod tests {
     use elgar_core::{
-        action::ActionLifecycleState, action_gate::ActionGate, agent_runtime::AgentRuntime,
-        controller::Controller, event::VerifiedActionResult, session::Session,
+        action::ActionLifecycleState,
+        action_gate::ActionGate,
+        agent_runtime::AgentRuntime,
+        controller::Controller,
+        event::{ProviderOutput, VerifiedActionResult},
+        model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
+        policy::PermissionPolicyMode,
+        provider::{
+            ChatMessage, ChatRole, ChatToolDefinition, ControllerProvider, ProviderError,
+            ProviderRequestMetadata,
+        },
+        session::Session,
     };
 
     use crate::layout::LayoutRegion;
@@ -317,7 +327,6 @@ mod tests {
 
     #[test]
     fn rendering_core_events_does_not_mutate_session_files_or_action_truth() {
-        let controller = Controller::default();
         let root = std::env::temp_dir().join(format!(
             "elgar-tui-render-{}-no-mutation",
             std::process::id()
@@ -325,9 +334,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("hello.py");
+        let runtime = create_file_runtime("hello.py", "");
         let mut session = Session::new("session-1", root.clone(), root.clone());
 
-        controller.turn(&mut session, "create file hello.py");
+        runtime.tool_turn(
+            &mut session,
+            "create file hello.py",
+            PermissionPolicyMode::ReviewAll,
+        );
         let before = session.clone();
 
         let mut shell = TuiShell::new();
@@ -365,15 +379,16 @@ mod tests {
 
     #[test]
     fn tui_approval_is_routed_through_action_gate_and_renders_applied_result() {
-        let controller = Controller::default();
         let action_gate = ActionGate::default();
         let root = temp_root("approve-through-controller");
         let target = root.join("hello.py");
+        let runtime = create_file_runtime("hello.py", "");
         let mut session = Session::new("session-1", root.clone(), root.clone());
-        let mut shell = TuiShell::new();
+        let mut shell = TuiShell::with_policy_mode(PermissionPolicyMode::ReviewAll);
 
-        let proposed = controller.turn(&mut session, "create file hello.py");
-        shell.consume_events(&proposed.events);
+        let proposed =
+            shell.submit_agent_tool_input(&runtime, &mut session, "create file hello.py");
+        assert_eq!(proposed.route, elgar_core::router::Route::AskModel);
         assert!(!target.exists());
         assert!(shell.render().contains("Status: waiting for approval"));
 
@@ -400,15 +415,14 @@ mod tests {
 
     #[test]
     fn tui_rejection_is_routed_through_action_gate_and_does_not_write() {
-        let controller = Controller::default();
         let action_gate = ActionGate::default();
         let root = temp_root("reject-through-controller");
         let target = root.join("hello.py");
+        let runtime = create_file_runtime("hello.py", "");
         let mut session = Session::new("session-1", root.clone(), root.clone());
-        let mut shell = TuiShell::new();
+        let mut shell = TuiShell::with_policy_mode(PermissionPolicyMode::ReviewAll);
 
-        let proposed = controller.turn(&mut session, "create file hello.py");
-        shell.consume_events(&proposed.events);
+        shell.submit_agent_tool_input(&runtime, &mut session, "create file hello.py");
 
         let rejected = shell.submit_rejection(&action_gate, &mut session);
 
@@ -429,7 +443,6 @@ mod tests {
 
     #[test]
     fn tui_renders_failed_result_from_controller_events() {
-        let controller = Controller::default();
         let action_gate = ActionGate::default();
         let root = temp_root("failed-through-controller");
         let absolute_target = std::env::temp_dir().join(format!(
@@ -437,14 +450,15 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&absolute_target);
+        let runtime = create_file_runtime(absolute_target.display().to_string(), "");
         let mut session = Session::new("session-1", root.clone(), root.clone());
-        let mut shell = TuiShell::new();
+        let mut shell = TuiShell::with_policy_mode(PermissionPolicyMode::ReviewAll);
 
-        let proposed = controller.turn(
+        shell.submit_agent_tool_input(
+            &runtime,
             &mut session,
             &format!("create file {}", absolute_target.display()),
         );
-        shell.consume_events(&proposed.events);
 
         shell.submit_approval(&action_gate, &mut session);
 
@@ -467,5 +481,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn create_file_runtime(
+        target_path: impl Into<String>,
+        contents: impl Into<String>,
+    ) -> AgentRuntime<ScriptedToolProvider> {
+        let target_path = target_path.into();
+        AgentRuntime::new(ScriptedToolProvider {
+            output: ProviderOutput::new("Creating file.").with_tool_calls(vec![RawModelToolCall {
+                id: "call-create-file".to_string(),
+                name: RawModelToolName::Known(ModelToolName::CreateFile),
+                arguments: serde_json::json!({
+                    "target_path": target_path.clone(),
+                    "contents": contents.into(),
+                }),
+                assistant_summary: Some(format!("write {target_path}")),
+            }]),
+        })
+    }
+
+    #[derive(Debug, Clone)]
+    struct ScriptedToolProvider {
+        output: ProviderOutput,
+    }
+
+    impl ControllerProvider for ScriptedToolProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "tool-provider",
+                Some("tool-model".to_string()),
+                "request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("plain response"))
+        }
+
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<ProviderOutput, ProviderError> {
+            if messages
+                .iter()
+                .any(|message| matches!(message.role, ChatRole::Tool))
+            {
+                return Ok(ProviderOutput::new("Done."));
+            }
+
+            Ok(self.output.clone())
+        }
     }
 }

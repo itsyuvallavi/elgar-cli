@@ -29,20 +29,6 @@ pub(crate) fn truth_guard_visible_message(session: &Session, message: String) ->
     message
 }
 
-pub(crate) fn create_directory_proposal_message(target_paths: &[PathBuf]) -> String {
-    if target_paths.len() == 1 {
-        return format!(
-            "I can create {}. Approve to create it.",
-            user_display_path(&target_paths[0])
-        );
-    }
-
-    format!(
-        "I can create these directories: {}. Approve to create them.",
-        display_user_path_list(target_paths)
-    )
-}
-
 pub(crate) fn verified_action_success_message(
     session: &Session,
     action: &Action,
@@ -234,22 +220,12 @@ fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_directory_proposal_message, truth_guard_visible_message};
+    use super::truth_guard_visible_message;
     use crate::{
         action::{Action, ActionRequest, CreateDirectoryAction, FileActionVerification},
         event::VerifiedActionResult,
         session::{ActionRecord, Session},
     };
-
-    #[test]
-    fn reporting_formats_create_directory_proposal_without_mutating_session() {
-        let message = create_directory_proposal_message(&["alpha".into(), "beta".into()]);
-
-        assert_eq!(
-            message,
-            "I can create these directories: alpha, beta. Approve to create them."
-        );
-    }
 
     #[test]
     fn truth_guard_replaces_false_folder_claim_with_verified_truth() {

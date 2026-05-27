@@ -58,13 +58,17 @@ fn terminal_state_commands_are_local_and_empty_without_provider_call() {
 
 #[test]
 fn terminal_pending_command_reports_pending_action_without_plain_words() {
-    let controller = Controller::default();
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-pending",
+        "pending.py",
+        "",
+    )]);
     let root = temp_root("terminal-pending-state");
     let mut session = Session::new("session-1", root.clone(), root.clone());
     let mut shell = TuiShell::new();
     let mut pending_turn = None;
 
-    submit_legacy_controller_input(
+    submit_review_tool_input(
         &mut shell,
         &controller,
         &mut session,
