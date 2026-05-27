@@ -28,7 +28,7 @@ create a folder named $plain_dir
 /tool create a folder named $project_dir
 what folder did you create?
 /state
-/tool create a markdown project plan inside $project_dir/plan.md for a tiny Python CLI app. Only create the plan file. The fenced file tree must contain exactly these files and no others: src/main.py and requirements.txt.
+/tool create only the markdown plan file at $project_dir/plan.md for a tiny Python CLI app. Do not create implementation files in this turn. The plan must contain a fenced text file tree with exactly two future files: src/main.py and requirements.txt.
 /plan
 /tool execute the plan
 /tool create a folder named $unrelated_dir
@@ -50,6 +50,7 @@ fail() {
 
 grep -q "stub provider response" "$output_file" && fail "script used stub provider"
 grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -A1 '^Plan Preview$' "$output_file" | grep -q '^(none)$' && fail "plan preview was empty after plan creation"
 
 [[ -e "$playground/$plain_dir" ]] && fail "plain text created $plain_dir"
 [[ -d "$playground/$project_dir" ]] || fail "missing project directory $project_dir"
@@ -60,6 +61,16 @@ grep -q "No live provider call was made" "$output_file" && fail "script used no-
 
 grep -q "$project_dir" "$output_file" || fail "transcript did not mention project directory"
 grep -q "$unrelated_dir" "$output_file" || fail "transcript did not mention unrelated directory"
+
+latest_state_answer="$(
+  awk '
+    $0 == "> what folder did you create?" { capture = 1; block = ""; next }
+    capture && $0 == "" { latest = block; capture = 0; next }
+    capture { block = block $0 "\n" }
+    END { printf "%s", latest }
+  ' "$output_file"
+)"
+printf '%s' "$latest_state_answer" | grep -q "$unrelated_dir" || fail "latest state answer did not mention $unrelated_dir"
 
 echo "==> dogfood passed"
 echo "project: $playground/$project_dir"
