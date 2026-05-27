@@ -92,6 +92,31 @@ fn terminal_layout_renders_default_shell_regions() {
 }
 
 #[test]
+fn terminal_layout_renders_provider_thinking_and_answer_in_same_tui_path() {
+    let mut shell = TuiShell::new();
+    shell.consume_events(&[
+        Event::ProviderStarted(ProviderStarted::new("stub-provider", "request-1")),
+        Event::ProviderFinished(ProviderFinished::new(
+            "stub-provider",
+            "request-1",
+            ProviderOutput::new("The visible answer.")
+                .with_thinking("Compact reasoning summary from provider."),
+        )),
+        Event::AssistantMessage(AssistantMessage::new(
+            "The visible answer.",
+            AssistantMessageSource::Provider,
+        )),
+    ]);
+
+    let text = draw_to_text(&shell, &TerminalShellContext::new("/repo", "/repo"));
+
+    assert!(text.contains("Compact reasoning summary from provider."));
+    assert!(text.contains("The visible answer."));
+    assert!(!text.contains("request-1"));
+    assert!(!text.contains("Thinking:"));
+}
+
+#[test]
 fn terminal_layout_renders_pending_action_only_when_present() {
     let controller = scripted_tool_controller(vec![scripted_create_file_output(
         "create-hello",

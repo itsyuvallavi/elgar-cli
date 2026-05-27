@@ -37,6 +37,7 @@ what folder did you create?
 EOF
 
 echo "==> running live scripted TUI dogfood"
+echo "==> scope: scripted TUI/runtime path; full-screen renderer is covered by ratatui renderer tests"
 (
   cd "$playground"
   elgar tui <"$input_file"
