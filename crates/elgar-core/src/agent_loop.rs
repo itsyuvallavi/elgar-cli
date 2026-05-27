@@ -698,19 +698,8 @@ enum ToolValidationRecovery {
 fn tool_validation_recovery(
     error: &crate::model_runtime::ModelToolValidationError,
 ) -> ToolValidationRecovery {
-    if is_target_path_validation_error(error) {
-        let tool = error.tool_name.as_deref().unwrap_or("tool");
-        return ToolValidationRecovery::AskUser(format!(
-            "I need a concrete target path before I can {}. Which file or folder should I use?",
-            tool_action_phrase(tool)
-        ));
-    }
-
-    if is_contents_validation_error(error) {
-        return ToolValidationRecovery::AskUser(format!(
-            "I need file contents before I can {}. What should I write?",
-            tool_action_phrase(error.tool_name.as_deref().unwrap_or("create the file"))
-        ));
+    if let Some(message) = tool_validation_guidance_message(error) {
+        return ToolValidationRecovery::AskUser(message);
     }
 
     ToolValidationRecovery::Error(format!(
@@ -719,24 +708,61 @@ fn tool_validation_recovery(
     ))
 }
 
-fn is_target_path_validation_error(error: &crate::model_runtime::ModelToolValidationError) -> bool {
-    matches!(
-        error.kind,
-        ModelToolValidationErrorKind::MissingArgument
-            | ModelToolValidationErrorKind::MalformedArgument
-    ) && error.argument.as_deref() == Some("target_path")
+fn tool_validation_guidance_message(
+    error: &crate::model_runtime::ModelToolValidationError,
+) -> Option<String> {
+    if !is_missing_or_malformed_tool_argument(error) {
+        return None;
+    }
+
+    let tool = error.tool_name.as_deref().unwrap_or("tool");
+    match error.argument.as_deref()? {
+        "target_path" => Some(format!(
+            "I need a concrete target path before I can {}. Which file or folder should I use?",
+            tool_action_phrase(tool)
+        )),
+        "source_path" => Some(format!(
+            "I need the source path before I can {}. Which existing file should I use?",
+            tool_action_phrase(tool)
+        )),
+        "cwd" => Some(format!(
+            "I need a working directory before I can {}. Which folder should I run it in?",
+            tool_action_phrase(tool)
+        )),
+        "command" => {
+            Some("I need the shell command before I can run it. What command should I run?".into())
+        }
+        "contents" if is_file_contents_tool(error) => Some(format!(
+            "I need file contents before I can {}. What should I write?",
+            tool_action_phrase(tool)
+        )),
+        "find" => Some(
+            "I need the exact text to replace before I can edit the file. What text should I replace?"
+                .into(),
+        ),
+        "replace" => Some(
+            "I need the replacement text before I can edit the file. What should I replace it with?"
+                .into(),
+        ),
+        _ => None,
+    }
 }
 
-fn is_contents_validation_error(error: &crate::model_runtime::ModelToolValidationError) -> bool {
+fn is_missing_or_malformed_tool_argument(
+    error: &crate::model_runtime::ModelToolValidationError,
+) -> bool {
     matches!(
         error.kind,
         ModelToolValidationErrorKind::MissingArgument
             | ModelToolValidationErrorKind::MalformedArgument
-    ) && error.argument.as_deref() == Some("contents")
-        && matches!(
-            error.tool_name.as_deref(),
-            Some("create_file" | "overwrite_file")
-        )
+    )
+}
+
+fn is_file_contents_tool(error: &crate::model_runtime::ModelToolValidationError) -> bool {
+    matches!(
+        error.tool_name.as_deref(),
+        Some("create_file" | "overwrite_file")
+    )
 }
 
 fn friendly_tool_validation_error(
@@ -1157,6 +1183,142 @@ mod tests {
         )));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_move_source_path_asks_user_without_raw_tool_error() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-missing-move-source",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider =
+            SequenceProvider::new(vec![crate::event::ProviderOutput::new("Moving the file.")
+                .with_tool_calls(vec![RawModelToolCall {
+                    id: "missing-move-source-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::MoveFile),
+                    arguments: json!({ "target_path": "renamed.md" }),
+                    assistant_summary: None,
+                }])]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "move the file",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(session.actions().is_empty());
+        assert_eq!(provider.messages.lock().unwrap().len(), 1);
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("source path")
+                    && message.content.contains("move the file")
+        )));
+        assert_no_raw_tool_validation_error(&session);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_shell_cwd_asks_user_without_running_command() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-missing-shell-cwd",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
+            "Running the command.",
+        )
+        .with_tool_calls(vec![RawModelToolCall {
+            id: "missing-shell-cwd-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::ShellCommand),
+            arguments: json!({ "command": "printf hello" }),
+            assistant_summary: None,
+        }])]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "run a shell command",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(session.actions().is_empty());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message
+                        .content
+                        .contains("working directory before I can run the command")
+        )));
+        assert_no_raw_tool_validation_error(&session);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn malformed_patch_find_asks_for_exact_text_without_raw_tool_error() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-missing-patch-find",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("notes.md"), "old\n").unwrap();
+        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
+            "Patching the file.",
+        )
+        .with_tool_calls(vec![RawModelToolCall {
+            id: "missing-patch-find-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::PatchFile),
+            arguments: json!({
+                "target_path": "notes.md",
+                "find": "",
+                "replace": "new"
+            }),
+            assistant_summary: None,
+        }])]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "patch notes",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.md")).unwrap(),
+            "old\n"
+        );
+        assert!(session.actions().is_empty());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("exact text to replace")
+        )));
+        assert_no_raw_tool_validation_error(&session);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn assert_no_raw_tool_validation_error(session: &Session) {
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::Error(error)
+                if error.message.contains("model tool")
+                    || error.message.contains("missing required argument")
+                    || error.message.contains("Tool error")
+        )));
     }
 
     #[test]

@@ -135,6 +135,31 @@ fn explicit_tool_turn_can_be_rejected_without_writing() {
 }
 
 #[test]
+fn invalid_tool_call_renders_guidance_without_action_truth() {
+    let root = smoke_root("invalid-tool-guidance");
+    let runtime = AgentRuntime::new(ScriptedToolProvider {
+        output: ProviderOutput::new("Creating file.").with_tool_calls(vec![RawModelToolCall {
+            id: "call-missing-target".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateFile),
+            arguments: serde_json::json!({ "contents": "hello\n" }),
+            assistant_summary: None,
+        }]),
+    });
+    let mut session = session_at(&root);
+    let mut shell = TuiShell::new();
+
+    shell.submit_agent_tool_input(&runtime, &mut session, "create a file");
+
+    let rendered = shell.render();
+    assert!(session.actions().is_empty());
+    assert!(rendered.contains("I need a concrete target path before I can create the file"));
+    assert!(!rendered.contains("missing required argument"));
+    assert!(!rendered.contains("Tool call incomplete"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn provider_error_renders_without_mutating_action_truth() {
     let root = smoke_root("provider-error");
     let controller = Controller::new(FailingProvider);

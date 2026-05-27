@@ -1,8 +1,4 @@
-use std::{
-    ffi::OsString,
-    path::PathBuf,
-    sync::{Mutex, MutexGuard},
-};
+use std::path::PathBuf;
 
 use crate::{
     action::{
@@ -17,6 +13,7 @@ use crate::{
     provider::{ControllerProvider, ProviderConfig, ProviderError, ProviderStub},
     router::Route,
     session::{ActionRecord, Session},
+    test_env::EnvGuard,
 };
 
 use super::Controller;
@@ -35,37 +32,6 @@ fn rooted_session(name: &str) -> (Session, PathBuf) {
     std::fs::create_dir_all(&root).unwrap();
 
     (Session::new("session-1", root.clone(), root.clone()), root)
-}
-
-static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct EnvGuard {
-    previous: Option<OsString>,
-    _home_lock: MutexGuard<'static, ()>,
-}
-
-impl EnvGuard {
-    fn set_home(value: &std::path::Path) -> Self {
-        let home_lock = HOME_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous = std::env::var_os("HOME");
-        std::env::set_var("HOME", value);
-        Self {
-            previous,
-            _home_lock: home_lock,
-        }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        if let Some(previous) = &self.previous {
-            std::env::set_var("HOME", previous);
-        } else {
-            std::env::remove_var("HOME");
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -75,12 +75,7 @@ impl Default for AgentRuntime<ProviderStub> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        ffi::OsString,
-        fs,
-        path::Path,
-        sync::{Mutex, MutexGuard},
-    };
+    use std::fs;
 
     use crate::{
         action::{ActionLifecycleState, ActionRequest},
@@ -92,6 +87,7 @@ mod tests {
             ChatMessage, ChatToolDefinition, ControllerProvider, ProviderError,
             ProviderRequestMetadata, ProviderStub,
         },
+        test_env::EnvGuard,
     };
 
     use super::*;
@@ -102,37 +98,6 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
-    }
-
-    static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvGuard {
-        previous_home: Option<OsString>,
-        _home_lock: MutexGuard<'static, ()>,
-    }
-
-    impl EnvGuard {
-        fn set_home(value: &Path) -> Self {
-            let home_lock = HOME_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let previous_home = std::env::var_os("HOME");
-            std::env::set_var("HOME", value);
-            Self {
-                previous_home,
-                _home_lock: home_lock,
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(previous_home) = &self.previous_home {
-                std::env::set_var("HOME", previous_home);
-            } else {
-                std::env::remove_var("HOME");
-            }
-        }
     }
 
     #[test]

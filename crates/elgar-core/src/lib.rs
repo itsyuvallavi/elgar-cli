@@ -20,5 +20,7 @@ pub mod renderer;
 pub mod router;
 pub mod session;
 pub mod shell;
+#[cfg(test)]
+mod test_env;
 
 pub const CORE_PHILOSOPHY: &str = "Model reasons. Runtime routes. Action gate enforces. Filesystem confirms. UI reports. Tests protect. Extensions wait.";
