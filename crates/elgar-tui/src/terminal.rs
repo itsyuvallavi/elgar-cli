@@ -620,7 +620,7 @@ fn print_conversation_line(line: &str, style: ConversationLineStyle) -> io::Resu
             print_spacer()?;
             writeln!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}")
         }
-        ConversationLineStyle::Thinking => {
+        ConversationLineStyle::Thinking | ConversationLineStyle::Metrics => {
             print_spacer()?;
             writeln!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}")
         }
@@ -1003,6 +1003,7 @@ fn style_terminal_conversation(
             }
             ConversationLineStyle::Loading => Line::styled(line, theme::thinking()),
             ConversationLineStyle::Thinking => Line::styled(line, theme::thinking()),
+            ConversationLineStyle::Metrics => Line::styled(line, theme::muted()),
             ConversationLineStyle::Plain => Line::styled(line, theme::model_output()),
             ConversationLineStyle::Tool => {
                 Line::styled(pad_line(&line, width), theme::tool_output())

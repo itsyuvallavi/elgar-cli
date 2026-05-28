@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use elgar_core::event::{
     ActionEvent, ActionKind, AssistantMessageSource, Event, FileActionVerification,
-    VerifiedActionResult,
+    ProviderFinished, ProviderMetrics, VerifiedActionResult,
 };
 use elgar_core::policy::ApprovalSource;
 
@@ -47,6 +47,11 @@ impl ConversationPane {
 
         if !matches!(event, Event::Error(_)) {
             self.create_batch = None;
+        }
+
+        if let Event::ProviderFinished(finished) = event {
+            self.push_provider_finished(finished);
+            return;
         }
 
         if let Some((line, style)) = render_tui_event(event) {
@@ -226,6 +231,25 @@ impl ConversationPane {
             }
         }
     }
+
+    fn push_provider_finished(&mut self, finished: &ProviderFinished) {
+        if !finished.output.tool_calls.is_empty() {
+            return;
+        }
+
+        if let Some(line) = render_provider_thinking(finished.output.thinking.as_deref()) {
+            self.push_line(line, ConversationLineStyle::Thinking);
+        }
+
+        if let Some(line) = finished
+            .output
+            .metrics
+            .as_ref()
+            .and_then(render_provider_metrics_summary)
+        {
+            self.push_line(line, ConversationLineStyle::Metrics);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -235,6 +259,7 @@ pub(crate) enum ConversationLineStyle {
     User,
     Loading,
     Thinking,
+    Metrics,
     Tool,
 }
 
@@ -446,14 +471,7 @@ fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
         Event::ProviderStarted(_) => {
             Some((render_thinking_progress(), ConversationLineStyle::Loading))
         }
-        Event::ProviderFinished(finished) => {
-            if !finished.output.tool_calls.is_empty() {
-                return None;
-            }
-
-            render_provider_thinking(finished.output.thinking.as_deref())
-                .map(|line| (line, ConversationLineStyle::Thinking))
-        }
+        Event::ProviderFinished(_) => None,
         Event::ActionProposed(action) => {
             Some((render_action_proposed(action), ConversationLineStyle::Plain))
         }
@@ -560,6 +578,61 @@ fn create_directory_summary_path(summary: &str) -> Option<&str> {
         .strip_prefix("create directory ")
         .map(str::trim)
         .filter(|path| !path.is_empty())
+}
+
+fn render_provider_metrics_summary(metrics: &ProviderMetrics) -> Option<String> {
+    let usage = metrics.usage.as_ref()?;
+    let duration = format_duration(metrics.total_duration_millis?)?;
+    let mut parts = vec![format!("response {duration}")];
+    if let Some(first_chunk) = metrics.first_chunk_latency_millis.and_then(format_duration) {
+        parts.push(format!("first {first_chunk}"));
+    }
+    let input = usage
+        .prompt_tokens
+        .map(compact_token_count)
+        .unwrap_or_else(|| "?".to_string());
+    let output = usage
+        .completion_tokens
+        .map(compact_token_count)
+        .unwrap_or_else(|| "?".to_string());
+    let total = usage
+        .total_tokens
+        .or_else(|| {
+            usage
+                .prompt_tokens
+                .unwrap_or_default()
+                .checked_add(usage.completion_tokens.unwrap_or_default())
+        })
+        .map(compact_token_count)
+        .unwrap_or_else(|| "?".to_string());
+    parts.push(format!("↑{input} ↓{output}"));
+    parts.push(format!("{total} tokens"));
+    Some(parts.join(" · "))
+}
+
+fn compact_token_count(tokens: u64) -> String {
+    if tokens >= 1_000 {
+        let value = tokens as f64 / 1_000.0;
+        if tokens % 1_000 == 0 {
+            format!("{value:.0}k")
+        } else {
+            format!("{value:.1}k")
+        }
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn format_duration(millis: u64) -> Option<String> {
+    if millis == 0 {
+        return None;
+    }
+    if millis < 1_000 {
+        Some(format!("{millis}ms"))
+    } else {
+        let seconds = millis as f64 / 1_000.0;
+        Some(format!("{seconds:.1}s"))
+    }
 }
 
 fn render_user_message(content: &str) -> String {
@@ -783,8 +856,9 @@ mod tests {
     use elgar_core::{
         event::{
             ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
-            ErrorEvent, Event, FileActionVerification, ProviderFinished, ProviderOutput,
-            ProviderStarted, ShellActionVerification, UserMessage, VerifiedActionResult,
+            ErrorEvent, Event, FileActionVerification, ProviderFinished, ProviderMetrics,
+            ProviderOutput, ProviderStarted, ProviderTokenUsage, ShellActionVerification,
+            UserMessage, VerifiedActionResult,
         },
         model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
     };
@@ -1066,6 +1140,69 @@ mod tests {
         assert!(!rendered.contains("thinking:"));
         assert!(thinking_index < model_index);
         assert!(!rendered.contains("request-1"));
+    }
+
+    #[test]
+    fn conversation_renders_provider_duration_and_token_cost() {
+        let mut conversation = ConversationPane::default();
+        let mut metrics =
+            ProviderMetrics::new("request-1", Some("model-a".to_string()), true, 1, 128);
+        metrics.first_chunk_latency_millis = Some(640);
+        metrics.total_duration_millis = Some(2_430);
+        metrics.usage = Some(ProviderTokenUsage {
+            prompt_tokens: Some(2_200),
+            completion_tokens: Some(24),
+            total_tokens: Some(2_224),
+        });
+
+        conversation.push_event(&Event::ProviderStarted(ProviderStarted::new(
+            "lm-studio",
+            "request-1",
+        )));
+        conversation.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "request-1",
+            ProviderOutput::new("final answer").with_metrics(metrics),
+        )));
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "final answer",
+            AssistantMessageSource::Provider,
+        )));
+
+        let rendered = conversation.render_body();
+
+        assert!(rendered.contains("response 2.4s · first 640ms · ↑2.2k ↓24 · 2.2k tokens"));
+        assert!(rendered.contains("final answer"));
+        assert!(!rendered.contains("request-1"));
+    }
+
+    #[test]
+    fn conversation_hides_provider_duration_when_token_usage_is_missing() {
+        let mut conversation = ConversationPane::default();
+        let mut metrics =
+            ProviderMetrics::new("request-1", Some("model-a".to_string()), true, 1, 128);
+        metrics.first_chunk_latency_millis = Some(640);
+        metrics.total_duration_millis = Some(2_430);
+
+        conversation.push_event(&Event::ProviderStarted(ProviderStarted::new(
+            "lm-studio",
+            "request-1",
+        )));
+        conversation.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "request-1",
+            ProviderOutput::new("final answer").with_metrics(metrics),
+        )));
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "final answer",
+            AssistantMessageSource::Provider,
+        )));
+
+        let rendered = conversation.render_body();
+
+        assert!(!rendered.contains("response 2.4s"));
+        assert!(!rendered.contains("first 640ms"));
+        assert!(rendered.contains("final answer"));
     }
 
     #[test]
