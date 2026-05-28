@@ -24,6 +24,11 @@ impl PlanContract {
     pub fn draft_from_structured_plan(id: impl Into<String>, plan: &StructuredProjectPlan) -> Self {
         let (verification_steps, acceptance_criteria) =
             review_metadata_from_source_plan(&plan.source_plan_path);
+        let verification_checks = verification_checks_from_items(
+            &verification_steps,
+            &acceptance_criteria,
+            &plan.project_root,
+        );
         Self {
             id: id.into(),
             source_plan_path: plan.source_plan_path.clone(),
@@ -35,6 +40,7 @@ impl PlanContract {
                 allowed_files: plan.expected_files.clone(),
                 allowed_command_classes: Vec::new(),
                 verification_steps,
+                verification_checks,
                 acceptance_criteria,
                 revision_reason: None,
             },
@@ -194,28 +200,39 @@ impl PlanContract {
             });
         }
 
-        for item in self
-            .scope
-            .verification_steps
-            .iter()
-            .chain(self.scope.acceptance_criteria.iter())
-        {
-            for referenced_path in referenced_scope_paths(item, &self.project_root) {
-                if !scope_paths.iter().any(|path| **path == referenced_path) {
-                    issues.push(PlanContractDraftIssue {
-                        severity: PlanContractDraftIssueSeverity::Blocking,
-                        kind: PlanContractDraftIssueKind::ReferencedPathMissingFromScope,
-                        path: Some(referenced_path),
-                    });
-                }
-            }
+        let verification_checks = if self.scope.verification_checks.is_empty() {
+            verification_checks_from_items(
+                &self.scope.verification_steps,
+                &self.scope.acceptance_criteria,
+                &self.project_root,
+            )
+        } else {
+            self.scope.verification_checks.clone()
+        };
 
-            for module in invalid_python_module_references(item) {
-                issues.push(PlanContractDraftIssue {
-                    severity: PlanContractDraftIssueSeverity::Blocking,
-                    kind: PlanContractDraftIssueKind::InvalidPythonModuleReference { module },
-                    path: None,
-                });
+        for check in verification_checks {
+            match check.kind {
+                PlanVerificationCheckKind::PathExists { path }
+                | PlanVerificationCheckKind::TestPath { path } => {
+                    if !scope_paths.iter().any(|scope_path| **scope_path == path) {
+                        issues.push(PlanContractDraftIssue {
+                            severity: PlanContractDraftIssueSeverity::Blocking,
+                            kind: PlanContractDraftIssueKind::ReferencedPathMissingFromScope,
+                            path: Some(path),
+                        });
+                    }
+                }
+                PlanVerificationCheckKind::PythonModule { module } => {
+                    if !is_valid_python_module_reference(&module) {
+                        issues.push(PlanContractDraftIssue {
+                            severity: PlanContractDraftIssueSeverity::Blocking,
+                            kind: PlanContractDraftIssueKind::InvalidPythonModuleReference {
+                                module,
+                            },
+                            path: None,
+                        });
+                    }
+                }
             }
         }
 
@@ -329,9 +346,77 @@ fn has_malformed_scope_path_segment(path: &Path) -> bool {
     })
 }
 
+fn verification_checks_from_items(
+    verification_steps: &[String],
+    acceptance_criteria: &[String],
+    project_root: &Path,
+) -> Vec<PlanVerificationCheck> {
+    let mut checks = Vec::new();
+    for item in verification_steps.iter().chain(acceptance_criteria.iter()) {
+        for path in referenced_scope_paths(item, project_root) {
+            let kind = if references_test_command_for_path(item, &path) {
+                PlanVerificationCheckKind::TestPath { path }
+            } else {
+                PlanVerificationCheckKind::PathExists { path }
+            };
+            push_verification_check(&mut checks, kind, item);
+        }
+
+        for module in python_module_references(item) {
+            push_verification_check(
+                &mut checks,
+                PlanVerificationCheckKind::PythonModule { module },
+                item,
+            );
+        }
+    }
+    checks
+}
+
+fn push_verification_check(
+    checks: &mut Vec<PlanVerificationCheck>,
+    kind: PlanVerificationCheckKind,
+    source: &str,
+) {
+    if !checks.iter().any(|check| check.kind == kind) {
+        checks.push(PlanVerificationCheck {
+            kind,
+            source: source.to_string(),
+        });
+    }
+}
+
+fn references_test_command_for_path(item: &str, path: &Path) -> bool {
+    item.split_whitespace()
+        .any(|token| matches!(token, "pytest" | "cargo" | "npm" | "pnpm" | "bun"))
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.starts_with("test_")
+                    || name.ends_with("_test.rs")
+                    || name.ends_with(".test.ts")
+            })
+        || path.components().any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|segment| segment == "tests" || segment == "test")
+        })
+}
+
 fn referenced_scope_paths(text: &str, project_root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    let mut next_token_is_module = false;
     for token in text.split_whitespace().filter_map(clean_reference_token) {
+        if next_token_is_module {
+            next_token_is_module = false;
+            continue;
+        }
+        if token == "-m" {
+            next_token_is_module = true;
+            continue;
+        }
         if !looks_like_plan_path_reference(&token) {
             continue;
         }
@@ -355,11 +440,11 @@ fn referenced_scope_paths(text: &str, project_root: &Path) -> Vec<PathBuf> {
 fn clean_reference_token(token: &str) -> Option<String> {
     let token = token
         .trim()
+        .trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']' | '{' | '}'))
+        .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':'))
         .trim_matches('`')
         .trim_matches('"')
-        .trim_matches('\'')
-        .trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']' | '{' | '}'))
-        .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':'));
+        .trim_matches('\'');
     (!token.is_empty()).then(|| token.to_string())
 }
 
@@ -381,7 +466,7 @@ fn looks_like_plan_path_reference(token: &str) -> bool {
         || file_name.starts_with('.')
 }
 
-fn invalid_python_module_references(text: &str) -> Vec<String> {
+fn python_module_references(text: &str) -> Vec<String> {
     let mut modules = Vec::new();
     let mut tokens = text.split_whitespace().peekable();
     while let Some(token) = tokens.next() {
@@ -391,15 +476,17 @@ fn invalid_python_module_references(text: &str) -> Vec<String> {
         let Some(module) = tokens.next().and_then(clean_reference_token) else {
             continue;
         };
-        if !module
-            .split('.')
-            .all(|segment| is_valid_python_module_segment(segment))
-            && !modules.contains(&module)
-        {
+        if !modules.contains(&module) {
             modules.push(module);
         }
     }
     modules
+}
+
+fn is_valid_python_module_reference(module: &str) -> bool {
+    module
+        .split('.')
+        .all(|segment| is_valid_python_module_segment(segment))
 }
 
 fn is_valid_python_module_segment(segment: &str) -> bool {
@@ -461,9 +548,24 @@ pub struct PlanContractScope {
     pub allowed_files: Vec<PathBuf>,
     pub allowed_command_classes: Vec<PlanCommandClass>,
     pub verification_steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification_checks: Vec<PlanVerificationCheck>,
     pub acceptance_criteria: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanVerificationCheck {
+    pub kind: PlanVerificationCheckKind,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanVerificationCheckKind {
+    PathExists { path: PathBuf },
+    TestPath { path: PathBuf },
+    PythonModule { module: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,6 +696,56 @@ mod tests {
     }
 
     #[test]
+    fn draft_contract_extracts_typed_verification_checks() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-typed-checks-{}",
+            std::process::id()
+        ));
+        let project = root.join("demo");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Plan\n\n```text\ncli.py\ntests/test_cli.py\n```\n\n## Verification\n- Verify that `cli.py` can run with `python -m demo.cli`.\n- Run `pytest tests/test_cli.py`.\n\n## Acceptance Criteria\n- `cli.py` and `tests/test_cli.py` match the approved plan.\n",
+        )
+        .unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("tests")],
+            expected_files: vec![project.join("cli.py"), project.join("tests/test_cli.py")],
+        };
+
+        let contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+
+        assert!(contract.scope.verification_checks.iter().any(|check| {
+            check.kind
+                == PlanVerificationCheckKind::PathExists {
+                    path: project.join("cli.py"),
+                }
+        }));
+        assert!(contract.scope.verification_checks.iter().any(|check| {
+            check.kind
+                == PlanVerificationCheckKind::TestPath {
+                    path: project.join("tests/test_cli.py"),
+                }
+        }));
+        assert!(contract.scope.verification_checks.iter().any(|check| {
+            check.kind
+                == PlanVerificationCheckKind::PythonModule {
+                    module: "demo.cli".to_string(),
+                }
+        }));
+        assert!(contract.review_draft().is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn contract_lifecycle_tracks_approval_revision_completion_and_stale_state() {
         let root =
             std::env::temp_dir().join(format!("elgar-plan-contract-status-{}", std::process::id()));
@@ -715,6 +867,7 @@ mod tests {
                 allowed_files: Vec::new(),
                 allowed_command_classes: Vec::new(),
                 verification_steps: vec!["inspect expected files".to_string()],
+                verification_checks: Vec::new(),
                 acceptance_criteria: vec!["all expected files are present".to_string()],
                 revision_reason: None,
             },
@@ -743,6 +896,7 @@ mod tests {
                 ],
                 allowed_command_classes: Vec::new(),
                 verification_steps: vec!["inspect expected files".to_string()],
+                verification_checks: Vec::new(),
                 acceptance_criteria: vec!["all expected files are present".to_string()],
                 revision_reason: None,
             },
@@ -795,6 +949,7 @@ mod tests {
                 ],
                 allowed_command_classes: Vec::new(),
                 verification_steps: vec!["Ensure all listed files exist.".to_string()],
+                verification_checks: Vec::new(),
                 acceptance_criteria: vec![
                     "The project directory exists with the specified structure.".to_string(),
                 ],
@@ -845,6 +1000,7 @@ mod tests {
                     "Verify that `cli.py` can be executed with `python -m plan-review-copy-test.cli` and displays help.".to_string(),
                     "Run `pytest tests/test_cli.py` to ensure all unit tests pass.".to_string(),
                 ],
+                verification_checks: Vec::new(),
                 acceptance_criteria: vec![
                     "The project contains a clear `README.md` with usage instructions.".to_string(),
                 ],
