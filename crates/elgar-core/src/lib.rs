@@ -11,6 +11,8 @@ mod controller_shell_verify;
 pub mod event;
 pub mod fs;
 pub mod model_runtime;
+#[cfg(test)]
+mod normal_turn_decision;
 mod path_resolution;
 pub mod policy;
 pub mod provider;
@@ -20,8 +22,8 @@ pub mod renderer;
 pub mod router;
 pub mod session;
 pub mod shell;
-mod verified_state_answer;
 #[cfg(test)]
 mod test_env;
+mod verified_state_answer;
 
 pub const CORE_PHILOSOPHY: &str = "Model reasons. Runtime routes. Action gate enforces. Filesystem confirms. UI reports. Tests protect. Extensions wait.";
