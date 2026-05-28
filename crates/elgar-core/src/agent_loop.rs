@@ -743,6 +743,32 @@ fn guard_plan_creation_tool_outputs(
     plan_created_this_turn: bool,
     plan_creation_repair_in_progress: bool,
 ) -> Vec<ResolvedAgentToolOutput> {
+    if plan_creation_repair_in_progress {
+        return outputs
+            .into_iter()
+            .map(|output| match output {
+                ResolvedAgentToolOutput::Guidance(guidance) => {
+                    ResolvedAgentToolOutput::Skipped {
+                        tool_call_id: guidance.tool_call_id,
+                        message: plan_creation_repair_message(session),
+                        visible: false,
+                    }
+                }
+                ResolvedAgentToolOutput::Action(action)
+                    if is_latest_verified_plan_file_action(session, &action.request) =>
+                {
+                    ResolvedAgentToolOutput::Action(action)
+                }
+                ResolvedAgentToolOutput::Action(action) => ResolvedAgentToolOutput::Skipped {
+                    tool_call_id: action.tool_call_id,
+                    message: "Skipped non-plan repair action. Update the same verified plan file before execution.".to_string(),
+                    visible: false,
+                },
+                skipped => skipped,
+            })
+            .collect();
+    }
+
     let plan_roots = outputs
         .iter()
         .filter_map(|output| match output {
@@ -759,13 +785,6 @@ fn guard_plan_creation_tool_outputs(
     outputs
         .into_iter()
         .map(|output| match output {
-            ResolvedAgentToolOutput::Action(action)
-                if plan_creation_repair_in_progress
-                    && (plan_creation_root_for_action(session, &action.request).is_some()
-                        || is_plan_parent_setup_action(session, &action.request, &plan_roots)) =>
-            {
-                ResolvedAgentToolOutput::Action(action)
-            }
             ResolvedAgentToolOutput::Action(action)
                 if plan_created_this_turn || plan_creation_repair_in_progress =>
             {
@@ -808,6 +827,23 @@ fn latest_plan_contract_needs_repair(session: &Session) -> bool {
         .is_some_and(|contract| !contract.review_draft().is_approvable())
 }
 
+fn is_latest_verified_plan_file_action(session: &Session, request: &ActionRequest) -> bool {
+    let Some(contract) = session.latest_plan_contract() else {
+        return false;
+    };
+    let target_path = match request {
+        ActionRequest::CreateFile(action) => &action.target_path,
+        ActionRequest::OverwriteFile(action) => &action.target_path,
+        ActionRequest::CreateDirectory(_)
+        | ActionRequest::PatchFile(_)
+        | ActionRequest::DeleteFile(_)
+        | ActionRequest::MoveFile(_)
+        | ActionRequest::ShellCommand(_) => return false,
+    };
+
+    absolute_session_path(session, target_path) == normalize_path(&contract.source_plan_path)
+}
+
 fn plan_creation_repair_message(session: &Session) -> String {
     let Some(contract) = session.latest_plan_contract() else {
         return "The verified plan draft is not ready. Update the same plan file with a concrete file tree, Verification section, and Acceptance Criteria section before creating implementation files.".to_string();
@@ -824,6 +860,9 @@ fn plan_creation_repair_message(session: &Session) -> String {
         lines.push(format!("- {}", plan_draft_issue_message(issue)));
     }
     lines.push("The plan file must include a concrete fenced file tree or path list, a `Verification` section with bullet checks, and an `Acceptance Criteria` section with bullet criteria.".to_string());
+    lines.push("Do not ask the user whether to rename the project root.".to_string());
+    lines.push("Keep the existing project root and choose valid package or module names inside it, for example by using underscores for Python package paths.".to_string());
+    lines.push("If verification or acceptance criteria reference a file path, include that path in the plan scope.".to_string());
     lines.join("\n")
 }
 
@@ -864,6 +903,7 @@ fn plan_execution_blocked_by_contract_repair_message(session: &Session) -> Strin
         "Update the same verified plan file `{plan_path}` to fix these blockers before creating implementation files."
     ));
     lines.push("Do not create implementation files in this repair step.".to_string());
+    lines.push("Do not ask the user whether to rename the project root; keep the existing project root and choose valid package or module names inside it.".to_string());
     lines.join("\n")
 }
 
@@ -3378,6 +3418,103 @@ mod tests {
             .flatten()
             .any(|message| message.content.contains("Missing expected files")
                 && message.content.contains("demo/src/main.py")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_repair_only_updates_same_plan_file() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-repair-same-plan-only",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("demo-bad")).unwrap();
+        std::fs::write(
+            cwd.join("demo-bad/PLAN.md"),
+            "# Project Plan\n\n```text\ncli.py\nutils.py\n```\n\n## Verification\n- Run `pytest tests/test_cli.py`.\n\n## Acceptance Criteria\n- Running `python -m demo-bad.cli` prints a greeting.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "blocked-exec-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "cli.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Repairing plan.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "rename-question-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::AskGuidance),
+                    arguments: json!({
+                        "question": "Should I rename the project folder to demo_bad?"
+                    }),
+                    assistant_summary: None,
+                },
+                RawModelToolCall {
+                    id: "wrong-folder-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "demo_bad" }),
+                    assistant_summary: Some("create replacement folder".to_string()),
+                },
+                RawModelToolCall {
+                    id: "repair-plan-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::OverwriteFile),
+                    arguments: json!({
+                        "target_path": "demo-bad/PLAN.md",
+                        "contents": "# Project Plan\n\n```text\ncli.py\nutils.py\ntests/test_cli.py\n```\n\n## Verification\n- `cli.py`, `utils.py`, and `tests/test_cli.py` exist.\n- Run `pytest tests/test_cli.py`.\n\n## Acceptance Criteria\n- Running `python cli.py --name Alice` prints `Hello, Alice!`.\n- The test suite passes.\n"
+                    }),
+                    assistant_summary: Some("repair same plan file".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Plan revised."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("demo-bad/PLAN.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "demo-bad/PLAN.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(!cwd.join("demo_bad").exists());
+        assert!(!cwd.join("demo-bad/cli.py").exists());
+        assert!(std::fs::read_to_string(cwd.join("demo-bad/PLAN.md"))
+            .unwrap()
+            .contains("tests/test_cli.py"));
+        assert!(session
+            .latest_plan_contract()
+            .is_some_and(|contract| contract.review_draft().is_approvable()));
+        assert_eq!(session.actions().len(), 1);
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.content.contains("Should I rename the project folder")
+        )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
