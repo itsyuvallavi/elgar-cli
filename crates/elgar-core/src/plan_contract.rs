@@ -92,6 +92,98 @@ impl PlanContract {
             .any(|allowed| allowed == path)
     }
 
+    pub fn review_draft(&self) -> PlanContractDraftReview {
+        let mut issues = Vec::new();
+        let status = self.runtime_status();
+
+        if status != PlanContractStatus::Draft {
+            issues.push(PlanContractDraftIssue {
+                severity: PlanContractDraftIssueSeverity::Blocking,
+                kind: PlanContractDraftIssueKind::ContractNotDraft { status },
+                path: None,
+            });
+        }
+
+        if !self.source_plan_path.is_file() {
+            issues.push(PlanContractDraftIssue {
+                severity: PlanContractDraftIssueSeverity::Blocking,
+                kind: PlanContractDraftIssueKind::MissingSourcePlan,
+                path: Some(self.source_plan_path.clone()),
+            });
+        } else if !self.source_plan_path.starts_with(&self.project_root) {
+            issues.push(PlanContractDraftIssue {
+                severity: PlanContractDraftIssueSeverity::Blocking,
+                kind: PlanContractDraftIssueKind::SourcePlanOutsideProjectRoot,
+                path: Some(self.source_plan_path.clone()),
+            });
+        }
+
+        if !self.project_root.is_dir() {
+            issues.push(PlanContractDraftIssue {
+                severity: PlanContractDraftIssueSeverity::Blocking,
+                kind: PlanContractDraftIssueKind::MissingProjectRoot,
+                path: Some(self.project_root.clone()),
+            });
+        }
+
+        let scope_paths: Vec<&PathBuf> = self
+            .scope
+            .allowed_files
+            .iter()
+            .chain(self.scope.allowed_directories.iter())
+            .collect();
+
+        if scope_paths.is_empty() {
+            issues.push(PlanContractDraftIssue {
+                severity: PlanContractDraftIssueSeverity::Blocking,
+                kind: PlanContractDraftIssueKind::EmptyExecutableScope,
+                path: None,
+            });
+        }
+
+        for path in &scope_paths {
+            if !path.starts_with(&self.project_root) {
+                issues.push(PlanContractDraftIssue {
+                    severity: PlanContractDraftIssueSeverity::Blocking,
+                    kind: PlanContractDraftIssueKind::PathOutsideProjectRoot,
+                    path: Some((*path).clone()),
+                });
+            }
+        }
+
+        for (index, path) in scope_paths.iter().enumerate() {
+            if scope_paths
+                .iter()
+                .skip(index + 1)
+                .any(|other| other == path)
+            {
+                issues.push(PlanContractDraftIssue {
+                    severity: PlanContractDraftIssueSeverity::Blocking,
+                    kind: PlanContractDraftIssueKind::DuplicateScopePath,
+                    path: Some((*path).clone()),
+                });
+            }
+        }
+
+        if self.scope.verification_steps.is_empty() {
+            issues.push(PlanContractDraftIssue {
+                severity: PlanContractDraftIssueSeverity::Blocking,
+                kind: PlanContractDraftIssueKind::MissingVerificationSteps,
+                path: None,
+            });
+        }
+
+        if self.scope.acceptance_criteria.is_empty() {
+            issues.push(PlanContractDraftIssue {
+                severity: PlanContractDraftIssueSeverity::Blocking,
+                kind: PlanContractDraftIssueKind::MissingAcceptanceCriteria,
+                path: None,
+            });
+        }
+
+        PlanContractDraftReview { issues }
+    }
+
     pub fn validate_path_execution(&self, path: &Path) -> Result<(), PlanContractViolation> {
         match self.runtime_status() {
             PlanContractStatus::Approved | PlanContractStatus::Executing => {}
@@ -118,6 +210,47 @@ impl PlanContract {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanContractDraftReview {
+    pub issues: Vec<PlanContractDraftIssue>,
+}
+
+impl PlanContractDraftReview {
+    pub fn is_approvable(&self) -> bool {
+        !self
+            .issues
+            .iter()
+            .any(|issue| issue.severity == PlanContractDraftIssueSeverity::Blocking)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanContractDraftIssue {
+    pub severity: PlanContractDraftIssueSeverity,
+    pub kind: PlanContractDraftIssueKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanContractDraftIssueSeverity {
+    Blocking,
+    Advisory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanContractDraftIssueKind {
+    ContractNotDraft { status: PlanContractStatus },
+    MissingSourcePlan,
+    MissingProjectRoot,
+    SourcePlanOutsideProjectRoot,
+    EmptyExecutableScope,
+    PathOutsideProjectRoot,
+    DuplicateScopePath,
+    MissingVerificationSteps,
+    MissingAcceptanceCriteria,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,6 +397,129 @@ mod tests {
 
         fs::remove_file(project.join("src/main.py")).unwrap();
         assert_eq!(contract.runtime_status(), PlanContractStatus::Stale);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_requires_verification_and_acceptance_before_approval() {
+        let root =
+            std::env::temp_dir().join(format!("elgar-plan-contract-review-{}", std::process::id()));
+        let project = root.join("demo");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(&plan_path, "# Plan\n").unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![project.join("src/main.py")],
+        };
+        let mut contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+
+        let review = contract.review_draft();
+        assert!(!review.is_approvable());
+        assert!(review
+            .issues
+            .iter()
+            .any(|issue| issue.kind == PlanContractDraftIssueKind::MissingVerificationSteps));
+        assert!(review
+            .issues
+            .iter()
+            .any(|issue| issue.kind == PlanContractDraftIssueKind::MissingAcceptanceCriteria));
+
+        contract
+            .scope
+            .verification_steps
+            .push("run the CLI help command".to_string());
+        contract
+            .scope
+            .acceptance_criteria
+            .push("src/main.py and requirements.txt match the approved plan".to_string());
+
+        assert!(contract.review_draft().is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_blocks_empty_duplicate_and_out_of_root_scope() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-review-invalid-{}",
+            std::process::id()
+        ));
+        let project = root.join("demo");
+        let other = root.join("other");
+        let plan_path = project.join("plan.md");
+        let external_plan_path = other.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(&plan_path, "# Plan\n").unwrap();
+        fs::write(&external_plan_path, "# Other plan\n").unwrap();
+
+        let empty_contract = PlanContract {
+            id: "contract-empty".to_string(),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            source_action_id: None,
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: Vec::new(),
+                allowed_files: Vec::new(),
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec!["inspect expected files".to_string()],
+                acceptance_criteria: vec!["all expected files are present".to_string()],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+        let empty_review = empty_contract.review_draft();
+        assert!(!empty_review.is_approvable());
+        assert!(empty_review
+            .issues
+            .iter()
+            .any(|issue| issue.kind == PlanContractDraftIssueKind::EmptyExecutableScope));
+
+        let duplicate_path = project.join("src/main.py");
+        let scoped_contract = PlanContract {
+            id: "contract-scoped".to_string(),
+            source_plan_path: external_plan_path.clone(),
+            project_root: project,
+            source_action_id: None,
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: Vec::new(),
+                allowed_files: vec![
+                    duplicate_path.clone(),
+                    duplicate_path,
+                    other.join("outside.py"),
+                ],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec!["inspect expected files".to_string()],
+                acceptance_criteria: vec!["all expected files are present".to_string()],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+        let scoped_review = scoped_contract.review_draft();
+        assert!(!scoped_review.is_approvable());
+        assert!(scoped_review.issues.iter().any(|issue| {
+            issue.kind == PlanContractDraftIssueKind::SourcePlanOutsideProjectRoot
+                && issue.path.as_ref() == Some(&external_plan_path)
+        }));
+        assert!(scoped_review
+            .issues
+            .iter()
+            .any(|issue| issue.kind == PlanContractDraftIssueKind::DuplicateScopePath));
+        assert!(scoped_review
+            .issues
+            .iter()
+            .any(|issue| issue.kind == PlanContractDraftIssueKind::PathOutsideProjectRoot));
 
         let _ = fs::remove_dir_all(root);
     }
