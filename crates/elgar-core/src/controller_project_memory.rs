@@ -115,12 +115,15 @@ fn extract_expected_plan_paths(
     let mut expected_directories = Vec::new();
     let mut expected_files = Vec::new();
     let mut tree_stack: Vec<PathBuf> = Vec::new();
+    let mut plain_indent_stack: Vec<(usize, PathBuf)> = Vec::new();
     let lines = contents.lines().collect::<Vec<_>>();
 
     for (index, line) in lines.iter().enumerate() {
         if let Some(root_path) = tree_root_path_from_line(line) {
             tree_stack.clear();
             tree_stack.push(root_path.clone());
+            plain_indent_stack.clear();
+            plain_indent_stack.push((0, root_path.clone()));
             push_plan_path(
                 project_root,
                 root_path,
@@ -134,6 +137,21 @@ fn extract_expected_plan_paths(
         let infer_directory =
             tree_line_depth(line).is_some_and(|depth| next_tree_depth(&lines, index) > Some(depth));
         if let Some((path, kind)) = tree_path_from_line(line, &mut tree_stack, infer_directory) {
+            push_plan_path(
+                project_root,
+                path,
+                kind,
+                &mut expected_directories,
+                &mut expected_files,
+            );
+            continue;
+        }
+
+        let infer_plain_directory = plain_line_indent(line)
+            .is_some_and(|indent| next_plain_indent(&lines, index) > Some(indent));
+        if let Some((path, kind)) =
+            plain_indented_path_from_line(line, &mut plain_indent_stack, infer_plain_directory)
+        {
             push_plan_path(
                 project_root,
                 path,
@@ -233,6 +251,51 @@ fn tree_path_from_line(
     }
 
     Some((path, kind))
+}
+
+fn plain_indented_path_from_line(
+    line: &str,
+    stack: &mut Vec<(usize, PathBuf)>,
+    infer_directory: bool,
+) -> Option<(PathBuf, PlanPathKind)> {
+    let indent = plain_line_indent(line)?;
+    let (name, kind) = clean_plan_path_token_with_inference(line.trim(), infer_directory)?;
+
+    while stack
+        .last()
+        .is_some_and(|(stack_indent, _)| *stack_indent >= indent)
+    {
+        stack.pop();
+    }
+
+    let parent = stack
+        .last()
+        .map(|(_, path)| path.clone())
+        .unwrap_or_default();
+    let path = parent.join(&name);
+
+    if matches!(kind, PlanPathKind::Directory) {
+        stack.push((indent, path.clone()));
+    }
+
+    Some((path, kind))
+}
+
+fn plain_line_indent(line: &str) -> Option<usize> {
+    if tree_marker(line).is_some() {
+        return None;
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed == line {
+        return None;
+    }
+    Some(line.len().saturating_sub(line.trim_start().len()))
+}
+
+fn next_plain_indent(lines: &[&str], index: usize) -> Option<usize> {
+    lines
+        .get(index + 1)
+        .and_then(|line| plain_line_indent(line))
 }
 
 fn tree_marker(line: &str) -> Option<(usize, usize)> {
@@ -725,6 +788,56 @@ mod tests {
         assert!(structured
             .expected_files
             .contains(&root.join("LivePlan/requirements.txt")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn records_plain_indented_tree_children_under_directory_root() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plain-indented-structured-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("LivePlan")).unwrap();
+        fs::write(
+            root.join("LivePlan/plan.md"),
+            "# Project Plan\n\n```text\nsrc/\n  main.py\nrequirements.txt\n```\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("LivePlan/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("LivePlan/plan.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified live plan should create structured plan state");
+        assert!(structured
+            .expected_directories
+            .contains(&root.join("LivePlan/src")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("LivePlan/src/main.py")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("LivePlan/requirements.txt")));
+        assert!(!structured
+            .expected_files
+            .contains(&root.join("LivePlan/main.py")));
 
         let _ = fs::remove_dir_all(&root);
     }
