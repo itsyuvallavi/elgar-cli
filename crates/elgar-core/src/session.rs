@@ -150,7 +150,10 @@ impl Session {
     }
 
     pub(crate) fn record_structured_project_plan(&mut self, plan: StructuredProjectPlan) {
+        let contract_id = plan_contract_id_from_structured_plan(&plan);
+        let contract = PlanContract::draft_from_structured_plan(contract_id, &plan);
         self.project_memory.remember_structured_plan(plan);
+        self.record_plan_contract(contract);
     }
 
     pub fn record_plan_contract(&mut self, contract: PlanContract) {
@@ -188,6 +191,13 @@ impl Session {
         self.project_memory
             .remove_structured_plan_for_action(action_id);
     }
+}
+
+fn plan_contract_id_from_structured_plan(plan: &StructuredProjectPlan) -> String {
+    plan.source_action_id
+        .as_ref()
+        .map(|source_action_id| format!("plan-contract:{source_action_id}"))
+        .unwrap_or_else(|| format!("plan-contract:{}", plan.source_plan_path.to_string_lossy()))
 }
 
 /// A data-only record of an action as known by the controller.
@@ -640,6 +650,47 @@ mod tests {
                 .map(PlanContract::runtime_status),
             Some(PlanContractStatus::Approved)
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recording_structured_plan_creates_draft_plan_contract() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-session-plan-contract-draft-{}",
+            std::process::id()
+        ));
+        let project = root.join("demo");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(&plan_path, "# Plan\n").unwrap();
+        let mut session = Session::new("session-plan-contract-draft", &root, &root);
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path.clone(),
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![project.join("src/main.py")],
+        };
+
+        session.record_structured_project_plan(plan);
+
+        let contract = session
+            .latest_plan_contract()
+            .expect("structured plan should create a draft contract");
+        assert_eq!(contract.id, "plan-contract:action-plan");
+        assert_eq!(contract.status, PlanContractStatus::Draft);
+        assert_eq!(contract.source_plan_path, plan_path);
+        assert_eq!(contract.project_root, project);
+        assert_eq!(contract.source_action_id.as_deref(), Some("action-plan"));
+        assert!(contract
+            .scope
+            .allowed_files
+            .contains(&project.join("src/main.py")));
+        assert!(session.project_memory().latest_structured_plan().is_some());
 
         let _ = fs::remove_dir_all(root);
     }
