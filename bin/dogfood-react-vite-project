@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+project_dir="react-vite-project-test-$stamp"
+input_file="$playground/.dogfood-react-vite-project-$stamp.in"
+output_file="$playground/.dogfood-react-vite-project-$stamp.out"
+final_plan_file="$playground/.dogfood-react-vite-project-$stamp.final-plan"
+timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-240}"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+Create a complete small but real React Vite project inside a new folder named $project_dir. First create a project plan, then execute it. The app should be a task board with columns for Todo, In Progress, and Done. Users should be able to add tasks, move tasks between columns, and delete tasks. Include all files needed for npm run dev: package.json with scripts, index.html, src/main.jsx or src/main.tsx, src/App.jsx or src/App.tsx, CSS, Vite config if useful, README, and tests or a clear test setup. Do not leave placeholder-only files.
+/plan
+execute the plan
+/plan
+complete all missing files needed to run npm run dev
+/plan
+/reasoning
+/exit
+EOF
+
+echo "==> running live React/Vite project dogfood"
+set +e
+(
+  cd "$playground"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" elgar tui <"$input_file"
+  else
+    elgar tui <"$input_file"
+  fi
+) | tee "$output_file"
+run_status=${PIPESTATUS[0]}
+set -e
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+[[ "$run_status" -eq 0 ]] || fail "elgar tui exited nonzero or timed out after ${timeout_seconds}s"
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+
+project_path="$playground/$project_dir"
+[[ -d "$project_path" ]] || fail "missing project directory $project_dir"
+find "$project_path" -maxdepth 1 -iname '*plan*.md' -type f | grep -q . \
+  || fail "missing plan markdown file"
+
+awk '
+  $0 == "Plan Preview" { capture = 1; block = $0 "\n"; next }
+  capture && $0 == "" { latest = block; capture = 0; next }
+  capture { block = block $0 "\n" }
+  END {
+    if (capture) {
+      latest = block
+    }
+    printf "%s", latest
+  }
+' "$output_file" >"$final_plan_file"
+
+grep -q "Plan Preview" "$final_plan_file" || fail "final plan preview was empty"
+grep -q "contract review:" "$final_plan_file" || fail "plan contract review missing"
+grep -q "verification:" "$final_plan_file" || fail "verification section was not recognized"
+grep -q "acceptance criteria:" "$final_plan_file" || fail "acceptance criteria section was not recognized"
+
+for junk in 'scripts": {' 'dependencies": {' 'devDependencies": {' '<head>' '<body>' 'return ('; do
+  grep -qF "$junk" "$final_plan_file" && fail "plan preview contains snippet path: $junk"
+done
+
+[[ -f "$project_path/package.json" ]] || fail "missing package.json"
+[[ -f "$project_path/index.html" ]] || fail "missing root index.html"
+find "$project_path/src" -maxdepth 1 -type f \( -name 'main.jsx' -o -name 'main.tsx' \) | grep -q . \
+  || fail "missing src/main.jsx or src/main.tsx"
+find "$project_path/src" -maxdepth 1 -type f \( -name 'App.jsx' -o -name 'App.tsx' \) | grep -q . \
+  || fail "missing src/App.jsx or src/App.tsx"
+find "$project_path/src" -type f \( -name '*.css' -o -name '*.scss' \) | grep -q . \
+  || fail "missing CSS file under src"
+[[ -f "$project_path/README.md" ]] || fail "missing README.md"
+
+grep -q '"scripts"' "$project_path/package.json" || fail "package.json missing scripts"
+grep -q '"dev"' "$project_path/package.json" || fail "package.json missing dev script"
+grep -q '"vite"' "$project_path/package.json" || fail "package.json does not use vite"
+grep -q '"react"' "$project_path/package.json" || fail "package.json missing react dependency"
+grep -q '"react-dom"' "$project_path/package.json" || fail "package.json missing react-dom dependency"
+grep -Eq '"build"|"preview"|"test"' "$project_path/package.json" \
+  || fail "package.json missing build, preview, or test script"
+
+grep -q "src/main." "$project_path/index.html" || fail "index.html does not load src/main"
+grep -Eq "Todo|In Progress|Done|task|Task" "$project_path/src/"*.{jsx,tsx} \
+  || fail "React source does not appear to implement task board UI"
+
+if grep -q -- "- missing playground/$project_dir/" "$final_plan_file"; then
+  fail "final plan preview still has missing expected paths"
+fi
+
+grep -q '^Reasoning$' "$output_file" || fail "reasoning output missing"
+grep -q '^route:' "$output_file" || fail "reasoning route missing"
+grep -q '^runtime checks:' "$output_file" || fail "reasoning runtime checks missing"
+
+echo "==> dogfood passed"
+echo "project: $project_path"
+echo "transcript: $output_file"
