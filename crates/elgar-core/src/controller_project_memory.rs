@@ -333,7 +333,16 @@ fn tree_root_path_from_line(line: &str) -> Option<PathBuf> {
 }
 
 fn tree_depth(prefix: &str) -> usize {
-    prefix.chars().count() / 4
+    let pipe_depth = prefix.chars().filter(|ch| *ch == '│').count();
+    if pipe_depth == 0 {
+        return prefix.chars().count() / 4;
+    }
+
+    let trailing_indent_after_last_pipe = prefix
+        .rsplit_once('│')
+        .map(|(_, suffix)| suffix.chars().count() / 4)
+        .unwrap_or(0);
+    pipe_depth + trailing_indent_after_last_pipe
 }
 
 fn inline_path_from_line(line: &str) -> Option<(PathBuf, PlanPathKind)> {
@@ -1089,6 +1098,73 @@ mod tests {
                     .chain(structured.expected_files.iter())
                     .any(|path| path.to_string_lossy().contains(junk)),
                 "unexpected snippet path {junk}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extracts_single_dash_unicode_tree_under_expected_parents() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-single-dash-react-tree-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("react-vite-plan-test-manual")).unwrap();
+        fs::write(
+            root.join("react-vite-plan-test-manual/plan.md"),
+            "# Project Plan\n\n## File Tree\n```\nreact-vite-plan-test-manual/\n├─ package.json\n├─ src/\n│  ├─ main.jsx\n│  ├─ App.jsx\n│  ├─ components/\n│  │  ├─ TaskBoard.jsx\n│  │  ├─ Column.jsx\n│  │  └─ TaskItem.jsx\n│  ├─ styles/\n│  │  └─ app.css\n│  └─ tests/\n│     ├─ App.test.jsx\n│     └─ setupTests.js\n└─ README.md\n```\n\n## Verification Approach\n1. Run `npm run dev`.\n\n## Acceptance Criteria\n- The board renders.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("react-vite-plan-test-manual/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root
+                .join("react-vite-plan-test-manual/plan.md")
+                .display()
+                .to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified React plan should create structured plan state");
+        let project = root.join("react-vite-plan-test-manual");
+        for directory in ["src", "src/components", "src/styles", "src/tests"] {
+            assert!(
+                structured
+                    .expected_directories
+                    .contains(&project.join(directory)),
+                "missing directory {directory}"
+            );
+        }
+        for file in [
+            "package.json",
+            "src/main.jsx",
+            "src/App.jsx",
+            "src/components/TaskBoard.jsx",
+            "src/components/Column.jsx",
+            "src/components/TaskItem.jsx",
+            "src/styles/app.css",
+            "src/tests/App.test.jsx",
+            "src/tests/setupTests.js",
+            "README.md",
+        ] {
+            assert!(
+                structured.expected_files.contains(&project.join(file)),
+                "missing file {file}"
             );
         }
 

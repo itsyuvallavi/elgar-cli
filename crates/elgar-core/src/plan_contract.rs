@@ -376,7 +376,15 @@ fn normalize_markdown_heading(heading: &str) -> String {
 }
 
 fn markdown_heading_matches(current: &str, expected: &str) -> bool {
-    current == expected || (expected == "verification" && current == "verification steps")
+    current == expected
+        || (expected == "verification"
+            && matches!(
+                current,
+                "verification steps"
+                    | "verification approach"
+                    | "verification strategy"
+                    | "verification checks"
+            ))
 }
 
 fn markdown_list_item_text(line: &str) -> Option<String> {
@@ -861,6 +869,46 @@ mod tests {
         assert_eq!(
             contract.scope.acceptance_criteria,
             vec!["The CLI supports add, list, complete, and delete."]
+        );
+        assert!(contract.review_draft().is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_contract_accepts_verification_approach_heading() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-verification-approach-{}",
+            std::process::id()
+        ));
+        let project = root.join("react-vite-plan-test");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n```text\npackage.json\nsrc/main.jsx\n```\n\n## Verification Approach\n1. Run `npm run dev`.\n2. Run `npm test`.\n\n## Acceptance Criteria\n- The Vite app starts successfully.\n",
+        )
+        .unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![project.join("package.json"), project.join("src/main.jsx")],
+        };
+
+        let contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+
+        assert_eq!(
+            contract.scope.verification_steps,
+            vec!["Run `npm run dev`.", "Run `npm test`."]
+        );
+        assert_eq!(
+            contract.scope.acceptance_criteria,
+            vec!["The Vite app starts successfully."]
         );
         assert!(contract.review_draft().is_approvable());
 
