@@ -36,7 +36,7 @@ pub(crate) fn verified_action_success_message(
 ) -> String {
     match &action.request {
         ActionRequest::CreateDirectory(create_directory) => {
-            let path = resolve_project_path(&session.project_root, &create_directory.target_path);
+            let path = resolve_project_path(&session.cwd, &create_directory.target_path);
             format!("Created {}.", user_display_path(&path))
         }
         ActionRequest::ShellCommand(shell_command) => {
@@ -220,7 +220,7 @@ fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::truth_guard_visible_message;
+    use super::{truth_guard_visible_message, verified_action_success_message};
     use crate::{
         action::{Action, ActionRequest, CreateDirectoryAction, FileActionVerification},
         event::VerifiedActionResult,
@@ -248,6 +248,26 @@ mod tests {
         assert_eq!(
             truth_guard_visible_message(&session, "No folder was created.".to_string()),
             "Filesystem truth: demo was created and verified."
+        );
+    }
+
+    #[test]
+    fn directory_success_message_resolves_relative_target_from_session_cwd() {
+        let session = Session::new("session-1", "/repo", "/repo/playground");
+        let action = Action::proposed(
+            "action-1",
+            ActionRequest::CreateDirectory(CreateDirectoryAction {
+                target_path: "demo/src".into(),
+            }),
+            "create directory",
+        );
+        let result = VerifiedActionResult::File(FileActionVerification::DirectoryCreated {
+            path: "/repo/playground/demo/src".to_string(),
+        });
+
+        assert_eq!(
+            verified_action_success_message(&session, &action, &result),
+            "Created /repo/playground/demo/src."
         );
     }
 }

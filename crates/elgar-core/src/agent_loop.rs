@@ -90,7 +90,7 @@ const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
     "Answer normally in prose. Do not claim filesystem or shell changes unless they were already reported by verified tool results."
 );
 
-const MAX_AGENT_TOOL_ROUNDS: usize = 6;
+const MAX_AGENT_TOOL_ROUNDS: usize = 16;
 const TOOL_COMMAND_PREFIX: &str = "/tool";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1750,9 +1750,13 @@ fn tool_validation_repair_message(
     }
 
     let tool = error.tool_name.as_deref().unwrap_or("tool");
-    let argument = error.argument.as_deref()?;
+    let repair_instruction = error
+        .argument
+        .as_deref()
+        .map(|argument| format!("with `{argument}` included"))
+        .unwrap_or_else(|| "with all required arguments included".to_string());
     Some(format!(
-        "{} Use the original user request and verified session context to send a corrected `{tool}` tool call with `{argument}` included. No filesystem action was applied.",
+        "{} Use the original user request and verified session context to send a corrected `{tool}` tool call {repair_instruction}. No filesystem action was applied.",
         friendly_tool_validation_error(error)
     ))
 }
@@ -3652,6 +3656,237 @@ mod tests {
             .runtime_checks
             .iter()
             .any(|line| line == "plan execution paths detected")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_execution_repairs_malformed_tool_call_without_raw_error() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-repairs-malformed",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("demo")).unwrap();
+        std::fs::write(
+            cwd.join("demo/plan.md"),
+            "# Project Plan\n\n```text\nsrc/main.py\n```\n\n## Verification\n- `src/main.py` exists.\n\n## Acceptance Criteria\n- Expected file exists under the plan root.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating directory.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "malformed-dir-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!("src"),
+                    assistant_summary: Some("create src".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Creating file.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "repaired-file-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: Some("create main".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("demo/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "demo/plan.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("demo/src/main.py")).unwrap(),
+            "print('hello')\n"
+        );
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::Error(error)
+                if error.message.contains("tool call is incomplete or malformed")
+        )));
+        assert!(provider
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(|message| message
+                .content
+                .contains("send a corrected `create_directory` tool call")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_execution_can_complete_many_expected_paths_one_per_round() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-many-rounds",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("demo")).unwrap();
+        std::fs::write(
+            cwd.join("demo/plan.md"),
+            "# Project Plan\n\n```text\nsrc/\n  main.py\ntests/\n  __init__.py\n  test_main.py\nREADME.md\nrequirements.txt\n.gitignore\n```\n\n## Verification\n- All listed files and directories exist.\n\n## Acceptance Criteria\n- The complete expected tree is present.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Create src.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "many-src".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "src" }),
+                    assistant_summary: Some("create src".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Create tests.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "many-tests".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "tests" }),
+                    assistant_summary: Some("create tests".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Create readme.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "many-readme".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "README.md",
+                        "contents": "# Demo\n"
+                    }),
+                    assistant_summary: Some("create readme".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Create main.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "many-main".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: Some("create main".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Create test init.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "many-test-init".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "tests/__init__.py",
+                        "contents": ""
+                    }),
+                    assistant_summary: Some("create test init".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Create test file.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "many-test-main".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "tests/test_main.py",
+                        "contents": "def test_smoke():\n    assert True\n"
+                    }),
+                    assistant_summary: Some("create test".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Create requirements.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "many-requirements".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "requirements.txt",
+                        "contents": ""
+                    }),
+                    assistant_summary: Some("create requirements".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Create gitignore.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "many-gitignore".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": ".gitignore",
+                        "contents": "__pycache__/\n"
+                    }),
+                    assistant_summary: Some("create gitignore".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("demo/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "demo/plan.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        for path in [
+            "demo/src/main.py",
+            "demo/tests/__init__.py",
+            "demo/tests/test_main.py",
+            "demo/README.md",
+            "demo/requirements.txt",
+            "demo/.gitignore",
+        ] {
+            assert!(cwd.join(path).is_file(), "missing {path}");
+        }
+        assert_eq!(
+            session
+                .project_memory()
+                .latest_structured_plan()
+                .expect("plan should remain recorded")
+                .runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
