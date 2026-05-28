@@ -335,6 +335,7 @@ where
         let starts_plan_execution = plan_execution_batch && !plan_execution_in_progress;
         plan_execution_in_progress |= plan_execution_batch;
         if plan_execution_batch {
+            session.record_reasoning_route("plan_execution");
             session.push_reasoning_runtime_check("plan execution paths detected");
         }
         let resolved_outputs = guard_plan_execution_tool_outputs(
@@ -3542,6 +3543,16 @@ mod tests {
             .any(|message| message
                 .content
                 .contains("Skipped tool call because it does not create a missing expected path")));
+        assert_eq!(
+            session
+                .latest_reasoning_trace()
+                .and_then(|trace| trace.route.as_deref()),
+            Some("plan_execution")
+        );
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line == "plan execution paths detected")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
