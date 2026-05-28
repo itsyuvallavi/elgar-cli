@@ -360,7 +360,7 @@ fn clean_plan_path_token_with_inference(
     token: &str,
     infer_directory: bool,
 ) -> Option<(PathBuf, PlanPathKind)> {
-    let token = strip_markdown_list_marker(token)
+    let token = strip_inline_plan_comment(strip_markdown_list_marker(token))
         .trim()
         .trim_matches('`')
         .trim_matches('"')
@@ -386,6 +386,13 @@ fn clean_plan_path_token_with_inference(
     };
 
     Some((PathBuf::from(token.trim_end_matches('/')), kind))
+}
+
+fn strip_inline_plan_comment(token: &str) -> &str {
+    token
+        .split_once(" #")
+        .map(|(path, _)| path)
+        .unwrap_or(token)
 }
 
 fn strip_markdown_list_marker(token: &str) -> &str {
@@ -918,6 +925,75 @@ mod tests {
             .iter()
             .chain(structured.expected_directories.iter())
             .any(|path| path.to_string_lossy().contains("/- ")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extracts_realistic_tree_paths_with_inline_comments() {
+        let root =
+            std::env::temp_dir().join(format!("elgar-realistic-tree-plan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("advanced-plan-test")).unwrap();
+        fs::write(
+            root.join("advanced-plan-test/plan.md"),
+            "# Project Plan: Task Tracker CLI\n\n## 1. File Tree\n```text\nadvanced-plan-test/\n├── src/\n│   ├── tasktracker_cli/\n│   │   ├── __init__.py\n│   │   ├── cli.py          # Argument parsing & command dispatch\n│   │   ├── storage.py      # JSON file storage helpers\n│   │   └── tasks.py        # Core task model & business logic\n├── tests/\n│   ├── __init__.py\n│   ├── test_cli.py         # CLI command integration tests\n│   └── test_storage.py     # Storage module unit tests\n├── README.md\n├── pyproject.toml\n└── plan.md                 # This project plan file\n```\n\n## 2. Verification Steps\n- Run `pytest tests/`.\n\n## 3. Acceptance Criteria\n- The CLI supports add, list, complete, and delete.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("advanced-plan-test/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root
+                .join("advanced-plan-test/plan.md")
+                .display()
+                .to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified realistic plan should create structured plan state");
+        let project = root.join("advanced-plan-test");
+        for directory in ["src", "src/tasktracker_cli", "tests"] {
+            assert!(
+                structured
+                    .expected_directories
+                    .contains(&project.join(directory)),
+                "missing directory {directory}"
+            );
+        }
+        for file in [
+            "src/tasktracker_cli/__init__.py",
+            "src/tasktracker_cli/cli.py",
+            "src/tasktracker_cli/storage.py",
+            "src/tasktracker_cli/tasks.py",
+            "tests/__init__.py",
+            "tests/test_cli.py",
+            "tests/test_storage.py",
+            "README.md",
+            "pyproject.toml",
+            "plan.md",
+        ] {
+            assert!(
+                structured.expected_files.contains(&project.join(file)),
+                "missing file {file}"
+            );
+        }
+        assert!(!structured
+            .expected_files
+            .iter()
+            .any(|path| path.to_string_lossy().contains('#')));
 
         let _ = fs::remove_dir_all(&root);
     }

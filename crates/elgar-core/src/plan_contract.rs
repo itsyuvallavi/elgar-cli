@@ -311,7 +311,7 @@ fn extract_markdown_section_items(contents: &str, heading: &str) -> Vec<String> 
 
     for line in contents.lines() {
         if let Some(current_heading) = markdown_heading_text(line) {
-            in_section = current_heading == heading;
+            in_section = markdown_heading_matches(&current_heading, heading);
             continue;
         }
 
@@ -334,7 +334,24 @@ fn markdown_heading_text(line: &str) -> Option<String> {
     if !trimmed.starts_with('#') {
         return None;
     }
-    Some(trimmed.trim_start_matches('#').trim().to_ascii_lowercase())
+    Some(normalize_markdown_heading(
+        trimmed.trim_start_matches('#').trim(),
+    ))
+}
+
+fn normalize_markdown_heading(heading: &str) -> String {
+    let heading = heading.trim().trim_end_matches(':').trim();
+    let heading = heading
+        .split_once(". ")
+        .filter(|(prefix, _)| !prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit()))
+        .map(|(_, suffix)| suffix)
+        .unwrap_or(heading);
+
+    heading.to_ascii_lowercase()
+}
+
+fn markdown_heading_matches(current: &str, expected: &str) -> bool {
+    current == expected || (expected == "verification" && current == "verification steps")
 }
 
 fn markdown_list_item_text(line: &str) -> Option<String> {
@@ -772,6 +789,46 @@ mod tests {
         assert_eq!(
             contract.scope.acceptance_criteria,
             vec!["The expected file exists."]
+        );
+        assert!(contract.review_draft().is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_contract_extracts_numbered_review_section_headings() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-numbered-review-sections-{}",
+            std::process::id()
+        ));
+        let project = root.join("advanced-plan-test");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n```text\ncli.py\n```\n\n## 2. Verification Steps\n- Run `python cli.py --help`.\n\n## 3. Acceptance Criteria\n- The CLI supports add, list, complete, and delete.\n",
+        )
+        .unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![],
+            expected_files: vec![project.join("cli.py")],
+        };
+
+        let contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+
+        assert_eq!(
+            contract.scope.verification_steps,
+            vec!["Run `python cli.py --help`."]
+        );
+        assert_eq!(
+            contract.scope.acceptance_criteria,
+            vec!["The CLI supports add, list, complete, and delete."]
         );
         assert!(contract.review_draft().is_approvable());
 

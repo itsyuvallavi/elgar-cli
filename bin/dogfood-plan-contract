@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+project_dir="plan-contract-test-$stamp"
+renamed_project_dir="${project_dir//-/_}"
+input_file="$playground/.dogfood-plan-contract-$stamp.in"
+output_file="$playground/.dogfood-plan-contract-$stamp.out"
+final_plan_file="$playground/.dogfood-plan-contract-$stamp.final-plan"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+create only a project plan for a tiny Python CLI app inside a new folder named $project_dir. Do not implement it yet.
+/plan
+execute the plan
+/plan
+execute the plan
+/reasoning
+/exit
+EOF
+
+echo "==> running live plan-contract dogfood"
+(
+  cd "$playground"
+  elgar tui <"$input_file"
+) | tee "$output_file"
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+grep -A1 '^Plan Preview$' "$output_file" | grep -q '^(none)$' && fail "plan preview was empty"
+
+[[ -d "$playground/$project_dir" ]] || fail "missing project directory $project_dir"
+find "$playground/$project_dir" -maxdepth 1 -iname '*plan*.md' -type f | grep -q . \
+  || fail "missing plan markdown file"
+[[ ! -d "$playground/$renamed_project_dir" ]] \
+  || fail "repair created renamed sibling folder $renamed_project_dir"
+
+awk '
+  $0 == "Plan Preview" { capture = 1; block = $0 "\n"; next }
+  capture && $0 == "" { latest = block; capture = 0; next }
+  capture { block = block $0 "\n" }
+  END {
+    if (capture) {
+      latest = block
+    }
+    printf "%s", latest
+  }
+' "$output_file" >"$final_plan_file"
+
+grep -q "status: completed" "$final_plan_file" || fail "final plan preview did not complete"
+grep -q -- "- missing playground/$project_dir/" "$final_plan_file" \
+  && fail "final plan preview still has missing expected paths"
+grep -q -- "- ok playground/$project_dir/" "$final_plan_file" \
+  || fail "final plan preview did not show verified project files"
+
+find "$playground/$project_dir" -type f ! -iname '*plan*.md' | grep -q . \
+  || fail "implementation did not create project files beyond the plan"
+
+grep -q '^Reasoning$' "$output_file" || fail "reasoning output missing"
+grep -q '^route:' "$output_file" || fail "reasoning route missing"
+grep -q '^runtime checks:' "$output_file" || fail "reasoning runtime checks missing"
+
+echo "==> dogfood passed"
+echo "project: $playground/$project_dir"
+echo "transcript: $output_file"
