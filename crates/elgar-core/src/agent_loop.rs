@@ -289,7 +289,8 @@ where
         }
 
         if policy_mode == PermissionPolicyMode::ReviewAll {
-            if let Some(action) = review_required_action_to_propose(&resolved_outputs, policy_mode)
+            if let Some(action) =
+                review_required_action_to_propose(session, &resolved_outputs, policy_mode)
             {
                 apply_agent_action_with_policy(
                     session,
@@ -1014,15 +1015,16 @@ fn plan_execution_continue_message(session: &Session) -> String {
     })
 }
 
-fn review_required_action_to_propose(
-    outputs: &[ResolvedAgentToolOutput],
+fn review_required_action_to_propose<'a>(
+    session: &Session,
+    outputs: &'a [ResolvedAgentToolOutput],
     policy_mode: PermissionPolicyMode,
-) -> Option<&ValidatedModelToolAction> {
+) -> Option<&'a ValidatedModelToolAction> {
     let reviewed_actions = outputs
         .iter()
         .filter_map(|output| match output {
             ResolvedAgentToolOutput::Action(action)
-                if action_requires_review(policy_mode, action) =>
+                if action_requires_review(session, policy_mode, action) =>
             {
                 Some(action)
             }
@@ -1038,6 +1040,7 @@ fn review_required_action_to_propose(
 }
 
 fn action_requires_review(
+    session: &Session,
     policy_mode: PermissionPolicyMode,
     action: &ValidatedModelToolAction,
 ) -> bool {
@@ -1046,7 +1049,7 @@ fn action_requires_review(
         action.request.clone(),
         action.summary.clone(),
     );
-    policy_decision_for_agent_action(policy_mode, &proposed).user_approval_required
+    policy_decision_for_agent_action(session, policy_mode, &proposed).user_approval_required
 }
 
 fn apply_agent_action_with_policy(
@@ -1066,7 +1069,7 @@ fn apply_agent_action_with_policy(
         }
     };
     let proposed = Action::proposed(next_action_id(session), request, summary);
-    let policy_decision = policy_decision_for_agent_action(policy_mode, &proposed);
+    let policy_decision = policy_decision_for_agent_action(session, policy_mode, &proposed);
 
     if policy_decision.user_approval_required {
         return propose_agent_action_for_review(session, proposed, policy_decision);
@@ -1201,7 +1204,11 @@ fn propose_agent_action_for_review(
     )
 }
 
-fn policy_decision_for_agent_action(mode: PermissionPolicyMode, action: &Action) -> PolicyDecision {
+fn policy_decision_for_agent_action(
+    session: &Session,
+    mode: PermissionPolicyMode,
+    action: &Action,
+) -> PolicyDecision {
     match (mode, &action.request) {
         (PermissionPolicyMode::FullAccess, _) => PolicyDecision::allow_apply(
             mode,
@@ -1220,9 +1227,19 @@ fn policy_decision_for_agent_action(mode: PermissionPolicyMode, action: &Action)
             | ActionRequest::CreateDirectory(_)
             | ActionRequest::OverwriteFile(_)
             | ActionRequest::PatchFile(_),
-        ) => PolicyDecision::allow_apply(
+        ) if action_targets_are_inside_workspace(session, action) => PolicyDecision::allow_apply(
             mode,
             "workspace_write_with_review allows validated workspace write actions",
+        ),
+        (
+            PermissionPolicyMode::WorkspaceWriteWithReview,
+            ActionRequest::CreateFile(_)
+            | ActionRequest::CreateDirectory(_)
+            | ActionRequest::OverwriteFile(_)
+            | ActionRequest::PatchFile(_),
+        ) => PolicyDecision::require_review(
+            mode,
+            "workspace_write_with_review gates file writes outside the current workspace",
         ),
         (PermissionPolicyMode::AutoCreateReviewModify, _) => PolicyDecision::require_review(
             mode,
@@ -1235,6 +1252,26 @@ fn policy_decision_for_agent_action(mode: PermissionPolicyMode, action: &Action)
         (PermissionPolicyMode::ReviewAll, _) => {
             PolicyDecision::require_review(mode, "review_all requires user approval")
         }
+    }
+}
+
+fn action_targets_are_inside_workspace(session: &Session, action: &Action) -> bool {
+    let targets = workspace_write_targets(&action.request);
+    !targets.is_empty()
+        && targets
+            .into_iter()
+            .all(|target| path_is_within(&absolute_session_path(session, target), &session.cwd))
+}
+
+fn workspace_write_targets(request: &ActionRequest) -> Vec<&Path> {
+    match request {
+        ActionRequest::CreateFile(action) => vec![&action.target_path],
+        ActionRequest::CreateDirectory(action) => vec![&action.target_path],
+        ActionRequest::OverwriteFile(action) => vec![&action.target_path],
+        ActionRequest::PatchFile(action) => vec![&action.target_path],
+        ActionRequest::DeleteFile(_)
+        | ActionRequest::MoveFile(_)
+        | ActionRequest::ShellCommand(_) => Vec::new(),
     }
 }
 

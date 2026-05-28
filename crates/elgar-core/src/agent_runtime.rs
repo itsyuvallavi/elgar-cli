@@ -322,6 +322,86 @@ mod tests {
     }
 
     #[test]
+    fn agent_runtime_workspace_write_policy_reviews_absolute_write_outside_cwd() {
+        let root = temp_root("workspace-absolute-outside");
+        let _home = EnvGuard::set_home(&root);
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        let target = root.join("outside.txt");
+        fs::write(&target, "old\n").unwrap();
+        let runtime = AgentRuntime::new(ToolProvider::new(RawModelToolCall {
+            id: "tool-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::OverwriteFile),
+            arguments: serde_json::json!({
+                "target_path": target,
+                "contents": "new\n"
+            }),
+            assistant_summary: Some("overwrite outside workspace".to_string()),
+        }));
+        let mut session = Session::new("session-1", &root, &cwd);
+
+        let result = runtime.tool_turn(
+            &mut session,
+            "overwrite outside.txt",
+            PermissionPolicyMode::WorkspaceWriteWithReview,
+        );
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "old\n");
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionProposed(_))));
+        assert!(!result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+        let record = session.actions().last().expect("pending overwrite");
+        assert_eq!(record.action.state, ActionLifecycleState::Proposed);
+        assert_eq!(
+            record
+                .policy_decision
+                .as_ref()
+                .map(|decision| decision.kind),
+            Some(PolicyDecisionKind::RequireReview)
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_runtime_workspace_write_policy_applies_absolute_write_inside_cwd() {
+        let root = temp_root("workspace-absolute-inside");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        let target = cwd.join("demo.txt");
+        fs::write(&target, "old\n").unwrap();
+        let runtime = AgentRuntime::new(ToolProvider::new(RawModelToolCall {
+            id: "tool-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::OverwriteFile),
+            arguments: serde_json::json!({
+                "target_path": target,
+                "contents": "new\n"
+            }),
+            assistant_summary: Some("overwrite workspace file".to_string()),
+        }));
+        let mut session = Session::new("session-1", &root, &cwd);
+
+        let result = runtime.tool_turn(
+            &mut session,
+            "overwrite demo.txt",
+            PermissionPolicyMode::WorkspaceWriteWithReview,
+        );
+
+        assert_eq!(fs::read_to_string(cwd.join("demo.txt")).unwrap(), "new\n");
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn agent_runtime_review_all_prefers_file_action_from_directory_file_batch() {
         let root = temp_root("review-all-file-batch");
         let _home = EnvGuard::set_home(&root);
