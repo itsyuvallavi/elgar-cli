@@ -454,16 +454,56 @@ fn looks_like_plan_path_reference(token: &str) -> bool {
         return false;
     };
 
-    token.contains('/')
+    file_name.starts_with('.')
+        || is_well_known_extensionless_file(file_name)
         || path
             .extension()
             .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                !extension.is_empty()
-                    && extension.len() <= 12
-                    && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
-            })
-        || file_name.starts_with('.')
+            .is_some_and(is_recognized_plan_file_extension)
+}
+
+fn is_recognized_plan_file_extension(extension: &str) -> bool {
+    matches!(
+        extension,
+        "bash"
+            | "c"
+            | "cc"
+            | "cfg"
+            | "conf"
+            | "cpp"
+            | "css"
+            | "csv"
+            | "env"
+            | "go"
+            | "h"
+            | "hpp"
+            | "html"
+            | "java"
+            | "js"
+            | "jsx"
+            | "json"
+            | "lock"
+            | "md"
+            | "py"
+            | "rs"
+            | "scss"
+            | "sh"
+            | "sql"
+            | "toml"
+            | "ts"
+            | "tsx"
+            | "txt"
+            | "yaml"
+            | "yml"
+            | "zsh"
+    )
+}
+
+fn is_well_known_extensionless_file(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        "Dockerfile" | "Makefile" | "Procfile" | "README" | "LICENSE"
+    )
 }
 
 fn python_module_references(text: &str) -> Vec<String> {
@@ -741,6 +781,67 @@ mod tests {
                 }
         }));
         assert!(contract.review_draft().is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_contract_ignores_module_and_prose_fragments_as_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-prose-fragments-{}",
+            std::process::id()
+        ));
+        let project = root.join("typed-plan-test");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Plan\n\n```text\ncli.py\n__init__.py\ntyped_plan_test/__main__.py\ntests/test_cli.py\nREADME.md\n```\n\n## Verification\n- `tests/test_cli.py` imports `cli.main` and verifies it can be invoked with sample arguments.\n\n## Acceptance Criteria\n- All listed files are present with non-empty content that compiles/run without errors.\n- Running `python -m typed_plan_test` executes the CLI entry point.\n",
+        )
+        .unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("typed_plan_test"), project.join("tests")],
+            expected_files: vec![
+                project.join("cli.py"),
+                project.join("__init__.py"),
+                project.join("typed_plan_test/__main__.py"),
+                project.join("tests/test_cli.py"),
+                project.join("README.md"),
+            ],
+        };
+
+        let contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+        let review = contract.review_draft();
+
+        assert!(review.is_approvable());
+        assert!(!contract.scope.verification_checks.iter().any(|check| {
+            check.kind
+                == PlanVerificationCheckKind::PathExists {
+                    path: project.join("cli.main"),
+                }
+                || check.kind
+                    == PlanVerificationCheckKind::PathExists {
+                        path: project.join("compiles/run"),
+                    }
+        }));
+        assert!(contract.scope.verification_checks.iter().any(|check| {
+            check.kind
+                == PlanVerificationCheckKind::TestPath {
+                    path: project.join("tests/test_cli.py"),
+                }
+        }));
+        assert!(contract.scope.verification_checks.iter().any(|check| {
+            check.kind
+                == PlanVerificationCheckKind::PythonModule {
+                    module: "typed_plan_test".to_string(),
+                }
+        }));
 
         let _ = fs::remove_dir_all(root);
     }
