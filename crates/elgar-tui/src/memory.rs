@@ -395,6 +395,11 @@ enum PathKind {
 fn path_state(path: &Path, kind: PathKind) -> &'static str {
     match kind {
         PathKind::Directory if path.is_dir() => "ok",
+        PathKind::File
+            if path.is_file() && path.metadata().is_ok_and(|metadata| metadata.len() == 0) =>
+        {
+            "empty"
+        }
         PathKind::File if path.is_file() => "ok",
         _ => "missing",
     }
@@ -611,6 +616,7 @@ mod tests {
         assert!(rendered.contains("status: completed"));
         assert!(rendered.contains("directories: 1/1 present"));
         assert!(rendered.contains("files: 2/2 present"));
+        assert!(rendered.contains("- empty DemoApp/requirements.txt"));
 
         fs::remove_file(project.join("plan.md")).unwrap();
         let rendered = render_session_plan_preview(&session);

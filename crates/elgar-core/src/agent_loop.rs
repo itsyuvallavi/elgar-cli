@@ -176,6 +176,7 @@ where
     let mut handled_tool_call_ids = HashSet::new();
     let mut plan_created_this_turn = false;
     let mut plan_execution_in_progress = false;
+    let mut plan_creation_repair_in_progress = false;
     let mut visible_skipped_tool_notice_shown = false;
 
     for _round in 0..MAX_AGENT_TOOL_ROUNDS {
@@ -302,8 +303,12 @@ where
             session,
             resolve_agent_tool_outputs(outputs, &path_resolution),
         );
-        let resolved_outputs =
-            guard_plan_creation_tool_outputs(session, resolved_outputs, plan_created_this_turn);
+        let resolved_outputs = guard_plan_creation_tool_outputs(
+            session,
+            resolved_outputs,
+            plan_created_this_turn,
+            plan_creation_repair_in_progress,
+        );
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
         let plan_execution_batch =
             resolved_outputs_touch_structured_plan(session, &resolved_outputs);
@@ -380,6 +385,11 @@ where
                             .is_some()
                     {
                         plan_created_this_turn = true;
+                        plan_creation_repair_in_progress =
+                            !latest_structured_plan_has_expected_paths(session);
+                        if plan_creation_repair_in_progress {
+                            messages.push(ChatMessage::system(plan_creation_repair_message()));
+                        }
                     }
                     messages.push(ChatMessage::tool(action.tool_call_id, result));
                     if !matches!(
@@ -607,6 +617,7 @@ fn guard_plan_creation_tool_outputs(
     session: &Session,
     outputs: Vec<ResolvedAgentToolOutput>,
     plan_created_this_turn: bool,
+    plan_creation_repair_in_progress: bool,
 ) -> Vec<ResolvedAgentToolOutput> {
     let plan_roots = outputs
         .iter()
@@ -617,14 +628,23 @@ fn guard_plan_creation_tool_outputs(
             ResolvedAgentToolOutput::Guidance(_) | ResolvedAgentToolOutput::Skipped { .. } => None,
         })
         .collect::<Vec<_>>();
-    if plan_roots.is_empty() && !plan_created_this_turn {
+    if plan_roots.is_empty() && !plan_created_this_turn && !plan_creation_repair_in_progress {
         return outputs;
     }
 
     outputs
         .into_iter()
         .map(|output| match output {
-            ResolvedAgentToolOutput::Action(action) if plan_created_this_turn => {
+            ResolvedAgentToolOutput::Action(action)
+                if plan_creation_repair_in_progress
+                    && (plan_creation_root_for_action(session, &action.request).is_some()
+                        || is_plan_parent_setup_action(session, &action.request, &plan_roots)) =>
+            {
+                ResolvedAgentToolOutput::Action(action)
+            }
+            ResolvedAgentToolOutput::Action(action)
+                if plan_created_this_turn || plan_creation_repair_in_progress =>
+            {
                 ResolvedAgentToolOutput::Skipped {
                     tool_call_id: action.tool_call_id,
                     message: "Skipped implementation tool calls after creating the verified plan. Ask to execute the plan when you want to apply it.".to_string(),
@@ -645,6 +665,19 @@ fn guard_plan_creation_tool_outputs(
             other => other,
         })
         .collect()
+}
+
+fn latest_structured_plan_has_expected_paths(session: &Session) -> bool {
+    session
+        .project_memory()
+        .latest_structured_plan()
+        .is_some_and(|plan| {
+            !plan.expected_directories.is_empty() || !plan.expected_files.is_empty()
+        })
+}
+
+fn plan_creation_repair_message() -> String {
+    "The verified plan file has no executable expected paths. Update the same plan file with a concrete fenced file tree or path list before creating implementation files.".to_string()
 }
 
 fn guard_redundant_directory_tool_outputs(
@@ -1985,6 +2018,80 @@ mod tests {
                 .count(),
             1
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_creation_repairs_plan_without_expected_paths_before_implementation() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-empty-path-repair",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("PlanRepair")).unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating incomplete plan.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "plan-repair-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "PlanRepair/plan.md",
+                        "contents": "# Project Plan\n\nThis is a tiny Python CLI app.\n"
+                    }),
+                    assistant_summary: Some("create incomplete plan".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Repairing plan.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "plan-repair-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::OverwriteFile),
+                    arguments: json!({
+                        "target_path": "PlanRepair/plan.md",
+                        "contents": "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n"
+                    }),
+                    assistant_summary: Some("repair plan".to_string()),
+                },
+                RawModelToolCall {
+                    id: "plan-repair-3".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "PlanRepair/src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: Some("create main too early".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Plan ready."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "create only the project plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("PlanRepair/plan.md")).unwrap(),
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n"
+        );
+        assert!(!root.join("PlanRepair/src/main.py").exists());
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("repaired plan should be remembered");
+        assert!(plan
+            .expected_files
+            .contains(&root.join("PlanRepair/src/main.py")));
+        assert!(provider
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(|message| message.content.contains("no executable expected paths")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
