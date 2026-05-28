@@ -52,11 +52,14 @@ fail() {
 grep -q "stub provider response" "$output_file" && fail "script used stub provider"
 grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
 grep -A1 '^Plan Preview$' "$output_file" | grep -q '^(none)$' && fail "plan preview was empty after plan creation"
+grep -q -- "- missing playground/$project_dir/src/main.py" "$output_file" || fail "plan preview did not nest src/main.py under src"
+grep -q -- "- missing playground/$project_dir/main.py" "$output_file" && fail "plan preview exposed root-level main.py instead of src/main.py"
 
 [[ -d "$playground/$plain_dir" ]] || fail "normal text did not create $plain_dir"
 [[ -d "$playground/$project_dir" ]] || fail "missing project directory $project_dir"
 [[ -f "$playground/$project_dir/plan.md" ]] || fail "missing plan.md"
 [[ -f "$playground/$project_dir/src/main.py" ]] || fail "missing src/main.py"
+[[ -s "$playground/$project_dir/src/main.py" ]] || fail "src/main.py is empty"
 [[ -f "$playground/$project_dir/requirements.txt" ]] || fail "missing requirements.txt"
 [[ -d "$playground/$unrelated_dir" ]] || fail "missing unrelated directory $unrelated_dir"
 
