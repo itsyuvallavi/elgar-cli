@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -154,6 +154,14 @@ impl PlanContract {
                     path: Some((*path).clone()),
                 });
             }
+
+            if has_malformed_scope_path_segment(path) {
+                issues.push(PlanContractDraftIssue {
+                    severity: PlanContractDraftIssueSeverity::Blocking,
+                    kind: PlanContractDraftIssueKind::MalformedScopePath,
+                    path: Some((*path).clone()),
+                });
+            }
         }
 
         for (index, path) in scope_paths.iter().enumerate() {
@@ -277,6 +285,25 @@ fn numbered_markdown_list_item(trimmed: &str) -> Option<&str> {
     (!prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit())).then_some(suffix)
 }
 
+fn has_malformed_scope_path_segment(path: &Path) -> bool {
+    path.components().any(|component| {
+        let Component::Normal(segment) = component else {
+            return false;
+        };
+        let Some(segment) = segment.to_str() else {
+            return true;
+        };
+        let trimmed = segment.trim();
+        trimmed.is_empty()
+            || trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed.starts_with("+ ")
+            || trimmed.starts_with("├")
+            || trimmed.starts_with("└")
+            || trimmed.starts_with("│")
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanContractDraftReview {
     pub issues: Vec<PlanContractDraftIssue>,
@@ -313,6 +340,7 @@ pub enum PlanContractDraftIssueKind {
     SourcePlanOutsideProjectRoot,
     EmptyExecutableScope,
     PathOutsideProjectRoot,
+    MalformedScopePath,
     DuplicateScopePath,
     MissingVerificationSteps,
     MissingAcceptanceCriteria,
@@ -625,6 +653,56 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.kind == PlanContractDraftIssueKind::PathOutsideProjectRoot));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_blocks_malformed_scope_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-review-malformed-{}",
+            std::process::id()
+        ));
+        let project = root.join("plan-review-copy-test");
+        let plan_path = project.join("PLAN.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n## Verification\n- Ensure all listed files exist.\n\n## Acceptance Criteria\n- The project directory exists with the specified structure.\n",
+        )
+        .unwrap();
+        let contract = PlanContract {
+            id: "contract-malformed".to_string(),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            source_action_id: Some("action-plan".to_string()),
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: vec![project.join("- tests")],
+                allowed_files: vec![
+                    project.join("- app.py"),
+                    project.join("- tests/- test_app.py"),
+                ],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec!["Ensure all listed files exist.".to_string()],
+                acceptance_criteria: vec![
+                    "The project directory exists with the specified structure.".to_string(),
+                ],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+
+        let review = contract.review_draft();
+
+        assert!(!review.is_approvable());
+        assert!(review.issues.iter().any(|issue| issue.kind
+            == PlanContractDraftIssueKind::MalformedScopePath
+            && issue.path.as_ref() == Some(&project.join("- tests"))));
+        assert!(review.issues.iter().any(|issue| issue.kind
+            == PlanContractDraftIssueKind::MalformedScopePath
+            && issue.path.as_ref() == Some(&project.join("- tests/- test_app.py"))));
 
         let _ = fs::remove_dir_all(root);
     }

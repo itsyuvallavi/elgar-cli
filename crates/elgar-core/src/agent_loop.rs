@@ -725,6 +725,9 @@ fn plan_draft_issue_message(issue: &PlanContractDraftIssue) -> String {
         PlanContractDraftIssueKind::PathOutsideProjectRoot => {
             format!("planned path is outside the project root{path}")
         }
+        PlanContractDraftIssueKind::MalformedScopePath => {
+            format!("planned path is malformed{path}")
+        }
         PlanContractDraftIssueKind::DuplicateScopePath => {
             format!("duplicate planned path{path}")
         }

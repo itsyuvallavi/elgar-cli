@@ -315,7 +315,7 @@ fn next_tree_depth(lines: &[&str], index: usize) -> Option<usize> {
 }
 
 fn tree_root_path_from_line(line: &str) -> Option<PathBuf> {
-    let trimmed = line.trim();
+    let trimmed = strip_markdown_list_marker(line.trim());
     if trimmed.chars().any(char::is_whitespace) || trimmed.contains("──") {
         return None;
     }
@@ -342,14 +342,7 @@ fn inline_path_from_line(line: &str) -> Option<(PathBuf, PlanPathKind)> {
         return None;
     }
 
-    let token = trimmed
-        .trim_start_matches(|ch: char| {
-            ch.is_ascii_whitespace() || ch == '-' || ch == '*' || ch == '+' || ch.is_ascii_digit()
-        })
-        .trim_start_matches("[ ]")
-        .trim_start_matches("[x]")
-        .trim_start_matches("[X]")
-        .trim();
+    let token = strip_markdown_list_marker(trimmed);
     let token = token
         .split_whitespace()
         .next()
@@ -367,7 +360,7 @@ fn clean_plan_path_token_with_inference(
     token: &str,
     infer_directory: bool,
 ) -> Option<(PathBuf, PlanPathKind)> {
-    let token = token
+    let token = strip_markdown_list_marker(token)
         .trim()
         .trim_matches('`')
         .trim_matches('"')
@@ -393,6 +386,29 @@ fn clean_plan_path_token_with_inference(
     };
 
     Some((PathBuf::from(token.trim_end_matches('/')), kind))
+}
+
+fn strip_markdown_list_marker(token: &str) -> &str {
+    let trimmed = token.trim();
+    let without_marker = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+        .or_else(|| numbered_markdown_list_item(trimmed))
+        .unwrap_or(trimmed)
+        .trim();
+
+    without_marker
+        .strip_prefix("[ ]")
+        .or_else(|| without_marker.strip_prefix("[x]"))
+        .or_else(|| without_marker.strip_prefix("[X]"))
+        .unwrap_or(without_marker)
+        .trim()
+}
+
+fn numbered_markdown_list_item(trimmed: &str) -> Option<&str> {
+    let (prefix, suffix) = trimmed.split_once(". ")?;
+    (!prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit())).then_some(suffix)
 }
 
 fn path_has_file_extension(path: &Path) -> bool {
@@ -838,6 +854,70 @@ mod tests {
         assert!(!structured
             .expected_files
             .contains(&root.join("LivePlan/main.py")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn strips_markdown_list_markers_from_indented_file_tree_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-markdown-list-structured-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("plan-review-copy-test")).unwrap();
+        fs::write(
+            root.join("plan-review-copy-test/PLAN.md"),
+            "# Project Plan\n\n```text\n  - app.py\n  - __init__.py\n  - cli.py\n  - README.md\n  - requirements.txt\n  - tests\n    - test_app.py\n```\n\n## Verification\n- Ensure all listed files exist.\n\n## Acceptance Criteria\n- The project directory exists with the specified structure.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("plan-review-copy-test/PLAN.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root
+                .join("plan-review-copy-test/PLAN.md")
+                .display()
+                .to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified live plan should create structured plan state");
+        let project = root.join("plan-review-copy-test");
+        assert!(structured
+            .expected_directories
+            .contains(&project.join("tests")));
+        assert!(structured.expected_files.contains(&project.join("app.py")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("__init__.py")));
+        assert!(structured.expected_files.contains(&project.join("cli.py")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("README.md")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("requirements.txt")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("tests/test_app.py")));
+        assert!(!structured
+            .expected_files
+            .iter()
+            .chain(structured.expected_directories.iter())
+            .any(|path| path.to_string_lossy().contains("/- ")));
 
         let _ = fs::remove_dir_all(&root);
     }

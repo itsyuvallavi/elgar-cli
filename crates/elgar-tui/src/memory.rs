@@ -291,6 +291,9 @@ fn draft_issue_line(session: &Session, issue: &PlanContractDraftIssue) -> String
         PlanContractDraftIssueKind::PathOutsideProjectRoot => {
             format!("planned path outside project root{path}")
         }
+        PlanContractDraftIssueKind::MalformedScopePath => {
+            format!("malformed planned path{path}")
+        }
         PlanContractDraftIssueKind::DuplicateScopePath => {
             format!("duplicate planned path{path}")
         }
@@ -758,6 +761,39 @@ mod tests {
         assert!(rendered.contains("- blocking issues: none"));
         assert!(rendered.contains("- verification:\n  - Run the CLI smoke test."));
         assert!(rendered.contains("- acceptance criteria:\n  - The expected files exist."));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renders_plan_preview_with_cleaned_markdown_list_file_tree_paths() {
+        let root = temp_root("plan-contract-review-cleaned-list-tree");
+        let project = root.join("plan-review-copy-test");
+        fs::create_dir_all(&project).unwrap();
+        let mut session = Session::new("memory-session", &root, &root);
+        let plan_contents = "# Project Plan\n\n```text\n  - app.py\n  - __init__.py\n  - cli.py\n  - README.md\n  - requirements.txt\n  - tests\n    - test_app.py\n```\n\n## Verification\n- Ensure all listed files exist and contain minimal placeholder content.\n\n## Acceptance Criteria\n- The project directory exists with the specified structure.\n";
+
+        tool_runtime(
+            ModelToolName::CreateFile,
+            serde_json::json!({
+                "target_path": "plan-review-copy-test/PLAN.md",
+                "contents": plan_contents,
+            }),
+        )
+        .tool_turn(
+            &mut session,
+            "create project plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let rendered = render_session_plan_preview(&session);
+        assert!(rendered.contains("root: plan-review-copy-test"));
+        assert!(rendered.contains("- missing plan-review-copy-test/app.py"));
+        assert!(rendered.contains("- missing plan-review-copy-test/tests"));
+        assert!(rendered.contains("- missing plan-review-copy-test/tests/test_app.py"));
+        assert!(!rendered.contains("/- "));
+        assert!(!rendered.contains("plan-review-copy-test/- "));
+        assert!(rendered.contains("- approvable: yes"));
 
         let _ = fs::remove_dir_all(root);
     }
