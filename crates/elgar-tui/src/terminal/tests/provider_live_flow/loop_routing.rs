@@ -140,6 +140,94 @@ fn terminal_loop_normal_action_like_text_stays_plain_without_tools() {
 }
 
 #[test]
+fn terminal_loop_normal_text_can_execute_after_model_decision() {
+    #[derive(Clone)]
+    struct ExecuteDecisionProvider;
+
+    impl ControllerProvider for ExecuteDecisionProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "execute-decision-provider",
+                Some("model-a".to_string()),
+                "execute-decision-request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("unused chat response"))
+        }
+
+        fn chat_messages_with_metadata(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+        ) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("{\"route\":\"execute\"}"))
+        }
+
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<ProviderOutput, ProviderError> {
+            if messages
+                .iter()
+                .any(|message| matches!(message.role, ChatRole::Tool))
+            {
+                return Ok(ProviderOutput::new("Done."));
+            }
+
+            Ok(
+                ProviderOutput::new("Creating model-owned folder.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "normal-text-execute-call-1".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                        arguments: serde_json::json!({
+                            "target_path": "normal-text-model-folder"
+                        }),
+                        assistant_summary: Some("create model-owned folder".to_string()),
+                    },
+                ]),
+            )
+        }
+    }
+
+    let controller = Controller::new(ExecuteDecisionProvider);
+    let root = temp_root("terminal-normal-text-model-execute");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    assert!(!handle_submitted_terminal_input_for_loop(
+        "please handle this request",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    ));
+    finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
+
+    assert!(root.join("normal-text-model-folder").is_dir());
+    assert_eq!(session.actions().len(), 1);
+    assert!(session.events().iter().any(|event| matches!(
+        event,
+        Event::ProviderStarted(started)
+            if started.request_mode.as_deref() == Some("plain_chat")
+                && started.tool_count == Some(0)
+    )));
+    assert!(session.events().iter().any(|event| matches!(
+        event,
+        Event::ProviderStarted(started)
+            if started.request_mode.as_deref() == Some("tool_enabled")
+                && started.tool_count.unwrap_or_default() > 0
+    )));
+    assert!(!shell.render().contains("\"route\":\"execute\""));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn terminal_loop_explicit_tool_turn_creates_directory() {
     let controller = scripted_tool_controller(vec![scripted_create_directory_output(
         "create-helloworld",

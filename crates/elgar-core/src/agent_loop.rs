@@ -22,6 +22,7 @@ use crate::{
         RawModelToolCall, ValidatedModelGuidanceRequest, ValidatedModelToolAction,
         ValidatedModelToolOutput,
     },
+    normal_turn_decision::{parse_normal_turn_decision, NormalTurnDecision},
     path_resolution::{allowed_root_for_action, resolve_agent_action_paths, AgentPathResolution},
     policy::{PermissionPolicyMode, PolicyDecision},
     provider::{
@@ -54,11 +55,17 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "When creating a framework project, infer the necessary starter files from the requested stack and create the complete runnable scaffold before the final answer. ",
     "After tools run, answer naturally and briefly with what happened."
 );
-const AGENT_PLAIN_CHAT_SYSTEM_PROMPT: &str = concat!(
-    "You are Elgar. Answer normal conversational messages directly in concise terminal-friendly prose. ",
-    "This plain chat turn has no filesystem or shell tools attached. ",
-    "If the user asks you to create, edit, move, delete, or run something, say this turn has no filesystem tools and they can use `/tool <request>` instead of claiming it was done. ",
-    "Do not output tool-call markup. Do not claim filesystem or shell changes unless they were already reported by verified tool results."
+const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
+    "You are Elgar. Decide how this normal user turn should proceed. ",
+    "Return only JSON using one of these shapes: ",
+    "{\"route\":\"chat\",\"content\":\"...\"}, ",
+    "{\"route\":\"execute\"}, or ",
+    "{\"route\":\"ask_guidance\",\"question\":\"...\"}. ",
+    "Allowed route values are: chat, execute, ask_guidance. ",
+    "Use chat for conversational answers or text-only help, with concise terminal-friendly content. ",
+    "Use execute when the request should be attempted with filesystem or shell tools. ",
+    "Use ask_guidance only when a required concrete detail is missing, with a concise question. ",
+    "Do not claim filesystem or shell changes in chat content unless they were already reported by verified tool results."
 );
 const AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT: &str = concat!(
     "Classify which verified runtime state answer, if any, the user needs from this current session. ",
@@ -73,6 +80,12 @@ const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
 
 const MAX_AGENT_TOOL_ROUNDS: usize = 6;
 const TOOL_COMMAND_PREFIX: &str = "/tool";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlainAgentChatOutcome {
+    Finished,
+    Execute,
+}
 
 pub fn run_permissive_agent_turn<P>(provider: &P, session: &mut Session, input: &str) -> TurnResult
 where
@@ -94,7 +107,9 @@ where
     session.push_event(Event::UserMessage(UserMessage::new(input)));
 
     let Some(tool_input) = explicit_tool_command_input(input) else {
-        run_plain_agent_chat(provider, session, input);
+        if run_plain_agent_chat(provider, session, input) == PlainAgentChatOutcome::Execute {
+            return run_agent_tool_chat(provider, session, input, policy_mode, start_index);
+        }
         return TurnResult {
             route: Route::AskModel,
             events: session.events()[start_index..].to_vec(),
@@ -388,7 +403,11 @@ fn explicit_tool_command_input(input: &str) -> Option<&str> {
         .map(str::trim)
 }
 
-fn run_plain_agent_chat<P>(provider: &P, session: &mut Session, input: &str)
+fn run_plain_agent_chat<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+) -> PlainAgentChatOutcome
 where
     P: ControllerProvider,
 {
@@ -398,7 +417,7 @@ where
                 verified_session_state_answer(session, answer_kind),
                 AssistantMessageSource::Controller,
             )));
-            return;
+            return PlainAgentChatOutcome::Finished;
         }
     }
 
@@ -408,7 +427,7 @@ where
             .with_request_details(request.model.clone(), "plain_chat", 0),
     ));
     let messages = vec![
-        ChatMessage::system(AGENT_PLAIN_CHAT_SYSTEM_PROMPT),
+        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
         ChatMessage::user(input),
     ];
 
@@ -420,13 +439,28 @@ where
                 request.request_id,
                 output,
             )));
-            push_plain_provider_message_if_visible(session, assistant_text);
+            match parse_normal_turn_decision(&assistant_text) {
+                Some(NormalTurnDecision::Execute) => PlainAgentChatOutcome::Execute,
+                Some(NormalTurnDecision::Chat { content }) => {
+                    push_plain_provider_message_if_visible(session, content);
+                    PlainAgentChatOutcome::Finished
+                }
+                Some(NormalTurnDecision::AskGuidance { question }) => {
+                    push_plain_provider_message_if_visible(session, question);
+                    PlainAgentChatOutcome::Finished
+                }
+                None => {
+                    push_plain_provider_message_if_visible(session, assistant_text);
+                    PlainAgentChatOutcome::Finished
+                }
+            }
         }
         Err(error) => {
             session.push_event(Event::Error(ErrorEvent::new(format!(
                 "{} provider request {} failed: {error}",
                 request.provider, request.request_id
             ))));
+            PlainAgentChatOutcome::Finished
         }
     }
 }
@@ -2701,12 +2735,19 @@ mod tests {
             _metadata: &ProviderRequestMetadata,
             tools: Vec<ChatToolDefinition>,
         ) -> Result<crate::event::ProviderOutput, ProviderError> {
+            let has_tool_result = messages
+                .iter()
+                .any(|message| matches!(message.role, ChatRole::Tool));
             self.requests.lock().unwrap().push(CapturedProviderRequest {
                 mode: CapturedProviderRequestMode::Tool,
                 messages,
                 tool_count: tools.len(),
             });
-            Ok(self.tool_output.clone())
+            if has_tool_result {
+                Ok(crate::event::ProviderOutput::new("Done."))
+            } else {
+                Ok(self.tool_output.clone())
+            }
         }
 
         fn chat_messages_with_metadata(
@@ -2760,6 +2801,88 @@ mod tests {
                     if started.request_mode.as_deref() == Some("tool_enabled")
             )));
         }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn normal_text_model_execute_decision_enters_tool_loop_without_slash_command() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-normal-execute-decision",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating it.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "normal-execute-call-1".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                        arguments: json!({ "target_path": "model-selected-folder" }),
+                        assistant_summary: Some("create model-selected folder".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "please handle this request");
+
+        assert!(root.join("model-selected-folder").is_dir());
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[0].tool_count, 0);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert!(requests[1].tool_count > 0);
+        assert!(requests[2]
+            .messages
+            .iter()
+            .any(|message| matches!(message.role, ChatRole::Tool)));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ActionApplied(applied)
+                if matches!(
+                    &applied.result,
+                    VerifiedActionResult::File(crate::event::FileActionVerification::DirectoryCreated { path })
+                        if path.ends_with("model-selected-folder")
+                )
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn normal_text_model_chat_decision_renders_content_without_tools() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-normal-chat-decision",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new().with_plain_output(
+            crate::event::ProviderOutput::new("{\"route\":\"chat\",\"content\":\"Hello there.\"}"),
+        );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "hello");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[0].tool_count, 0);
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content == "Hello there."
+        )));
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message) if message.content.contains("\"route\"")
+        )));
+        assert!(session.actions().is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
     }

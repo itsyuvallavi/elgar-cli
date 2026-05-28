@@ -11,7 +11,6 @@ mod controller_shell_verify;
 pub mod event;
 pub mod fs;
 pub mod model_runtime;
-#[cfg(test)]
 mod normal_turn_decision;
 mod path_resolution;
 pub mod policy;
