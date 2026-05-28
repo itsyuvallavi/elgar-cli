@@ -176,6 +176,7 @@ where
     let mut handled_tool_call_ids = HashSet::new();
     let mut plan_created_this_turn = false;
     let mut plan_execution_in_progress = false;
+    let mut visible_skipped_tool_notice_shown = false;
 
     for _round in 0..MAX_AGENT_TOOL_ROUNDS {
         let request = provider.request_metadata();
@@ -342,7 +343,6 @@ where
             }
         }
 
-        let mut skipped_tool_notice_shown = false;
         for output in resolved_outputs {
             match output {
                 ResolvedAgentToolOutput::Guidance(guidance) => {
@@ -354,12 +354,12 @@ where
                     message,
                     visible,
                 } => {
-                    if visible && !skipped_tool_notice_shown {
+                    if visible && !visible_skipped_tool_notice_shown {
                         session.push_event(Event::AssistantMessage(AssistantMessage::new(
                             message.clone(),
                             AssistantMessageSource::Controller,
                         )));
-                        skipped_tool_notice_shown = true;
+                        visible_skipped_tool_notice_shown = true;
                     }
                     messages.push(ChatMessage::tool(tool_call_id, message));
                 }
@@ -1972,6 +1972,19 @@ mod tests {
             PendingActionSelection::None
         ));
         assert_eq!(session.actions().len(), 1);
+        assert_eq!(
+            session
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Event::AssistantMessage(message)
+                        if message.source == AssistantMessageSource::Controller
+                            && message.content.contains("Skipped implementation tool calls")
+                ))
+                .count(),
+            1
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
