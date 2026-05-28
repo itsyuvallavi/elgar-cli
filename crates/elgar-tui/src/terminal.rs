@@ -5,7 +5,10 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
 };
@@ -1202,7 +1205,11 @@ impl TerminalModeGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnableBracketedPaste)?;
+        execute!(
+            stdout,
+            EnableBracketedPaste,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
         write!(stdout, "{ANSI_CURSOR_HIDE}")?;
         stdout.flush()?;
         Ok(Self)
@@ -1212,7 +1219,7 @@ impl TerminalModeGuard {
 impl Drop for TerminalModeGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
-        let _ = execute!(stdout, DisableBracketedPaste);
+        let _ = execute!(stdout, PopKeyboardEnhancementFlags, DisableBracketedPaste);
         let _ = write!(stdout, "{ANSI_CURSOR_SHOW}");
         let _ = stdout.flush();
         let _ = disable_raw_mode();

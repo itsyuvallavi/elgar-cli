@@ -41,7 +41,18 @@ impl TerminalInput {
                 self.cursor = 0;
                 TerminalInputAction::Continue
             }
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.insert_text("\n");
+                TerminalInputAction::Continue
+            }
+            KeyCode::Char('\n') => {
+                self.insert_text("\n");
+                TerminalInputAction::Continue
+            }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.insert_text("\n");
                 TerminalInputAction::Continue
             }
@@ -210,6 +221,26 @@ mod tests {
         input.handle_key(key(KeyCode::Char('s')));
 
         assert_eq!(input.text(), "first\ns");
+    }
+
+    #[test]
+    fn alternate_newline_chords_insert_newline_without_submitting() {
+        let mut input = TerminalInput::from_text("a");
+
+        assert_eq!(
+            input.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)),
+            TerminalInputAction::Continue
+        );
+        assert_eq!(
+            input.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
+            TerminalInputAction::Continue
+        );
+        assert_eq!(
+            input.handle_key(key(KeyCode::Char('\n'))),
+            TerminalInputAction::Continue
+        );
+
+        assert_eq!(input.text(), "a\n\n\n");
     }
 
     #[test]
