@@ -150,6 +150,7 @@ where
     let tools = elgar_model_tool_definitions();
     let mut handled_tool_call_ids = HashSet::new();
     let mut plan_created_this_turn = false;
+    let mut plan_execution_in_progress = false;
 
     for _round in 0..MAX_AGENT_TOOL_ROUNDS {
         let request = provider.request_metadata();
@@ -221,6 +222,12 @@ where
         )));
 
         if tool_calls.is_empty() {
+            if plan_execution_in_progress {
+                if let Some(message) = missing_expected_plan_files_message(session) {
+                    messages.push(ChatMessage::system(message));
+                    continue;
+                }
+            }
             push_provider_message_after_tool_turn_if_visible(session, start_index, assistant_text);
             break;
         }
@@ -264,6 +271,14 @@ where
         let resolved_outputs =
             guard_plan_creation_tool_outputs(session, resolved_outputs, plan_created_this_turn);
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
+        let plan_execution_batch =
+            resolved_outputs_touch_structured_plan(session, &resolved_outputs);
+        plan_execution_in_progress |= plan_execution_batch;
+        let resolved_outputs = guard_plan_execution_tool_outputs(
+            session,
+            resolved_outputs,
+            plan_execution_in_progress,
+        );
 
         if let Err(message) = preflight_verified_plan_tool_outputs(session, &resolved_outputs) {
             session.push_event(Event::AssistantMessage(AssistantMessage::new(
@@ -339,6 +354,13 @@ where
                         };
                     }
                 }
+            }
+        }
+
+        if plan_execution_in_progress {
+            if let Some(message) = missing_expected_plan_files_message(session) {
+                messages.push(ChatMessage::system(message));
+                continue;
             }
         }
     }
@@ -675,6 +697,71 @@ fn guard_redundant_directory_tool_outputs(
         .collect()
 }
 
+fn resolved_outputs_touch_structured_plan(
+    session: &Session,
+    outputs: &[ResolvedAgentToolOutput],
+) -> bool {
+    let Some(plan) = session.project_memory().latest_structured_plan() else {
+        return false;
+    };
+
+    outputs
+        .iter()
+        .filter_map(|output| match output {
+            ResolvedAgentToolOutput::Action(action) => Some(&action.request),
+            ResolvedAgentToolOutput::Guidance(_) | ResolvedAgentToolOutput::Skipped { .. } => None,
+        })
+        .flat_map(plan_guard_paths)
+        .any(|path| structured_plan_expects_path(plan, &absolute_session_path(session, path)))
+}
+
+fn guard_plan_execution_tool_outputs(
+    session: &Session,
+    outputs: Vec<ResolvedAgentToolOutput>,
+    plan_execution_in_progress: bool,
+) -> Vec<ResolvedAgentToolOutput> {
+    if !plan_execution_in_progress {
+        return outputs;
+    }
+
+    let Some(plan) = session.project_memory().latest_structured_plan() else {
+        return outputs;
+    };
+
+    outputs
+        .into_iter()
+        .map(|output| match output {
+            ResolvedAgentToolOutput::Guidance(guidance) => ResolvedAgentToolOutput::Skipped {
+                tool_call_id: guidance.tool_call_id,
+                message: plan_execution_continue_message(session),
+                visible: false,
+            },
+            ResolvedAgentToolOutput::Action(action)
+                if is_unexpected_plan_execution_directory(session, plan, &action.request) =>
+            {
+                ResolvedAgentToolOutput::Skipped {
+                    tool_call_id: action.tool_call_id,
+                    message: "Skipped directory creation outside the verified plan; file tools create parent directories when needed.".to_string(),
+                    visible: false,
+                }
+            }
+            other => other,
+        })
+        .collect()
+}
+
+fn is_unexpected_plan_execution_directory(
+    session: &Session,
+    plan: &crate::session::StructuredProjectPlan,
+    request: &ActionRequest,
+) -> bool {
+    let ActionRequest::CreateDirectory(action) = request else {
+        return false;
+    };
+    let target_path = absolute_session_path(session, &action.target_path);
+    !structured_plan_expects_path(plan, &target_path)
+}
+
 fn created_file_target_path(session: &Session, request: &ActionRequest) -> Option<PathBuf> {
     match request {
         ActionRequest::CreateFile(action) => {
@@ -839,6 +926,18 @@ fn plan_preflight_paths(request: &ActionRequest) -> Vec<&Path> {
     }
 }
 
+fn plan_guard_paths(request: &ActionRequest) -> Vec<&Path> {
+    match request {
+        ActionRequest::CreateFile(action) => vec![&action.target_path],
+        ActionRequest::CreateDirectory(action) => vec![&action.target_path],
+        ActionRequest::PatchFile(action) => vec![&action.target_path],
+        ActionRequest::OverwriteFile(action) => vec![&action.target_path],
+        ActionRequest::DeleteFile(action) => vec![&action.target_path],
+        ActionRequest::MoveFile(action) => vec![&action.source_path, &action.target_path],
+        ActionRequest::ShellCommand(_) => Vec::new(),
+    }
+}
+
 fn absolute_session_path(session: &Session, path: &Path) -> PathBuf {
     normalize_path(if path.is_absolute() {
         path.to_path_buf()
@@ -877,6 +976,42 @@ fn plan_preflight_outside_root_message(
         display_agent_context_path(session, &plan.project_root),
         display_agent_context_path(session, target_path)
     )
+}
+
+fn missing_expected_plan_files_message(session: &Session) -> Option<String> {
+    let missing = missing_expected_plan_files(session);
+    if missing.is_empty() {
+        return None;
+    }
+
+    let paths = missing
+        .iter()
+        .map(|path| format!("- {}", display_agent_context_path(session, path)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "The verified plan is not complete. Missing expected files:\n{paths}\nUse create_file for every missing file under the verified plan root. Do not ask whether to create expected files or directories."
+    ))
+}
+
+fn missing_expected_plan_files(session: &Session) -> Vec<PathBuf> {
+    session
+        .project_memory()
+        .latest_structured_plan()
+        .map(|plan| {
+            plan.expected_files
+                .iter()
+                .filter(|path| !path.is_file())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn plan_execution_continue_message(session: &Session) -> String {
+    missing_expected_plan_files_message(session).unwrap_or_else(|| {
+        "The verified plan already defines concrete expected paths; continue under the verified plan root without asking for clarification.".to_string()
+    })
 }
 
 fn review_required_action_to_propose(
@@ -2061,6 +2196,17 @@ mod tests {
                     assistant_summary: None,
                 },
             ]),
+            crate::event::ProviderOutput::new("Creating remaining files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "anchor-expected-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "requirements.txt",
+                        "contents": ""
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
             crate::event::ProviderOutput::new("Done."),
         ]);
         let mut session = Session::new("session", &root, &cwd);
@@ -2094,6 +2240,7 @@ mod tests {
             "print('hello')\n"
         );
         assert!(!cwd.join("src/main.py").exists());
+        assert!(cwd.join("tui-state-memory-test/requirements.txt").is_file());
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::ActionApplied(applied)
@@ -2106,6 +2253,108 @@ mod tests {
                             .to_string()
                 )
         )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_execution_skips_off_root_directory_and_continues_missing_files() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-continue-missing",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("demo")).unwrap();
+        std::fs::write(
+            cwd.join("demo/plan.md"),
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "off-root-dir-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "src" }),
+                    assistant_summary: Some("create src".to_string()),
+                },
+                RawModelToolCall {
+                    id: "main-file-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: Some("create main".to_string()),
+                },
+                RawModelToolCall {
+                    id: "guidance-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::AskGuidance),
+                    arguments: json!({
+                        "question": "Should I create the src directory inside demo?"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Creating remaining file.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "requirements-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "requirements.txt",
+                        "contents": ""
+                    }),
+                    assistant_summary: Some("create requirements".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("demo/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "demo/plan.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(!cwd.join("src").exists());
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("demo/src/main.py")).unwrap(),
+            "print('hello')\n"
+        );
+        assert!(cwd.join("demo/requirements.txt").is_file());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.content.contains("Should I create the src directory")
+        )));
+        assert!(provider
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(|message| message.content.contains("Missing expected files")
+                && message.content.contains("demo/requirements.txt")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

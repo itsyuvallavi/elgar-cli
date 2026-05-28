@@ -189,9 +189,9 @@ fn tree_path_from_line(
     stack: &mut Vec<PathBuf>,
     infer_directory: bool,
 ) -> Option<(PathBuf, PlanPathKind)> {
-    let marker_index = tree_marker_index(line)?;
+    let (marker_index, marker_len) = tree_marker(line)?;
     let depth = tree_depth(&line[..marker_index]);
-    let name = line[marker_index + "├──".len()..].trim();
+    let name = line[marker_index + marker_len..].trim();
     let (name, kind) = clean_plan_path_token_with_inference(name, infer_directory)?;
     let parent = stack.get(depth).cloned().unwrap_or_default();
     let path = parent.join(&name);
@@ -207,12 +207,15 @@ fn tree_path_from_line(
     Some((path, kind))
 }
 
-fn tree_marker_index(line: &str) -> Option<usize> {
-    line.find("├──").or_else(|| line.find("└──"))
+fn tree_marker(line: &str) -> Option<(usize, usize)> {
+    ["├──", "└──", "├─", "└─"]
+        .into_iter()
+        .filter_map(|marker| line.find(marker).map(|index| (index, marker.len())))
+        .min_by_key(|(index, _)| *index)
 }
 
 fn tree_line_depth(line: &str) -> Option<usize> {
-    let marker_index = tree_marker_index(line)?;
+    let (marker_index, _) = tree_marker(line)?;
     Some(tree_depth(&line[..marker_index]))
 }
 
@@ -647,6 +650,53 @@ mod tests {
         assert!(!structured
             .expected_files
             .contains(&root.join("tui-state-test/main.py")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn records_single_dash_tree_markers_from_live_plan_output() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-single-dash-structured-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("LivePlan")).unwrap();
+        fs::write(
+            root.join("LivePlan/plan.md"),
+            "# Project Plan\n\n```text\nsrc/\n└─ main.py\nrequirements.txt\n```\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("LivePlan/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("LivePlan/plan.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified live plan should create structured plan state");
+        assert!(structured
+            .expected_directories
+            .contains(&root.join("LivePlan/src")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("LivePlan/src/main.py")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("LivePlan/requirements.txt")));
 
         let _ = fs::remove_dir_all(&root);
     }

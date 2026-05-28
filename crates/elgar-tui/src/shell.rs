@@ -45,11 +45,16 @@ impl TuiShell {
     }
 
     pub fn render(&self) -> String {
+        self.render_with_conversation_body(&self.conversation.render_body())
+    }
+
+    pub fn render_scripted_transcript(&self) -> String {
+        self.render_with_conversation_body(&self.conversation.render_copy_body())
+    }
+
+    fn render_with_conversation_body(&self, conversation_body: &str) -> String {
         [
-            render_section(
-                LayoutRegion::Conversation.title(),
-                &self.conversation.render_body(),
-            ),
+            render_section(LayoutRegion::Conversation.title(), conversation_body),
             render_section(
                 LayoutRegion::PendingAction.title(),
                 &self.pending_action.render_body(),
@@ -209,7 +214,10 @@ mod tests {
         action_gate::ActionGate,
         agent_runtime::AgentRuntime,
         controller::Controller,
-        event::{ProviderOutput, VerifiedActionResult},
+        event::{
+            AssistantMessage, AssistantMessageSource, Event, ProviderFinished, ProviderOutput,
+            ProviderStarted, VerifiedActionResult,
+        },
         model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
         policy::PermissionPolicyMode,
         provider::{
@@ -276,6 +284,34 @@ mod tests {
         assert!(rendered.contains("Input\n> "));
         assert!(rendered.contains("Status\nready"));
         assert!(rendered.contains("Pending Action\nnone"));
+    }
+
+    #[test]
+    fn scripted_transcript_omits_provider_thinking_but_regular_render_keeps_it() {
+        let mut shell = TuiShell::new();
+        shell.consume_events(&[
+            Event::ProviderStarted(ProviderStarted::new("stub-provider", "request-1")),
+            Event::ProviderFinished(ProviderFinished::new(
+                "stub-provider",
+                "request-1",
+                ProviderOutput::new("visible answer")
+                    .with_thinking("Internal reasoning should stay hidden."),
+            )),
+            Event::AssistantMessage(AssistantMessage::new(
+                "visible answer",
+                AssistantMessageSource::Provider,
+            )),
+        ]);
+
+        assert!(shell
+            .render()
+            .contains("Internal reasoning should stay hidden."));
+        assert!(!shell
+            .render_scripted_transcript()
+            .contains("Internal reasoning should stay hidden."));
+        assert!(shell
+            .render_scripted_transcript()
+            .contains("visible answer"));
     }
 
     #[test]

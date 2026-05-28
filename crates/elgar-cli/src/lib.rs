@@ -556,10 +556,10 @@ where
             rendered_turns.push(render_tui_help().to_string());
         } else if is_tui_clear_command(input) {
             shell.clear_conversation();
-            rendered_turns.push(shell.render());
+            rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_cancel_command(input) {
             shell.push_local_message("No active provider turn to cancel.");
-            rendered_turns.push(shell.render());
+            rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_copy_command(input) {
             rendered_turns.push(shell.conversation_copy_text());
         } else if is_tui_state_snapshot_command(input) {
@@ -576,7 +576,7 @@ where
             rendered_turns.push(elgar_tui::render_session_plan_preview(&session));
         } else {
             submit_tui_input(&mut shell, &runtime, &action_gate, &mut session, input);
-            rendered_turns.push(shell.render());
+            rendered_turns.push(shell.render_scripted_transcript());
         }
     }
 
@@ -697,10 +697,10 @@ where
             writeln!(writer, "{}", render_tui_help())?;
         } else if is_tui_clear_command(&input) {
             shell.clear_conversation();
-            writeln!(writer, "{}", shell.render())?;
+            writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_cancel_command(&input) {
             shell.push_local_message("No active provider turn to cancel.");
-            writeln!(writer, "{}", shell.render())?;
+            writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_copy_command(&input) {
             writeln!(writer, "{}", shell.conversation_copy_text())?;
         } else if is_tui_state_snapshot_command(&input) {
@@ -734,7 +734,7 @@ where
         } else {
             runtime.refresh_context_accounting(&mut session, context_window_tokens);
             submit_tui_input(&mut shell, &runtime, &action_gate, &mut session, &input);
-            writeln!(writer, "{}", shell.render())?;
+            writeln!(writer, "{}", shell.render_scripted_transcript())?;
         }
     }
 
@@ -870,7 +870,15 @@ fn read_env(name: &'static str) -> Result<Option<String>, ProviderSmokeError> {
 
 #[cfg(test)]
 mod tests {
-    use elgar_core::{policy::PermissionPolicyMode, provider::LM_STUDIO_DEFAULT_BASE_URL};
+    use elgar_core::{
+        agent_runtime::AgentRuntime,
+        event::ProviderOutput,
+        policy::PermissionPolicyMode,
+        provider::{
+            ChatMessage, ControllerProvider, ProviderError, ProviderRequestMetadata,
+            LM_STUDIO_DEFAULT_BASE_URL,
+        },
+    };
     use std::{fs, path::PathBuf};
 
     use super::{
@@ -880,11 +888,38 @@ mod tests {
         is_tui_rejection_command, is_tui_state_snapshot_command, is_tui_status_command,
         load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
         render_cli_turn_from_runtime_config, render_tui_help, render_tui_script,
-        resolve_runtime_project_root, run_tui_loop, runtime_permission_policy_mode,
-        should_launch_terminal_tui_by_default, tui_permission_command_argument,
-        tui_tool_command_argument, ProviderSmokeError, RuntimePaths, RuntimeProviderConfigError,
-        PROVIDER_CONFIG_FILE, PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
+        resolve_runtime_project_root, run_tui_loop, run_tui_loop_with_runtime,
+        runtime_permission_policy_mode, should_launch_terminal_tui_by_default,
+        tui_permission_command_argument, tui_tool_command_argument, ProviderSmokeError,
+        RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
+        PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
+
+    #[derive(Debug, Clone)]
+    struct ThinkingProvider;
+
+    impl ControllerProvider for ThinkingProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "thinking-provider",
+                Some("test-model".to_string()),
+                "request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new("visible answer")
+                .with_thinking("Internal reasoning should stay hidden."))
+        }
+
+        fn chat_messages_with_metadata(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+        ) -> Result<ProviderOutput, ProviderError> {
+            self.chat("")
+        }
+    }
 
     fn temp_root(name: &str) -> PathBuf {
         let root =
@@ -1553,6 +1588,29 @@ mod tests {
         assert!(rendered.contains("Elgar TUI. Type /exit, /quit, or /q to leave."));
         assert!(rendered.contains("> what does the harness do?"));
         assert!(!rendered.contains("stub-request-1"));
+        assert!(rendered.contains("Exiting Elgar TUI."));
+    }
+
+    #[test]
+    fn tui_loop_scripted_transcript_omits_provider_thinking() {
+        let input = b"hello\n/exit\n";
+        let mut output = Vec::new();
+
+        run_tui_loop_with_runtime(
+            &input[..],
+            &mut output,
+            ".",
+            ".",
+            AgentRuntime::new(ThinkingProvider),
+            None,
+            PermissionPolicyMode::AutoCreateReviewModify,
+        )
+        .unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("> hello"));
+        assert!(rendered.contains("visible answer"));
+        assert!(!rendered.contains("Internal reasoning should stay hidden."));
         assert!(rendered.contains("Exiting Elgar TUI."));
     }
 
