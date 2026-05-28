@@ -451,6 +451,15 @@ where
         }
     }
 
+    if plan_creation_repair_in_progress && latest_plan_contract_needs_repair(session) {
+        let message = plan_creation_needs_revision_notice(session);
+        session.push_reasoning_runtime_check(message.clone());
+        session.push_event(Event::AssistantMessage(AssistantMessage::new(
+            message,
+            AssistantMessageSource::Controller,
+        )));
+    }
+
     TurnResult {
         route: Route::AskModel,
         events: session.events()[start_index..].to_vec(),
@@ -792,6 +801,24 @@ fn plan_creation_repair_message(session: &Session) -> String {
         lines.push(format!("- {}", plan_draft_issue_message(issue)));
     }
     lines.push("The plan file must include a concrete fenced file tree or path list, a `Verification` section with bullet checks, and an `Acceptance Criteria` section with bullet criteria.".to_string());
+    lines.join("\n")
+}
+
+fn plan_creation_needs_revision_notice(session: &Session) -> String {
+    let Some(contract) = session.latest_plan_contract() else {
+        return "The plan needs revision before execution. Review /plan for details.".to_string();
+    };
+    let review = contract.review_draft();
+    let mut lines = vec![
+        "The plan needs revision before execution.".to_string(),
+        "Blocking issues:".to_string(),
+    ];
+    for issue in review.issues.iter().filter(|issue| {
+        issue.severity == crate::plan_contract::PlanContractDraftIssueSeverity::Blocking
+    }) {
+        lines.push(format!("- {}", plan_draft_issue_message(issue)));
+    }
+    lines.push("Use /plan to review the current contract details.".to_string());
     lines.join("\n")
 }
 
@@ -2663,6 +2690,54 @@ mod tests {
                         .content
                         .contains("missing `Acceptance Criteria` section")
             ));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plan_creation_reports_needs_revision_when_repair_does_not_converge() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-needs-revision",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("NeedsRevision")).unwrap();
+        let mut outputs = vec![crate::event::ProviderOutput::new("Creating weak plan.")
+            .with_tool_calls(vec![RawModelToolCall {
+                id: "plan-needs-revision-1".to_string(),
+                name: RawModelToolName::Known(ModelToolName::CreateFile),
+                arguments: json!({
+                    "target_path": "NeedsRevision/plan.md",
+                    "contents": "# Project Plan\n\n```text\nREADME.md\n```\n"
+                }),
+                assistant_summary: Some("create weak plan".to_string()),
+            }])];
+        for _ in 1..MAX_AGENT_TOOL_ROUNDS {
+            outputs.push(crate::event::ProviderOutput::new("Plan created."));
+        }
+        let provider = SequenceProvider::new(outputs);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "create only the project plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(root.join("NeedsRevision/plan.md").is_file());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("The plan needs revision before execution")
+                    && message.content.contains("missing `Verification` section")
+                    && message.content.contains("missing `Acceptance Criteria` section")
+        )));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| { line.contains("The plan needs revision before execution") })));
 
         let _ = std::fs::remove_dir_all(root);
     }

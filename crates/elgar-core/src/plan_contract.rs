@@ -438,13 +438,20 @@ fn referenced_scope_paths(text: &str, project_root: &Path) -> Vec<PathBuf> {
 }
 
 fn clean_reference_token(token: &str) -> Option<String> {
-    let token = token
-        .trim()
-        .trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']' | '{' | '}'))
-        .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':'))
-        .trim_matches('`')
-        .trim_matches('"')
-        .trim_matches('\'');
+    let mut token = token.trim();
+    loop {
+        let cleaned = token
+            .trim()
+            .trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']' | '{' | '}'))
+            .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':'))
+            .trim_matches('`')
+            .trim_matches('"')
+            .trim_matches('\'');
+        if cleaned == token {
+            break;
+        }
+        token = cleaned;
+    }
     (!token.is_empty()).then(|| token.to_string())
 }
 
@@ -454,12 +461,21 @@ fn looks_like_plan_path_reference(token: &str) -> bool {
         return false;
     };
 
-    file_name.starts_with('.')
+    is_hidden_plan_file_name(file_name)
         || is_well_known_extensionless_file(file_name)
         || path
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(is_recognized_plan_file_extension)
+}
+
+fn is_hidden_plan_file_name(file_name: &str) -> bool {
+    file_name.starts_with('.')
+        && file_name.len() > 1
+        && file_name
+            .chars()
+            .skip(1)
+            .any(|ch| ch == '_' || ch == '-' || ch.is_ascii_alphanumeric())
 }
 
 fn is_recognized_plan_file_extension(extension: &str) -> bool {
@@ -797,7 +813,7 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         fs::write(
             &plan_path,
-            "# Plan\n\n```text\ncli.py\n__init__.py\ntyped_plan_test/__main__.py\ntests/test_cli.py\nREADME.md\n```\n\n## Verification\n- `tests/test_cli.py` imports `cli.main` and verifies it can be invoked with sample arguments.\n\n## Acceptance Criteria\n- All listed files are present with non-empty content that compiles/run without errors.\n- Running `python -m typed_plan_test` executes the CLI entry point.\n",
+            "# Plan\n\n```text\ncli.py\n__init__.py\ntyped_plan_test/__main__.py\ntests/test_cli.py\nREADME.md\n```\n\n## Verification\n- `tests/test_cli.py` imports `cli.main` and verifies it can be invoked with sample arguments.\n\n## Acceptance Criteria\n- All listed files are present with non-empty content that compiles/run without errors.\n- Running `python -m typed_plan_test` executes the CLI entry point.\n- The package can be installed locally, e.g. `pip install .`).\n",
         )
         .unwrap();
         let plan = StructuredProjectPlan {
@@ -828,6 +844,10 @@ mod tests {
                 || check.kind
                     == PlanVerificationCheckKind::PathExists {
                         path: project.join("compiles/run"),
+                    }
+                || check.kind
+                    == PlanVerificationCheckKind::PathExists {
+                        path: project.join("."),
                     }
         }));
         assert!(contract.scope.verification_checks.iter().any(|check| {
