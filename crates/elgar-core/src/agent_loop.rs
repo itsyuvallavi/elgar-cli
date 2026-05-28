@@ -402,6 +402,7 @@ where
                     let is_plan_creation =
                         plan_creation_root_for_action(session, &action.request).is_some();
                     if is_plan_creation {
+                        session.record_reasoning_route("plan_creation");
                         session.push_reasoning_runtime_check(format!(
                             "plan detected: {}",
                             action.request.approval_target()
@@ -2373,7 +2374,7 @@ mod tests {
         let trace = session
             .latest_reasoning_trace()
             .expect("reasoning trace should be recorded");
-        assert_eq!(trace.route.as_deref(), Some("execute"));
+        assert_eq!(trace.route.as_deref(), Some("plan_creation"));
         assert!(trace
             .provider_planning
             .iter()
