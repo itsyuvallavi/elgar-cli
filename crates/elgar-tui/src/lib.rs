@@ -18,6 +18,7 @@ pub use memory::{
     render_session_plan_preview, render_session_state_snapshot, render_session_status,
 };
 pub use panes::{ConversationPane, InputArea, StatusLine};
+pub use reasoning::render_session_reasoning;
 pub use shell::TuiShell;
 pub use terminal::{
     default_shell_text, run_terminal_shell, run_terminal_shell_at,

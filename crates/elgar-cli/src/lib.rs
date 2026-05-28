@@ -459,6 +459,10 @@ pub fn is_tui_plan_preview_command(input: &str) -> bool {
     matches!(input.trim(), "/plan" | "/plan preview")
 }
 
+pub fn is_tui_reasoning_command(input: &str) -> bool {
+    matches!(input.trim(), "/reasoning" | "/trace")
+}
+
 pub fn tui_tool_command_argument(input: &str) -> Option<&str> {
     input.trim().strip_prefix("/tool ").map(str::trim)
 }
@@ -515,7 +519,7 @@ fn submit_tui_input<P>(
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/tool <request>        Run an explicit tool-enabled turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/state                 Show verified state snapshot\n/status                Show session status\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
+    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/tool <request>        Run an explicit tool-enabled turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/state                 Show verified state snapshot\n/status                Show session status\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/reasoning             Show latest reasoning trace\n/trace                 Show latest reasoning trace\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
 }
 
 pub fn render_tui_script<I, S>(
@@ -574,6 +578,8 @@ where
             rendered_turns.push(elgar_tui::render_session_memory(&session));
         } else if is_tui_plan_preview_command(input) {
             rendered_turns.push(elgar_tui::render_session_plan_preview(&session));
+        } else if is_tui_reasoning_command(input) {
+            rendered_turns.push(elgar_tui::render_session_reasoning(&session));
         } else {
             submit_tui_input(&mut shell, &runtime, &action_gate, &mut session, input);
             rendered_turns.push(shell.render_scripted_transcript());
@@ -731,6 +737,8 @@ where
                 "{}",
                 elgar_tui::render_session_plan_preview(&session)
             )?;
+        } else if is_tui_reasoning_command(&input) {
+            writeln!(writer, "{}", elgar_tui::render_session_reasoning(&session))?;
         } else {
             runtime.refresh_context_accounting(&mut session, context_window_tokens);
             submit_tui_input(&mut shell, &runtime, &action_gate, &mut session, &input);
@@ -885,8 +893,8 @@ mod tests {
         default_permission_policy_mode, is_tui_approval_command, is_tui_clear_command,
         is_tui_copy_command, is_tui_created_command, is_tui_exit_command, is_tui_help_command,
         is_tui_memory_command, is_tui_pending_command, is_tui_plan_preview_command,
-        is_tui_rejection_command, is_tui_state_snapshot_command, is_tui_status_command,
-        load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
+        is_tui_reasoning_command, is_tui_rejection_command, is_tui_state_snapshot_command,
+        is_tui_status_command, load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
         render_cli_turn_from_runtime_config, render_tui_help, render_tui_script,
         resolve_runtime_project_root, run_tui_loop, run_tui_loop_with_runtime,
         runtime_permission_policy_mode, should_launch_terminal_tui_by_default,
@@ -1255,6 +1263,8 @@ mod tests {
         assert!(help.contains("/memory"));
         assert!(help.contains("/plan"));
         assert!(help.contains("/plan preview"));
+        assert!(help.contains("/reasoning"));
+        assert!(help.contains("/trace"));
         assert!(help.contains("/permissions"));
         assert!(help.contains("/copy"));
         assert!(help.contains("/exit"));
@@ -1267,6 +1277,15 @@ mod tests {
         assert!(!help.contains("/provider"));
         assert!(!help.contains("/bash"));
         assert!(!help.contains("/api"));
+    }
+
+    #[test]
+    fn tui_reasoning_command_is_explicit() {
+        assert!(is_tui_reasoning_command("/reasoning"));
+        assert!(is_tui_reasoning_command(" /trace "));
+        assert!(!is_tui_reasoning_command("reasoning"));
+        assert!(!is_tui_reasoning_command("trace"));
+        assert!(!is_tui_reasoning_command("/plan"));
     }
 
     #[test]
@@ -1418,11 +1437,23 @@ mod tests {
         assert!(rendered.contains("/memory"));
         assert!(rendered.contains("/plan"));
         assert!(rendered.contains("/plan preview"));
+        assert!(rendered.contains("/reasoning"));
+        assert!(rendered.contains("/trace"));
         assert!(rendered.contains("/copy"));
         assert!(!rendered.contains("> /help"));
         assert!(!rendered.contains("> /commands"));
         assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("stub-provider"));
+        assert!(!rendered.contains("lm-studio"));
+    }
+
+    #[test]
+    fn tui_script_reasoning_command_is_local_and_empty_without_provider_call() {
+        let rendered = render_tui_script(["/reasoning", "/trace"], ".", ".");
+
+        assert!(rendered.contains("Reasoning\n(none)"));
+        assert!(!rendered.contains("> /reasoning"));
+        assert!(!rendered.contains("stub provider response"));
         assert!(!rendered.contains("lm-studio"));
     }
 

@@ -117,6 +117,7 @@ where
 {
     let start_index = session.events().len();
     session.push_event(Event::UserMessage(UserMessage::new(input)));
+    session.start_reasoning_trace(input);
 
     let Some(tool_input) = explicit_tool_command_input(input) else {
         if run_plain_agent_chat(provider, session, input) == PlainAgentChatOutcome::Execute {
@@ -139,6 +140,8 @@ where
         };
     }
 
+    session.record_reasoning_route("execute");
+    session.push_reasoning_model_decision("explicit /tool route selected");
     run_agent_tool_chat(provider, session, tool_input, policy_mode, start_index)
 }
 
@@ -153,6 +156,9 @@ where
 {
     let start_index = session.events().len();
     session.push_event(Event::UserMessage(UserMessage::new(input)));
+    session.start_reasoning_trace(input);
+    session.record_reasoning_route("execute");
+    session.push_reasoning_model_decision("tool-enabled turn started");
     run_agent_tool_chat(provider, session, input, policy_mode, start_index)
 }
 
@@ -166,6 +172,7 @@ fn run_agent_tool_chat<P>(
 where
     P: ControllerProvider,
 {
+    session.push_reasoning_runtime_check(format!("policy: {policy_mode:?}"));
     let agent_context = agent_verified_memory_context(session);
     let mut messages = vec![ChatMessage::new(ChatRole::System, AGENT_SYSTEM_PROMPT)];
     if let Some(context) = agent_local_runtime_context(session) {
@@ -256,6 +263,8 @@ where
 
         let mut tool_calls = output.tool_calls.clone();
         let assistant_text = output.text.clone();
+        let assistant_thinking = output.thinking.clone();
+        record_provider_planning_trace(session, assistant_thinking.as_deref(), &assistant_text);
         session.push_event(Event::ProviderFinished(ProviderFinished::new(
             request.provider,
             request.request_id,
@@ -307,6 +316,7 @@ where
                 }
             },
         };
+        record_validated_tool_output_trace(session, &outputs);
 
         let path_resolution = AgentPathResolution::new(None, None, &session.project_root);
         let resolved_outputs = anchor_verified_plan_tool_outputs(
@@ -324,6 +334,9 @@ where
             resolved_outputs_touch_structured_plan(session, &resolved_outputs);
         let starts_plan_execution = plan_execution_batch && !plan_execution_in_progress;
         plan_execution_in_progress |= plan_execution_batch;
+        if plan_execution_batch {
+            session.push_reasoning_runtime_check("plan execution paths detected");
+        }
         let resolved_outputs = guard_plan_execution_tool_outputs(
             session,
             resolved_outputs,
@@ -331,6 +344,7 @@ where
         );
 
         if let Err(message) = preflight_verified_plan_tool_outputs(session, &resolved_outputs) {
+            session.push_reasoning_runtime_check(format!("preflight blocked: {message}"));
             session.push_event(Event::AssistantMessage(AssistantMessage::new(
                 message,
                 AssistantMessageSource::Controller,
@@ -338,6 +352,7 @@ where
             break;
         }
         if starts_plan_execution {
+            session.push_reasoning_runtime_check("latest structured plan marked executing");
             session.mark_latest_structured_project_plan_executing();
         }
 
@@ -361,6 +376,10 @@ where
         for output in resolved_outputs {
             match output {
                 ResolvedAgentToolOutput::Guidance(guidance) => {
+                    session.push_reasoning_model_decision(format!(
+                        "guidance requested: {}",
+                        guidance.question
+                    ));
                     push_provider_message_if_visible(session, guidance.question.clone());
                     messages.push(ChatMessage::tool(guidance.tool_call_id, guidance.question));
                 }
@@ -369,6 +388,7 @@ where
                     message,
                     visible,
                 } => {
+                    session.push_reasoning_runtime_check(format!("skipped: {message}"));
                     if visible && !visible_skipped_tool_notice_shown {
                         session.push_event(Event::AssistantMessage(AssistantMessage::new(
                             message.clone(),
@@ -381,12 +401,19 @@ where
                 ResolvedAgentToolOutput::Action(action) => {
                     let is_plan_creation =
                         plan_creation_root_for_action(session, &action.request).is_some();
+                    if is_plan_creation {
+                        session.push_reasoning_runtime_check(format!(
+                            "plan detected: {}",
+                            action.request.approval_target()
+                        ));
+                    }
                     let result = apply_agent_action_with_policy(
                         session,
                         action.request,
                         action.summary,
                         policy_mode,
                     );
+                    session.push_reasoning_runtime_check(format!("action result: {result}"));
                     if is_plan_creation
                         && session
                             .actions()
@@ -442,6 +469,53 @@ fn explicit_tool_command_input(input: &str) -> Option<&str> {
         .map(str::trim)
 }
 
+fn record_provider_planning_trace(
+    session: &mut Session,
+    thinking: Option<&str>,
+    assistant_text: &str,
+) {
+    if let Some(thinking) = thinking.filter(|value| !value.trim().is_empty()) {
+        session.push_reasoning_provider_planning(format!("thinking: {}", thinking.trim()));
+    }
+
+    let text = assistant_text.trim();
+    if !text.is_empty() && !looks_like_raw_tool_protocol(text) {
+        session.push_reasoning_provider_planning(format!("visible text: {text}"));
+    }
+}
+
+fn record_validated_tool_output_trace(session: &mut Session, outputs: &[ValidatedModelToolOutput]) {
+    for output in outputs {
+        match output {
+            ValidatedModelToolOutput::Action(action) => {
+                session.push_reasoning_model_decision(format!(
+                    "requested {}: {}",
+                    action_request_kind_label(&action.request),
+                    action.request.approval_target()
+                ));
+            }
+            ValidatedModelToolOutput::Guidance(guidance) => {
+                session.push_reasoning_model_decision(format!(
+                    "requested guidance: {}",
+                    guidance.question
+                ));
+            }
+        }
+    }
+}
+
+fn action_request_kind_label(request: &ActionRequest) -> &'static str {
+    match request {
+        ActionRequest::CreateFile(_) => "create_file",
+        ActionRequest::CreateDirectory(_) => "create_directory",
+        ActionRequest::OverwriteFile(_) => "overwrite_file",
+        ActionRequest::PatchFile(_) => "patch_file",
+        ActionRequest::DeleteFile(_) => "delete_file",
+        ActionRequest::MoveFile(_) => "move_file",
+        ActionRequest::ShellCommand(_) => "shell_command",
+    }
+}
+
 fn run_plain_agent_chat<P>(
     provider: &P,
     session: &mut Session,
@@ -479,19 +553,37 @@ where
                 output,
             )));
             if looks_like_raw_tool_protocol(&assistant_text) {
+                session.record_reasoning_route("execute");
+                session.push_reasoning_model_decision(
+                    "normal turn decision returned raw tool protocol; routed to execute",
+                );
                 return PlainAgentChatOutcome::Execute;
             }
             match parse_normal_turn_decision(&assistant_text) {
-                Some(NormalTurnDecision::Execute) => PlainAgentChatOutcome::Execute,
+                Some(NormalTurnDecision::Execute) => {
+                    session.record_reasoning_route("execute");
+                    session.push_reasoning_model_decision("normal turn decision selected execute");
+                    PlainAgentChatOutcome::Execute
+                }
                 Some(NormalTurnDecision::Chat { content }) => {
+                    session.record_reasoning_route("chat");
+                    session.push_reasoning_model_decision("normal turn decision selected chat");
                     push_plain_provider_message_if_visible(session, content);
                     PlainAgentChatOutcome::Finished
                 }
                 Some(NormalTurnDecision::AskGuidance { question }) => {
+                    session.record_reasoning_route("ask_guidance");
+                    session.push_reasoning_model_decision(
+                        "normal turn decision selected ask_guidance",
+                    );
                     push_plain_provider_message_if_visible(session, question);
                     PlainAgentChatOutcome::Finished
                 }
                 None => {
+                    session.record_reasoning_route("chat");
+                    session.push_reasoning_model_decision(
+                        "normal turn decision did not return structured JSON; treated as chat",
+                    );
                     push_plain_provider_message_if_visible(session, assistant_text);
                     PlainAgentChatOutcome::Finished
                 }
@@ -2216,6 +2308,62 @@ mod tests {
                     .contains("Provider did not return the required filesystem tool calls")
         )));
         assert_eq!(provider.messages.lock().unwrap().len(), 2);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_creation_records_reasoning_trace_for_review() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-reasoning-trace",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating only the plan file first.")
+                .with_thinking("I need to create a plan before implementation and wait.")
+                .with_tool_calls(vec![RawModelToolCall {
+                    id: "plan-reasoning-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "ReasoningPlan/plan.md",
+                        "contents": "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Check src/main.py and requirements.txt exist after execution.\n\n## Acceptance Criteria\n- The project matches the listed file tree.\n"
+                    }),
+                    assistant_summary: Some("create plan".to_string()),
+                }]),
+            crate::event::ProviderOutput::new("Plan created."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "create only a project plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let trace = session
+            .latest_reasoning_trace()
+            .expect("reasoning trace should be recorded");
+        assert_eq!(trace.route.as_deref(), Some("execute"));
+        assert!(trace
+            .provider_planning
+            .iter()
+            .any(|line| line.contains("create a plan before implementation")));
+        assert!(trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains("requested create_file")
+                && line.contains("ReasoningPlan/plan.md")));
+        assert!(trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("plan detected") && line.contains("ReasoningPlan/plan.md")));
+        assert!(trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Wrote") && line.contains("ReasoningPlan/plan.md")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

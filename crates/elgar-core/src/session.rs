@@ -31,6 +31,8 @@ pub struct Session {
     plan_contracts: Vec<PlanContract>,
     #[serde(default)]
     context_accounting: ContextAccounting,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latest_reasoning_trace: Option<ReasoningTrace>,
 }
 
 pub const PROJECT_MEMORY_LIMIT: usize = 8;
@@ -53,6 +55,7 @@ impl Session {
             latest_provider_prompt_memory_selection: None,
             plan_contracts: Vec::new(),
             context_accounting: ContextAccounting::unknown(),
+            latest_reasoning_trace: None,
         }
     }
 
@@ -121,6 +124,14 @@ impl Session {
         &self.context_accounting
     }
 
+    /// Latest inspectable reasoning/decision trace for user review.
+    ///
+    /// This is debug visibility, not proof of filesystem state. Verified action
+    /// records remain the source of truth for what actually happened.
+    pub fn latest_reasoning_trace(&self) -> Option<&ReasoningTrace> {
+        self.latest_reasoning_trace.as_ref()
+    }
+
     pub(crate) fn push_event(&mut self, event: Event) {
         self.events.push(event);
     }
@@ -139,6 +150,34 @@ impl Session {
 
     pub(crate) fn set_context_accounting(&mut self, context_accounting: ContextAccounting) {
         self.context_accounting = context_accounting;
+    }
+
+    pub(crate) fn start_reasoning_trace(&mut self, user_input: impl Into<String>) {
+        self.latest_reasoning_trace = Some(ReasoningTrace::new(user_input));
+    }
+
+    pub(crate) fn record_reasoning_route(&mut self, route: impl Into<String>) {
+        if let Some(trace) = self.latest_reasoning_trace.as_mut() {
+            trace.route = Some(route.into());
+        }
+    }
+
+    pub(crate) fn push_reasoning_provider_planning(&mut self, line: impl Into<String>) {
+        if let Some(trace) = self.latest_reasoning_trace.as_mut() {
+            trace.push_provider_planning(line);
+        }
+    }
+
+    pub(crate) fn push_reasoning_model_decision(&mut self, line: impl Into<String>) {
+        if let Some(trace) = self.latest_reasoning_trace.as_mut() {
+            trace.push_model_decision(line);
+        }
+    }
+
+    pub(crate) fn push_reasoning_runtime_check(&mut self, line: impl Into<String>) {
+        if let Some(trace) = self.latest_reasoning_trace.as_mut() {
+            trace.push_runtime_check(line);
+        }
     }
 
     pub(crate) fn record_verified_folder_reference(&mut self, reference: VerifiedFolderReference) {
@@ -222,6 +261,47 @@ impl ActionRecord {
 }
 
 pub type ActionState = ActionLifecycleState;
+
+/// Inspectable latest-turn reasoning/decision trace.
+///
+/// This intentionally stores visible provider thinking/summaries, model
+/// decisions, and runtime checks. It is not authoritative action truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningTrace {
+    pub user_input: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_planning: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_decisions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_checks: Vec<String>,
+}
+
+impl ReasoningTrace {
+    pub fn new(user_input: impl Into<String>) -> Self {
+        Self {
+            user_input: user_input.into(),
+            route: None,
+            provider_planning: Vec::new(),
+            model_decisions: Vec::new(),
+            runtime_checks: Vec::new(),
+        }
+    }
+
+    fn push_provider_planning(&mut self, line: impl Into<String>) {
+        push_bounded_unique_line(&mut self.provider_planning, line.into());
+    }
+
+    fn push_model_decision(&mut self, line: impl Into<String>) {
+        push_bounded_unique_line(&mut self.model_decisions, line.into());
+    }
+
+    fn push_runtime_check(&mut self, line: impl Into<String>) {
+        push_bounded_unique_line(&mut self.runtime_checks, line.into());
+    }
+}
 
 /// Bounded trace of memory facts selected or omitted for the latest provider prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -479,6 +559,15 @@ fn trim_to_limit<T>(items: &mut Vec<T>, limit: usize) {
         let overflow = items.len() - limit;
         items.drain(0..overflow);
     }
+}
+
+fn push_bounded_unique_line(lines: &mut Vec<String>, line: String) {
+    let line = line.trim();
+    if line.is_empty() || lines.iter().any(|existing| existing == line) {
+        return;
+    }
+    lines.push(line.to_string());
+    trim_to_memory_limit(lines);
 }
 
 /// Deterministic result of selecting a pending action from a session.

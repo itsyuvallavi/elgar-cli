@@ -305,6 +305,10 @@ where
             print_and_record_local(shell, render_session_plan_preview(session))?;
             Ok((false, String::new()))
         }
+        TerminalCommand::Reasoning => {
+            print_and_record_local(shell, crate::render_session_reasoning(session))?;
+            Ok((false, String::new()))
+        }
         TerminalCommand::Status => {
             print_and_record_local(shell, render_session_status(session))?;
             Ok((false, String::new()))
@@ -1025,6 +1029,12 @@ where
             shell
                 .conversation
                 .push_local_message(render_session_plan_preview(session));
+            shell.conversation.follow_latest();
+        }
+        TerminalCommand::Reasoning => {
+            shell
+                .conversation
+                .push_local_message(crate::render_session_reasoning(session));
             shell.conversation.follow_latest();
         }
         TerminalCommand::Status => {
