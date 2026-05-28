@@ -31,6 +31,7 @@ what folder did you create?
 /tool create only the markdown plan file at $project_dir/plan.md for a tiny Python CLI app. Do not create implementation files in this turn. The plan must contain a fenced text file tree with exactly two future files: src/main.py and requirements.txt.
 /plan
 /tool execute the plan
+/plan
 /tool create a folder named $unrelated_dir
 what folder did you create?
 /exit
@@ -54,6 +55,9 @@ grep -q "No live provider call was made" "$output_file" && fail "script used no-
 grep -A1 '^Plan Preview$' "$output_file" | grep -q '^(none)$' && fail "plan preview was empty after plan creation"
 grep -q -- "- missing playground/$project_dir/src/main.py" "$output_file" || fail "plan preview did not nest src/main.py under src"
 grep -q -- "- missing playground/$project_dir/main.py" "$output_file" && fail "plan preview exposed root-level main.py instead of src/main.py"
+grep -q "status: completed" "$output_file" || fail "plan preview did not report completed after execution"
+grep -q -- "- ok playground/$project_dir/src/main.py" "$output_file" || fail "completed plan preview did not show src/main.py present"
+grep -q -- "- ok playground/$project_dir/requirements.txt" "$output_file" || fail "completed plan preview did not show requirements.txt present"
 
 [[ -d "$playground/$plain_dir" ]] || fail "normal text did not create $plain_dir"
 [[ -d "$playground/$project_dir" ]] || fail "missing project directory $project_dir"
