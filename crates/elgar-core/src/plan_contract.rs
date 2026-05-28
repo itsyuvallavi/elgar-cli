@@ -278,6 +278,9 @@ fn scope_contains_referenced_path(
     {
         return true;
     }
+    if is_extensionless_reference_satisfied_by_scoped_file(scope_paths, path) {
+        return true;
+    }
 
     let Ok(relative) = path.strip_prefix(project_root) else {
         return false;
@@ -292,6 +295,28 @@ fn scope_contains_referenced_path(
     scope_paths
         .iter()
         .any(|scope_path| scope_path.file_name() == Some(file_name))
+}
+
+fn is_extensionless_reference_satisfied_by_scoped_file(
+    scope_paths: &[&PathBuf],
+    path: &Path,
+) -> bool {
+    if path.extension().is_some() {
+        return false;
+    }
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !is_well_known_extensionless_file(file_name) {
+        return false;
+    }
+
+    scope_paths.iter().any(|scope_path| {
+        scope_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem == file_name)
+    })
 }
 
 fn review_metadata_from_source_plan(path: &Path) -> (Vec<String>, Vec<String>) {
@@ -464,6 +489,9 @@ fn referenced_scope_paths(text: &str, project_root: &Path) -> Vec<PathBuf> {
         if !looks_like_plan_path_reference(&token) {
             continue;
         }
+        if is_glob_like_reference(&token) {
+            continue;
+        }
         let path = PathBuf::from(token);
         if path.components().any(|component| {
             matches!(
@@ -479,6 +507,10 @@ fn referenced_scope_paths(text: &str, project_root: &Path) -> Vec<PathBuf> {
         }
     }
     paths
+}
+
+fn is_glob_like_reference(token: &str) -> bool {
+    token.contains('*') || token.contains('?') || token.contains('[') || token.contains(']')
 }
 
 fn clean_reference_token(token: &str) -> Option<String> {
@@ -1267,6 +1299,95 @@ mod tests {
                 == PlanContractDraftIssueKind::InvalidPythonModuleReference {
                     module: "plan-review-copy-test.cli".to_string(),
                 }
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_allows_readme_stem_and_ignores_glob_references() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-review-glob-readme-{}",
+            std::process::id()
+        ));
+        let project = root.join("advanced-plan-test");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n## Verification\n- README explains usage.\n- Tests are named with the `test_*.py` pattern.\n\n## Acceptance Criteria\n- README has a top-level heading.\n",
+        )
+        .unwrap();
+        let contract = PlanContract {
+            id: "contract-readme-glob".to_string(),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            source_action_id: Some("action-plan".to_string()),
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: vec![project.join("tests")],
+                allowed_files: vec![project.join("README.md"), project.join("tests/test_cli.py")],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec![
+                    "README explains usage.".to_string(),
+                    "Tests are named with the `test_*.py` pattern.".to_string(),
+                ],
+                verification_checks: Vec::new(),
+                acceptance_criteria: vec!["README has a top-level heading.".to_string()],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+
+        let review = contract.review_draft();
+
+        assert!(review.is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_still_blocks_real_concrete_path_mismatch() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-review-concrete-mismatch-{}",
+            std::process::id()
+        ));
+        let project = root.join("advanced-plan-test");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n## Verification\n- `src/tasktracker/cli.py` contains a command parser.\n\n## Acceptance Criteria\n- `src/cli.py` exists.\n",
+        )
+        .unwrap();
+        let contract = PlanContract {
+            id: "contract-concrete-mismatch".to_string(),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            source_action_id: Some("action-plan".to_string()),
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: vec![project.join("src")],
+                allowed_files: vec![project.join("src/cli.py")],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec![
+                    "`src/tasktracker/cli.py` contains a command parser.".to_string()
+                ],
+                verification_checks: Vec::new(),
+                acceptance_criteria: vec!["`src/cli.py` exists.".to_string()],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+
+        let review = contract.review_draft();
+
+        assert!(!review.is_approvable());
+        assert!(review.issues.iter().any(|issue| {
+            issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
+                && issue.path.as_ref() == Some(&project.join("src/tasktracker/cli.py"))
         }));
 
         let _ = fs::remove_dir_all(root);
