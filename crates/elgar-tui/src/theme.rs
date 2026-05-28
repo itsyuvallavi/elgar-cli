@@ -46,6 +46,24 @@ pub(crate) fn warning_action() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+pub(crate) fn context_normal() -> Style {
+    muted()
+}
+
+pub(crate) fn context_mild() -> Style {
+    Style::default().fg(Color::Rgb(194, 170, 112))
+}
+
+pub(crate) fn context_warning() -> Style {
+    warning_action()
+}
+
+pub(crate) fn context_danger() -> Style {
+    Style::default()
+        .fg(Color::Rgb(218, 118, 118))
+        .add_modifier(Modifier::BOLD)
+}
+
 #[cfg(test)]
 pub(crate) fn error() -> Style {
     Style::default()
@@ -58,8 +76,8 @@ mod tests {
     use ratatui::style::{Color, Modifier};
 
     use super::{
-        accent, error, model_output, muted, primary, success, thinking, tool_output,
-        user_input_block, warning_action,
+        accent, context_danger, context_mild, context_normal, context_warning, error, model_output,
+        muted, primary, success, thinking, tool_output, user_input_block, warning_action,
     };
 
     #[test]
@@ -75,6 +93,10 @@ mod tests {
         assert_eq!(tool_output().bg, Some(Color::Rgb(29, 45, 34)));
         assert_eq!(success().fg, Some(Color::Rgb(143, 188, 143)));
         assert_eq!(warning_action().fg, Some(Color::Rgb(214, 181, 110)));
+        assert_eq!(context_normal().fg, muted().fg);
+        assert_eq!(context_mild().fg, Some(Color::Rgb(194, 170, 112)));
+        assert_eq!(context_warning().fg, warning_action().fg);
+        assert_eq!(context_danger().fg, Some(Color::Rgb(218, 118, 118)));
         assert_eq!(error().fg, Some(Color::Rgb(218, 118, 118)));
     }
 
@@ -87,6 +109,10 @@ mod tests {
         assert!(accent().add_modifier.contains(Modifier::BOLD));
         assert!(user_input_block().add_modifier.contains(Modifier::BOLD));
         assert!(warning_action().add_modifier.contains(Modifier::BOLD));
+        assert!(!context_normal().add_modifier.contains(Modifier::BOLD));
+        assert!(!context_mild().add_modifier.contains(Modifier::BOLD));
+        assert!(context_warning().add_modifier.contains(Modifier::BOLD));
+        assert!(context_danger().add_modifier.contains(Modifier::BOLD));
         assert!(error().add_modifier.contains(Modifier::BOLD));
     }
 }

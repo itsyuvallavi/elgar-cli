@@ -75,13 +75,19 @@ fn inline_prompt_frame_matches_old_elgar_runtime_shape() {
 #[test]
 fn active_working_frame_keeps_prompt_and_footer_visible() {
     let context = TerminalShellContext::new("/repo", "/repo")
-        .with_provider("lm-studio", Some("model-a".to_string()));
+        .with_provider("lm-studio", Some("model-a".to_string()))
+        .with_context_accounting(ContextAccounting {
+            loaded_files: Vec::new(),
+            omitted_files: Vec::new(),
+            estimated_tokens: Some(4_000),
+            max_window_tokens: Some(16_000),
+        });
 
     let live_output = LiveProviderOutput::default();
     let (progress, reasoning, response, top, input, bottom, footer) =
         active_working_frame_lines(&context, 1, 7, "/cancel", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model."]);
+    assert_eq!(progress, vec!["", "Working with local model. 7s"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
     assert_eq!(top[0], "");
@@ -89,6 +95,7 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     assert_eq!(input, vec!["▸ /cancel▌"]);
     assert_eq!(bottom, vec![top[1].clone()]);
     assert!(footer[0].contains("model-a"));
+    assert!(footer[0].contains("ctx ~4.0k/16.0k ~25%"));
     assert_eq!(footer.len(), 1);
     assert!(!footer.join("\n").contains("context:"));
 }
@@ -132,7 +139,7 @@ fn active_working_frame_uses_neutral_provider_progress_for_project_requests() {
             80,
         );
 
-    assert_eq!(progress, vec!["", "Working with local model."]);
+    assert_eq!(progress, vec!["", "Working with local model. 1s"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
@@ -327,7 +334,7 @@ fn active_working_frame_can_suppress_provider_turn_response_preview() {
     let (progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "create files", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model"]);
+    assert_eq!(progress, vec!["", "Working with local model 1s"]);
     assert!(response.is_empty());
 }
 
@@ -344,7 +351,7 @@ fn active_working_frame_can_suppress_provider_turn_reasoning_preview() {
     let (progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "create files", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model"]);
+    assert_eq!(progress, vec!["", "Working with local model 1s"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
@@ -377,7 +384,7 @@ fn active_working_frame_suppresses_provider_turn_tool_stream_with_neutral_progre
         .concat()
         .join("\n");
 
-    assert_eq!(progress, vec!["", "Working with local model"]);
+    assert_eq!(progress, vec!["", "Working with local model 1s"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
     assert!(!rendered.contains("to=functions"));

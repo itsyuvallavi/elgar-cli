@@ -207,7 +207,7 @@ fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
 }
 
 #[test]
-fn terminal_footer_hides_controller_context_accounting() {
+fn terminal_footer_shows_estimated_context_accounting_with_approximate_label() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()))
         .with_context_accounting(ContextAccounting {
@@ -225,14 +225,12 @@ fn terminal_footer_hides_controller_context_accounting() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(!footer.contains("~321"));
-    assert!(!footer.contains("128k"));
-    assert!(!footer.contains('%'));
+    assert!(footer.contains("ctx ~321/128.0k ~0%"));
     assert!(!footer.contains("TBD"));
 }
 
 #[test]
-fn terminal_footer_hides_provider_usage_when_present() {
+fn terminal_footer_does_not_use_provider_metrics_without_session_snapshot() {
     let mut metrics = ProviderMetrics::new(
         "request-usage",
         Some("openai/gpt-oss-20b".to_string()),
@@ -258,9 +256,8 @@ fn terminal_footer_hides_provider_usage_when_present() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(!footer.contains("10/128k"));
-    assert!(!footer.contains("~321"));
-    assert!(!footer.contains('%'));
+    assert!(footer.contains("ctx ~321/128.0k ~0%"));
+    assert!(!footer.contains("10/128.0k"));
 }
 
 #[test]
@@ -305,7 +302,7 @@ fn terminal_context_from_session_carries_provider_usage_to_footer() {
 }
 
 #[test]
-fn terminal_footer_hides_context_when_provider_usage_is_absent() {
+fn terminal_footer_shows_unknown_context_when_provider_usage_is_absent() {
     let metrics = ProviderMetrics::new(
         "request-no-usage",
         Some("openai/gpt-oss-20b".to_string()),
@@ -325,12 +322,13 @@ fn terminal_footer_hides_context_when_provider_usage_is_absent() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
+    assert!(footer.contains("ctx ?/?"));
     assert!(!footer.contains("TBD"));
     assert!(!footer.contains('%'));
 }
 
 #[test]
-fn terminal_footer_hides_context_with_configured_window() {
+fn terminal_footer_shows_unknown_context_with_configured_window() {
     let context =
         TerminalShellContext::new("/repo", "/repo").with_context_accounting(ContextAccounting {
             loaded_files: Vec::new(),
@@ -342,8 +340,55 @@ fn terminal_footer_hides_context_with_configured_window() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(!footer.contains("128k"));
+    assert!(footer.contains("ctx ?/128.0k"));
     assert!(!footer.contains('%'));
+}
+
+#[test]
+fn terminal_footer_context_pressure_uses_documented_thresholds() {
+    let context = TerminalShellContext::new(".", ".").with_context_accounting(ContextAccounting {
+        loaded_files: Vec::new(),
+        omitted_files: Vec::new(),
+        estimated_tokens: Some(7_999),
+        max_window_tokens: Some(16_000),
+    });
+    assert_eq!(
+        context_window_pressure(context.context_window_snapshot.as_ref()),
+        ContextWindowPressure::Normal
+    );
+
+    let context = TerminalShellContext::new(".", ".").with_context_accounting(ContextAccounting {
+        loaded_files: Vec::new(),
+        omitted_files: Vec::new(),
+        estimated_tokens: Some(8_000),
+        max_window_tokens: Some(16_000),
+    });
+    assert_eq!(
+        context_window_pressure(context.context_window_snapshot.as_ref()),
+        ContextWindowPressure::Mild
+    );
+
+    let context = TerminalShellContext::new(".", ".").with_context_accounting(ContextAccounting {
+        loaded_files: Vec::new(),
+        omitted_files: Vec::new(),
+        estimated_tokens: Some(11_200),
+        max_window_tokens: Some(16_000),
+    });
+    assert_eq!(
+        context_window_pressure(context.context_window_snapshot.as_ref()),
+        ContextWindowPressure::Warning
+    );
+
+    let context = TerminalShellContext::new(".", ".").with_context_accounting(ContextAccounting {
+        loaded_files: Vec::new(),
+        omitted_files: Vec::new(),
+        estimated_tokens: Some(13_760),
+        max_window_tokens: Some(16_000),
+    });
+    assert_eq!(
+        context_window_pressure(context.context_window_snapshot.as_ref()),
+        ContextWindowPressure::Danger
+    );
 }
 
 #[test]

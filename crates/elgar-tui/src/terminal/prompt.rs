@@ -49,8 +49,9 @@ impl InlinePromptRenderer {
         for line in &bottom_lines {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
         }
+        let footer_ansi = self.context.footer_ansi();
         for line in &footer_lines {
-            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+            write!(io::stdout(), "{footer_ansi}{line}{ANSI_RESET}\r\n")?;
         }
 
         self.rows = top_lines.len() + input_lines.len() + bottom_lines.len() + footer_lines.len();
@@ -131,8 +132,9 @@ impl InlineWorkingRenderer {
         for line in &bottom_lines {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
         }
+        let footer_ansi = self.context.footer_ansi();
         for line in &footer_lines {
-            write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
+            write!(io::stdout(), "{footer_ansi}{line}{ANSI_RESET}\r\n")?;
         }
 
         self.rows = thinking_lines.len()
@@ -271,7 +273,7 @@ type ActiveWorkingFrameLineGroups = (
 pub(super) fn active_working_frame_lines(
     context: &TerminalShellContext,
     tick: usize,
-    _elapsed_secs: u64,
+    elapsed_secs: u64,
     input: &str,
     live_output: &LiveProviderOutput,
     width: usize,
@@ -285,7 +287,7 @@ pub(super) fn active_working_frame_lines(
         .map(|text| with_leading_spacer(rendered_preview_lines(&text, drawable_width(width))))
         .unwrap_or_default();
     let progress_lines = if reasoning_lines.is_empty() && response_lines.is_empty() {
-        with_leading_spacer(vec![provider_progress_line(tick).to_string()])
+        with_leading_spacer(vec![provider_progress_line(tick, elapsed_secs)])
     } else {
         Vec::new()
     };
@@ -302,12 +304,17 @@ pub(super) fn active_working_frame_lines(
     )
 }
 
-fn provider_progress_line(tick: usize) -> &'static str {
-    match tick % 4 {
+fn provider_progress_line(tick: usize, elapsed_secs: u64) -> String {
+    let base = match tick % 4 {
         0 => "Working with local model",
         1 => "Working with local model.",
         2 => "Working with local model..",
         _ => "Working with local model...",
+    };
+    if elapsed_secs == 0 {
+        base.to_string()
+    } else {
+        format!("{base} {elapsed_secs}s")
     }
 }
 

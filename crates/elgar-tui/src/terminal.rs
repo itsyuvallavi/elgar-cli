@@ -78,6 +78,9 @@ const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_CYAN: &str = "\x1b[38;2;143;207;198m";
 const ANSI_MUTED: &str = "\x1b[38;2;118;126;126m";
+const ANSI_CONTEXT_MILD: &str = "\x1b[38;2;194;170;112m";
+const ANSI_CONTEXT_WARNING: &str = "\x1b[1m\x1b[38;2;214;181;110m";
+const ANSI_CONTEXT_DANGER: &str = "\x1b[1m\x1b[38;2;218;118;118m";
 const ANSI_TEXT: &str = "\x1b[38;2;214;219;224m";
 const ANSI_TOOL_BLOCK: &str = "\x1b[38;2;186;214;194m\x1b[48;2;29;45;34m";
 const ANSI_USER_BLOCK: &str = "\x1b[1m\x1b[38;2;143;207;198m\x1b[48;2;8;32;32m";
@@ -744,7 +747,7 @@ pub fn render_tui_shell(frame: &mut Frame<'_>, shell: &TuiShell, context: &Termi
 
     let status =
         Paragraph::new(context.footer_body_for_width(usize::from(chunks[status_index].width)))
-            .style(theme::muted())
+            .style(context.footer_style())
             .wrap(Wrap { trim: false })
             .block(Block::default());
     frame.render_widget(status, chunks[status_index]);
@@ -807,6 +810,11 @@ impl TerminalShellContext {
     }
 
     pub fn with_context_accounting(mut self, context_accounting: ContextAccounting) -> Self {
+        self.context_window_snapshot = Some(if context_accounting.estimated_tokens.is_some() {
+            ContextWindowSnapshot::from_context_estimate(&context_accounting)
+        } else {
+            ContextWindowSnapshot::unknown(context_accounting.max_window_tokens)
+        });
         self.context_accounting = context_accounting;
         self
     }
@@ -862,11 +870,53 @@ impl TerminalShellContext {
             (Some(tokens), ContextWindowSource::Unknown) => compact_token_count(tokens),
             (None, _) => "?".to_string(),
         };
-        let percent = snapshot
-            .used_percent
-            .map(|percent| format!(" {percent}%"))
-            .unwrap_or_default();
+        let percent = footer_percent_label(snapshot);
         Some(format!("ctx {current}/{window}{percent}"))
+    }
+
+    pub(super) fn footer_ansi(&self) -> &'static str {
+        match context_window_pressure(self.context_window_snapshot.as_ref()) {
+            ContextWindowPressure::Normal | ContextWindowPressure::Unknown => ANSI_MUTED,
+            ContextWindowPressure::Mild => ANSI_CONTEXT_MILD,
+            ContextWindowPressure::Warning => ANSI_CONTEXT_WARNING,
+            ContextWindowPressure::Danger => ANSI_CONTEXT_DANGER,
+        }
+    }
+
+    fn footer_style(&self) -> ratatui::style::Style {
+        match context_window_pressure(self.context_window_snapshot.as_ref()) {
+            ContextWindowPressure::Normal | ContextWindowPressure::Unknown => {
+                theme::context_normal()
+            }
+            ContextWindowPressure::Mild => theme::context_mild(),
+            ContextWindowPressure::Warning => theme::context_warning(),
+            ContextWindowPressure::Danger => theme::context_danger(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextWindowPressure {
+    Normal,
+    Mild,
+    Warning,
+    Danger,
+    Unknown,
+}
+
+fn context_window_pressure(snapshot: Option<&ContextWindowSnapshot>) -> ContextWindowPressure {
+    let Some(snapshot) = snapshot else {
+        return ContextWindowPressure::Unknown;
+    };
+    let Some(percent) = snapshot.used_percent else {
+        return ContextWindowPressure::Unknown;
+    };
+
+    match percent {
+        0..=49 => ContextWindowPressure::Normal,
+        50..=69 => ContextWindowPressure::Mild,
+        70..=85 => ContextWindowPressure::Warning,
+        _ => ContextWindowPressure::Danger,
     }
 }
 
@@ -875,6 +925,16 @@ fn compact_token_count(tokens: u64) -> String {
         format!("{:.1}k", tokens as f64 / 1_000.0)
     } else {
         tokens.to_string()
+    }
+}
+
+fn footer_percent_label(snapshot: &ContextWindowSnapshot) -> String {
+    let Some(percent) = snapshot.used_percent else {
+        return String::new();
+    };
+    match snapshot.source {
+        ContextWindowSource::Estimate => format!(" ~{percent}%"),
+        _ => format!(" {percent}%"),
     }
 }
 
