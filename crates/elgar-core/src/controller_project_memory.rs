@@ -175,12 +175,40 @@ fn push_plan_path(
         return;
     };
 
+    if matches!(kind, PlanPathKind::File) {
+        push_parent_plan_directories(project_root, &path, expected_directories);
+    }
+
     let bucket = match kind {
         PlanPathKind::Directory => expected_directories,
         PlanPathKind::File => expected_files,
     };
     if !bucket.contains(&path) {
         bucket.push(path);
+    }
+}
+
+fn push_parent_plan_directories(
+    project_root: &Path,
+    path: &Path,
+    expected_directories: &mut Vec<PathBuf>,
+) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let Ok(relative_parent) = parent.strip_prefix(project_root) else {
+        return;
+    };
+
+    let mut current = project_root.to_path_buf();
+    for component in relative_parent.components() {
+        let Component::Normal(segment) = component else {
+            return;
+        };
+        current.push(segment);
+        if current != project_root && !expected_directories.contains(&current) {
+            expected_directories.push(current.clone());
+        }
     }
 }
 
@@ -691,6 +719,59 @@ mod tests {
         assert!(structured
             .expected_directories
             .contains(&root.join("LivePlan/src")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("LivePlan/src/main.py")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("LivePlan/requirements.txt")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn records_parent_directories_for_expected_file_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-parent-dir-structured-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("LivePlan")).unwrap();
+        fs::write(
+            root.join("LivePlan/plan.md"),
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\ntests/\n```\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("LivePlan/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("LivePlan/plan.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified live plan should create structured plan state");
+        assert!(structured
+            .expected_directories
+            .contains(&root.join("LivePlan/src")));
+        assert!(structured
+            .expected_directories
+            .contains(&root.join("LivePlan/tests")));
+        assert!(!structured
+            .expected_directories
+            .contains(&root.join("LivePlan")));
         assert!(structured
             .expected_files
             .contains(&root.join("LivePlan/src/main.py")));
