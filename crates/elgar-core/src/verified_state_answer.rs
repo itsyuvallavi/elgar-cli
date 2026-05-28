@@ -152,7 +152,7 @@ fn verified_plan_answer(session: &Session) -> String {
             "plan: {}\nroot: {}\nstatus: {}",
             display_agent_context_path(session, &plan.source_plan_path),
             display_agent_context_path(session, &plan.project_root),
-            structured_plan_status_label(plan.status)
+            structured_plan_status_label(plan.runtime_status())
         );
     }
     if let Some(plan) = session.project_memory().latest_verified_plan() {
@@ -205,8 +205,11 @@ fn verified_pending_summary_value(session: &Session) -> String {
 
 fn structured_plan_status_label(status: StructuredProjectPlanStatus) -> &'static str {
     match status {
-        StructuredProjectPlanStatus::Proposed => "proposed",
-        StructuredProjectPlanStatus::Executed => "executed",
+        StructuredProjectPlanStatus::Draft => "draft",
+        StructuredProjectPlanStatus::Verified => "verified",
+        StructuredProjectPlanStatus::Executing => "executing",
+        StructuredProjectPlanStatus::Completed => "completed",
+        StructuredProjectPlanStatus::Stale => "stale",
     }
 }
 

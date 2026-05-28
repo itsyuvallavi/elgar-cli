@@ -153,6 +153,16 @@ impl Session {
         self.project_memory.mark_structured_plan_executed(action_id);
     }
 
+    pub(crate) fn mark_latest_structured_project_plan_executing(&mut self) {
+        self.project_memory
+            .mark_latest_structured_plan_status(StructuredProjectPlanStatus::Executing);
+    }
+
+    pub(crate) fn mark_latest_structured_project_plan_completed(&mut self) {
+        self.project_memory
+            .mark_latest_structured_plan_status(StructuredProjectPlanStatus::Completed);
+    }
+
     pub(crate) fn remove_structured_project_plan_for_action(&mut self, action_id: &str) {
         self.project_memory
             .remove_structured_plan_for_action(action_id);
@@ -299,7 +309,7 @@ impl ProjectMemory {
         self.structured_plans
             .iter()
             .rev()
-            .find(|plan| plan.status == StructuredProjectPlanStatus::Executed)
+            .find(|plan| plan.runtime_status() == StructuredProjectPlanStatus::Completed)
     }
 
     fn remember_verified_folder(&mut self, reference: VerifiedFolderReference) {
@@ -330,7 +340,13 @@ impl ProjectMemory {
             .rev()
             .find(|plan| plan.source_action_id.as_deref() == Some(action_id))
         {
-            plan.status = StructuredProjectPlanStatus::Executed;
+            plan.status = StructuredProjectPlanStatus::Completed;
+        }
+    }
+
+    fn mark_latest_structured_plan_status(&mut self, status: StructuredProjectPlanStatus) {
+        if let Some(plan) = self.structured_plans.last_mut() {
+            plan.status = status;
         }
     }
 
@@ -366,11 +382,61 @@ pub struct StructuredProjectPlan {
     pub expected_files: Vec<PathBuf>,
 }
 
+impl StructuredProjectPlan {
+    pub fn runtime_status(&self) -> StructuredProjectPlanStatus {
+        if self.is_stale() {
+            return StructuredProjectPlanStatus::Stale;
+        }
+
+        if self.has_expected_paths() && self.expected_paths_complete() {
+            return StructuredProjectPlanStatus::Completed;
+        }
+
+        self.status
+    }
+
+    pub fn expected_directories_present_count(&self) -> usize {
+        self.expected_directories
+            .iter()
+            .filter(|path| path.is_dir())
+            .count()
+    }
+
+    pub fn expected_files_present_count(&self) -> usize {
+        self.expected_files
+            .iter()
+            .filter(|path| path.is_file())
+            .count()
+    }
+
+    fn is_stale(&self) -> bool {
+        !self.source_plan_path.is_file()
+            || !self.project_root.is_dir()
+            || (self.status == StructuredProjectPlanStatus::Completed
+                && self.has_expected_paths()
+                && !self.expected_paths_complete())
+    }
+
+    fn has_expected_paths(&self) -> bool {
+        !self.expected_directories.is_empty() || !self.expected_files.is_empty()
+    }
+
+    fn expected_paths_complete(&self) -> bool {
+        self.expected_directories.iter().all(|path| path.is_dir())
+            && self.expected_files.iter().all(|path| path.is_file())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum StructuredProjectPlanStatus {
+    Draft,
     #[default]
-    Proposed,
-    Executed,
+    #[serde(alias = "Proposed")]
+    Verified,
+    Executing,
+    #[serde(alias = "Executed")]
+    Completed,
+    Stale,
 }
 
 fn trim_to_memory_limit<T>(items: &mut Vec<T>) {
@@ -418,7 +484,7 @@ impl ProviderMetadata {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
 
     use crate::action::{Action, ActionLifecycleState};
     use crate::event::{
@@ -426,7 +492,10 @@ mod tests {
         ProviderOutput, VerifiedActionResult,
     };
 
-    use super::{ActionRecord, PendingActionSelection, ProjectMemory, ProviderMetadata, Session};
+    use super::{
+        ActionRecord, PendingActionSelection, ProjectMemory, ProviderMetadata, Session,
+        StructuredProjectPlan, StructuredProjectPlanStatus,
+    };
 
     #[test]
     fn new_session_stores_identity_paths_and_empty_state() {
@@ -443,6 +512,56 @@ mod tests {
         let debug = format!("{session:?}");
         assert!(debug.contains("session-1"));
         assert!(debug.contains("project_root"));
+    }
+
+    #[test]
+    fn structured_plan_runtime_status_tracks_verified_completed_and_stale() {
+        let root =
+            std::env::temp_dir().join(format!("elgar-session-plan-status-{}", std::process::id()));
+        let project = root.join("DemoApp");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(&plan_path, "# Plan\n").unwrap();
+
+        let mut plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path.clone(),
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::default(),
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![
+                project.join("src/main.py"),
+                project.join("requirements.txt"),
+            ],
+        };
+
+        assert_eq!(plan.runtime_status(), StructuredProjectPlanStatus::Verified);
+        assert_eq!(plan.expected_directories_present_count(), 0);
+        assert_eq!(plan.expected_files_present_count(), 0);
+
+        plan.status = StructuredProjectPlanStatus::Executing;
+        assert_eq!(
+            plan.runtime_status(),
+            StructuredProjectPlanStatus::Executing
+        );
+
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::write(project.join("src/main.py"), "print('hello')\n").unwrap();
+        fs::write(project.join("requirements.txt"), "").unwrap();
+        assert_eq!(
+            plan.runtime_status(),
+            StructuredProjectPlanStatus::Completed
+        );
+        assert_eq!(plan.expected_directories_present_count(), 1);
+        assert_eq!(plan.expected_files_present_count(), 2);
+
+        plan.status = StructuredProjectPlanStatus::Completed;
+        fs::remove_file(project.join("requirements.txt")).unwrap();
+        assert_eq!(plan.runtime_status(), StructuredProjectPlanStatus::Stale);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

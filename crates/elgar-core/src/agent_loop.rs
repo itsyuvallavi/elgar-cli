@@ -216,7 +216,8 @@ where
                                 output,
                             )));
                             if plan_execution_in_progress {
-                                if let Some(message) = missing_expected_plan_paths_message(session)
+                                if let Some(message) =
+                                    plan_execution_repair_message_or_mark_complete(session)
                                 {
                                     messages.push(ChatMessage::system(message));
                                     continue;
@@ -255,7 +256,7 @@ where
 
         if tool_calls.is_empty() {
             if plan_execution_in_progress {
-                if let Some(message) = missing_expected_plan_paths_message(session) {
+                if let Some(message) = plan_execution_repair_message_or_mark_complete(session) {
                     messages.push(ChatMessage::system(message));
                     continue;
                 }
@@ -305,6 +306,7 @@ where
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
         let plan_execution_batch =
             resolved_outputs_touch_structured_plan(session, &resolved_outputs);
+        let starts_plan_execution = plan_execution_batch && !plan_execution_in_progress;
         plan_execution_in_progress |= plan_execution_batch;
         let resolved_outputs = guard_plan_execution_tool_outputs(
             session,
@@ -318,6 +320,9 @@ where
                 AssistantMessageSource::Controller,
             )));
             break;
+        }
+        if starts_plan_execution {
+            session.mark_latest_structured_project_plan_executing();
         }
 
         if policy_mode == PermissionPolicyMode::ReviewAll {
@@ -391,7 +396,7 @@ where
         }
 
         if plan_execution_in_progress {
-            if let Some(message) = missing_expected_plan_paths_message(session) {
+            if let Some(message) = plan_execution_repair_message_or_mark_complete(session) {
                 messages.push(ChatMessage::system(message));
                 continue;
             }
@@ -1003,6 +1008,14 @@ fn missing_expected_plan_paths_message(session: &Session) -> Option<String> {
     }
     lines.push("Use create_directory for missing expected directories and create_file for missing expected files under the verified plan root. Do not ask whether to create expected paths.".to_string());
     Some(lines.join("\n"))
+}
+
+fn plan_execution_repair_message_or_mark_complete(session: &mut Session) -> Option<String> {
+    let message = missing_expected_plan_paths_message(session);
+    if message.is_none() {
+        session.mark_latest_structured_project_plan_completed();
+    }
+    message
 }
 
 fn missing_expected_plan_directories(session: &Session) -> Vec<PathBuf> {
@@ -2574,6 +2587,14 @@ mod tests {
             "print('hello')\n"
         );
         assert!(cwd.join("demo/tests").is_dir());
+        assert_eq!(
+            session
+                .project_memory()
+                .latest_structured_plan()
+                .expect("plan should remain recorded")
+                .runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
         assert!(provider
             .messages
             .lock()

@@ -137,7 +137,7 @@ pub fn render_session_state_snapshot(session: &Session) -> String {
         lines.push("latest structured plan:".to_string());
         lines.push(format!(
             "- {} {}",
-            structured_status(plan.status),
+            structured_status(plan.runtime_status()),
             display_session_path(session, &plan.source_plan_path)
         ));
         lines.push(format!(
@@ -160,7 +160,15 @@ pub fn render_session_state_snapshot(session: &Session) -> String {
 
 fn render_structured_plan_preview(session: &Session, plan: &StructuredProjectPlan) -> String {
     let mut lines = vec!["Plan Preview".to_string()];
-    lines.push(format!("status: {}", structured_status(plan.status)));
+    lines.push(format!(
+        "status: {}",
+        structured_status(plan.runtime_status())
+    ));
+    lines.push(format!("stage: {}", plan.stage));
+    lines.push(format!(
+        "source action: {}",
+        plan.source_action_id.as_deref().unwrap_or("unknown-action")
+    ));
     lines.push(format!(
         "plan: {}",
         display_session_path(session, &plan.source_plan_path)
@@ -173,7 +181,11 @@ fn render_structured_plan_preview(session: &Session, plan: &StructuredProjectPla
     if plan.expected_directories.is_empty() {
         lines.push("directories: (none listed)".to_string());
     } else {
-        lines.push(format!("directories: {}", plan.expected_directories.len()));
+        lines.push(format!(
+            "directories: {}/{} present",
+            plan.expected_directories_present_count(),
+            plan.expected_directories.len()
+        ));
         for path in &plan.expected_directories {
             lines.push(format!(
                 "- {} {}",
@@ -186,7 +198,11 @@ fn render_structured_plan_preview(session: &Session, plan: &StructuredProjectPla
     if plan.expected_files.is_empty() {
         lines.push("files: (none listed)".to_string());
     } else {
-        lines.push(format!("files: {}", plan.expected_files.len()));
+        lines.push(format!(
+            "files: {}/{} present",
+            plan.expected_files_present_count(),
+            plan.expected_files.len()
+        ));
         for path in &plan.expected_files {
             lines.push(format!(
                 "- {} {}",
@@ -334,7 +350,7 @@ fn render_memory(
             let action = plan.source_action_id.as_deref().unwrap_or("unknown-action");
             lines.push(format!(
                 "- {} {} ({})",
-                structured_status(plan.status),
+                structured_status(plan.runtime_status()),
                 plan.stage,
                 action
             ));
@@ -397,8 +413,11 @@ fn path_count(paths: &[std::path::PathBuf], kind: PathKind) -> String {
 
 fn structured_status(status: StructuredProjectPlanStatus) -> &'static str {
     match status {
-        StructuredProjectPlanStatus::Proposed => "proposed",
-        StructuredProjectPlanStatus::Executed => "executed",
+        StructuredProjectPlanStatus::Draft => "draft",
+        StructuredProjectPlanStatus::Verified => "verified",
+        StructuredProjectPlanStatus::Executing => "executing",
+        StructuredProjectPlanStatus::Completed => "completed",
+        StructuredProjectPlanStatus::Stale => "stale",
     }
 }
 
@@ -551,6 +570,51 @@ mod tests {
         fs::remove_file(&plan_path).unwrap();
         let rendered = render_session_memory(&session);
         assert!(rendered.contains("- missing "));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renders_plan_preview_lifecycle_from_verified_paths() {
+        let root = temp_root("plan-preview-lifecycle");
+        let project = root.join("DemoApp");
+        fs::create_dir_all(&project).unwrap();
+        let mut session = Session::new("memory-session", &root, &root);
+        let plan_contents = "# Project Plan\n\n```text\nsrc/\n└─ main.py\nrequirements.txt\n```\n";
+
+        tool_runtime(
+            ModelToolName::CreateFile,
+            serde_json::json!({
+                "target_path": "DemoApp/plan.md",
+                "contents": plan_contents,
+            }),
+        )
+        .tool_turn(
+            &mut session,
+            "create project plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let rendered = render_session_plan_preview(&session);
+        assert!(rendered.contains("status: verified"));
+        assert!(rendered.contains("stage: verified-plan"));
+        assert!(rendered.contains("source action: action-1"));
+        assert!(rendered.contains("plan: DemoApp/plan.md"));
+        assert!(rendered.contains("root: DemoApp"));
+        assert!(rendered.contains("directories: 0/1 present"));
+        assert!(rendered.contains("files: 0/2 present"));
+
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::write(project.join("src/main.py"), "print('hello')\n").unwrap();
+        fs::write(project.join("requirements.txt"), "").unwrap();
+        let rendered = render_session_plan_preview(&session);
+        assert!(rendered.contains("status: completed"));
+        assert!(rendered.contains("directories: 1/1 present"));
+        assert!(rendered.contains("files: 2/2 present"));
+
+        fs::remove_file(project.join("plan.md")).unwrap();
+        let rendered = render_session_plan_preview(&session);
+        assert!(rendered.contains("status: stale"));
 
         let _ = fs::remove_dir_all(root);
     }
