@@ -35,6 +35,10 @@ use crate::{
         ProviderPromptMemorySelection, Session, VerifiedPlanReference,
     },
     shell::ShellExecutor,
+    verified_state_answer::{
+        parse_verified_state_classifier_output, verified_session_state_answer,
+        VerifiedStateAnswerKind,
+    },
 };
 
 const AGENT_SYSTEM_PROMPT: &str = concat!(
@@ -57,10 +61,10 @@ const AGENT_PLAIN_CHAT_SYSTEM_PROMPT: &str = concat!(
     "Do not output tool-call markup. Do not claim filesystem or shell changes unless they were already reported by verified tool results."
 );
 const AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT: &str = concat!(
-    "Classify whether answering the user requires verified runtime state from this current session. ",
-    "Return only JSON with this exact shape: {\"needs_verified_state\":true} or {\"needs_verified_state\":false}. ",
-    "Use true for questions about prior actions, verified filesystem changes, pending approvals, known project folders or plans, or current session status. ",
-    "Use false for greetings, general questions, content generation, or requests to perform new work."
+    "Classify which verified runtime state answer, if any, the user needs from this current session. ",
+    "Return only JSON with this exact shape: {\"answer_kind\":\"none\"}. ",
+    "Allowed answer_kind values are: none, latest_folder, latest_file, created_summary, pending, plan, status, memory, summary. ",
+    "Choose none when the answer does not require verified session state."
 );
 const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
     "The previous tool-enabled provider request returned no usable response. ",
@@ -388,14 +392,14 @@ fn run_plain_agent_chat<P>(provider: &P, session: &mut Session, input: &str)
 where
     P: ControllerProvider,
 {
-    if has_verified_session_state(session)
-        && classify_verified_state_need(provider, session, input).unwrap_or(false)
-    {
-        session.push_event(Event::AssistantMessage(AssistantMessage::new(
-            verified_session_state_answer(session),
-            AssistantMessageSource::Controller,
-        )));
-        return;
+    if has_verified_session_state(session) {
+        if let Some(answer_kind) = classify_verified_state_answer_kind(provider, session, input) {
+            session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                verified_session_state_answer(session, answer_kind),
+                AssistantMessageSource::Controller,
+            )));
+            return;
+        }
     }
 
     let request = provider.request_metadata();
@@ -427,7 +431,11 @@ where
     }
 }
 
-fn classify_verified_state_need<P>(provider: &P, session: &mut Session, input: &str) -> Option<bool>
+fn classify_verified_state_answer_kind<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+) -> Option<VerifiedStateAnswerKind>
 where
     P: ControllerProvider,
 {
@@ -461,24 +469,6 @@ where
     }
 }
 
-fn parse_verified_state_classifier_output(message: &str) -> Option<bool> {
-    parse_json_value(message)?
-        .get("needs_verified_state")?
-        .as_bool()
-}
-
-fn parse_json_value(message: &str) -> Option<Value> {
-    serde_json::from_str::<Value>(message.trim())
-        .ok()
-        .or_else(|| {
-            let start = message.find('{')?;
-            let end = message.rfind('}')?;
-            (start < end)
-                .then(|| serde_json::from_str::<Value>(&message[start..=end]).ok())
-                .flatten()
-        })
-}
-
 fn has_verified_session_state(session: &Session) -> bool {
     session
         .actions()
@@ -491,68 +481,6 @@ fn has_verified_session_state(session: &Session) -> bool {
         || session.project_memory().latest_verified_folder().is_some()
         || session.project_memory().latest_verified_plan().is_some()
         || session.project_memory().latest_structured_plan().is_some()
-}
-
-fn verified_session_state_answer(session: &Session) -> String {
-    let pending = match session.pending_action_selection() {
-        PendingActionSelection::None => None,
-        PendingActionSelection::Single(_) => Some("Pending: one action.".to_string()),
-        PendingActionSelection::Ambiguous => Some("Pending: multiple actions.".to_string()),
-    };
-
-    let latest_folder = session
-        .project_memory()
-        .latest_verified_folder()
-        .map(|folder| display_agent_context_path(session, &folder.path));
-    let latest_file = latest_verified_file_path(session);
-
-    let mut lines = Vec::new();
-    if let Some(folder) = latest_folder {
-        lines.push(("latest folder", folder));
-    }
-    if let Some(file) = latest_file {
-        lines.push(("latest file", file));
-    }
-
-    match (lines.as_slice(), pending.as_ref()) {
-        ([], None) => "No verified filesystem changes recorded.".to_string(),
-        ([], Some(pending)) => pending.clone(),
-        ([(.., value)], None) => value.clone(),
-        _ => {
-            let mut rendered = lines
-                .into_iter()
-                .map(|(label, value)| format!("{label}: {value}"))
-                .collect::<Vec<_>>();
-            if let Some(pending) = pending {
-                rendered.push(pending);
-            }
-            rendered.join("\n")
-        }
-    }
-}
-
-fn latest_verified_file_path(session: &Session) -> Option<String> {
-    session.actions().iter().rev().find_map(|record| {
-        let result = record.verified_result.as_ref()?;
-        match result {
-            VerifiedActionResult::FileWritten { path } => {
-                Some(display_agent_context_path(session, Path::new(path)))
-            }
-            VerifiedActionResult::File(file) => match file {
-                crate::event::FileActionVerification::FileCreated { path }
-                | crate::event::FileActionVerification::FilePatched { path }
-                | crate::event::FileActionVerification::FileOverwritten { path }
-                | crate::event::FileActionVerification::FileDeleted { path } => {
-                    Some(display_agent_context_path(session, Path::new(path)))
-                }
-                crate::event::FileActionVerification::FileMoved { target_path, .. } => {
-                    Some(display_agent_context_path(session, Path::new(target_path)))
-                }
-                crate::event::FileActionVerification::DirectoryCreated { .. } => None,
-            },
-            VerifiedActionResult::Shell(_) => None,
-        }
-    })
 }
 
 fn agent_local_runtime_context(session: &mut Session) -> Option<String> {
@@ -2652,12 +2580,18 @@ mod tests {
     #[test]
     fn verified_state_classifier_parser_accepts_wrapped_json() {
         assert_eq!(
-            parse_verified_state_classifier_output("```json\n{\"needs_verified_state\":true}\n```"),
-            Some(true)
+            parse_verified_state_classifier_output(
+                "```json\n{\"answer_kind\":\"latest_folder\"}\n```"
+            ),
+            Some(VerifiedStateAnswerKind::LatestFolder)
         );
         assert_eq!(
-            parse_verified_state_classifier_output("{\"needs_verified_state\":false}"),
-            Some(false)
+            parse_verified_state_classifier_output("{\"answer_kind\":\"none\"}"),
+            None
+        );
+        assert_eq!(
+            parse_verified_state_classifier_output("{\"needs_verified_state\":true}"),
+            Some(VerifiedStateAnswerKind::Summary)
         );
     }
 
@@ -2894,7 +2828,7 @@ mod tests {
         std::fs::create_dir_all(root.join("remembered")).unwrap();
         std::fs::create_dir_all(root.join("latest-folder")).unwrap();
         let provider = CapturingProvider::new().with_plain_output(
-            crate::event::ProviderOutput::new("{\"needs_verified_state\":true}"),
+            crate::event::ProviderOutput::new("{\"answer_kind\":\"latest_folder\"}"),
         );
         let mut session = Session::new("session", &root, &root);
         for (action_id, target_path) in [
@@ -2991,10 +2925,68 @@ mod tests {
             record_verified_project_memory(&mut session, &action, &result);
         }
 
-        let answer = verified_session_state_answer(&session);
+        let answer = verified_session_state_answer(&session, VerifiedStateAnswerKind::Summary);
 
         assert!(answer.contains("latest folder: unrelated"));
         assert!(answer.contains("latest file: demo/requirements.txt"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permissive_agent_created_summary_uses_verified_action_records() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-created-summary",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new().with_plain_output(
+            crate::event::ProviderOutput::new("{\"answer_kind\":\"created_summary\"}"),
+        );
+        let mut session = Session::new("session", &root, &root);
+
+        for (action_id, request, result) in [
+            (
+                "action-folder",
+                ActionRequest::CreateDirectory(crate::action::CreateDirectoryAction {
+                    target_path: PathBuf::from("demo"),
+                }),
+                VerifiedActionResult::File(
+                    crate::event::FileActionVerification::DirectoryCreated {
+                        path: "demo".to_string(),
+                    },
+                ),
+            ),
+            (
+                "action-file",
+                ActionRequest::CreateFile(crate::action::CreateFileAction {
+                    target_path: PathBuf::from("demo/requirements.txt"),
+                    contents: String::new(),
+                }),
+                VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                    path: "demo/requirements.txt".to_string(),
+                }),
+            ),
+        ] {
+            let action = Action::proposed(action_id, request, "apply")
+                .approve()
+                .mark_applied();
+            let mut record = ActionRecord::new(action.clone());
+            record.verified_result = Some(result.clone());
+            session.push_action(record);
+            record_verified_project_memory(&mut session, &action, &result);
+        }
+
+        run_permissive_agent_turn(&provider, &mut session, "what did you create?");
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content == "directory demo\nfile demo/requirements.txt"
+        )));
+        assert_eq!(provider.requests().len(), 1);
 
         let _ = std::fs::remove_dir_all(&root);
     }

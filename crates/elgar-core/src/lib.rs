@@ -20,6 +20,7 @@ pub mod renderer;
 pub mod router;
 pub mod session;
 pub mod shell;
+mod verified_state_answer;
 #[cfg(test)]
 mod test_env;
 
