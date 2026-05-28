@@ -91,6 +91,33 @@ impl PlanContract {
             .chain(self.scope.allowed_directories.iter())
             .any(|allowed| allowed == path)
     }
+
+    pub fn validate_path_execution(&self, path: &Path) -> Result<(), PlanContractViolation> {
+        match self.runtime_status() {
+            PlanContractStatus::Approved | PlanContractStatus::Executing => {}
+            PlanContractStatus::Stale => {
+                return Err(PlanContractViolation {
+                    kind: PlanContractViolationKind::Stale,
+                    path: path.to_path_buf(),
+                });
+            }
+            status => {
+                return Err(PlanContractViolation {
+                    kind: PlanContractViolationKind::NotApproved { status },
+                    path: path.to_path_buf(),
+                });
+            }
+        }
+
+        if !self.allows_path(path) {
+            return Err(PlanContractViolation {
+                kind: PlanContractViolationKind::OutOfScope,
+                path: path.to_path_buf(),
+            });
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +153,19 @@ pub enum PlanContractStatus {
     NeedsRevision,
     Completed,
     Rejected,
+    Stale,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanContractViolation {
+    pub kind: PlanContractViolationKind,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanContractViolationKind {
+    NotApproved { status: PlanContractStatus },
+    OutOfScope,
     Stale,
 }
 
@@ -224,6 +264,62 @@ mod tests {
 
         fs::remove_file(project.join("src/main.py")).unwrap();
         assert_eq!(contract.runtime_status(), PlanContractStatus::Stale);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_execution_validation_requires_approved_in_scope_contract() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-validate-{}",
+            std::process::id()
+        ));
+        let project = root.join("demo");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(&plan_path, "# Plan\n").unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![project.join("src/main.py")],
+        };
+        let mut contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+        let allowed_file = project.join("src/main.py");
+        let unexpected_file = project.join("README.md");
+
+        assert_eq!(
+            contract.validate_path_execution(&allowed_file),
+            Err(PlanContractViolation {
+                kind: PlanContractViolationKind::NotApproved {
+                    status: PlanContractStatus::Draft,
+                },
+                path: allowed_file.clone(),
+            })
+        );
+
+        contract.approve("user", "2026-05-28T12:00:00Z");
+        assert_eq!(contract.validate_path_execution(&allowed_file), Ok(()));
+        assert_eq!(
+            contract.validate_path_execution(&unexpected_file),
+            Err(PlanContractViolation {
+                kind: PlanContractViolationKind::OutOfScope,
+                path: unexpected_file,
+            })
+        );
+
+        fs::remove_file(project.join("plan.md")).unwrap();
+        assert_eq!(
+            contract.validate_path_execution(&allowed_file),
+            Err(PlanContractViolation {
+                kind: PlanContractViolationKind::Stale,
+                path: allowed_file,
+            })
+        );
 
         let _ = fs::remove_dir_all(root);
     }
