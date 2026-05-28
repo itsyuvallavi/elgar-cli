@@ -13,6 +13,7 @@ pub mod fs;
 pub mod model_runtime;
 mod normal_turn_decision;
 mod path_resolution;
+pub mod plan_contract;
 pub mod policy;
 pub mod provider;
 mod provider_visible;

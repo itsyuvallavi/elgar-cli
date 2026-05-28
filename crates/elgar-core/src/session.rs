@@ -6,6 +6,7 @@ use crate::{
     action::{Action, ActionLifecycleState},
     context::ContextAccounting,
     event::{Event, ProviderMetrics, VerifiedActionResult},
+    plan_contract::PlanContract,
     policy::PolicyDecision,
 };
 
@@ -26,6 +27,8 @@ pub struct Session {
     project_memory: ProjectMemory,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     latest_provider_prompt_memory_selection: Option<ProviderPromptMemorySelection>,
+    #[serde(default)]
+    plan_contracts: Vec<PlanContract>,
     #[serde(default)]
     context_accounting: ContextAccounting,
 }
@@ -48,6 +51,7 @@ impl Session {
             provider_metadata: None,
             project_memory: ProjectMemory::default(),
             latest_provider_prompt_memory_selection: None,
+            plan_contracts: Vec::new(),
             context_accounting: ContextAccounting::unknown(),
         }
     }
@@ -102,6 +106,16 @@ impl Session {
         self.latest_provider_prompt_memory_selection.as_ref()
     }
 
+    /// First-class planning contracts owned by core runtime state.
+    pub fn plan_contracts(&self) -> &[PlanContract] {
+        &self.plan_contracts
+    }
+
+    /// Latest first-class planning contract, if one has been recorded.
+    pub fn latest_plan_contract(&self) -> Option<&PlanContract> {
+        self.plan_contracts.last()
+    }
+
     /// Controller-recorded context accounting for UI display and provider budgeting.
     pub fn context_accounting(&self) -> &ContextAccounting {
         &self.context_accounting
@@ -137,6 +151,13 @@ impl Session {
 
     pub(crate) fn record_structured_project_plan(&mut self, plan: StructuredProjectPlan) {
         self.project_memory.remember_structured_plan(plan);
+    }
+
+    pub fn record_plan_contract(&mut self, contract: PlanContract) {
+        self.plan_contracts
+            .retain(|existing| existing.id != contract.id);
+        self.plan_contracts.push(contract);
+        trim_to_memory_limit(&mut self.plan_contracts);
     }
 
     pub(crate) fn set_latest_provider_prompt_memory_selection(
@@ -492,9 +513,11 @@ mod tests {
         ProviderOutput, VerifiedActionResult,
     };
 
+    use crate::plan_contract::{PlanContract, PlanContractStatus};
+
     use super::{
         ActionRecord, PendingActionSelection, ProjectMemory, ProviderMetadata, Session,
-        StructuredProjectPlan, StructuredProjectPlanStatus,
+        StructuredProjectPlan, StructuredProjectPlanStatus, PROJECT_MEMORY_LIMIT,
     };
 
     #[test]
@@ -508,6 +531,7 @@ mod tests {
         assert!(session.actions.is_empty());
         assert_eq!(session.provider_metadata, None);
         assert_eq!(session.project_memory, ProjectMemory::default());
+        assert!(session.plan_contracts.is_empty());
 
         let debug = format!("{session:?}");
         assert!(debug.contains("session-1"));
@@ -560,6 +584,62 @@ mod tests {
         plan.status = StructuredProjectPlanStatus::Completed;
         fs::remove_file(project.join("requirements.txt")).unwrap();
         assert_eq!(plan.runtime_status(), StructuredProjectPlanStatus::Stale);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_records_bounded_first_class_plan_contracts() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-session-plan-contracts-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("demo")).unwrap();
+        let mut session = Session::new("session-plan-contracts", &root, &root);
+
+        for index in 0..(PROJECT_MEMORY_LIMIT + 2) {
+            let project = root.join(format!("demo-{index}"));
+            fs::create_dir_all(&project).unwrap();
+            let plan_path = project.join("plan.md");
+            fs::write(&plan_path, "# Plan\n").unwrap();
+            let plan = StructuredProjectPlan {
+                source_action_id: Some(format!("action-{index}")),
+                source_plan_path: plan_path,
+                project_root: project.clone(),
+                stage: "verified-plan".to_string(),
+                status: StructuredProjectPlanStatus::Verified,
+                expected_directories: vec![project.join("src")],
+                expected_files: vec![project.join("src/main.py")],
+            };
+            let mut contract =
+                PlanContract::draft_from_structured_plan(format!("contract-{index}"), &plan);
+            if index == PROJECT_MEMORY_LIMIT + 1 {
+                contract.approve("user", "2026-05-28T12:00:00Z");
+            }
+            session.record_plan_contract(contract);
+        }
+
+        assert_eq!(session.plan_contracts().len(), PROJECT_MEMORY_LIMIT);
+        assert_eq!(
+            session
+                .plan_contracts()
+                .first()
+                .map(|contract| contract.id.as_str()),
+            Some("contract-2")
+        );
+        assert_eq!(
+            session
+                .latest_plan_contract()
+                .map(|contract| contract.id.as_str()),
+            Some("contract-9")
+        );
+        assert_eq!(
+            session
+                .latest_plan_contract()
+                .map(PlanContract::runtime_status),
+            Some(PlanContractStatus::Approved)
+        );
 
         let _ = fs::remove_dir_all(root);
     }
