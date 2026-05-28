@@ -336,13 +336,14 @@ where
             session.record_reasoning_route("plan_execution");
             session.push_reasoning_runtime_check("plan execution paths detected");
             if latest_plan_contract_needs_repair(session) {
-                let message = plan_execution_blocked_by_contract_notice(session);
+                let message = plan_execution_blocked_by_contract_repair_message(session);
                 session.push_reasoning_runtime_check(message.clone());
-                session.push_event(Event::AssistantMessage(AssistantMessage::new(
-                    message,
-                    AssistantMessageSource::Controller,
-                )));
-                break;
+                plan_creation_repair_in_progress = true;
+                for tool_call_id in resolved_outputs_tool_call_ids(&resolved_outputs) {
+                    messages.push(ChatMessage::tool(tool_call_id, message.clone()));
+                }
+                messages.push(ChatMessage::system(plan_creation_repair_message(session)));
+                continue;
             }
         }
         let starts_plan_execution = plan_execution_batch && !plan_execution_in_progress;
@@ -790,6 +791,17 @@ fn guard_plan_creation_tool_outputs(
         .collect()
 }
 
+fn resolved_outputs_tool_call_ids(outputs: &[ResolvedAgentToolOutput]) -> Vec<String> {
+    outputs
+        .iter()
+        .map(|output| match output {
+            ResolvedAgentToolOutput::Guidance(guidance) => guidance.tool_call_id.clone(),
+            ResolvedAgentToolOutput::Action(action) => action.tool_call_id.clone(),
+            ResolvedAgentToolOutput::Skipped { tool_call_id, .. } => tool_call_id.clone(),
+        })
+        .collect()
+}
+
 fn latest_plan_contract_needs_repair(session: &Session) -> bool {
     session
         .latest_plan_contract()
@@ -833,11 +845,12 @@ fn plan_creation_needs_revision_notice(session: &Session) -> String {
     lines.join("\n")
 }
 
-fn plan_execution_blocked_by_contract_notice(session: &Session) -> String {
+fn plan_execution_blocked_by_contract_repair_message(session: &Session) -> String {
     let Some(contract) = session.latest_plan_contract() else {
-        return "Cannot execute the plan yet. Review /plan for contract details.".to_string();
+        return "Cannot execute the plan yet. Update the verified plan before creating implementation files.".to_string();
     };
     let review = contract.review_draft();
+    let plan_path = display_agent_context_path(session, &contract.source_plan_path);
     let mut lines = vec![
         "Cannot execute the plan yet.".to_string(),
         "The plan contract has blocking issues:".to_string(),
@@ -847,7 +860,10 @@ fn plan_execution_blocked_by_contract_notice(session: &Session) -> String {
     }) {
         lines.push(format!("- {}", plan_draft_issue_message(issue)));
     }
-    lines.push("Revise the plan first, then execute it.".to_string());
+    lines.push(format!(
+        "Update the same verified plan file `{plan_path}` to fix these blockers before creating implementation files."
+    ));
+    lines.push("Do not create implementation files in this repair step.".to_string());
     lines.join("\n")
 }
 
@@ -3188,7 +3204,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_plan_execution_blocks_non_approvable_contract_before_filesystem_changes() {
+    fn verified_plan_execution_repairs_non_approvable_contract_before_filesystem_changes() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plan-exec-blocks-bad-contract",
             std::process::id()
@@ -3201,18 +3217,31 @@ mod tests {
             "# Project Plan\n\n```text\nsrc/main.py\n```\n",
         )
         .unwrap();
-        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
-            "Creating missing files.",
-        )
-        .with_tool_calls(vec![RawModelToolCall {
-            id: "blocked-plan-exec-1".to_string(),
-            name: RawModelToolName::Known(ModelToolName::CreateFile),
-            arguments: json!({
-                "target_path": "src/main.py",
-                "contents": "print('hello')\n"
-            }),
-            assistant_summary: None,
-        }])]);
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating missing files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "blocked-plan-exec-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Repairing plan first.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "repair-plan-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::OverwriteFile),
+                    arguments: json!({
+                        "target_path": "demo/plan.md",
+                        "contents": "# Project Plan\n\n```text\nsrc/main.py\n```\n\n## Verification\n- `src/main.py` exists.\n\n## Acceptance Criteria\n- Expected files exist under the plan root.\n"
+                    }),
+                    assistant_summary: Some("repair plan".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Plan revised."),
+        ]);
         let mut session = Session::new("session", &root, &cwd);
         let plan_action = Action::proposed(
             "action-plan",
@@ -3240,21 +3269,28 @@ mod tests {
         );
 
         assert!(!cwd.join("demo/src/main.py").exists());
-        assert!(session.actions().is_empty());
+        assert!(cwd.join("demo/plan.md").is_file());
+        assert!(session
+            .latest_plan_contract()
+            .is_some_and(|contract| contract.review_draft().is_approvable()));
+        assert_eq!(session.actions().len(), 1);
         assert!(session.events().iter().any(|event| matches!(
             event,
-            Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
-                    && message.content.contains("Cannot execute the plan yet")
-                    && message.content.contains("missing `Verification` section")
-                    && message.content.contains("missing `Acceptance Criteria` section")
+            Event::ActionApplied(applied)
+                if matches!(&applied.result, VerifiedActionResult::File(
+                    crate::event::FileActionVerification::FileOverwritten { path }
+                ) if path.ends_with("demo/plan.md"))
         )));
         assert_eq!(
             session
                 .latest_reasoning_trace()
                 .and_then(|trace| trace.route.as_deref()),
-            Some("plan_execution")
+            Some("plan_creation")
         );
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Cannot execute the plan yet"))));
 
         let _ = std::fs::remove_dir_all(&root);
     }
