@@ -779,6 +779,15 @@ fn guard_plan_execution_tool_outputs(
                     visible: false,
                 }
             }
+            ResolvedAgentToolOutput::Action(action)
+                if is_nonconstructive_plan_execution_action(session, plan, &action.request) =>
+            {
+                ResolvedAgentToolOutput::Skipped {
+                    tool_call_id: action.tool_call_id,
+                    message: "Skipped tool call because it does not create a missing expected path from the verified plan.".to_string(),
+                    visible: false,
+                }
+            }
             other => other,
         })
         .collect()
@@ -806,6 +815,28 @@ fn is_existing_plan_execution_directory(
     };
     let target_path = absolute_session_path(session, &action.target_path);
     structured_plan_expects_path(plan, &target_path) && target_path.is_dir()
+}
+
+fn is_nonconstructive_plan_execution_action(
+    session: &Session,
+    plan: &crate::session::StructuredProjectPlan,
+    request: &ActionRequest,
+) -> bool {
+    match request {
+        ActionRequest::CreateFile(action) => {
+            let target_path = absolute_session_path(session, &action.target_path);
+            !structured_plan_expects_path(plan, &target_path)
+        }
+        ActionRequest::OverwriteFile(action) => {
+            let target_path = absolute_session_path(session, &action.target_path);
+            !structured_plan_expects_path(plan, &target_path) || target_path.is_file()
+        }
+        ActionRequest::CreateDirectory(_) => false,
+        ActionRequest::PatchFile(_)
+        | ActionRequest::DeleteFile(_)
+        | ActionRequest::MoveFile(_)
+        | ActionRequest::ShellCommand(_) => true,
+    }
 }
 
 fn created_file_target_path(session: &Session, request: &ActionRequest) -> Option<PathBuf> {
@@ -2977,6 +3008,116 @@ mod tests {
             .any(|message| message.content.contains(
                 "Skipped directory creation because the verified plan directory already exists."
             )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_execution_skips_destructive_followup_after_expected_files() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-skip-delete",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("demo")).unwrap();
+        std::fs::write(
+            cwd.join("demo/plan.md"),
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "main-file-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: Some("create main".to_string()),
+                },
+                RawModelToolCall {
+                    id: "requirements-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "requirements.txt",
+                        "contents": ""
+                    }),
+                    assistant_summary: Some("create requirements".to_string()),
+                },
+                RawModelToolCall {
+                    id: "delete-main-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::DeleteFile),
+                    arguments: json!({
+                        "target_path": "src/main.py"
+                    }),
+                    assistant_summary: Some("delete main".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("demo/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "demo/plan.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::AutoCreateReviewModify,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("demo/src/main.py")).unwrap(),
+            "print('hello')\n"
+        );
+        assert!(cwd.join("demo/requirements.txt").is_file());
+        assert!(matches!(
+            session.pending_action_selection(),
+            PendingActionSelection::None
+        ));
+        assert_eq!(session.actions().len(), 2);
+        assert!(session
+            .actions()
+            .iter()
+            .all(|record| { !matches!(record.action.request, ActionRequest::DeleteFile(_)) }));
+        assert!(!session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ActionProposed(_))));
+        assert_eq!(
+            session
+                .project_memory()
+                .latest_structured_plan()
+                .expect("plan should remain recorded")
+                .runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
+        assert!(provider
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(|message| message
+                .content
+                .contains("Skipped tool call because it does not create a missing expected path")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
