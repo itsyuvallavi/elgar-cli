@@ -27,22 +27,24 @@ Default policy:
 
 ## Routing
 
-Explicit shell command prefixes create a proposed shell action:
+Normal user text goes to the model path. Elgar does not maintain natural
+language shell prefixes that locally create shell actions.
 
-- `run ...`
-- `run command ...`
-- `run shell ...`
-- `run shell command ...`
-- `shell command ...`
+The model may request the typed `shell_command` tool when the active
+model-tool turn supports tools. Slash commands, such as `/tool`, are local UI
+controls for choosing a runtime path; ordinary words are not local command
+triggers.
 
 Natural filesystem requests should prefer typed filesystem tools when possible.
 Shell-backed filesystem work is reserved for cases that cannot be represented
-as a safe typed file action under the active policy. Approval is required unless
-the selected policy mode explicitly allows the shell action, and the executor
+as a safe typed file action under the active policy. User review is required in
+`review_all`, `auto_create_review_modify`, and `workspace_write_with_review`.
+`full_access` may apply a validated shell action immediately, and the executor
 must verify any expected filesystem effect after the command finishes.
 
 Questions such as `can you run ...?` still go to the provider as model text.
-Bare shell syntax such as `bash -lc ...` is not a command proposal by itself.
+Bare shell syntax such as `bash -lc ...` is not a local command proposal by
+itself.
 
 ## Execution Boundary
 

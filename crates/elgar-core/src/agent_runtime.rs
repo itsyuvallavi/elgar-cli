@@ -80,7 +80,7 @@ mod tests {
     use crate::{
         action::{ActionLifecycleState, ActionRequest},
         action_gate::ActionGate,
-        event::{Event, ProviderOutput},
+        event::{Event, ProviderOutput, VerifiedActionResult},
         model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
         policy::{ApprovalSource, PermissionPolicyMode, PolicyDecisionKind},
         provider::{
@@ -214,34 +214,82 @@ mod tests {
     }
 
     #[test]
-    fn agent_runtime_auto_create_gates_shell_commands() {
-        let root = temp_root("auto-create-shell");
-        let runtime = shell_command_runtime("echo hello");
+    fn agent_runtime_non_full_access_modes_gate_shell_commands() {
+        for mode in [
+            PermissionPolicyMode::ReviewAll,
+            PermissionPolicyMode::AutoCreateReviewModify,
+            PermissionPolicyMode::WorkspaceWriteWithReview,
+        ] {
+            let root = temp_root(mode.as_str());
+            let marker_file_name = format!("{}-shell-marker.txt", mode.as_str());
+            let runtime = shell_file_runtime(
+                &format!("printf nope > {marker_file_name}"),
+                &marker_file_name,
+            );
+            let mut session = Session::new("session-1", &root, &root);
+
+            let result = runtime.tool_turn(&mut session, "model requested a shell tool call", mode);
+
+            assert!(
+                !root.join(&marker_file_name).exists(),
+                "shell must not run before review in {mode}"
+            );
+            assert!(result
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ActionProposed(_))));
+            assert!(!result
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ActionApplied(_))));
+            let record = session.actions().last().expect("pending shell action");
+            assert_eq!(record.action.state, ActionLifecycleState::Proposed);
+            assert_eq!(
+                record
+                    .policy_decision
+                    .as_ref()
+                    .map(|decision| decision.kind),
+                Some(PolicyDecisionKind::RequireReview)
+            );
+
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn agent_runtime_full_access_executes_validated_shell_commands() {
+        let root = temp_root("full-access-shell");
+        let marker_file_name = "full-access-shell-marker.txt";
+        let marker_file = root.join(marker_file_name);
+        let runtime =
+            shell_file_runtime("printf ok > full-access-shell-marker.txt", marker_file_name);
         let mut session = Session::new("session-1", &root, &root);
 
         let result = runtime.tool_turn(
             &mut session,
-            "run shell command echo hello",
-            PermissionPolicyMode::AutoCreateReviewModify,
+            "model requested a shell tool call",
+            PermissionPolicyMode::FullAccess,
         );
 
+        assert_eq!(fs::read_to_string(&marker_file).unwrap(), "ok");
         assert!(result
             .events
             .iter()
-            .any(|event| matches!(event, Event::ActionProposed(_))));
+            .any(|event| matches!(event, Event::ActionApplied(_))));
         assert!(!result
             .events
             .iter()
-            .any(|event| matches!(event, Event::ActionApplied(_))));
-        let record = session.actions().last().expect("pending shell action");
-        assert_eq!(record.action.state, ActionLifecycleState::Proposed);
-        assert_eq!(
-            record
-                .policy_decision
-                .as_ref()
-                .map(|decision| decision.kind),
-            Some(PolicyDecisionKind::RequireReview)
-        );
+            .any(|event| matches!(event, Event::ActionProposed(_))));
+        let record = session.actions().last().expect("applied shell action");
+        assert_eq!(record.action.state, ActionLifecycleState::Applied);
+        assert!(record
+            .policy_decision
+            .as_ref()
+            .is_some_and(|decision| decision.is_policy_approved()));
+        assert!(matches!(
+            record.verified_result,
+            Some(VerifiedActionResult::Shell(_))
+        ));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -582,13 +630,14 @@ mod tests {
         }))
     }
 
-    fn shell_command_runtime(command: &str) -> AgentRuntime<ToolProvider> {
+    fn shell_file_runtime(command: &str, expected_file: &str) -> AgentRuntime<ToolProvider> {
         AgentRuntime::new(ToolProvider::new(RawModelToolCall {
             id: "tool-1".to_string(),
             name: RawModelToolName::Known(ModelToolName::ShellCommand),
             arguments: serde_json::json!({
                 "command": command,
-                "cwd": "."
+                "cwd": ".",
+                "expected_file": expected_file
             }),
             assistant_summary: Some(format!("run {command}")),
         }))
