@@ -862,16 +862,35 @@ impl TerminalShellContext {
             .context_window_tokens
             .map(compact_token_count)
             .unwrap_or_else(|| "?".to_string());
-        let current = match (snapshot.current_tokens, snapshot.source) {
-            (Some(tokens), ContextWindowSource::Provider) => compact_token_count(tokens),
-            (Some(tokens), ContextWindowSource::Estimate) => {
-                format!("~{}", compact_token_count(tokens))
-            }
-            (Some(tokens), ContextWindowSource::Unknown) => compact_token_count(tokens),
-            (None, _) => "?".to_string(),
+        let (input, output) = match snapshot.source {
+            ContextWindowSource::Provider => self
+                .provider_metrics
+                .as_ref()
+                .and_then(|metrics| metrics.usage.as_ref())
+                .map(|usage| {
+                    (
+                        usage
+                            .prompt_tokens
+                            .map(compact_token_count)
+                            .unwrap_or_else(|| "?".to_string()),
+                        usage
+                            .completion_tokens
+                            .map(compact_token_count)
+                            .unwrap_or_else(|| "?".to_string()),
+                    )
+                })
+                .unwrap_or_else(|| ("?".to_string(), "?".to_string())),
+            ContextWindowSource::Estimate => (
+                snapshot
+                    .current_tokens
+                    .map(|tokens| format!("~{}", compact_token_count(tokens)))
+                    .unwrap_or_else(|| "?".to_string()),
+                "?".to_string(),
+            ),
+            ContextWindowSource::Unknown => ("?".to_string(), "?".to_string()),
         };
         let percent = footer_percent_label(snapshot);
-        Some(format!("ctx {current}/{window}{percent}"))
+        Some(format!("↑{input} ↓{output} {percent}/{window}"))
     }
 
     pub(super) fn footer_ansi(&self) -> &'static str {
@@ -922,19 +941,32 @@ fn context_window_pressure(snapshot: Option<&ContextWindowSnapshot>) -> ContextW
 
 fn compact_token_count(tokens: u64) -> String {
     if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
+        let value = tokens as f64 / 1_000.0;
+        if tokens % 1_000 == 0 {
+            format!("{value:.0}k")
+        } else {
+            format!("{value:.1}k")
+        }
     } else {
         tokens.to_string()
     }
 }
 
 fn footer_percent_label(snapshot: &ContextWindowSnapshot) -> String {
-    let Some(percent) = snapshot.used_percent else {
-        return String::new();
+    let percent = match (snapshot.current_tokens, snapshot.context_window_tokens) {
+        (Some(current), Some(window)) if window > 0 => {
+            let percent = current as f64 * 100.0 / window as f64;
+            if percent < 10.0 {
+                format!("{percent:.1}%")
+            } else {
+                format!("{percent:.0}%")
+            }
+        }
+        _ => "?%".to_string(),
     };
     match snapshot.source {
-        ContextWindowSource::Estimate => format!(" ~{percent}%"),
-        _ => format!(" {percent}%"),
+        ContextWindowSource::Estimate => format!("~{percent}"),
+        _ => percent,
     }
 }
 

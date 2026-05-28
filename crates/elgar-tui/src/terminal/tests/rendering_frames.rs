@@ -95,7 +95,7 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     assert_eq!(input, vec!["▸ /cancel▌"]);
     assert_eq!(bottom, vec![top[1].clone()]);
     assert!(footer[0].contains("model-a"));
-    assert!(footer[0].contains("ctx ~4.0k/16.0k ~25%"));
+    assert!(footer[0].contains("↑~4k ↓? ~25%/16k"));
     assert_eq!(footer.len(), 1);
     assert!(!footer.join("\n").contains("context:"));
 }

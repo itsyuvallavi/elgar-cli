@@ -25,6 +25,7 @@ use elgar_core::{
         ProviderRequestMetadata, ProviderStreamChunk,
     },
     session::Session,
+    token_accounting::ContextWindowSnapshot,
 };
 use ratatui::{backend::TestBackend, Terminal};
 

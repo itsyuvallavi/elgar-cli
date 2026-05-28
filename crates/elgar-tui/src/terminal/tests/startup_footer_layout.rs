@@ -225,7 +225,8 @@ fn terminal_footer_shows_estimated_context_accounting_with_approximate_label() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("ctx ~321/128.0k ~0%"));
+    assert!(footer.contains("↑~321 ↓? ~0.3%/128k"));
+    assert!(!footer.contains("ctx "));
     assert!(!footer.contains("TBD"));
 }
 
@@ -256,8 +257,40 @@ fn terminal_footer_does_not_use_provider_metrics_without_session_snapshot() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("ctx ~321/128.0k ~0%"));
-    assert!(!footer.contains("10/128.0k"));
+    assert!(footer.contains("↑~321 ↓? ~0.3%/128k"));
+    assert!(!footer.contains("ctx "));
+    assert!(!footer.contains("↑7 ↓3"));
+}
+
+#[test]
+fn terminal_footer_formats_provider_usage_as_compact_flow() {
+    let usage = ProviderTokenUsage {
+        prompt_tokens: Some(2_200),
+        completion_tokens: Some(24),
+        total_tokens: Some(2_224),
+    };
+    let mut metrics = ProviderMetrics::new(
+        "request-usage",
+        Some("openai/gpt-oss-20b".to_string()),
+        false,
+        1,
+        128,
+    );
+    metrics.usage = Some(usage.clone());
+    let mut context = TerminalShellContext::new("/repo", "/repo")
+        .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()))
+        .with_provider_metrics(metrics);
+    context.context_window_snapshot = Some(ContextWindowSnapshot::from_provider_usage(
+        &usage,
+        Some(128_000),
+        "request-usage",
+    ));
+
+    let footer = context.footer_body("ready", "copy");
+
+    assert!(footer.contains("↑2.2k ↓24 1.7%/128k"));
+    assert!(!footer.contains("ctx "));
+    assert!(!footer.contains("tokens"));
 }
 
 #[test]
@@ -295,10 +328,10 @@ fn terminal_context_from_session_carries_provider_usage_to_footer() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(footer.contains("model-a"));
-    assert!(footer.contains("ctx 16/?"));
+    assert!(footer.contains("↑11 ↓5 ?%/?"));
+    assert!(!footer.contains("ctx "));
     assert!(!footer.contains("context:"));
     assert!(!footer.contains("16 tokens"));
-    assert!(!footer.contains('%'));
 }
 
 #[test]
@@ -322,9 +355,9 @@ fn terminal_footer_shows_unknown_context_when_provider_usage_is_absent() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("ctx ?/?"));
+    assert!(footer.contains("↑? ↓? ?%/?"));
+    assert!(!footer.contains("ctx "));
     assert!(!footer.contains("TBD"));
-    assert!(!footer.contains('%'));
 }
 
 #[test]
@@ -340,8 +373,8 @@ fn terminal_footer_shows_unknown_context_with_configured_window() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("ctx ?/128.0k"));
-    assert!(!footer.contains('%'));
+    assert!(footer.contains("↑? ↓? ?%/128k"));
+    assert!(!footer.contains("ctx "));
 }
 
 #[test]
