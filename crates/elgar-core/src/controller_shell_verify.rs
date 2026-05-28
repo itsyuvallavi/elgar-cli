@@ -6,6 +6,8 @@ pub(crate) fn verify_expected_shell_effect(
     action: &ShellCommandAction,
     mut result: VerifiedActionResult,
 ) -> Result<VerifiedActionResult, String> {
+    verify_shell_exit_status(&result)?;
+
     let mut expected_directories = Vec::new();
     if let Some(expected_directory) = action.expected_directory.as_ref() {
         expected_directories.push(expected_directory.clone());
@@ -76,6 +78,25 @@ pub(crate) fn verify_expected_shell_effect(
     }
 
     Ok(result)
+}
+
+fn verify_shell_exit_status(result: &VerifiedActionResult) -> Result<(), String> {
+    let VerifiedActionResult::Shell(shell) = result else {
+        return Ok(());
+    };
+
+    if shell.timed_out {
+        return Err(format!(
+            "shell command timed out after {} ms",
+            shell.elapsed_millis
+        ));
+    }
+
+    match shell.exit_code {
+        Some(0) => Ok(()),
+        Some(exit_code) => Err(format!("shell command exited with status {exit_code}")),
+        None => Err("shell command finished without an exit code".to_string()),
+    }
 }
 
 fn display_path_list(paths: &[PathBuf]) -> String {

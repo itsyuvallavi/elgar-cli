@@ -1919,6 +1919,59 @@ mod tests {
     }
 
     #[test]
+    fn policy_applied_shell_command_fails_when_exit_is_nonzero() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-shell-nonzero",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Running command.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "shell-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                    arguments: json!({
+                        "command": "exit 7",
+                        "cwd": root.display().to_string()
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "run a failing shell command",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert_eq!(session.actions().len(), 1);
+        assert_eq!(
+            session.actions()[0].action.state,
+            crate::action::ActionLifecycleState::Failed
+        );
+        assert!(session.actions()[0].verified_result.is_none());
+        assert!(session.actions()[0]
+            .failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("shell command exited with status 7")));
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ActionFailed(_))));
+        assert!(!session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn policy_applied_shell_command_resolves_relative_cwd_and_expected_paths() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-shell-relative-paths",

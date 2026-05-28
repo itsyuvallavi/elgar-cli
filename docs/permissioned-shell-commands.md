@@ -55,6 +55,9 @@ executor.
 
 Provider text never executes shell and never proves command truth.
 
+Timed-out shell commands and nonzero shell exits are failed actions. They are
+not recorded as applied work.
+
 Successful executor completion records `VerifiedActionResult::Shell` with:
 
 - command
@@ -66,4 +69,5 @@ Successful executor completion records `VerifiedActionResult::Shell` with:
 - timeout status
 - expected filesystem effect when a shell-backed filesystem task can be verified
 
-Nonzero exit and timeout are shell-owned results, not provider truth.
+Shell status, output, and expected-effect verification are shell-owned results,
+not provider truth.

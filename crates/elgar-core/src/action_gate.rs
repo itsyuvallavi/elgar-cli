@@ -462,6 +462,79 @@ mod tests {
     }
 
     #[test]
+    fn action_gate_shell_approval_fails_when_exit_is_nonzero() {
+        let root = temp_root("approve-shell-nonzero");
+        let gate = ActionGate::default();
+        let mut session = Session::new("session-1", &root, &root);
+        let shell = ShellCommandAction::new("exit 7", &root);
+        session.push_action(ActionRecord::new(Action::proposed(
+            "action-1",
+            ActionRequest::ShellCommand(shell),
+            "run shell command exit 7",
+        )));
+
+        let result = gate.approve(&mut session);
+
+        assert_eq!(result.route, Route::ApproveAction);
+        assert_eq!(
+            session.actions()[0].action.state,
+            crate::action::ActionLifecycleState::Failed
+        );
+        assert!(session.actions()[0].verified_result.is_none());
+        assert!(session.actions()[0]
+            .failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("shell command exited with status 7")));
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionFailed(_))));
+        assert!(!result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn action_gate_shell_approval_fails_when_command_times_out() {
+        let root = temp_root("approve-shell-timeout");
+        let gate = ActionGate::default();
+        let mut session = Session::new("session-1", &root, &root);
+        let mut shell = ShellCommandAction::new("sleep 1", &root);
+        shell.timeout_seconds = 0;
+        session.push_action(ActionRecord::new(Action::proposed(
+            "action-1",
+            ActionRequest::ShellCommand(shell),
+            "run shell command sleep 1",
+        )));
+
+        let result = gate.approve(&mut session);
+
+        assert_eq!(result.route, Route::ApproveAction);
+        assert_eq!(
+            session.actions()[0].action.state,
+            crate::action::ActionLifecycleState::Failed
+        );
+        assert!(session.actions()[0].verified_result.is_none());
+        assert!(session.actions()[0]
+            .failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("shell command timed out after")));
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionFailed(_))));
+        assert!(!result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn action_gate_shell_approval_resolves_relative_cwd_and_expected_paths() {
         let root = temp_root("approve-shell-relative-paths");
         fs::create_dir_all(root.join("work")).unwrap();
