@@ -770,6 +770,15 @@ fn guard_plan_execution_tool_outputs(
                     visible: false,
                 }
             }
+            ResolvedAgentToolOutput::Action(action)
+                if is_existing_plan_execution_directory(session, plan, &action.request) =>
+            {
+                ResolvedAgentToolOutput::Skipped {
+                    tool_call_id: action.tool_call_id,
+                    message: "Skipped directory creation because the verified plan directory already exists.".to_string(),
+                    visible: false,
+                }
+            }
             other => other,
         })
         .collect()
@@ -785,6 +794,18 @@ fn is_unexpected_plan_execution_directory(
     };
     let target_path = absolute_session_path(session, &action.target_path);
     !structured_plan_expects_path(plan, &target_path)
+}
+
+fn is_existing_plan_execution_directory(
+    session: &Session,
+    plan: &crate::session::StructuredProjectPlan,
+    request: &ActionRequest,
+) -> bool {
+    let ActionRequest::CreateDirectory(action) = request else {
+        return false;
+    };
+    let target_path = absolute_session_path(session, &action.target_path);
+    structured_plan_expects_path(plan, &target_path) && target_path.is_dir()
 }
 
 fn created_file_target_path(session: &Session, request: &ActionRequest) -> Option<PathBuf> {
@@ -2811,6 +2832,98 @@ mod tests {
             .flatten()
             .any(|message| message.content.contains("Missing expected files")
                 && message.content.contains("demo/requirements.txt")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_execution_skips_late_directory_that_file_action_already_created() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-late-dir",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("demo")).unwrap();
+        std::fs::write(
+            cwd.join("demo/plan.md"),
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "main-file-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: Some("create main".to_string()),
+                },
+                RawModelToolCall {
+                    id: "requirements-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "requirements.txt",
+                        "contents": ""
+                    }),
+                    assistant_summary: Some("create requirements".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Creating parent directory late.").with_tool_calls(
+                vec![RawModelToolCall {
+                    id: "late-src-dir-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                    arguments: json!({ "target_path": "src" }),
+                    assistant_summary: Some("create src late".to_string()),
+                }],
+            ),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("demo/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "demo/plan.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(cwd.join("demo/src").is_dir());
+        assert!(cwd.join("demo/src/main.py").is_file());
+        assert!(cwd.join("demo/requirements.txt").is_file());
+        assert_eq!(session.actions().len(), 2);
+        assert!(session
+            .actions()
+            .iter()
+            .all(|record| { !matches!(record.action.request, ActionRequest::CreateDirectory(_)) }));
+        assert!(provider
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(|message| message.content.contains(
+                "Skipped directory creation because the verified plan directory already exists."
+            )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
