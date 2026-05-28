@@ -1054,7 +1054,7 @@ fn preflight_verified_plan_tool_outputs(
             ResolvedAgentToolOutput::Action(action) => Some(action),
             ResolvedAgentToolOutput::Guidance(_) | ResolvedAgentToolOutput::Skipped { .. } => None,
         })
-        .flat_map(|action| plan_preflight_paths(&action.request))
+        .flat_map(|action| plan_preflight_paths(session, &action.request))
     {
         let target_path = absolute_session_path(session, target_path);
         if !path_is_within(&target_path, &plan.project_root) {
@@ -1069,7 +1069,11 @@ fn preflight_verified_plan_tool_outputs(
     Ok(())
 }
 
-fn plan_preflight_paths(request: &ActionRequest) -> Vec<&Path> {
+fn plan_preflight_paths<'a>(session: &Session, request: &'a ActionRequest) -> Vec<&'a Path> {
+    if plan_creation_root_for_action(session, request).is_some() {
+        return Vec::new();
+    }
+
     match request {
         ActionRequest::CreateFile(action) => vec![&action.target_path],
         ActionRequest::CreateDirectory(_) => Vec::new(),
@@ -2618,6 +2622,63 @@ mod tests {
             Event::AssistantMessage(message)
                 if message.content.contains("verified plan is rooted")
         )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_preflight_allows_new_independent_plan_creation() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-independent-draft",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("existing")).unwrap();
+        std::fs::write(
+            root.join("existing/plan.md"),
+            "# Existing Plan\n\n```text\nmain.py\n```\n\n## Verification\n- Check main.py exists.\n\n## Acceptance Criteria\n- Existing plan remains available.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating the new plan.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "new-independent-plan-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "new-plan/plan.md",
+                        "contents": "# New Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Check src/main.py and requirements.txt exist.\n\n## Acceptance Criteria\n- New plan can be executed independently.\n"
+                    }),
+                    assistant_summary: Some("create new independent plan".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Plan created."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: root.join("existing/plan.md"),
+            project_root: root.join("existing"),
+            source_action_id: "action-existing-plan".to_string(),
+        });
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "create a separate plan for a different project",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(root.join("new-plan/plan.md").is_file());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("outside that project")
+        )));
+        let latest = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("new plan should become latest structured plan");
+        assert_eq!(latest.project_root, root.join("new-plan"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
