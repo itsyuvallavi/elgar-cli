@@ -1,6 +1,9 @@
 use elgar_core::{
     action::{ActionKind, ActionLifecycleState},
     event::{FileActionVerification, VerifiedActionResult},
+    plan_contract::{
+        PlanContract, PlanContractDraftIssue, PlanContractDraftIssueKind, PlanContractStatus,
+    },
     session::{
         PendingActionSelection, ProjectMemory, ProviderPromptMemoryOmittedFact,
         ProviderPromptMemorySelectedFact, ProviderPromptMemorySelection, Session,
@@ -212,7 +215,92 @@ fn render_structured_plan_preview(session: &Session, plan: &StructuredProjectPla
         }
     }
 
+    if let Some(contract) = session
+        .latest_plan_contract()
+        .filter(|contract| contract.source_plan_path == plan.source_plan_path)
+    {
+        render_plan_contract_review(session, contract, &mut lines);
+    }
+
     lines.join("\n")
+}
+
+fn render_plan_contract_review(
+    session: &Session,
+    contract: &PlanContract,
+    lines: &mut Vec<String>,
+) {
+    let review = contract.review_draft();
+    lines.push("contract review:".to_string());
+    lines.push(format!(
+        "- status: {}",
+        plan_contract_status(contract.runtime_status())
+    ));
+    lines.push(format!(
+        "- approvable: {}",
+        if review.is_approvable() { "yes" } else { "no" }
+    ));
+
+    if review.issues.is_empty() {
+        lines.push("- blocking issues: none".to_string());
+    } else {
+        lines.push("- blocking issues:".to_string());
+        for issue in &review.issues {
+            lines.push(format!("  - {}", draft_issue_line(session, issue)));
+        }
+    }
+
+    if contract.scope.verification_steps.is_empty() {
+        lines.push("- verification: missing".to_string());
+    } else {
+        lines.push("- verification:".to_string());
+        for step in &contract.scope.verification_steps {
+            lines.push(format!("  - {step}"));
+        }
+    }
+
+    if contract.scope.acceptance_criteria.is_empty() {
+        lines.push("- acceptance criteria: missing".to_string());
+    } else {
+        lines.push("- acceptance criteria:".to_string());
+        for criterion in &contract.scope.acceptance_criteria {
+            lines.push(format!("  - {criterion}"));
+        }
+    }
+}
+
+fn draft_issue_line(session: &Session, issue: &PlanContractDraftIssue) -> String {
+    let path = issue
+        .path
+        .as_ref()
+        .map(|path| format!(": {}", display_session_path(session, path)))
+        .unwrap_or_default();
+
+    match &issue.kind {
+        PlanContractDraftIssueKind::ContractNotDraft { status } => {
+            format!("contract is not draft ({})", plan_contract_status(*status))
+        }
+        PlanContractDraftIssueKind::MissingSourcePlan => format!("missing source plan{path}"),
+        PlanContractDraftIssueKind::MissingProjectRoot => format!("missing project root{path}"),
+        PlanContractDraftIssueKind::SourcePlanOutsideProjectRoot => {
+            format!("source plan outside project root{path}")
+        }
+        PlanContractDraftIssueKind::EmptyExecutableScope => {
+            "missing concrete file tree or expected path list".to_string()
+        }
+        PlanContractDraftIssueKind::PathOutsideProjectRoot => {
+            format!("planned path outside project root{path}")
+        }
+        PlanContractDraftIssueKind::DuplicateScopePath => {
+            format!("duplicate planned path{path}")
+        }
+        PlanContractDraftIssueKind::MissingVerificationSteps => {
+            "missing Verification section".to_string()
+        }
+        PlanContractDraftIssueKind::MissingAcceptanceCriteria => {
+            "missing Acceptance Criteria section".to_string()
+        }
+    }
 }
 
 pub fn render_session_pending_action(session: &Session) -> String {
@@ -426,6 +514,18 @@ fn structured_status(status: StructuredProjectPlanStatus) -> &'static str {
     }
 }
 
+fn plan_contract_status(status: PlanContractStatus) -> &'static str {
+    match status {
+        PlanContractStatus::Draft => "draft",
+        PlanContractStatus::Approved => "approved",
+        PlanContractStatus::Executing => "executing",
+        PlanContractStatus::NeedsRevision => "needs_revision",
+        PlanContractStatus::Completed => "completed",
+        PlanContractStatus::Rejected => "rejected",
+        PlanContractStatus::Stale => "stale",
+    }
+}
+
 fn render_provider_prompt_memory_selection(
     selection: &ProviderPromptMemorySelection,
     lines: &mut Vec<String>,
@@ -608,6 +708,11 @@ mod tests {
         assert!(rendered.contains("root: DemoApp"));
         assert!(rendered.contains("directories: 0/1 present"));
         assert!(rendered.contains("files: 0/2 present"));
+        assert!(rendered.contains("contract review:"));
+        assert!(rendered.contains("- status: draft"));
+        assert!(rendered.contains("- approvable: no"));
+        assert!(rendered.contains("missing Verification section"));
+        assert!(rendered.contains("missing Acceptance Criteria section"));
 
         fs::create_dir_all(project.join("src")).unwrap();
         fs::write(project.join("src/main.py"), "print('hello')\n").unwrap();
@@ -621,6 +726,38 @@ mod tests {
         fs::remove_file(project.join("plan.md")).unwrap();
         let rendered = render_session_plan_preview(&session);
         assert!(rendered.contains("status: stale"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renders_plan_contract_review_when_plan_is_approvable() {
+        let root = temp_root("plan-contract-review-approvable");
+        let project = root.join("DemoApp");
+        fs::create_dir_all(&project).unwrap();
+        let mut session = Session::new("memory-session", &root, &root);
+        let plan_contents = "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Run the CLI smoke test.\n\n## Acceptance Criteria\n- The expected files exist.\n";
+
+        tool_runtime(
+            ModelToolName::CreateFile,
+            serde_json::json!({
+                "target_path": "DemoApp/plan.md",
+                "contents": plan_contents,
+            }),
+        )
+        .tool_turn(
+            &mut session,
+            "create project plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let rendered = render_session_plan_preview(&session);
+        assert!(rendered.contains("contract review:"));
+        assert!(rendered.contains("- status: draft"));
+        assert!(rendered.contains("- approvable: yes"));
+        assert!(rendered.contains("- blocking issues: none"));
+        assert!(rendered.contains("- verification:\n  - Run the CLI smoke test."));
+        assert!(rendered.contains("- acceptance criteria:\n  - The expected files exist."));
 
         let _ = fs::remove_dir_all(root);
     }

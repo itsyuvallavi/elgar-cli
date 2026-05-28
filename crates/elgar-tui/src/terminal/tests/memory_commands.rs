@@ -186,6 +186,10 @@ fn terminal_plan_preview_command_reports_structured_plan_state() {
     assert!(rendered.contains("directories: 1/2 present"));
     assert!(rendered.contains("files: 0/2 present"));
     assert!(rendered.contains("- missing DemoApp/src/main.py"));
+    assert!(rendered.contains("contract review:"));
+    assert!(rendered.contains("- approvable: no"));
+    assert!(rendered.contains("missing Verification section"));
+    assert!(rendered.contains("missing Acceptance Criteria section"));
     assert!(!rendered.contains("stub provider response"));
     assert!(pending_turn.is_none());
 
