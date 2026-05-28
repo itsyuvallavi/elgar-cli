@@ -330,7 +330,9 @@ mod tests {
     use std::fs;
 
     use crate::{
-        action::{Action, ActionRequest, CreateDirectoryAction, OverwriteFileAction},
+        action::{
+            Action, ActionRequest, CreateDirectoryAction, OverwriteFileAction, ShellCommandAction,
+        },
         event::{Event, FileActionVerification, UserMessage, VerifiedActionResult},
         router::Route,
         session::{ActionRecord, Session},
@@ -368,6 +370,87 @@ mod tests {
         ));
         assert!(root.join("demo").is_dir());
         assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn action_gate_approval_runs_shell_and_records_verified_expected_effect() {
+        let root = temp_root("approve-shell");
+        let expected_directory = root.join("shell-created");
+        let gate = ActionGate::default();
+        let mut session = Session::new("session-1", &root, &root);
+        let mut shell = ShellCommandAction::new("mkdir shell-created", &root);
+        shell.expected_directory = Some(expected_directory.clone());
+        session.push_action(ActionRecord::new(Action::proposed(
+            "action-1",
+            ActionRequest::ShellCommand(shell),
+            "run shell command mkdir shell-created",
+        )));
+
+        let result = gate.approve(&mut session);
+
+        assert_eq!(result.route, Route::ApproveAction);
+        assert!(expected_directory.is_dir());
+        assert_eq!(
+            session.actions()[0].action.state,
+            crate::action::ActionLifecycleState::Applied
+        );
+        let expected_effect = format!(
+            "verified directory exists: {}",
+            expected_directory.display()
+        );
+        assert!(session.actions()[0]
+            .verified_result
+            .as_ref()
+            .is_some_and(|verified| matches!(
+                verified,
+                VerifiedActionResult::Shell(shell)
+                    if shell.verified_effect.as_deref() == Some(expected_effect.as_str())
+            )));
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn action_gate_shell_approval_fails_when_expected_effect_is_missing() {
+        let root = temp_root("approve-shell-missing-effect");
+        let missing_file = root.join("missing.txt");
+        let gate = ActionGate::default();
+        let mut session = Session::new("session-1", &root, &root);
+        let mut shell = ShellCommandAction::new("printf done", &root);
+        shell.expected_file = Some(missing_file.clone());
+        session.push_action(ActionRecord::new(Action::proposed(
+            "action-1",
+            ActionRequest::ShellCommand(shell),
+            "run shell command printf done",
+        )));
+
+        let result = gate.approve(&mut session);
+
+        assert_eq!(result.route, Route::ApproveAction);
+        assert!(!missing_file.exists());
+        assert_eq!(
+            session.actions()[0].action.state,
+            crate::action::ActionLifecycleState::Failed
+        );
+        assert!(session.actions()[0].verified_result.is_none());
+        assert!(session.actions()[0]
+            .failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("expected files were not created")));
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionFailed(_))));
+        assert!(!result
             .events
             .iter()
             .any(|event| matches!(event, Event::ActionApplied(_))));

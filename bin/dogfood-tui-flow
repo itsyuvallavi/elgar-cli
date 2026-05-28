@@ -16,7 +16,7 @@ if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
 fi
 
 stamp="$(date +%Y%m%d-%H%M%S)-$$"
-plain_dir="should-not-create-$stamp"
+plain_dir="plain-create-$stamp"
 project_dir="tui-flow-$stamp"
 unrelated_dir="unrelated-after-plan-$stamp"
 input_file="$playground/.dogfood-tui-flow-$stamp.in"
@@ -53,7 +53,7 @@ grep -q "stub provider response" "$output_file" && fail "script used stub provid
 grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
 grep -A1 '^Plan Preview$' "$output_file" | grep -q '^(none)$' && fail "plan preview was empty after plan creation"
 
-[[ -e "$playground/$plain_dir" ]] && fail "plain text created $plain_dir"
+[[ -d "$playground/$plain_dir" ]] || fail "normal text did not create $plain_dir"
 [[ -d "$playground/$project_dir" ]] || fail "missing project directory $project_dir"
 [[ -f "$playground/$project_dir/plan.md" ]] || fail "missing plan.md"
 [[ -f "$playground/$project_dir/src/main.py" ]] || fail "missing src/main.py"

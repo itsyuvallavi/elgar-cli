@@ -12,6 +12,7 @@ use crate::{
     controller::TurnResult,
     controller_project_memory::{is_plan_path_or_contents, record_verified_project_memory},
     controller_reporting::verified_action_success_message,
+    controller_shell_verify::verify_expected_shell_effect,
     event::{
         ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
         ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage, VerifiedActionResult,
@@ -1161,9 +1162,9 @@ fn apply_agent_action_with_policy(
     session.push_event(Event::ActionApproved(approved_event));
 
     let result: Result<VerifiedActionResult, String> = match &action.request {
-        ActionRequest::ShellCommand(shell) => {
-            ShellExecutor::execute(shell).map_err(|error| error.to_string())
-        }
+        ActionRequest::ShellCommand(shell) => ShellExecutor::execute(shell)
+            .map_err(|error| error.to_string())
+            .and_then(|result| verify_expected_shell_effect(shell, result)),
         _ => Filesystem::apply_file_action(&action, allowed_root_for_action(session, &action))
             .map_err(|error| error.to_string()),
     };
@@ -1766,6 +1767,128 @@ mod tests {
         assert!(messages[1]
             .iter()
             .any(|message| matches!(message.role, ChatRole::Tool)));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn policy_applied_shell_command_records_verified_expected_effect() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-shell-verified",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let expected_directory = root.join("shell-out");
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Running command.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "shell-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                    arguments: json!({
+                        "command": "mkdir shell-out",
+                        "cwd": root.display().to_string(),
+                        "expected_directory": expected_directory.display().to_string()
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "create a directory using shell",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(expected_directory.is_dir());
+        assert_eq!(session.actions().len(), 1);
+        assert_eq!(
+            session.actions()[0].action.state,
+            crate::action::ActionLifecycleState::Applied
+        );
+        let expected_effect = format!(
+            "verified directory exists: {}",
+            expected_directory.display()
+        );
+        let Some(VerifiedActionResult::Shell(shell)) =
+            session.actions()[0].verified_result.as_ref()
+        else {
+            panic!("expected verified shell result");
+        };
+        assert_eq!(shell.exit_code, Some(0));
+        assert_eq!(
+            shell.verified_effect.as_deref(),
+            Some(expected_effect.as_str())
+        );
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ActionApplied(applied)
+                if matches!(
+                    &applied.result,
+                    VerifiedActionResult::Shell(shell)
+                        if shell.verified_effect.as_deref() == Some(expected_effect.as_str())
+                )
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn policy_applied_shell_command_fails_when_expected_effect_is_missing() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-shell-missing-effect",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let missing_file = root.join("missing.txt");
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Running command.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "shell-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                    arguments: json!({
+                        "command": "printf done",
+                        "cwd": root.display().to_string(),
+                        "expected_file": missing_file.display().to_string()
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "create a file using shell",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(!missing_file.exists());
+        assert_eq!(session.actions().len(), 1);
+        assert_eq!(
+            session.actions()[0].action.state,
+            crate::action::ActionLifecycleState::Failed
+        );
+        assert!(session.actions()[0].verified_result.is_none());
+        assert!(session.actions()[0]
+            .failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("expected files were not created")));
+        assert!(session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ActionFailed(_))));
+        assert!(!session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
 
         let _ = std::fs::remove_dir_all(&root);
     }
