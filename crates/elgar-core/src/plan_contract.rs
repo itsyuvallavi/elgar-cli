@@ -194,6 +194,31 @@ impl PlanContract {
             });
         }
 
+        for item in self
+            .scope
+            .verification_steps
+            .iter()
+            .chain(self.scope.acceptance_criteria.iter())
+        {
+            for referenced_path in referenced_scope_paths(item, &self.project_root) {
+                if !scope_paths.iter().any(|path| **path == referenced_path) {
+                    issues.push(PlanContractDraftIssue {
+                        severity: PlanContractDraftIssueSeverity::Blocking,
+                        kind: PlanContractDraftIssueKind::ReferencedPathMissingFromScope,
+                        path: Some(referenced_path),
+                    });
+                }
+            }
+
+            for module in invalid_python_module_references(item) {
+                issues.push(PlanContractDraftIssue {
+                    severity: PlanContractDraftIssueSeverity::Blocking,
+                    kind: PlanContractDraftIssueKind::InvalidPythonModuleReference { module },
+                    path: None,
+                });
+            }
+        }
+
         PlanContractDraftReview { issues }
     }
 
@@ -304,6 +329,88 @@ fn has_malformed_scope_path_segment(path: &Path) -> bool {
     })
 }
 
+fn referenced_scope_paths(text: &str, project_root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for token in text.split_whitespace().filter_map(clean_reference_token) {
+        if !looks_like_plan_path_reference(&token) {
+            continue;
+        }
+        let path = PathBuf::from(token);
+        if path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        }) {
+            continue;
+        }
+        let resolved = project_root.join(path);
+        if !paths.contains(&resolved) {
+            paths.push(resolved);
+        }
+    }
+    paths
+}
+
+fn clean_reference_token(token: &str) -> Option<String> {
+    let token = token
+        .trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']' | '{' | '}'))
+        .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':'));
+    (!token.is_empty()).then(|| token.to_string())
+}
+
+fn looks_like_plan_path_reference(token: &str) -> bool {
+    let path = Path::new(token);
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    token.contains('/')
+        || path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                !extension.is_empty()
+                    && extension.len() <= 12
+                    && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
+            })
+        || file_name.starts_with('.')
+}
+
+fn invalid_python_module_references(text: &str) -> Vec<String> {
+    let mut modules = Vec::new();
+    let mut tokens = text.split_whitespace().peekable();
+    while let Some(token) = tokens.next() {
+        if token != "-m" {
+            continue;
+        }
+        let Some(module) = tokens.next().and_then(clean_reference_token) else {
+            continue;
+        };
+        if !module
+            .split('.')
+            .all(|segment| is_valid_python_module_segment(segment))
+            && !modules.contains(&module)
+        {
+            modules.push(module);
+        }
+    }
+    modules
+}
+
+fn is_valid_python_module_segment(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanContractDraftReview {
     pub issues: Vec<PlanContractDraftIssue>,
@@ -341,6 +448,8 @@ pub enum PlanContractDraftIssueKind {
     EmptyExecutableScope,
     PathOutsideProjectRoot,
     MalformedScopePath,
+    ReferencedPathMissingFromScope,
+    InvalidPythonModuleReference { module: String },
     DuplicateScopePath,
     MissingVerificationSteps,
     MissingAcceptanceCriteria,
@@ -572,7 +681,7 @@ mod tests {
         contract
             .scope
             .acceptance_criteria
-            .push("src/main.py and requirements.txt match the approved plan".to_string());
+            .push("src/main.py matches the approved plan".to_string());
 
         assert!(contract.review_draft().is_approvable());
 
@@ -703,6 +812,64 @@ mod tests {
         assert!(review.issues.iter().any(|issue| issue.kind
             == PlanContractDraftIssueKind::MalformedScopePath
             && issue.path.as_ref() == Some(&project.join("- tests/- test_app.py"))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_blocks_referenced_paths_missing_from_scope() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-review-coherence-{}",
+            std::process::id()
+        ));
+        let project = root.join("plan-review-copy-test");
+        let plan_path = project.join("PROJECT_PLAN.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n## Verification\n- Verify that `cli.py` can be executed with `python -m plan-review-copy-test.cli` and displays help.\n- Run `pytest tests/test_cli.py` to ensure all unit tests pass.\n\n## Acceptance Criteria\n- The project contains a clear `README.md` with usage instructions.\n",
+        )
+        .unwrap();
+        let contract = PlanContract {
+            id: "contract-incoherent".to_string(),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            source_action_id: Some("action-plan".to_string()),
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: vec![project.join("tests")],
+                allowed_files: vec![project.join("README.md"), project.join("__init__.py")],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec![
+                    "Verify that `cli.py` can be executed with `python -m plan-review-copy-test.cli` and displays help.".to_string(),
+                    "Run `pytest tests/test_cli.py` to ensure all unit tests pass.".to_string(),
+                ],
+                acceptance_criteria: vec![
+                    "The project contains a clear `README.md` with usage instructions.".to_string(),
+                ],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+
+        let review = contract.review_draft();
+
+        assert!(!review.is_approvable());
+        assert!(review.issues.iter().any(|issue| {
+            issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
+                && issue.path.as_ref() == Some(&project.join("cli.py"))
+        }));
+        assert!(review.issues.iter().any(|issue| {
+            issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
+                && issue.path.as_ref() == Some(&project.join("tests/test_cli.py"))
+        }));
+        assert!(review.issues.iter().any(|issue| {
+            issue.kind
+                == PlanContractDraftIssueKind::InvalidPythonModuleReference {
+                    module: "plan-review-copy-test.cli".to_string(),
+                }
+        }));
 
         let _ = fs::remove_dir_all(root);
     }

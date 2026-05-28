@@ -294,6 +294,12 @@ fn draft_issue_line(session: &Session, issue: &PlanContractDraftIssue) -> String
         PlanContractDraftIssueKind::MalformedScopePath => {
             format!("malformed planned path{path}")
         }
+        PlanContractDraftIssueKind::ReferencedPathMissingFromScope => {
+            format!("referenced path missing from plan scope{path}")
+        }
+        PlanContractDraftIssueKind::InvalidPythonModuleReference { module } => {
+            format!("invalid Python module reference: {module}")
+        }
         PlanContractDraftIssueKind::DuplicateScopePath => {
             format!("duplicate planned path{path}")
         }
@@ -794,6 +800,39 @@ mod tests {
         assert!(!rendered.contains("/- "));
         assert!(!rendered.contains("plan-review-copy-test/- "));
         assert!(rendered.contains("- approvable: yes"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renders_plan_contract_review_for_incoherent_referenced_paths() {
+        let root = temp_root("plan-contract-review-incoherent-paths");
+        let project = root.join("plan-review-copy-test");
+        fs::create_dir_all(&project).unwrap();
+        let mut session = Session::new("memory-session", &root, &root);
+        let plan_contents = "# Project Plan\n\n```text\nREADME.md\n__init__.py\ntests/\n```\n\n## Verification\n- Verify that `cli.py` can be executed with `python -m plan-review-copy-test.cli` and displays help.\n- Run `pytest tests/test_cli.py` to ensure all unit tests pass.\n\n## Acceptance Criteria\n- The project contains a clear `README.md` with usage instructions.\n";
+
+        tool_runtime(
+            ModelToolName::CreateFile,
+            serde_json::json!({
+                "target_path": "plan-review-copy-test/PROJECT_PLAN.md",
+                "contents": plan_contents,
+            }),
+        )
+        .tool_turn(
+            &mut session,
+            "create project plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let rendered = render_session_plan_preview(&session);
+        assert!(rendered.contains("- approvable: no"));
+        assert!(rendered
+            .contains("referenced path missing from plan scope: plan-review-copy-test/cli.py"));
+        assert!(rendered.contains(
+            "referenced path missing from plan scope: plan-review-copy-test/tests/test_cli.py"
+        ));
+        assert!(rendered.contains("invalid Python module reference: plan-review-copy-test.cli"));
 
         let _ = fs::remove_dir_all(root);
     }

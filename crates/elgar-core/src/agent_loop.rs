@@ -728,6 +728,12 @@ fn plan_draft_issue_message(issue: &PlanContractDraftIssue) -> String {
         PlanContractDraftIssueKind::MalformedScopePath => {
             format!("planned path is malformed{path}")
         }
+        PlanContractDraftIssueKind::ReferencedPathMissingFromScope => {
+            format!("referenced path is missing from the plan scope{path}")
+        }
+        PlanContractDraftIssueKind::InvalidPythonModuleReference { module } => {
+            format!("invalid Python module reference `{module}`")
+        }
         PlanContractDraftIssueKind::DuplicateScopePath => {
             format!("duplicate planned path{path}")
         }
