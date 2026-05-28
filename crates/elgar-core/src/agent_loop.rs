@@ -24,7 +24,10 @@ use crate::{
         ValidatedModelToolOutput,
     },
     normal_turn_decision::{parse_normal_turn_decision, NormalTurnDecision},
-    path_resolution::{allowed_root_for_action, resolve_agent_action_paths, AgentPathResolution},
+    path_resolution::{
+        allowed_root_for_action, resolve_agent_action_paths,
+        resolve_shell_action_paths_for_session, AgentPathResolution,
+    },
     policy::{PermissionPolicyMode, PolicyDecision},
     provider::{
         ChatMessage, ChatRole, ChatToolCall, ChatToolCallFunction, ControllerProvider,
@@ -1161,7 +1164,8 @@ fn apply_agent_action_with_policy(
     }
     session.push_event(Event::ActionApproved(approved_event));
 
-    let result: Result<VerifiedActionResult, String> = match &action.request {
+    let execution_action = resolve_shell_action_paths_for_session(session, &action);
+    let result: Result<VerifiedActionResult, String> = match &execution_action.request {
         ActionRequest::ShellCommand(shell) => ShellExecutor::execute(shell)
             .map_err(|error| error.to_string())
             .and_then(|result| verify_expected_shell_effect(shell, result)),
@@ -1170,14 +1174,14 @@ fn apply_agent_action_with_policy(
     };
 
     match result {
-        Ok(result) => record_agent_action_success(session, index, &action, result),
+        Ok(result) => record_agent_action_success(session, index, &execution_action, result),
         Err(reason) => {
             let record = session
                 .action_mut(index)
                 .expect("agent action index must reference an action record");
             record.verified_result = None;
             record.failure_reason = Some(reason.clone());
-            record.action = action.mark_failed();
+            record.action = execution_action.mark_failed();
             session.push_event(Event::ActionFailed(ActionFailed::new(
                 action.id.clone(),
                 action.kind(),
@@ -1889,6 +1893,54 @@ mod tests {
             .events()
             .iter()
             .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn policy_applied_shell_command_resolves_relative_cwd_and_expected_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-shell-relative-paths",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("work")).unwrap();
+        let expected_file = root.join("work/out.txt");
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Running command.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "shell-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                    arguments: json!({
+                        "command": "printf ok > out.txt",
+                        "cwd": "work",
+                        "expected_file": "out.txt"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "run a command in work",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert_eq!(std::fs::read_to_string(&expected_file).unwrap(), "ok");
+        let Some(VerifiedActionResult::Shell(shell)) =
+            session.actions()[0].verified_result.as_ref()
+        else {
+            panic!("expected verified shell result");
+        };
+        assert_eq!(shell.cwd, root.join("work").display().to_string());
+        assert_eq!(
+            shell.verified_effect.as_deref(),
+            Some(format!("verified file exists: {}", expected_file.display()).as_str())
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

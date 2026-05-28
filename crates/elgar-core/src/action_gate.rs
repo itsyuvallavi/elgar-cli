@@ -16,6 +16,7 @@ use crate::{
         UserMessage,
     },
     fs::Filesystem,
+    path_resolution::resolve_shell_action_paths_for_session,
     policy::ApprovalSource,
     provider::ProviderStub,
     router::Route,
@@ -138,22 +139,24 @@ fn handle_approve_action(session: &mut Session) {
         .with_approval_source(ApprovalSource::user()),
     ));
 
-    if let ActionRequest::ShellCommand(shell_command) = &approved.request {
+    let approved_for_execution = resolve_shell_action_paths_for_session(session, &approved);
+    if let ActionRequest::ShellCommand(shell_command) = &approved_for_execution.request {
         match ShellExecutor::execute(shell_command) {
             Ok(result) => match verify_expected_shell_effect(shell_command, result) {
                 Ok(result) => {
-                    let message = verified_action_success_message(session, &approved, &result);
+                    let message =
+                        verified_action_success_message(session, &approved_for_execution, &result);
                     let record = session
                         .action_mut(index)
                         .expect("approved action index must reference an action record");
                     record.verified_result = Some(result.clone());
                     record.failure_reason = None;
-                    record.action = approved.mark_applied();
-                    record_verified_project_memory(session, &approved, &result);
-                    session.mark_structured_project_plan_executed(&approved.id);
+                    record.action = approved_for_execution.mark_applied();
+                    record_verified_project_memory(session, &approved_for_execution, &result);
+                    session.mark_structured_project_plan_executed(&approved_for_execution.id);
                     session.push_event(Event::ActionApplied(ActionApplied::new(
-                        approved.id.clone(),
-                        approved.kind(),
+                        approved_for_execution.id.clone(),
+                        approved_for_execution.kind(),
                         result,
                     )));
                     push_action_gate_message(session, message);
@@ -164,11 +167,11 @@ fn handle_approve_action(session: &mut Session) {
                         .expect("approved action index must reference an action record");
                     record.verified_result = None;
                     record.failure_reason = Some(reason.clone());
-                    record.action = approved.mark_failed();
-                    session.remove_structured_project_plan_for_action(&approved.id);
+                    record.action = approved_for_execution.mark_failed();
+                    session.remove_structured_project_plan_for_action(&approved_for_execution.id);
                     session.push_event(Event::ActionFailed(ActionFailed::new(
-                        approved.id.clone(),
-                        approved.kind(),
+                        approved_for_execution.id.clone(),
+                        approved_for_execution.kind(),
                         reason,
                     )));
                     push_action_gate_message(
@@ -184,11 +187,11 @@ fn handle_approve_action(session: &mut Session) {
                     .expect("approved action index must reference an action record");
                 record.verified_result = None;
                 record.failure_reason = Some(reason.clone());
-                record.action = approved.mark_failed();
-                session.remove_structured_project_plan_for_action(&approved.id);
+                record.action = approved_for_execution.mark_failed();
+                session.remove_structured_project_plan_for_action(&approved_for_execution.id);
                 session.push_event(Event::ActionFailed(ActionFailed::new(
-                    approved.id.clone(),
-                    approved.kind(),
+                    approved_for_execution.id.clone(),
+                    approved_for_execution.kind(),
                     reason,
                 )));
                 push_action_gate_message(
@@ -451,6 +454,43 @@ mod tests {
             .iter()
             .any(|event| matches!(event, Event::ActionFailed(_))));
         assert!(!result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn action_gate_shell_approval_resolves_relative_cwd_and_expected_paths() {
+        let root = temp_root("approve-shell-relative-paths");
+        fs::create_dir_all(root.join("work")).unwrap();
+        let expected_file = root.join("work/out.txt");
+        let gate = ActionGate::default();
+        let mut session = Session::new("session-1", &root, &root);
+        let mut shell = ShellCommandAction::new("printf ok > out.txt", "work");
+        shell.expected_file = Some("out.txt".into());
+        session.push_action(ActionRecord::new(Action::proposed(
+            "action-1",
+            ActionRequest::ShellCommand(shell),
+            "run shell command printf ok",
+        )));
+
+        let result = gate.approve(&mut session);
+
+        assert_eq!(result.route, Route::ApproveAction);
+        assert_eq!(fs::read_to_string(&expected_file).unwrap(), "ok");
+        let Some(VerifiedActionResult::Shell(shell)) =
+            session.actions()[0].verified_result.as_ref()
+        else {
+            panic!("expected verified shell result");
+        };
+        assert_eq!(shell.cwd, root.join("work").display().to_string());
+        assert_eq!(
+            shell.verified_effect.as_deref(),
+            Some(format!("verified file exists: {}", expected_file.display()).as_str())
+        );
+        assert!(result
             .events
             .iter()
             .any(|event| matches!(event, Event::ActionApplied(_))));

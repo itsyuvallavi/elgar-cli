@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    action::{Action, ActionRequest},
+    action::{Action, ActionRequest, ShellCommandAction},
     model_runtime::ValidatedModelToolAction,
     session::Session,
 };
@@ -48,6 +48,45 @@ pub(crate) fn allowed_root_for_action(session: &Session, action: &Action) -> Pat
     session.cwd.clone()
 }
 
+pub(crate) fn resolve_shell_action_paths_for_session(session: &Session, action: &Action) -> Action {
+    let ActionRequest::ShellCommand(shell) = &action.request else {
+        return action.clone();
+    };
+
+    let mut resolved = action.clone();
+    resolved.request = ActionRequest::ShellCommand(resolve_shell_command_paths(session, shell));
+    resolved
+}
+
+pub(crate) fn resolve_shell_command_paths(
+    session: &Session,
+    action: &ShellCommandAction,
+) -> ShellCommandAction {
+    let mut resolved = action.clone();
+    expand_home_path(&mut resolved.cwd);
+    resolved.cwd = session_path(&session.cwd, &resolved.cwd);
+    let cwd = resolved.cwd.clone();
+
+    resolved.expected_directory = resolved
+        .expected_directory
+        .map(|path| shell_expected_path(&cwd, path));
+    resolved.expected_directories = resolved
+        .expected_directories
+        .into_iter()
+        .map(|path| shell_expected_path(&cwd, path))
+        .collect();
+    resolved.expected_file = resolved
+        .expected_file
+        .map(|path| shell_expected_path(&cwd, path));
+    resolved.expected_files = resolved
+        .expected_files
+        .into_iter()
+        .map(|path| shell_expected_path(&cwd, path))
+        .collect();
+
+    resolved
+}
+
 fn expand_home_paths(validated: &mut ValidatedModelToolAction) {
     match &mut validated.request {
         ActionRequest::CreateFile(create_file) => expand_home_path(&mut create_file.target_path),
@@ -64,6 +103,23 @@ fn expand_home_paths(validated: &mut ValidatedModelToolAction) {
             expand_home_path(&mut move_file.target_path);
         }
         ActionRequest::ShellCommand(shell) => expand_home_path(&mut shell.cwd),
+    }
+}
+
+fn session_path(cwd: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    }
+}
+
+fn shell_expected_path(cwd: &Path, mut path: PathBuf) -> PathBuf {
+    expand_home_path(&mut path);
+    if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
     }
 }
 
@@ -153,6 +209,38 @@ mod tests {
             panic!("expected shell command action");
         };
         assert_eq!(shell.cwd, home.join("myfirstproject"));
+    }
+
+    #[test]
+    fn resolve_shell_paths_uses_session_cwd_for_cwd_and_expected_paths() {
+        let session = Session::new("session", "/workspace", "/workspace/playground");
+        let mut action = ShellCommandAction::new("printf ok > out.txt", "project");
+        action.expected_file = Some("out.txt".into());
+        action.expected_files = vec!["nested/result.txt".into()];
+        action.expected_directory = Some("nested".into());
+        action.expected_directories = vec!["other".into()];
+
+        let resolved = resolve_shell_command_paths(&session, &action);
+
+        assert_eq!(resolved.cwd, PathBuf::from("/workspace/playground/project"));
+        assert_eq!(
+            resolved.expected_file,
+            Some(PathBuf::from("/workspace/playground/project/out.txt"))
+        );
+        assert_eq!(
+            resolved.expected_files,
+            vec![PathBuf::from(
+                "/workspace/playground/project/nested/result.txt"
+            )]
+        );
+        assert_eq!(
+            resolved.expected_directory,
+            Some(PathBuf::from("/workspace/playground/project/nested"))
+        );
+        assert_eq!(
+            resolved.expected_directories,
+            vec![PathBuf::from("/workspace/playground/project/other")]
+        );
     }
 
     #[test]
