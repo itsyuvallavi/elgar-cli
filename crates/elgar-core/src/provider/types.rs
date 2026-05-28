@@ -294,6 +294,14 @@ pub trait ControllerProvider {
         self.chat_with_metadata(prompt, metadata)
     }
 
+    fn chat_messages_without_streaming_with_metadata(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+    ) -> Result<ProviderOutput, ProviderError> {
+        self.chat_messages_with_metadata(messages, metadata)
+    }
+
     fn chat_stream(
         &self,
         prompt: &str,

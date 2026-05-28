@@ -68,14 +68,11 @@ const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "Normal user text may use that route; slash commands are optional explicit overrides, not required for normal requests. ",
     "For capability questions, say you can help create, edit, move, delete files and run commands through the harness, subject to validation, permissions, and verified results. ",
     "Do not say you lack filesystem access just because this first decision request has no tools attached. ",
-    "Return only JSON using one of these shapes: ",
-    "{\"route\":\"chat\",\"content\":\"...\"}, ",
-    "{\"route\":\"execute\"}, or ",
-    "{\"route\":\"ask_guidance\",\"question\":\"...\"}. ",
-    "Allowed route values are: chat, execute, ask_guidance. ",
-    "Use chat for conversational answers or text-only help, with concise terminal-friendly content. ",
-    "Use execute when the request should be attempted with filesystem or shell tools. ",
-    "Use ask_guidance only when a required concrete detail is missing, with a concise question. ",
+    "If the turn only needs a text reply, answer directly in concise terminal-friendly prose. ",
+    "Do not choose execute just to produce a conversational or text-only answer. ",
+    "Return {\"route\":\"execute\"} only when the request should be attempted with filesystem or shell tools. ",
+    "Return {\"route\":\"ask_guidance\",\"question\":\"...\"} only when a required concrete detail is missing. ",
+    "You may also return {\"route\":\"chat\",\"content\":\"...\"} for text-only help, but plain prose is preferred. ",
     "Do not claim filesystem or shell changes in chat content unless they were already reported by verified tool results."
 );
 const AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT: &str = concat!(
@@ -577,7 +574,7 @@ where
         ChatMessage::user(input),
     ];
 
-    match provider.chat_messages_with_metadata(messages, &request) {
+    match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
         Ok(output) => {
             let assistant_text = output.text.clone();
             push_provider_finished(session, request.provider, request.request_id, output);
@@ -4965,16 +4962,15 @@ mod tests {
     }
 
     #[test]
-    fn normal_text_model_chat_decision_renders_content_without_tools() {
+    fn normal_text_model_plain_answer_renders_without_tools() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-normal-chat-decision",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let provider = CapturingProvider::new().with_plain_output(
-            crate::event::ProviderOutput::new("{\"route\":\"chat\",\"content\":\"Hello there.\"}"),
-        );
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("Hello there."));
         let mut session = Session::new("session", &root, &root);
 
         run_permissive_agent_turn(&provider, &mut session, "hello");
@@ -4989,6 +4985,10 @@ mod tests {
         assert!(requests[0].messages[0]
             .content
             .contains("slash commands are optional explicit overrides"));
+        assert!(requests[0].messages[0]
+            .content
+            .contains("answer directly in concise terminal-friendly prose"));
+        assert!(!requests[0].messages[0].content.contains("Return only JSON"));
         assert!(!requests[0].messages[0].content.contains("Use `/tool"));
         assert!(session.events().iter().any(|event| matches!(
             event,

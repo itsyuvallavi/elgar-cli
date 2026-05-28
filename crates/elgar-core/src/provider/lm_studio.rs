@@ -320,6 +320,16 @@ impl ControllerProvider for LmStudioProvider {
         }
     }
 
+    fn chat_messages_without_streaming_with_metadata(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+    ) -> Result<ProviderOutput, ProviderError> {
+        let mut config = self.config.clone();
+        config.stream = false;
+        chat_lm_studio_with_request_id(&config, messages, &metadata.request_id)
+    }
+
     fn chat_stream(
         &self,
         prompt: &str,
@@ -360,6 +370,7 @@ mod tests {
     use std::{
         io::{Read, Write},
         net::TcpListener,
+        sync::mpsc,
         thread,
         time::Duration,
     };
@@ -967,6 +978,46 @@ data: [DONE]
         assert_eq!(error.status_code, Some(404));
         assert_eq!(error.code.as_deref(), Some("model_not_found"));
         assert_eq!(error.message, "model missing");
+    }
+
+    #[test]
+    fn non_streaming_message_request_overrides_streaming_config() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sender, receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let bytes_read = stream.read(&mut request).unwrap();
+            sender
+                .send(String::from_utf8_lossy(&request[..bytes_read]).to_string())
+                .unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\
+                    {\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Hello.\"}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}",
+                )
+                .unwrap();
+        });
+
+        let provider = LmStudioProvider::new(ProviderConfig {
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            stream: true,
+            timeout_millis: 1_000,
+            ..ProviderConfig::lm_studio("loaded-model")
+        });
+        let metadata = provider.request_metadata();
+        let output = provider
+            .chat_messages_without_streaming_with_metadata(
+                vec![ChatMessage::user("hello")],
+                &metadata,
+            )
+            .unwrap();
+
+        server.join().unwrap();
+        let request = receiver.recv().unwrap();
+        assert!(request.contains(r#""stream":false"#));
+        assert_eq!(output.metrics.unwrap().usage.unwrap().total_tokens, Some(7));
     }
 
     #[test]
