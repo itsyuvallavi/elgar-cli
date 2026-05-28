@@ -229,6 +229,38 @@ fn terminal_copy_slash_command_does_not_change_controller_or_scroll_state() {
 }
 
 #[test]
+fn inline_plan_preview_is_recorded_for_copy() {
+    let root = temp_root("inline-plan-copy");
+    std::fs::create_dir_all(root.join("DemoApp")).unwrap();
+    let plan = "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Run the smoke check.\n\n## Acceptance Criteria\n- Expected files exist.\n";
+    let controller = scripted_tool_controller(vec![scripted_create_file_output(
+        "create-plan",
+        "DemoApp/plan.md",
+        plan,
+    )]);
+    let runtime = AgentRuntime::new(controller.provider.clone());
+    let action_gate = ActionGate::new(controller.provider.clone());
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+
+    let result = runtime.tool_turn(
+        &mut session,
+        "create only the project plan",
+        PermissionPolicyMode::FullAccess,
+    );
+    shell.consume_events(&result.events);
+    handle_inline_submission("/plan", &runtime, &action_gate, &mut session, &mut shell).unwrap();
+
+    let copied = shell.conversation_copy_text();
+    assert!(copied.contains("Wrote "));
+    assert!(copied.contains("Plan Preview"));
+    assert!(copied.contains("contract review:"));
+    assert!(copied.contains("- approvable: yes"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn terminal_clipboard_encoding_is_standard_base64() {
     assert_eq!(encode_base64(b""), "");
     assert_eq!(encode_base64(b"f"), "Zg==");

@@ -272,7 +272,7 @@ where
         TerminalCommand::Empty => Ok((false, String::new())),
         TerminalCommand::Exit => Ok((true, String::new())),
         TerminalCommand::Help => {
-            print_plain_block(render_terminal_help())?;
+            print_and_record_local(shell, render_terminal_help())?;
             Ok((false, String::new()))
         }
         TerminalCommand::Clear => {
@@ -289,35 +289,36 @@ where
             Ok((false, String::new()))
         }
         TerminalCommand::Cancel => {
-            print_plain_block("No provider request is running.")?;
+            print_and_record_local(shell, "No provider request is running.")?;
             Ok((false, String::new()))
         }
         TerminalCommand::Memory => {
-            print_plain_block(&render_session_memory(session))?;
+            print_and_record_local(shell, render_session_memory(session))?;
             Ok((false, String::new()))
         }
         TerminalCommand::State => {
-            print_plain_block(&render_session_state_snapshot(session))?;
+            print_and_record_local(shell, render_session_state_snapshot(session))?;
             Ok((false, String::new()))
         }
         TerminalCommand::PlanPreview => {
-            print_plain_block(&render_session_plan_preview(session))?;
+            print_and_record_local(shell, render_session_plan_preview(session))?;
             Ok((false, String::new()))
         }
         TerminalCommand::Status => {
-            print_plain_block(&render_session_status(session))?;
+            print_and_record_local(shell, render_session_status(session))?;
             Ok((false, String::new()))
         }
         TerminalCommand::Pending => {
-            print_plain_block(&render_session_pending_action(session))?;
+            print_and_record_local(shell, render_session_pending_action(session))?;
             Ok((false, String::new()))
         }
         TerminalCommand::Created => {
-            print_plain_block(&render_session_created_actions(session))?;
+            print_and_record_local(shell, render_session_created_actions(session))?;
             Ok((false, String::new()))
         }
         TerminalCommand::Permissions(argument) => {
-            print_plain_block(&shell.apply_permission_command(argument))?;
+            let message = shell.apply_permission_command(argument);
+            print_and_record_local(shell, message)?;
             Ok((false, String::new()))
         }
         TerminalCommand::Tool(text) => {
@@ -325,9 +326,10 @@ where
             Ok((false, preserved_input))
         }
         TerminalCommand::Unknown(command) => {
-            print_plain_block(&format!(
-                "Unknown command: {command}. Type /commands for commands."
-            ))?;
+            print_and_record_local(
+                shell,
+                format!("Unknown command: {command}. Type /commands for commands."),
+            )?;
             Ok((false, String::new()))
         }
         TerminalCommand::Approve | TerminalCommand::Reject => {
@@ -623,6 +625,12 @@ fn print_plain_block(text: &str) -> io::Result<()> {
         )?;
     }
     io::stdout().flush()
+}
+
+fn print_and_record_local(shell: &mut TuiShell, text: impl Into<String>) -> io::Result<()> {
+    let text = text.into();
+    shell.push_local_message(text.clone());
+    print_plain_block(&text)
 }
 
 fn print_tool_block(text: &str) -> io::Result<()> {
