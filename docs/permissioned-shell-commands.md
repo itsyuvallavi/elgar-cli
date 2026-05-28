@@ -20,6 +20,7 @@ A `ShellCommand` proposal records:
 Default policy:
 
 - timeout: 30 seconds
+- maximum model-requested timeout: 300 seconds
 - stdout cap: 16 KiB
 - stderr cap: 16 KiB
 - environment: inherit the Elgar process environment

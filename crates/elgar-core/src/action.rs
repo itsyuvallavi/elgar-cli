@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub const SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+pub const SHELL_COMMAND_MAX_TIMEOUT_SECONDS: u64 = 5 * 60;
 pub const SHELL_COMMAND_STDOUT_CAP_BYTES: usize = 16 * 1024;
 pub const SHELL_COMMAND_STDERR_CAP_BYTES: usize = 16 * 1024;
 
@@ -328,6 +329,7 @@ impl ShellCommandAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellCommandPolicy {
     pub default_timeout_seconds: u64,
+    pub max_timeout_seconds: u64,
     pub output_caps: ShellCommandOutputCaps,
     pub environment: ShellCommandEnvironmentPolicy,
 }
@@ -336,6 +338,7 @@ impl Default for ShellCommandPolicy {
     fn default() -> Self {
         Self {
             default_timeout_seconds: SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS,
+            max_timeout_seconds: SHELL_COMMAND_MAX_TIMEOUT_SECONDS,
             output_caps: ShellCommandOutputCaps::default(),
             environment: ShellCommandEnvironmentPolicy::InheritControllerEnvironment,
         }
@@ -765,6 +768,7 @@ mod tests {
         let policy = ShellCommandPolicy::default();
 
         assert_eq!(policy.default_timeout_seconds, 30);
+        assert_eq!(policy.max_timeout_seconds, 300);
         assert_eq!(policy.output_caps.stdout_bytes, 16 * 1024);
         assert_eq!(policy.output_caps.stderr_bytes, 16 * 1024);
         assert_eq!(

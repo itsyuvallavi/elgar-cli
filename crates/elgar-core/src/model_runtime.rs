@@ -5,7 +5,7 @@ use serde_json::{json, Map, Value};
 
 use crate::action::{
     ActionRequest, CreateDirectoryAction, CreateFileAction, DeleteFileAction, MoveFileAction,
-    OverwriteFileAction, PatchFileAction, ShellCommandAction,
+    OverwriteFileAction, PatchFileAction, ShellCommandAction, SHELL_COMMAND_MAX_TIMEOUT_SECONDS,
 };
 use crate::provider::ChatToolDefinition;
 
@@ -160,7 +160,10 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
                     ),
                     (
                         "timeout_seconds",
-                        integer_property("Optional unsigned timeout in seconds."),
+                        integer_property(
+                            "Optional unsigned timeout in seconds.",
+                            Some(SHELL_COMMAND_MAX_TIMEOUT_SECONDS),
+                        ),
                     ),
                     (
                         "expected_effect",
@@ -216,12 +219,16 @@ fn string_property(description: &'static str) -> Value {
     })
 }
 
-fn integer_property(description: &'static str) -> Value {
-    json!({
+fn integer_property(description: &'static str, maximum: Option<u64>) -> Value {
+    let mut schema = json!({
         "type": "integer",
         "minimum": 0,
         "description": description
-    })
+    });
+    if let Some(maximum) = maximum {
+        schema["maximum"] = json!(maximum);
+    }
+    schema
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,7 +474,7 @@ fn validate_shell_command(
 
     if let Some(timeout_seconds) = optional_u64(tool_call, arguments, tool_name, "timeout_seconds")?
     {
-        action.timeout_seconds = timeout_seconds;
+        action.timeout_seconds = timeout_seconds.min(SHELL_COMMAND_MAX_TIMEOUT_SECONDS);
     }
     if let Some(expected_effect) =
         optional_string(tool_call, arguments, tool_name, "expected_effect")?
@@ -650,7 +657,9 @@ mod tests {
         ModelToolName, ModelToolValidationErrorKind, RawModelToolCall, RawModelToolName,
         ValidatedModelToolOutput,
     };
-    use crate::action::{ActionRequest, SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS};
+    use crate::action::{
+        ActionRequest, SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS, SHELL_COMMAND_MAX_TIMEOUT_SECONDS,
+    };
 
     #[test]
     fn model_tool_name_serde_names_roundtrip() {
@@ -751,6 +760,7 @@ mod tests {
         assert!(schema["properties"].get("command").is_some());
         assert!(schema["properties"].get("cwd").is_some());
         assert!(schema["properties"].get("timeout_seconds").is_some());
+        assert_eq!(schema["properties"]["timeout_seconds"]["maximum"], 300);
         assert!(schema["properties"].get("expected_effect").is_some());
         assert!(schema["properties"].get("risk_notes").is_some());
         assert!(schema["properties"].get("expected_file").is_some());
@@ -904,6 +914,28 @@ mod tests {
         assert!(action.risk_notes.contains("Shell commands are high risk"));
         assert_eq!(action.expected_file, None);
         assert_eq!(action.expected_directory, None);
+    }
+
+    #[test]
+    fn shell_command_timeout_is_capped_to_runtime_maximum() {
+        let draft = raw_call(
+            "tool-1",
+            RawModelToolName::Known(ModelToolName::ShellCommand),
+            json!({
+                "command": "sleep 999",
+                "cwd": ".",
+                "timeout_seconds": 999_999
+            }),
+        );
+
+        let validated = validate_exactly_one_model_tool_call(&[draft])
+            .expect("validate shell_command")
+            .expect("one validated action");
+
+        let ActionRequest::ShellCommand(action) = validated.request else {
+            panic!("expected ShellCommand");
+        };
+        assert_eq!(action.timeout_seconds, SHELL_COMMAND_MAX_TIMEOUT_SECONDS);
     }
 
     #[test]
