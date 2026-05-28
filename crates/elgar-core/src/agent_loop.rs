@@ -63,17 +63,12 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "After tools run, answer naturally and briefly with what happened."
 );
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
-    "You are Elgar. Decide how this normal user turn should proceed. ",
-    "You are connected to an Elgar harness that can run filesystem and shell tools after you choose the execute route. ",
-    "Normal user text may use that route; slash commands are optional explicit overrides, not required for normal requests. ",
-    "For capability questions, say you can help create, edit, move, delete files and run commands through the harness, subject to validation, permissions, and verified results. ",
-    "Do not say you lack filesystem access just because this first decision request has no tools attached. ",
-    "If the turn only needs a text reply, answer directly in concise terminal-friendly prose. ",
-    "Do not choose execute just to produce a conversational or text-only answer. ",
-    "Return {\"route\":\"execute\"} only when the request should be attempted with filesystem or shell tools. ",
-    "Return {\"route\":\"ask_guidance\",\"question\":\"...\"} only when a required concrete detail is missing. ",
-    "You may also return {\"route\":\"chat\",\"content\":\"...\"} for text-only help, but plain prose is preferred. ",
-    "Do not claim filesystem or shell changes in chat content unless they were already reported by verified tool results."
+    "You are Elgar. No tools are attached yet. ",
+    "Answer briefly for text-only turns. ",
+    "Return {\"route\":\"execute\"} for filesystem or shell work. ",
+    "Return {\"route\":\"ask_guidance\",\"question\":\"...\"} only when a required detail is missing. ",
+    "For capability questions, say Elgar can create, edit, move, delete files and run commands via the harness, subject to validation and permissions. ",
+    "Do not claim filesystem or shell work was completed."
 );
 const AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT: &str = concat!(
     "Classify which verified runtime state answer, if any, the user needs from this current session. ",
@@ -4893,6 +4888,7 @@ mod tests {
             assert_eq!(requests[0].tool_count, 0);
             assert_eq!(requests[0].messages.last(), Some(&ChatMessage::user(input)));
             let joined = joined_request_messages(&requests[0]);
+            assert!(joined.len() <= 520, "plain route prompt grew: {joined}");
             assert!(!joined.contains("latest verified folder"));
             assert!(!joined.contains("latest verified plan"));
             assert!(!joined.contains("Verified filesystem context"));
@@ -4981,13 +4977,14 @@ mod tests {
         assert_eq!(requests[0].tool_count, 0);
         assert!(requests[0].messages[0]
             .content
-            .contains("Normal user text may use that route"));
+            .contains("No tools are attached yet"));
         assert!(requests[0].messages[0]
             .content
-            .contains("slash commands are optional explicit overrides"));
+            .contains("Return {\"route\":\"execute\"}"));
         assert!(requests[0].messages[0]
             .content
-            .contains("answer directly in concise terminal-friendly prose"));
+            .contains("Answer briefly for text-only turns"));
+        assert!(requests[0].messages[0].content.len() <= 460);
         assert!(!requests[0].messages[0].content.contains("Return only JSON"));
         assert!(!requests[0].messages[0].content.contains("Use `/tool"));
         assert!(session.events().iter().any(|event| matches!(
