@@ -24,7 +24,7 @@ timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-240}"
 
 cat >"$input_file" <<EOF
 /permissions full_access
-Create a complete small but real React Vite project inside a new folder named $project_dir. First create a project plan, then execute it. The app should be a task board with columns for Todo, In Progress, and Done. Users should be able to add tasks, move tasks between columns, and delete tasks. Include all files needed for npm run dev: package.json with scripts, index.html, src/main.jsx or src/main.tsx, src/App.jsx or src/App.tsx, CSS, Vite config if useful, README, and tests or a clear test setup. Do not leave placeholder-only files.
+Create a complete small but real React Vite project inside a new folder named $project_dir. First create a project plan, then execute it. The app should be a compact task board with columns for Todo, In Progress, and Done. Users should be able to add tasks, move tasks between columns, and delete tasks. Keep this dogfood scaffold compact and complete: the plan and final project should include exactly these project files: package.json, root index.html at the project root (not public/index.html), vite.config.js, src/main.jsx, src/App.jsx, src/App.css, and README.md. Do not add component folders, test folders, public/index.html, or placeholder-only files. Include package.json scripts needed for npm run dev, npm run build, and npm run preview.
 /plan
 execute the plan
 /plan

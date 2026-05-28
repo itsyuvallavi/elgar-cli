@@ -324,6 +324,10 @@ fn next_tree_depth(lines: &[&str], index: usize) -> Option<usize> {
 }
 
 fn tree_root_path_from_line(line: &str) -> Option<PathBuf> {
+    if line != line.trim_start() {
+        return None;
+    }
+
     let trimmed = strip_markdown_list_marker(line.trim());
     if trimmed.chars().any(char::is_whitespace) || trimmed.contains("──") {
         return None;
@@ -934,9 +938,13 @@ mod tests {
             .expected_files
             .contains(&project.join("__init__.py")));
         assert!(structured.expected_files.contains(&project.join("cli.py")));
-        assert!(structured
-            .expected_files
-            .contains(&project.join("README.md")));
+        assert!(
+            structured
+                .expected_files
+                .contains(&project.join("README.md")),
+            "expected files: {:#?}",
+            structured.expected_files
+        );
         assert!(structured
             .expected_files
             .contains(&project.join("requirements.txt")));
@@ -948,6 +956,58 @@ mod tests {
             .iter()
             .chain(structured.expected_directories.iter())
             .any(|path| path.to_string_lossy().contains("/- ")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plain_indented_tree_sibling_after_directory_returns_to_parent() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-indented-tree-sibling-parent-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("react-vite-project")).unwrap();
+        fs::write(
+            root.join("react-vite-project/plan.md"),
+            "# Project Plan\n\n## File Tree\n- react-vite-project/\n  - package.json\n  - src/\n    - main.jsx\n    - App.jsx\n    - App.css\n  - README.md\n\n## Verification\n- Run `npm run dev`.\n\n## Acceptance Criteria\n- The app runs.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("react-vite-project/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root
+                .join("react-vite-project/plan.md")
+                .display()
+                .to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified plan should create structured plan state");
+        let project = root.join("react-vite-project");
+        assert!(
+            structured
+                .expected_files
+                .contains(&project.join("README.md")),
+            "expected files: {:#?}",
+            structured.expected_files
+        );
+        assert!(!structured
+            .expected_files
+            .contains(&project.join("src/README.md")));
 
         let _ = fs::remove_dir_all(&root);
     }

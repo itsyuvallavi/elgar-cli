@@ -1869,6 +1869,53 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
             plan.source_action_id.clone(),
         ));
     }
+    if let Some(plan) = session.project_memory().latest_structured_plan() {
+        lines.push(format!(
+            "- latest structured plan root: {}",
+            display_agent_context_path(session, &plan.project_root)
+        ));
+        let missing_directories = plan
+            .expected_directories
+            .iter()
+            .filter(|path| !path.is_dir())
+            .map(|path| display_agent_context_path(session, path))
+            .collect::<Vec<_>>();
+        let missing_files = plan
+            .expected_files
+            .iter()
+            .filter(|path| !path.is_file())
+            .map(|path| display_agent_context_path(session, path))
+            .collect::<Vec<_>>();
+        if !missing_directories.is_empty() {
+            lines.push(format!(
+                "- missing expected directories:\n{}",
+                missing_directories
+                    .iter()
+                    .map(|path| format!("  - {path}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+        if !missing_files.is_empty() {
+            lines.push(format!(
+                "- missing expected files:\n{}",
+                missing_files
+                    .iter()
+                    .map(|path| format!("  - {path}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+        if missing_directories.is_empty() && missing_files.is_empty() {
+            lines.push("- latest structured plan expected paths are complete".to_string());
+        }
+        selected.push(ProviderPromptMemorySelectedFact::new(
+            "structured_plan",
+            plan.source_plan_path.clone(),
+            Some(plan.project_root.clone()),
+            plan.source_action_id.clone().unwrap_or_default(),
+        ));
+    }
 
     if selected.is_empty() {
         session.set_latest_provider_prompt_memory_selection(None);
@@ -4412,11 +4459,23 @@ mod tests {
             path: cwd.join("tui-state-test"),
             source_action_id: "action-folder".to_string(),
         });
-        session.record_verified_plan_reference(VerifiedPlanReference {
-            path: cwd.join("tui-state-test/PLAN.md"),
-            project_root: cwd.join("tui-state-test"),
-            source_action_id: "action-plan".to_string(),
-        });
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("tui-state-test/PLAN.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: cwd.join("tui-state-test/PLAN.md").display().to_string(),
+            }),
+        );
 
         run_agent_tool_turn_with_policy(
             &provider,
@@ -4436,6 +4495,22 @@ mod tests {
         assert!(verified_context
             .content
             .contains("- latest verified plan: tui-state-test/PLAN.md"));
+        assert!(verified_context
+            .content
+            .contains("- latest structured plan root: tui-state-test"));
+        assert!(verified_context
+            .content
+            .contains("- missing expected directories:"));
+        assert!(verified_context.content.contains("  - tui-state-test/src"));
+        assert!(verified_context
+            .content
+            .contains("- missing expected files:"));
+        assert!(verified_context
+            .content
+            .contains("  - tui-state-test/src/main.py"));
+        assert!(verified_context
+            .content
+            .contains("  - tui-state-test/requirements.txt"));
         assert!(!verified_context
             .content
             .contains("playground/tui-state-test"));
