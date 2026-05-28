@@ -7,6 +7,7 @@ use elgar_core::event::{
 use elgar_core::policy::ApprovalSource;
 
 use crate::markdown::render_assistant_markdown;
+use crate::shell_result::render_shell_execution_details;
 
 mod provider_thinking;
 mod tool_activity;
@@ -650,7 +651,7 @@ fn render_verified_action_result(result: &VerifiedActionResult) -> String {
                     return message;
                 }
             }
-            "Shell command finished and verification was recorded.".to_string()
+            render_shell_execution_details(shell)
         }
     }
 }
@@ -783,7 +784,7 @@ mod tests {
         event::{
             ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
             ErrorEvent, Event, FileActionVerification, ProviderFinished, ProviderOutput,
-            ProviderStarted, UserMessage, VerifiedActionResult,
+            ProviderStarted, ShellActionVerification, UserMessage, VerifiedActionResult,
         },
         model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
     };
@@ -856,6 +857,33 @@ mod tests {
         assert!(rendered.contains("Rejected. No changes were made."));
         assert!(rendered.contains("Action failed: action-3 CreateFile permission denied"));
         assert!(rendered.contains("Error: boom"));
+    }
+
+    #[test]
+    fn conversation_renders_shell_result_exit_code_and_output() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::ShellCommand,
+            VerifiedActionResult::Shell(ShellActionVerification {
+                command: "printf hello".to_string(),
+                cwd: "/repo".to_string(),
+                stdout: "hello\n".to_string(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                exit_code: Some(0),
+                elapsed_millis: 12,
+                timed_out: false,
+                verified_effect: None,
+            }),
+        )));
+
+        let rendered = conversation.render_body();
+        assert!(rendered.contains("Shell command finished: exit 0."));
+        assert!(rendered.contains("stdout: hello"));
+        assert!(!rendered.contains("Shell command finished and verification was recorded."));
     }
 
     #[test]

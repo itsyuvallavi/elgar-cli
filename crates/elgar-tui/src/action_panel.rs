@@ -6,6 +6,8 @@ use std::{
 use elgar_core::event::{ActionEvent, Event, FileActionVerification, VerifiedActionResult};
 use elgar_core::policy::ApprovalSource;
 
+use crate::shell_result::render_shell_execution_details;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PendingActionArea {
     pub panel: Option<ActionApprovalPanel>,
@@ -245,7 +247,7 @@ fn render_verified_result(result: &VerifiedActionResult) -> String {
                     return message;
                 }
             }
-            "Shell command finished and verification was recorded.".to_string()
+            render_shell_execution_details(shell)
         }
     }
 }
@@ -333,7 +335,9 @@ fn user_display_path_list(paths: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use elgar_core::event::{ActionApplied, ActionEvent, Event, VerifiedActionResult};
+    use elgar_core::event::{
+        ActionApplied, ActionEvent, Event, ShellActionVerification, VerifiedActionResult,
+    };
 
     use super::{ActionPanelState, PendingActionArea};
 
@@ -408,6 +412,34 @@ mod tests {
         let rendered = pending_action.render_body();
         assert!(rendered.contains("Status: applied and verified"));
         assert!(rendered.contains("Result: Wrote hello.py."));
+    }
+
+    #[test]
+    fn applied_shell_result_renders_timeout_and_stderr_details() {
+        let mut pending_action = PendingActionArea::default();
+
+        pending_action.observe_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::ShellCommand,
+            VerifiedActionResult::Shell(ShellActionVerification {
+                command: "sleep 60".to_string(),
+                cwd: "/repo".to_string(),
+                stdout: String::new(),
+                stderr: "timed out\n".to_string(),
+                stdout_truncated: false,
+                stderr_truncated: true,
+                exit_code: None,
+                elapsed_millis: 30_000,
+                timed_out: true,
+                verified_effect: None,
+            }),
+        )));
+
+        let rendered = pending_action.render_body();
+        assert!(rendered.contains("Status: applied and verified"));
+        assert!(rendered.contains("Result: Shell command timed out after 30000 ms."));
+        assert!(rendered.contains("stderr: timed out (truncated)"));
+        assert!(!rendered.contains("Shell command finished and verification was recorded."));
     }
 
     #[test]

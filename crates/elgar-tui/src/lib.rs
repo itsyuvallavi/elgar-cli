@@ -6,6 +6,7 @@ mod memory;
 pub mod panes;
 mod reasoning;
 pub mod shell;
+mod shell_result;
 mod startup;
 pub mod terminal;
 mod theme;
