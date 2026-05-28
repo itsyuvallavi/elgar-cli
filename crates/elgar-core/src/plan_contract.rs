@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +22,8 @@ pub struct PlanContract {
 
 impl PlanContract {
     pub fn draft_from_structured_plan(id: impl Into<String>, plan: &StructuredProjectPlan) -> Self {
+        let (verification_steps, acceptance_criteria) =
+            review_metadata_from_source_plan(&plan.source_plan_path);
         Self {
             id: id.into(),
             source_plan_path: plan.source_plan_path.clone(),
@@ -29,8 +34,8 @@ impl PlanContract {
                 allowed_directories: plan.expected_directories.clone(),
                 allowed_files: plan.expected_files.clone(),
                 allowed_command_classes: Vec::new(),
-                verification_steps: Vec::new(),
-                acceptance_criteria: Vec::new(),
+                verification_steps,
+                acceptance_criteria,
                 revision_reason: None,
             },
             approval: None,
@@ -212,6 +217,66 @@ impl PlanContract {
     }
 }
 
+fn review_metadata_from_source_plan(path: &Path) -> (Vec<String>, Vec<String>) {
+    fs::read_to_string(path)
+        .map(|contents| {
+            (
+                extract_markdown_section_items(&contents, "verification"),
+                extract_markdown_section_items(&contents, "acceptance criteria"),
+            )
+        })
+        .unwrap_or_else(|_| (Vec::new(), Vec::new()))
+}
+
+fn extract_markdown_section_items(contents: &str, heading: &str) -> Vec<String> {
+    let mut in_section = false;
+    let mut items = Vec::new();
+
+    for line in contents.lines() {
+        if let Some(current_heading) = markdown_heading_text(line) {
+            in_section = current_heading == heading;
+            continue;
+        }
+
+        if !in_section {
+            continue;
+        }
+
+        if let Some(item) = markdown_list_item_text(line) {
+            if !items.iter().any(|existing| existing == &item) {
+                items.push(item);
+            }
+        }
+    }
+
+    items
+}
+
+fn markdown_heading_text(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+    Some(trimmed.trim_start_matches('#').trim().to_ascii_lowercase())
+}
+
+fn markdown_list_item_text(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let item = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+        .or_else(|| numbered_markdown_list_item(trimmed))?
+        .trim();
+
+    (!item.is_empty()).then(|| item.to_string())
+}
+
+fn numbered_markdown_list_item(trimmed: &str) -> Option<&str> {
+    let (prefix, suffix) = trimmed.split_once(". ")?;
+    (!prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit())).then_some(suffix)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanContractDraftReview {
     pub issues: Vec<PlanContractDraftIssue>,
@@ -347,6 +412,46 @@ mod tests {
             .contains(&plan.expected_files[0]));
         assert!(contract.allows_path(&plan.expected_files[1]));
         assert!(contract.approval.is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_contract_from_structured_plan_extracts_review_sections() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-draft-review-sections-{}",
+            std::process::id()
+        ));
+        let project = root.join("demo");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Plan\n\n```text\nsrc/main.py\n```\n\n## Verification\n- Run the CLI smoke check.\n\n## Acceptance Criteria\n1. The expected file exists.\n",
+        )
+        .unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![project.join("src/main.py")],
+        };
+
+        let contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+
+        assert_eq!(
+            contract.scope.verification_steps,
+            vec!["Run the CLI smoke check."]
+        );
+        assert_eq!(
+            contract.scope.acceptance_criteria,
+            vec!["The expected file exists."]
+        );
+        assert!(contract.review_draft().is_approvable());
 
         let _ = fs::remove_dir_all(root);
     }

@@ -28,6 +28,7 @@ use crate::{
         allowed_root_for_action, resolve_agent_action_paths,
         resolve_shell_action_paths_for_session, AgentPathResolution,
     },
+    plan_contract::{PlanContractDraftIssue, PlanContractDraftIssueKind},
     policy::{PermissionPolicyMode, PolicyDecision},
     provider::{
         ChatMessage, ChatRole, ChatToolCall, ChatToolCallFunction, ControllerProvider,
@@ -54,6 +55,7 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "If the user asks you to choose, choose a reasonable option and continue the prior request. ",
     "If the user asks for a plan and says to share it before implementation, create or update a plan file and summarize it; do not implement project files until asked. ",
     "If the user asks to create only a plan file with a future file tree, create only that plan file; do not ask whether to create the listed future files. ",
+    "Plan files must include a concrete file tree, a Verification section, and an Acceptance Criteria section before implementation. ",
     "If the user asks what the plan is, summarize the existing plan; do not implement it. ",
     "If a verified plan already exists and the user gives a short choice follow-up, answer from that plan instead of recreating the same file. ",
     "When creating a framework project, infer the necessary starter files from the requested stack and create the complete runnable scaffold before the final answer. ",
@@ -261,6 +263,10 @@ where
         )));
 
         if tool_calls.is_empty() {
+            if plan_creation_repair_in_progress {
+                messages.push(ChatMessage::system(plan_creation_repair_message(session)));
+                continue;
+            }
             if plan_execution_in_progress {
                 if let Some(message) = plan_execution_repair_message_or_mark_complete(session) {
                     messages.push(ChatMessage::system(message));
@@ -390,9 +396,10 @@ where
                     {
                         plan_created_this_turn = true;
                         plan_creation_repair_in_progress =
-                            !latest_structured_plan_has_expected_paths(session);
+                            latest_plan_contract_needs_repair(session);
                         if plan_creation_repair_in_progress {
-                            messages.push(ChatMessage::system(plan_creation_repair_message()));
+                            messages
+                                .push(ChatMessage::system(plan_creation_repair_message(session)));
                         }
                     }
                     messages.push(ChatMessage::tool(action.tool_call_id, result));
@@ -671,17 +678,63 @@ fn guard_plan_creation_tool_outputs(
         .collect()
 }
 
-fn latest_structured_plan_has_expected_paths(session: &Session) -> bool {
+fn latest_plan_contract_needs_repair(session: &Session) -> bool {
     session
-        .project_memory()
-        .latest_structured_plan()
-        .is_some_and(|plan| {
-            !plan.expected_directories.is_empty() || !plan.expected_files.is_empty()
-        })
+        .latest_plan_contract()
+        .is_some_and(|contract| !contract.review_draft().is_approvable())
 }
 
-fn plan_creation_repair_message() -> String {
-    "The verified plan file has no executable expected paths. Update the same plan file with a concrete fenced file tree or path list before creating implementation files.".to_string()
+fn plan_creation_repair_message(session: &Session) -> String {
+    let Some(contract) = session.latest_plan_contract() else {
+        return "The verified plan draft is not ready. Update the same plan file with a concrete file tree, Verification section, and Acceptance Criteria section before creating implementation files.".to_string();
+    };
+    let review = contract.review_draft();
+    let mut lines = vec![
+        "The verified plan draft is not approvable yet.".to_string(),
+        "Update the same plan file before creating implementation files.".to_string(),
+        "Blocking issues:".to_string(),
+    ];
+    for issue in review.issues.iter().filter(|issue| {
+        issue.severity == crate::plan_contract::PlanContractDraftIssueSeverity::Blocking
+    }) {
+        lines.push(format!("- {}", plan_draft_issue_message(issue)));
+    }
+    lines.push("The plan file must include a concrete fenced file tree or path list, a `Verification` section with bullet checks, and an `Acceptance Criteria` section with bullet criteria.".to_string());
+    lines.join("\n")
+}
+
+fn plan_draft_issue_message(issue: &PlanContractDraftIssue) -> String {
+    let path = issue
+        .path
+        .as_ref()
+        .map(|path| format!(": {}", path.display()))
+        .unwrap_or_default();
+    match &issue.kind {
+        PlanContractDraftIssueKind::ContractNotDraft { status } => {
+            format!("plan contract is not a draft ({status:?})")
+        }
+        PlanContractDraftIssueKind::MissingSourcePlan => format!("missing source plan{path}"),
+        PlanContractDraftIssueKind::MissingProjectRoot => format!("missing project root{path}"),
+        PlanContractDraftIssueKind::SourcePlanOutsideProjectRoot => {
+            format!("source plan is outside the project root{path}")
+        }
+        PlanContractDraftIssueKind::EmptyExecutableScope => {
+            "no executable expected paths; include a concrete fenced file tree or path list"
+                .to_string()
+        }
+        PlanContractDraftIssueKind::PathOutsideProjectRoot => {
+            format!("planned path is outside the project root{path}")
+        }
+        PlanContractDraftIssueKind::DuplicateScopePath => {
+            format!("duplicate planned path{path}")
+        }
+        PlanContractDraftIssueKind::MissingVerificationSteps => {
+            "missing `Verification` section with bullet checks".to_string()
+        }
+        PlanContractDraftIssueKind::MissingAcceptanceCriteria => {
+            "missing `Acceptance Criteria` section with bullet criteria".to_string()
+        }
+    }
 }
 
 fn guard_redundant_directory_tool_outputs(
@@ -2124,7 +2177,7 @@ mod tests {
                     name: RawModelToolName::Known(ModelToolName::CreateFile),
                     arguments: json!({
                         "target_path": "ReactPlanOnly/plan.md",
-                        "contents": "# React TS Tailwind Plan\n\n- Create package.json.\n- Create src/main.tsx.\n"
+                        "contents": "# React TS Tailwind Plan\n\n```text\npackage.json\nsrc/main.tsx\n```\n\n## Verification\n- Check package.json and src/main.tsx exist after execution.\n\n## Acceptance Criteria\n- The project matches the listed file tree.\n"
                     }),
                     assistant_summary: Some("create plan".to_string()),
                 },
@@ -2181,7 +2234,7 @@ mod tests {
                     name: RawModelToolName::Known(ModelToolName::CreateFile),
                     arguments: json!({
                         "target_path": "PlanBatch/plan.md",
-                        "contents": "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n"
+                        "contents": "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n\n## Verification\n- Check src/main.py and requirements.txt exist after execution.\n\n## Acceptance Criteria\n- The project matches the listed file tree.\n"
                     }),
                     assistant_summary: Some("create plan".to_string()),
                 },
@@ -2248,7 +2301,7 @@ mod tests {
                     name: RawModelToolName::Known(ModelToolName::CreateFile),
                     arguments: json!({
                         "target_path": "PlanLater/PROJECT_PLAN.md",
-                        "contents": "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n"
+                        "contents": "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n\n## Verification\n- Check src/main.py and requirements.txt exist after execution.\n\n## Acceptance Criteria\n- The project matches the listed file tree.\n"
                     }),
                     assistant_summary: Some("create plan".to_string()),
                 },
@@ -2328,7 +2381,7 @@ mod tests {
                     name: RawModelToolName::Known(ModelToolName::OverwriteFile),
                     arguments: json!({
                         "target_path": "PlanRepair/plan.md",
-                        "contents": "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n"
+                        "contents": "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Check src/main.py and requirements.txt exist after execution.\n\n## Acceptance Criteria\n- The project matches the listed file tree.\n"
                     }),
                     assistant_summary: Some("repair plan".to_string()),
                 },
@@ -2355,7 +2408,7 @@ mod tests {
 
         assert_eq!(
             std::fs::read_to_string(root.join("PlanRepair/plan.md")).unwrap(),
-            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n"
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Check src/main.py and requirements.txt exist after execution.\n\n## Acceptance Criteria\n- The project matches the listed file tree.\n"
         );
         assert!(!root.join("PlanRepair/src/main.py").exists());
         let plan = session
@@ -2374,6 +2427,83 @@ mod tests {
             .any(|message| message.content.contains("no executable expected paths")));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_creation_repairs_plan_missing_review_sections_before_implementation() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-review-section-repair",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("PlanReviewRepair")).unwrap();
+        let repaired_plan = "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Check src/main.py and requirements.txt exist after execution.\n\n## Acceptance Criteria\n- The project matches the listed file tree.\n";
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating weak plan.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "plan-review-repair-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "PlanReviewRepair/plan.md",
+                        "contents": "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n"
+                    }),
+                    assistant_summary: Some("create weak plan".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Repairing review sections.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "plan-review-repair-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::OverwriteFile),
+                    arguments: json!({
+                        "target_path": "PlanReviewRepair/plan.md",
+                        "contents": repaired_plan
+                    }),
+                    assistant_summary: Some("repair plan sections".to_string()),
+                },
+                RawModelToolCall {
+                    id: "plan-review-repair-3".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "PlanReviewRepair/src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: Some("create main too early".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Plan ready."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "create only the project plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("PlanReviewRepair/plan.md")).unwrap(),
+            repaired_plan
+        );
+        assert!(!root.join("PlanReviewRepair/src/main.py").exists());
+        let contract = session
+            .latest_plan_contract()
+            .expect("repaired plan should create a contract");
+        assert!(contract.review_draft().is_approvable());
+        assert!(provider
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .any(
+                |message| message.content.contains("missing `Verification` section")
+                    && message
+                        .content
+                        .contains("missing `Acceptance Criteria` section")
+            ));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2496,7 +2626,7 @@ mod tests {
                 RawModelToolCall {
                     id: "missing-create-target-1".to_string(),
                     name: RawModelToolName::Known(ModelToolName::CreateFile),
-                    arguments: json!({ "contents": "# Plan\n" }),
+                    arguments: json!({ "contents": "# Notes\n" }),
                     assistant_summary: None,
                 },
             ]),
@@ -2505,8 +2635,8 @@ mod tests {
                     id: "missing-create-target-2".to_string(),
                     name: RawModelToolName::Known(ModelToolName::CreateFile),
                     arguments: json!({
-                        "target_path": "plan.md",
-                        "contents": "# Plan\n"
+                        "target_path": "notes.md",
+                        "contents": "# Notes\n"
                     }),
                     assistant_summary: None,
                 },
@@ -2518,13 +2648,13 @@ mod tests {
         run_agent_tool_turn_with_policy(
             &provider,
             &mut session,
-            "create an md file with a plan for projects",
+            "create an md notes file",
             PermissionPolicyMode::FullAccess,
         );
 
         assert_eq!(
-            std::fs::read_to_string(root.join("plan.md")).unwrap(),
-            "# Plan\n"
+            std::fs::read_to_string(root.join("notes.md")).unwrap(),
+            "# Notes\n"
         );
         assert_eq!(session.actions().len(), 1);
         assert_eq!(provider.messages.lock().unwrap().len(), 3);
