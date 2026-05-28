@@ -117,8 +117,17 @@ fn extract_expected_plan_paths(
     let mut tree_stack: Vec<PathBuf> = Vec::new();
     let mut plain_indent_stack: Vec<(usize, PathBuf)> = Vec::new();
     let lines = contents.lines().collect::<Vec<_>>();
+    let mut fenced_path_block: Option<bool> = None;
 
     for (index, line) in lines.iter().enumerate() {
+        if let Some(path_block) = markdown_fence_path_mode(line) {
+            fenced_path_block = fenced_path_block.map(|_| None).unwrap_or(Some(path_block));
+            continue;
+        }
+        if fenced_path_block == Some(false) {
+            continue;
+        }
+
         if let Some(root_path) = tree_root_path_from_line(line) {
             tree_stack.clear();
             tree_stack.push(root_path.clone());
@@ -324,12 +333,7 @@ fn tree_root_path_from_line(line: &str) -> Option<PathBuf> {
 }
 
 fn tree_depth(prefix: &str) -> usize {
-    prefix
-        .chars()
-        .collect::<Vec<_>>()
-        .chunks(4)
-        .filter(|chunk| chunk.iter().any(|ch| !ch.is_whitespace()))
-        .count()
+    prefix.chars().count() / 4
 }
 
 fn inline_path_from_line(line: &str) -> Option<(PathBuf, PlanPathKind)> {
@@ -392,7 +396,17 @@ fn strip_inline_plan_comment(token: &str) -> &str {
     token
         .split_once(" #")
         .map(|(path, _)| path)
+        .or_else(|| token.split_once(" (").map(|(path, _)| path))
         .unwrap_or(token)
+}
+
+fn markdown_fence_path_mode(line: &str) -> Option<bool> {
+    let trimmed = line.trim();
+    let language = trimmed.strip_prefix("```")?.trim();
+    Some(matches!(
+        language.to_ascii_lowercase().as_str(),
+        "" | "text" | "txt" | "tree" | "plaintext"
+    ))
 }
 
 fn strip_markdown_list_marker(token: &str) -> &str {
@@ -994,6 +1008,89 @@ mod tests {
             .expected_files
             .iter()
             .any(|path| path.to_string_lossy().contains('#')));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extracts_react_vite_file_tree_without_json_or_jsx_snippets() {
+        let root =
+            std::env::temp_dir().join(format!("elgar-react-vite-tree-plan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("react-vite-plan-test")).unwrap();
+        fs::write(
+            root.join("react-vite-plan-test/plan.md"),
+            "# Project Plan: Task Board React Vite App\n\n## File Tree\n```\nreact-vite-plan-test/\n├── package.json\n├── vite.config.js (optional)\n├── index.html\n├── src/\n│   ├── main.jsx (or main.tsx)\n│   ├── App.jsx (or App.tsx)\n│   ├── components/\n│   │   ├── Column.jsx\n│   │   └── TaskCard.jsx\n│   ├── styles/\n│   │   └── app.css\n│   └── tests/\n│       ├── App.test.jsx\n│       └── TaskBoard.test.jsx\n├── README.md\n└── .gitignore\n```\n\n## package.json\n```json\n{\n  \"scripts\": {\n    \"dev\": \"vite\"\n  },\n  \"dependencies\": {\n    \"react-dom\": \"^18.2.0\"\n  }\n}\n```\n\n## index.html\n```html\n<head></head>\n<body></body>\n```\n\n## src/App.jsx\n```jsx\nreturn (\n  <div className=\"board\"></div>\n);\n```\n\n## Verification Steps\n- Run `npm run dev`.\n\n## Acceptance Criteria\n- The board renders.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("react-vite-plan-test/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root
+                .join("react-vite-plan-test/plan.md")
+                .display()
+                .to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified React plan should create structured plan state");
+        let project = root.join("react-vite-plan-test");
+        for directory in ["src", "src/components", "src/styles", "src/tests"] {
+            assert!(
+                structured
+                    .expected_directories
+                    .contains(&project.join(directory)),
+                "missing directory {directory}"
+            );
+        }
+        for file in [
+            "package.json",
+            "vite.config.js",
+            "index.html",
+            "src/main.jsx",
+            "src/App.jsx",
+            "src/components/Column.jsx",
+            "src/components/TaskCard.jsx",
+            "src/styles/app.css",
+            "src/tests/App.test.jsx",
+            "src/tests/TaskBoard.test.jsx",
+            "README.md",
+            ".gitignore",
+        ] {
+            assert!(
+                structured.expected_files.contains(&project.join(file)),
+                "missing file {file}"
+            );
+        }
+        for junk in [
+            "scripts\": {",
+            "dependencies\": {",
+            "<head>",
+            "<body>",
+            "return (",
+        ] {
+            assert!(
+                !structured
+                    .expected_directories
+                    .iter()
+                    .chain(structured.expected_files.iter())
+                    .any(|path| path.to_string_lossy().contains(junk)),
+                "unexpected snippet path {junk}"
+            );
+        }
 
         let _ = fs::remove_dir_all(&root);
     }
