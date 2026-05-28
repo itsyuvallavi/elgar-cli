@@ -443,6 +443,9 @@ where
                 request.request_id,
                 output,
             )));
+            if looks_like_raw_tool_protocol(&assistant_text) {
+                return PlainAgentChatOutcome::Execute;
+            }
             match parse_normal_turn_decision(&assistant_text) {
                 Some(NormalTurnDecision::Execute) => PlainAgentChatOutcome::Execute,
                 Some(NormalTurnDecision::Chat { content }) => {
@@ -3126,18 +3129,27 @@ mod tests {
     }
 
     #[test]
-    fn permissive_agent_plain_chat_does_not_surface_raw_tool_protocol_as_success() {
+    fn permissive_agent_raw_tool_protocol_decision_enters_tool_loop_without_surfacing_protocol() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plain-raw-tool-protocol",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let provider = CapturingProvider::new().with_plain_output(
-            crate::event::ProviderOutput::new(
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
                 "<|channel|>commentary to=filesystem.create code<|message|>{\"path\":\"testharness\",\"contents\":\"\"}\nCreated folder testharness.",
-            ),
-        );
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating it.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "raw-protocol-retry-call-1".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateDirectory),
+                        arguments: json!({ "target_path": "testharness" }),
+                        assistant_summary: Some("create testharness folder".to_string()),
+                    },
+                ]),
+            );
         let mut session = Session::new("session", &root, &root);
 
         run_permissive_agent_turn(
@@ -3146,13 +3158,13 @@ mod tests {
             "create a folder and name it testharness",
         );
 
-        assert!(!root.join("testharness").exists());
-        assert!(session.events().iter().any(|event| matches!(
-            event,
-            Event::AssistantMessage(message)
-                if message.content.contains("raw tool protocol")
-                    && message.content.contains("execute route")
-        )));
+        assert!(root.join("testharness").is_dir());
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[0].tool_count, 0);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert!(requests[1].tool_count > 0);
         assert!(!session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
