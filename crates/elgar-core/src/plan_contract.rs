@@ -214,7 +214,7 @@ impl PlanContract {
             match check.kind {
                 PlanVerificationCheckKind::PathExists { path }
                 | PlanVerificationCheckKind::TestPath { path } => {
-                    if !scope_paths.iter().any(|scope_path| **scope_path == path) {
+                    if !scope_contains_referenced_path(&scope_paths, &path, &self.project_root) {
                         issues.push(PlanContractDraftIssue {
                             severity: PlanContractDraftIssueSeverity::Blocking,
                             kind: PlanContractDraftIssueKind::ReferencedPathMissingFromScope,
@@ -265,6 +265,33 @@ impl PlanContract {
 
         Ok(())
     }
+}
+
+fn scope_contains_referenced_path(
+    scope_paths: &[&PathBuf],
+    path: &Path,
+    project_root: &Path,
+) -> bool {
+    if scope_paths
+        .iter()
+        .any(|scope_path| scope_path.as_path() == path)
+    {
+        return true;
+    }
+
+    let Ok(relative) = path.strip_prefix(project_root) else {
+        return false;
+    };
+    if relative.components().count() != 1 {
+        return false;
+    }
+    let Some(file_name) = relative.file_name() else {
+        return false;
+    };
+
+    scope_paths
+        .iter()
+        .any(|scope_path| scope_path.file_name() == Some(file_name))
 }
 
 fn review_metadata_from_source_plan(path: &Path) -> (Vec<String>, Vec<String>) {
@@ -797,6 +824,43 @@ mod tests {
                 }
         }));
         assert!(contract.review_draft().is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_contract_allows_bare_filename_reference_when_scope_has_same_basename() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-bare-basename-{}",
+            std::process::id()
+        ));
+        let project = root.join("reasoning-route-test");
+        let plan_path = project.join("PROJECT_PLAN.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n```text\nreasoning_route_test/cli.py\n```\n\n## Verification\n- `cli.py` prints a greeting.\n\n## Acceptance Criteria\n- A placeholder CLI in `cli.py` prints a greeting.\n",
+        )
+        .unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("reasoning_route_test")],
+            expected_files: vec![project.join("reasoning_route_test/cli.py")],
+        };
+
+        let contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+        let review = contract.review_draft();
+
+        assert!(review.is_approvable());
+        assert!(!review.issues.iter().any(|issue| {
+            issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
+                && issue.path.as_ref() == Some(&project.join("cli.py"))
+        }));
 
         let _ = fs::remove_dir_all(root);
     }

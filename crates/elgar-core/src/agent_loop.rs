@@ -332,12 +332,21 @@ where
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
         let plan_execution_batch =
             resolved_outputs_touch_structured_plan(session, &resolved_outputs);
-        let starts_plan_execution = plan_execution_batch && !plan_execution_in_progress;
-        plan_execution_in_progress |= plan_execution_batch;
         if plan_execution_batch {
             session.record_reasoning_route("plan_execution");
             session.push_reasoning_runtime_check("plan execution paths detected");
+            if latest_plan_contract_needs_repair(session) {
+                let message = plan_execution_blocked_by_contract_notice(session);
+                session.push_reasoning_runtime_check(message.clone());
+                session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                    message,
+                    AssistantMessageSource::Controller,
+                )));
+                break;
+            }
         }
+        let starts_plan_execution = plan_execution_batch && !plan_execution_in_progress;
+        plan_execution_in_progress |= plan_execution_batch;
         let resolved_outputs = guard_plan_execution_tool_outputs(
             session,
             resolved_outputs,
@@ -821,6 +830,24 @@ fn plan_creation_needs_revision_notice(session: &Session) -> String {
         lines.push(format!("- {}", plan_draft_issue_message(issue)));
     }
     lines.push("Use /plan to review the current contract details.".to_string());
+    lines.join("\n")
+}
+
+fn plan_execution_blocked_by_contract_notice(session: &Session) -> String {
+    let Some(contract) = session.latest_plan_contract() else {
+        return "Cannot execute the plan yet. Review /plan for contract details.".to_string();
+    };
+    let review = contract.review_draft();
+    let mut lines = vec![
+        "Cannot execute the plan yet.".to_string(),
+        "The plan contract has blocking issues:".to_string(),
+    ];
+    for issue in review.issues.iter().filter(|issue| {
+        issue.severity == crate::plan_contract::PlanContractDraftIssueSeverity::Blocking
+    }) {
+        lines.push(format!("- {}", plan_draft_issue_message(issue)));
+    }
+    lines.push("Revise the plan first, then execute it.".to_string());
     lines.join("\n")
 }
 
@@ -2754,7 +2781,7 @@ mod tests {
         std::fs::create_dir_all(root.join("demo")).unwrap();
         std::fs::write(
             root.join("demo/PROJECT_PLAN.md"),
-            "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n",
+            "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n\n## Verification\n- `src/main.py` and `requirements.txt` exist.\n\n## Acceptance Criteria\n- Expected files exist under the plan root.\n",
         )
         .unwrap();
         let provider = SequenceProvider::new(vec![
@@ -3080,7 +3107,7 @@ mod tests {
         std::fs::create_dir_all(cwd.join("tui-state-memory-test")).unwrap();
         std::fs::write(
             cwd.join("tui-state-memory-test/PLAN.md"),
-            "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n",
+            "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n\n## Verification\n- `src/main.py` and `requirements.txt` exist.\n\n## Acceptance Criteria\n- Expected files exist under the plan root.\n",
         )
         .unwrap();
         let provider = SequenceProvider::new(vec![
@@ -3157,6 +3184,78 @@ mod tests {
     }
 
     #[test]
+    fn verified_plan_execution_blocks_non_approvable_contract_before_filesystem_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-blocks-bad-contract",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("demo")).unwrap();
+        std::fs::write(
+            cwd.join("demo/plan.md"),
+            "# Project Plan\n\n```text\nsrc/main.py\n```\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
+            "Creating missing files.",
+        )
+        .with_tool_calls(vec![RawModelToolCall {
+            id: "blocked-plan-exec-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateFile),
+            arguments: json!({
+                "target_path": "src/main.py",
+                "contents": "print('hello')\n"
+            }),
+            assistant_summary: None,
+        }])]);
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("demo/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "demo/plan.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(!cwd.join("demo/src/main.py").exists());
+        assert!(session.actions().is_empty());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("Cannot execute the plan yet")
+                    && message.content.contains("missing `Verification` section")
+                    && message.content.contains("missing `Acceptance Criteria` section")
+        )));
+        assert_eq!(
+            session
+                .latest_reasoning_trace()
+                .and_then(|trace| trace.route.as_deref()),
+            Some("plan_execution")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn verified_plan_execution_anchors_unlisted_parent_directory_under_plan_root() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plan-anchor-parent-dir",
@@ -3167,7 +3266,7 @@ mod tests {
         std::fs::create_dir_all(cwd.join("demo")).unwrap();
         std::fs::write(
             cwd.join("demo/plan.md"),
-            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n",
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- `src/main.py` and `requirements.txt` exist.\n\n## Acceptance Criteria\n- Expected files exist and destructive extra actions are skipped.\n",
         )
         .unwrap();
         let provider = SequenceProvider::new(vec![
@@ -3254,7 +3353,7 @@ mod tests {
         std::fs::create_dir_all(cwd.join("demo")).unwrap();
         std::fs::write(
             cwd.join("demo/plan.md"),
-            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n",
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- `src/main.py` and `requirements.txt` exist.\n\n## Acceptance Criteria\n- Expected files exist and destructive extra actions are skipped.\n",
         )
         .unwrap();
         let provider = SequenceProvider::new(vec![
@@ -3356,7 +3455,7 @@ mod tests {
         std::fs::create_dir_all(cwd.join("demo")).unwrap();
         std::fs::write(
             cwd.join("demo/plan.md"),
-            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n",
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- `src/main.py` and `requirements.txt` exist.\n\n## Acceptance Criteria\n- Expected files exist under the plan root.\n",
         )
         .unwrap();
         let provider = SequenceProvider::new(vec![
@@ -3448,7 +3547,7 @@ mod tests {
         std::fs::create_dir_all(cwd.join("demo")).unwrap();
         std::fs::write(
             cwd.join("demo/plan.md"),
-            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n",
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- `src/main.py` and `requirements.txt` exist.\n\n## Acceptance Criteria\n- Expected files exist and destructive extra actions are skipped.\n",
         )
         .unwrap();
         let provider = SequenceProvider::new(vec![
@@ -3568,7 +3667,7 @@ mod tests {
         std::fs::create_dir_all(cwd.join("demo/src")).unwrap();
         std::fs::write(
             cwd.join("demo/plan.md"),
-            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n",
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- `src/main.py` and `requirements.txt` exist.\n\n## Acceptance Criteria\n- Expected files exist under the plan root.\n",
         )
         .unwrap();
         std::fs::write(cwd.join("demo/src/main.py"), "print('existing')\n").unwrap();
@@ -3664,7 +3763,7 @@ mod tests {
         std::fs::create_dir_all(cwd.join("demo")).unwrap();
         std::fs::write(
             cwd.join("demo/plan.md"),
-            "# Project Plan\n\n```text\nsrc/\n└─ main.py\ntests/\n```\n",
+            "# Project Plan\n\n```text\nsrc/\n└─ main.py\ntests/\n```\n\n## Verification\n- `src/main.py` exists and `tests/` exists.\n\n## Acceptance Criteria\n- Missing expected files and directories are created under the plan root.\n",
         )
         .unwrap();
         let provider = SequenceProvider::new(vec![
@@ -3791,7 +3890,7 @@ mod tests {
         std::fs::create_dir_all(cwd.join("demo")).unwrap();
         std::fs::write(
             cwd.join("demo/plan.md"),
-            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\ntests/\n```\n",
+            "# Project Plan\n\n```text\nsrc/main.py\nrequirements.txt\ntests/\n```\n\n## Verification\n- `src/main.py`, `requirements.txt`, and `tests/` exist.\n\n## Acceptance Criteria\n- Missing expected paths are created under the plan root.\n",
         )
         .unwrap();
         let provider = FallbackDuringPlanProvider {
@@ -3894,7 +3993,7 @@ mod tests {
         std::fs::create_dir_all(cwd.join("tui-state-test")).unwrap();
         std::fs::write(
             cwd.join("tui-state-test/PLAN.md"),
-            "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n",
+            "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n\n## Verification\n- `src/main.py` and `requirements.txt` exist.\n\n## Acceptance Criteria\n- Expected files exist under the plan root.\n",
         )
         .unwrap();
         let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
