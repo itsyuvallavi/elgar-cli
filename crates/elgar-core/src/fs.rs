@@ -175,7 +175,8 @@ fn apply_create_directory(
     create_directory: &crate::action::CreateDirectoryAction,
     allowed_root: &Path,
 ) -> Result<VerifiedActionResult, FilesystemError> {
-    let target_path = resolve_allowed_target(&create_directory.target_path, allowed_root)?;
+    let target_path =
+        resolve_allowed_create_directory_target(&create_directory.target_path, allowed_root)?;
     if target_exists(&target_path)? {
         if target_path
             .symlink_metadata()
@@ -197,7 +198,7 @@ fn apply_create_directory(
         return Err(FilesystemError::TargetAlreadyExists { path: target_path });
     }
 
-    fs::create_dir(&target_path).map_err(|source| FilesystemError::WriteFailed {
+    fs::create_dir_all(&target_path).map_err(|source| FilesystemError::WriteFailed {
         path: target_path.clone(),
         reason: source.to_string(),
     })?;
@@ -208,6 +209,24 @@ fn apply_create_directory(
             path: target_path.display().to_string(),
         },
     ))
+}
+
+fn resolve_allowed_create_directory_target(
+    target_path: &Path,
+    allowed_root: &Path,
+) -> Result<PathBuf, FilesystemError> {
+    let canonical_root =
+        allowed_root
+            .canonicalize()
+            .map_err(|source| FilesystemError::UnsafeRoot {
+                path: allowed_root.to_path_buf(),
+                reason: source.to_string(),
+            })?;
+    let resolved_target = resolve_allowed_target_path(target_path, allowed_root)?;
+
+    ensure_target_parent_can_be_created(&resolved_target, target_path, &canonical_root)?;
+
+    Ok(resolved_target)
 }
 
 fn resolve_existing_target(
@@ -1190,6 +1209,27 @@ mod tests {
         let root = root("approved-create-directory");
         let path = root.join("new-dir");
         let action = proposed_create_directory("new-dir").approve();
+
+        let result = Filesystem::apply_file_action(&action, &root);
+
+        assert_eq!(
+            result,
+            Ok(VerifiedActionResult::File(
+                FileActionVerification::DirectoryCreated {
+                    path: path.display().to_string()
+                }
+            ))
+        );
+        assert!(path.is_dir());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approved_create_directory_creates_missing_parent_directories() {
+        let root = root("approved-create-directory-nested");
+        let path = root.join("src/task_tracker");
+        let action = proposed_create_directory("src/task_tracker").approve();
 
         let result = Filesystem::apply_file_action(&action, &root);
 
