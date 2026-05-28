@@ -8,6 +8,7 @@ use crate::{
     event::{Event, ProviderMetrics, VerifiedActionResult},
     plan_contract::PlanContract,
     policy::PolicyDecision,
+    token_accounting::{ContextWindowSnapshot, LastTurnTokenUsage, SessionTokenTotals},
 };
 
 /// Core-owned state for one controller session.
@@ -32,6 +33,12 @@ pub struct Session {
     #[serde(default)]
     context_accounting: ContextAccounting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    latest_context_window_snapshot: Option<ContextWindowSnapshot>,
+    #[serde(default)]
+    session_token_totals: SessionTokenTotals,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latest_turn_token_usage: Option<LastTurnTokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     latest_reasoning_trace: Option<ReasoningTrace>,
 }
 
@@ -55,6 +62,9 @@ impl Session {
             latest_provider_prompt_memory_selection: None,
             plan_contracts: Vec::new(),
             context_accounting: ContextAccounting::unknown(),
+            latest_context_window_snapshot: None,
+            session_token_totals: SessionTokenTotals::default(),
+            latest_turn_token_usage: None,
             latest_reasoning_trace: None,
         }
     }
@@ -124,6 +134,26 @@ impl Session {
         &self.context_accounting
     }
 
+    pub fn latest_context_window_snapshot(&self) -> ContextWindowSnapshot {
+        self.latest_context_window_snapshot
+            .clone()
+            .unwrap_or_else(|| {
+                if self.context_accounting.estimated_tokens.is_some() {
+                    ContextWindowSnapshot::from_context_estimate(&self.context_accounting)
+                } else {
+                    ContextWindowSnapshot::unknown(self.context_accounting.max_window_tokens)
+                }
+            })
+    }
+
+    pub fn session_token_totals(&self) -> &SessionTokenTotals {
+        &self.session_token_totals
+    }
+
+    pub fn latest_turn_token_usage(&self) -> Option<&LastTurnTokenUsage> {
+        self.latest_turn_token_usage.as_ref()
+    }
+
     /// Latest inspectable reasoning/decision trace for user review.
     ///
     /// This is debug visibility, not proof of filesystem state. Verified action
@@ -150,6 +180,19 @@ impl Session {
 
     pub(crate) fn set_context_accounting(&mut self, context_accounting: ContextAccounting) {
         self.context_accounting = context_accounting;
+    }
+
+    pub(crate) fn record_provider_metrics(&mut self, metrics: &ProviderMetrics) {
+        let Some(usage) = metrics.usage.as_ref() else {
+            return;
+        };
+        self.latest_context_window_snapshot = Some(ContextWindowSnapshot::from_provider_usage(
+            usage,
+            self.context_accounting.max_window_tokens,
+            metrics.request_id.clone(),
+        ));
+        self.session_token_totals.add_provider_usage(usage);
+        self.latest_turn_token_usage = LastTurnTokenUsage::from_provider_metrics(metrics);
     }
 
     pub(crate) fn start_reasoning_trace(&mut self, user_input: impl Into<String>) {

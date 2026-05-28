@@ -15,7 +15,8 @@ use crate::{
     controller_shell_verify::verify_expected_shell_effect,
     event::{
         ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource,
-        ErrorEvent, Event, ProviderFinished, ProviderStarted, UserMessage, VerifiedActionResult,
+        ErrorEvent, Event, ProviderFinished, ProviderOutput, ProviderStarted, UserMessage,
+        VerifiedActionResult,
     },
     fs::Filesystem,
     model_runtime::{
@@ -162,6 +163,20 @@ where
     run_agent_tool_chat(provider, session, input, policy_mode, start_index)
 }
 
+fn push_provider_finished(
+    session: &mut Session,
+    provider: String,
+    request_id: String,
+    output: ProviderOutput,
+) {
+    if let Some(metrics) = output.metrics.as_ref() {
+        session.record_provider_metrics(metrics);
+    }
+    session.push_event(Event::ProviderFinished(ProviderFinished::new(
+        provider, request_id, output,
+    )));
+}
+
 fn run_agent_tool_chat<P>(
     provider: &P,
     session: &mut Session,
@@ -225,11 +240,12 @@ where
                     {
                         Ok(output) => {
                             let assistant_text = output.text.clone();
-                            session.push_event(Event::ProviderFinished(ProviderFinished::new(
+                            push_provider_finished(
+                                session,
                                 fallback_request.provider,
                                 fallback_request.request_id,
                                 output,
-                            )));
+                            );
                             if plan_execution_in_progress {
                                 if let Some(message) =
                                     plan_execution_repair_message_or_mark_complete(session)
@@ -265,11 +281,7 @@ where
         let assistant_text = output.text.clone();
         let assistant_thinking = output.thinking.clone();
         record_provider_planning_trace(session, assistant_thinking.as_deref(), &assistant_text);
-        session.push_event(Event::ProviderFinished(ProviderFinished::new(
-            request.provider,
-            request.request_id,
-            output,
-        )));
+        push_provider_finished(session, request.provider, request.request_id, output);
 
         if tool_calls.is_empty() {
             if plan_creation_repair_in_progress {
@@ -568,11 +580,7 @@ where
     match provider.chat_messages_with_metadata(messages, &request) {
         Ok(output) => {
             let assistant_text = output.text.clone();
-            session.push_event(Event::ProviderFinished(ProviderFinished::new(
-                request.provider,
-                request.request_id,
-                output,
-            )));
+            push_provider_finished(session, request.provider, request.request_id, output);
             if looks_like_raw_tool_protocol(&assistant_text) {
                 session.record_reasoning_route("execute");
                 session.push_reasoning_model_decision(
@@ -641,11 +649,7 @@ where
     match provider.chat_messages_with_metadata(messages, &request) {
         Ok(output) => {
             let decision = parse_verified_state_classifier_output(&output.text);
-            session.push_event(Event::ProviderFinished(ProviderFinished::new(
-                request.provider,
-                request.request_id,
-                output,
-            )));
+            push_provider_finished(session, request.provider, request.request_id, output);
             decision
         }
         Err(error) => {

@@ -14,6 +14,7 @@ pub(super) enum TerminalCommand<'a> {
     Cancel,
     State,
     Status,
+    Tokens,
     Pending,
     Created,
     Memory,
@@ -38,6 +39,7 @@ pub(super) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
         "/cancel" => TerminalCommand::Cancel,
         "/state" => TerminalCommand::State,
         "/status" => TerminalCommand::Status,
+        "/tokens" => TerminalCommand::Tokens,
         "/pending" => TerminalCommand::Pending,
         "/created" => TerminalCommand::Created,
         "/memory" => TerminalCommand::Memory,
@@ -73,7 +75,7 @@ pub(super) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
 }
 
 pub(super) fn render_terminal_help() -> &'static str {
-    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/state                 Show verified state snapshot\n/status                Show session status\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/reasoning             Show latest reasoning trace\n/trace                 Show latest reasoning trace\n/tool <request>        Run an explicit tool-enabled turn\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
+    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/state                 Show verified state snapshot\n/status                Show session status\n/tokens                Show token and context usage\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/reasoning             Show latest reasoning trace\n/trace                 Show latest reasoning trace\n/tool <request>        Run an explicit tool-enabled turn\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
 }
 
 pub(super) fn clear_terminal_conversation(shell: &mut TuiShell) {

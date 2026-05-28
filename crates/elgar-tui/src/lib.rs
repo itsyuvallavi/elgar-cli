@@ -16,6 +16,7 @@ pub use layout::LayoutRegion;
 pub use memory::{
     render_session_created_actions, render_session_memory, render_session_pending_action,
     render_session_plan_preview, render_session_state_snapshot, render_session_status,
+    render_session_tokens,
 };
 pub use panes::{ConversationPane, InputArea, StatusLine};
 pub use reasoning::render_session_reasoning;

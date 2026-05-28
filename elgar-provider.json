@@ -2,6 +2,7 @@
   "provider": "lm-studio",
   "base_url": "http://127.0.0.1:1234/v1",
   "default_model": "openai/gpt-oss-20b",
+  "context_window_tokens": 16000,
   "mode": "live",
   "connect_timeout_millis": 2000,
   "read_timeout_millis": 120000,

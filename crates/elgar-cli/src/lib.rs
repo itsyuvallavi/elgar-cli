@@ -463,6 +463,10 @@ pub fn is_tui_reasoning_command(input: &str) -> bool {
     matches!(input.trim(), "/reasoning" | "/trace")
 }
 
+pub fn is_tui_tokens_command(input: &str) -> bool {
+    input.trim() == "/tokens"
+}
+
 pub fn tui_tool_command_argument(input: &str) -> Option<&str> {
     input.trim().strip_prefix("/tool ").map(str::trim)
 }
@@ -519,7 +523,7 @@ fn submit_tui_input<P>(
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/tool <request>        Run an explicit tool-enabled turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/state                 Show verified state snapshot\n/status                Show session status\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/reasoning             Show latest reasoning trace\n/trace                 Show latest reasoning trace\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
+    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/tool <request>        Run an explicit tool-enabled turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/state                 Show verified state snapshot\n/status                Show session status\n/tokens                Show token and context usage\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/reasoning             Show latest reasoning trace\n/trace                 Show latest reasoning trace\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
 }
 
 pub fn render_tui_script<I, S>(
@@ -570,6 +574,8 @@ where
             rendered_turns.push(elgar_tui::render_session_state_snapshot(&session));
         } else if is_tui_status_command(input) {
             rendered_turns.push(elgar_tui::render_session_status(&session));
+        } else if is_tui_tokens_command(input) {
+            rendered_turns.push(elgar_tui::render_session_tokens(&session));
         } else if is_tui_pending_command(input) {
             rendered_turns.push(elgar_tui::render_session_pending_action(&session));
         } else if is_tui_created_command(input) {
@@ -717,6 +723,8 @@ where
             )?;
         } else if is_tui_status_command(&input) {
             writeln!(writer, "{}", elgar_tui::render_session_status(&session))?;
+        } else if is_tui_tokens_command(&input) {
+            writeln!(writer, "{}", elgar_tui::render_session_tokens(&session))?;
         } else if is_tui_pending_command(&input) {
             writeln!(
                 writer,
@@ -894,9 +902,9 @@ mod tests {
         is_tui_copy_command, is_tui_created_command, is_tui_exit_command, is_tui_help_command,
         is_tui_memory_command, is_tui_pending_command, is_tui_plan_preview_command,
         is_tui_reasoning_command, is_tui_rejection_command, is_tui_state_snapshot_command,
-        is_tui_status_command, load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
-        render_cli_turn_from_runtime_config, render_tui_help, render_tui_script,
-        resolve_runtime_project_root, run_tui_loop, run_tui_loop_with_runtime,
+        is_tui_status_command, is_tui_tokens_command, load_runtime_provider, provider_smoke_config,
+        provider_smoke_prompt, render_cli_turn_from_runtime_config, render_tui_help,
+        render_tui_script, resolve_runtime_project_root, run_tui_loop, run_tui_loop_with_runtime,
         runtime_permission_policy_mode, should_launch_terminal_tui_by_default,
         tui_permission_command_argument, tui_tool_command_argument, ProviderSmokeError,
         RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
@@ -1378,11 +1386,13 @@ mod tests {
     fn tui_state_commands_are_explicit() {
         assert!(is_tui_status_command("/status"));
         assert!(is_tui_status_command(" /status "));
+        assert!(is_tui_tokens_command("/tokens"));
         assert!(is_tui_state_snapshot_command("/state"));
         assert!(is_tui_pending_command("/pending"));
         assert!(is_tui_created_command("/created"));
 
         assert!(!is_tui_status_command("status"));
+        assert!(!is_tui_tokens_command("tokens"));
         assert!(!is_tui_state_snapshot_command("state"));
         assert!(!is_tui_pending_command("pending"));
         assert!(!is_tui_created_command("created"));

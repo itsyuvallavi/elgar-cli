@@ -298,6 +298,7 @@ fn terminal_context_from_session_carries_provider_usage_to_footer() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(footer.contains("model-a"));
+    assert!(footer.contains("ctx 16/?"));
     assert!(!footer.contains("context:"));
     assert!(!footer.contains("16 tokens"));
     assert!(!footer.contains('%'));

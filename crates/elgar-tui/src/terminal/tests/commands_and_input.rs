@@ -35,6 +35,7 @@ fn terminal_commands_are_slash_only() {
     assert_eq!(parse_terminal_command("/cancel"), TerminalCommand::Cancel);
     assert_eq!(parse_terminal_command("/state"), TerminalCommand::State);
     assert_eq!(parse_terminal_command("/status"), TerminalCommand::Status);
+    assert_eq!(parse_terminal_command("/tokens"), TerminalCommand::Tokens);
     assert_eq!(parse_terminal_command("/pending"), TerminalCommand::Pending);
     assert_eq!(parse_terminal_command("/created"), TerminalCommand::Created);
     assert_eq!(parse_terminal_command("/memory"), TerminalCommand::Memory);
@@ -70,6 +71,10 @@ fn terminal_commands_are_slash_only() {
     assert_eq!(
         parse_terminal_command("state"),
         TerminalCommand::Text("state")
+    );
+    assert_eq!(
+        parse_terminal_command("tokens"),
+        TerminalCommand::Text("tokens")
     );
     assert_eq!(
         parse_terminal_command("what did you create?"),

@@ -21,6 +21,7 @@ use elgar_core::{
     provider::{ControllerProvider, ProviderConfig},
     router::normalize_pasted_transcript_input,
     session::Session,
+    token_accounting::{ContextWindowSnapshot, ContextWindowSource},
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -311,6 +312,10 @@ where
         }
         TerminalCommand::Status => {
             print_and_record_local(shell, render_session_status(session))?;
+            Ok((false, String::new()))
+        }
+        TerminalCommand::Tokens => {
+            print_and_record_local(shell, crate::render_session_tokens(session))?;
             Ok((false, String::new()))
         }
         TerminalCommand::Pending => {
@@ -765,6 +770,7 @@ pub struct TerminalShellContext {
     pub model: Option<String>,
     pub provider_metrics: Option<ProviderMetrics>,
     pub context_accounting: ContextAccounting,
+    pub context_window_snapshot: Option<ContextWindowSnapshot>,
     pub policy_mode: PermissionPolicyMode,
 }
 
@@ -777,6 +783,7 @@ impl TerminalShellContext {
             model: None,
             provider_metrics: None,
             context_accounting: ContextAccounting::unknown(),
+            context_window_snapshot: None,
             policy_mode: PermissionPolicyMode::AutoCreateReviewModify,
         }
     }
@@ -795,6 +802,7 @@ impl TerminalShellContext {
             context.provider_metrics = metadata.metrics.clone();
         }
         context.context_accounting = session.context_accounting().clone();
+        context.context_window_snapshot = Some(session.latest_context_window_snapshot());
         context
     }
 
@@ -825,13 +833,48 @@ impl TerminalShellContext {
             .as_deref()
             .or(self.provider.as_deref())
             .unwrap_or("");
+        let context_label = self.footer_context_label();
+        let right = match (context_label, right.is_empty()) {
+            (Some(label), false) => format!("{label} · {right}"),
+            (Some(label), true) => label,
+            (None, _) => right.to_string(),
+        };
         let first_line = if right.is_empty() {
             left
         } else {
-            align_footer_line(&left, right, width)
+            align_footer_line(&left, &right, width)
         };
 
         first_line
+    }
+
+    fn footer_context_label(&self) -> Option<String> {
+        let snapshot = self.context_window_snapshot.as_ref()?;
+        let window = snapshot
+            .context_window_tokens
+            .map(compact_token_count)
+            .unwrap_or_else(|| "?".to_string());
+        let current = match (snapshot.current_tokens, snapshot.source) {
+            (Some(tokens), ContextWindowSource::Provider) => compact_token_count(tokens),
+            (Some(tokens), ContextWindowSource::Estimate) => {
+                format!("~{}", compact_token_count(tokens))
+            }
+            (Some(tokens), ContextWindowSource::Unknown) => compact_token_count(tokens),
+            (None, _) => "?".to_string(),
+        };
+        let percent = snapshot
+            .used_percent
+            .map(|percent| format!(" {percent}%"))
+            .unwrap_or_default();
+        Some(format!("ctx {current}/{window}{percent}"))
+    }
+}
+
+fn compact_token_count(tokens: u64) -> String {
+    if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
     }
 }
 
@@ -1041,6 +1084,12 @@ where
             shell
                 .conversation
                 .push_local_message(render_session_status(session));
+            shell.conversation.follow_latest();
+        }
+        TerminalCommand::Tokens => {
+            shell
+                .conversation
+                .push_local_message(crate::render_session_tokens(session));
             shell.conversation.follow_latest();
         }
         TerminalCommand::Pending => {

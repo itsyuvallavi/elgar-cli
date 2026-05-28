@@ -31,6 +31,13 @@ pub(crate) fn set_provider_metrics_metadata(
     metadata.request_id = Some(request.request_id.clone());
     metadata.metrics = Some(metrics);
     session.set_provider_metadata(metadata);
+    if let Some(metrics) = session
+        .provider_metadata()
+        .and_then(|metadata| metadata.metrics.as_ref())
+        .cloned()
+    {
+        session.record_provider_metrics(&metrics);
+    }
 }
 
 pub(crate) fn push_provider_message_if_visible(session: &mut Session, message: impl Into<String>) {

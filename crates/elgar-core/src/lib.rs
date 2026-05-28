@@ -24,6 +24,7 @@ pub mod session;
 pub mod shell;
 #[cfg(test)]
 mod test_env;
+pub mod token_accounting;
 mod verified_state_answer;
 
 pub const CORE_PHILOSOPHY: &str = "Model reasons. Runtime routes. Action gate enforces. Filesystem confirms. UI reports. Tests protect. Extensions wait.";

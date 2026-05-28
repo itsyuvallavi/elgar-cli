@@ -9,6 +9,7 @@ use elgar_core::{
         ProviderPromptMemorySelectedFact, ProviderPromptMemorySelection, Session,
         StructuredProjectPlan, StructuredProjectPlanStatus,
     },
+    token_accounting::ContextWindowSource,
 };
 use std::path::Path;
 
@@ -69,6 +70,50 @@ pub fn render_session_status(session: &Session) -> String {
         ));
     }
 
+    lines.join("\n")
+}
+
+pub fn render_session_tokens(session: &Session) -> String {
+    let snapshot = session.latest_context_window_snapshot();
+    let totals = session.session_token_totals();
+    let mut lines = vec!["Tokens".to_string()];
+    lines.push(format!(
+        "current context: {}",
+        render_context_snapshot(&snapshot)
+    ));
+    if let Some(last) = session.latest_turn_token_usage() {
+        lines.push(format!(
+            "last turn: {} input + {} output = {} total [{}]",
+            render_optional_tokens(last.input_tokens),
+            render_optional_tokens(last.output_tokens),
+            render_optional_tokens(last.total_tokens),
+            source_label(last.source)
+        ));
+        lines.push(format!("last request: {}", last.request_id));
+    } else {
+        lines.push("last turn: unknown".to_string());
+    }
+    lines.push(format!(
+        "session total: {} input + {} output = {} total",
+        format_tokens(totals.input_tokens),
+        format_tokens(totals.output_tokens),
+        format_tokens(totals.total_tokens)
+    ));
+    lines.push(format!(
+        "reasoning/cache: {} reasoning, {} cache read, {} cache write",
+        format_tokens(totals.reasoning_tokens),
+        format_tokens(totals.cache_read_tokens),
+        format_tokens(totals.cache_write_tokens)
+    ));
+    lines.push(format!(
+        "local context: {}",
+        session
+            .context_accounting()
+            .estimated_tokens
+            .map(|tokens| format!("~{} estimated tokens", format_tokens(tokens)))
+            .unwrap_or_else(|| "unknown".to_string())
+    ));
+    lines.push(format!("window source: {}", source_label(snapshot.source)));
     lines.join("\n")
 }
 
@@ -396,6 +441,52 @@ fn display_session_path(session: &Session, path: &Path) -> String {
         .to_string()
 }
 
+fn render_context_snapshot(
+    snapshot: &elgar_core::token_accounting::ContextWindowSnapshot,
+) -> String {
+    let current = render_optional_context_tokens(snapshot.current_tokens, snapshot.source);
+    let window = snapshot
+        .context_window_tokens
+        .map(format_tokens)
+        .unwrap_or_else(|| "?".to_string());
+    let percent = snapshot
+        .used_percent
+        .map(|percent| format!("{percent}%"))
+        .unwrap_or_else(|| "?%".to_string());
+    format!(
+        "{current} / {window} ({percent}) [{}]",
+        source_label(snapshot.source)
+    )
+}
+
+fn render_optional_context_tokens(tokens: Option<u64>, source: ContextWindowSource) -> String {
+    match (tokens, source) {
+        (Some(tokens), ContextWindowSource::Estimate) => format!("~{}", format_tokens(tokens)),
+        (Some(tokens), _) => format_tokens(tokens),
+        (None, _) => "?".to_string(),
+    }
+}
+
+fn render_optional_tokens(tokens: Option<u64>) -> String {
+    tokens.map(format_tokens).unwrap_or_else(|| "?".to_string())
+}
+
+fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn source_label(source: ContextWindowSource) -> &'static str {
+    match source {
+        ContextWindowSource::Provider => "provider",
+        ContextWindowSource::Estimate => "estimate",
+        ContextWindowSource::Unknown => "unknown",
+    }
+}
+
 fn render_memory(
     memory: &ProjectMemory,
     provider_selection: Option<&ProviderPromptMemorySelection>,
@@ -621,7 +712,8 @@ mod tests {
     use super::*;
     use elgar_core::{
         agent_runtime::AgentRuntime,
-        event::ProviderOutput,
+        controller::Controller,
+        event::{ProviderMetrics, ProviderOutput, ProviderTokenUsage},
         model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
         policy::PermissionPolicyMode,
         provider::{
@@ -636,6 +728,57 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn renders_tokens_with_current_window_and_session_totals_separated() {
+        let root = temp_root("tokens-provider");
+        fs::write(root.join("AGENTS.md"), "local context").unwrap();
+        let mut session = Session::new("memory-session", &root, &root);
+        let runtime = AgentRuntime::default();
+        runtime.refresh_context_accounting(&mut session, Some(128_000));
+        Controller::new(TokenUsageProvider).model_turn(&mut session, "hello");
+
+        let rendered = render_session_tokens(&session);
+
+        assert!(rendered.contains("current context: 42.0k / 128.0k (32%) [provider]"));
+        assert!(rendered.contains("last turn: 40.0k input + 2.0k output = 42.0k total [provider]"));
+        assert!(rendered.contains("session total: 40.0k input + 2.0k output = 42.0k total"));
+        assert!(rendered.contains("local context: ~"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[derive(Debug, Clone)]
+    struct TokenUsageProvider;
+
+    impl ControllerProvider for TokenUsageProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "usage-provider",
+                Some("model-a".to_string()),
+                "request-usage",
+            )
+        }
+
+        fn chat_with_metadata(
+            &self,
+            _prompt: &str,
+            _metadata: &ProviderRequestMetadata,
+        ) -> Result<ProviderOutput, ProviderError> {
+            self.chat("hello")
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            let mut metrics =
+                ProviderMetrics::new("request-usage", Some("model-a".to_string()), false, 2, 64);
+            metrics.usage = Some(ProviderTokenUsage {
+                prompt_tokens: Some(40_000),
+                completion_tokens: Some(2_000),
+                total_tokens: Some(42_000),
+            });
+            Ok(ProviderOutput::new("measured").with_metrics(metrics))
+        }
     }
 
     #[test]
