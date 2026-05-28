@@ -223,9 +223,15 @@ fn terminal_footer_shows_estimated_context_accounting_with_approximate_label() {
         });
 
     let footer = context.footer_body("ready", "copy");
+    let lines: Vec<_> = footer.lines().collect();
 
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], "repo");
+    assert!(lines[1].contains("openai/gpt-oss-20b"));
+    assert!(lines[1].contains("~0.3%/128k"));
+    assert!(!footer.contains('↑'));
+    assert!(!footer.contains('↓'));
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("↑~321 ↓? ~0.3%/128k"));
     assert!(!footer.contains("ctx "));
     assert!(!footer.contains("TBD"));
 }
@@ -257,8 +263,10 @@ fn terminal_footer_does_not_use_provider_metrics_without_session_snapshot() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("↑~321 ↓? ~0.3%/128k"));
+    assert!(footer.contains("~0.3%/128k"));
     assert!(!footer.contains("ctx "));
+    assert!(!footer.contains('↑'));
+    assert!(!footer.contains('↓'));
     assert!(!footer.contains("↑7 ↓3"));
 }
 
@@ -287,8 +295,13 @@ fn terminal_footer_formats_provider_usage_as_compact_flow() {
     ));
 
     let footer = context.footer_body("ready", "copy");
+    let lines: Vec<_> = footer.lines().collect();
 
-    assert!(footer.contains("↑2.2k ↓24 1.7%/128k"));
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], "repo");
+    assert!(lines[1].contains("↑2.2k ↓24 1.7%/128k"));
+    assert!(lines[1].contains("openai/gpt-oss-20b"));
+    assert!(!lines[0].contains("↑"));
     assert!(!footer.contains("ctx "));
     assert!(!footer.contains("tokens"));
 }
@@ -355,7 +368,9 @@ fn terminal_footer_shows_unknown_context_when_provider_usage_is_absent() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("↑? ↓? ?%/?"));
+    assert!(footer.contains("?%/?"));
+    assert!(!footer.contains('↑'));
+    assert!(!footer.contains('↓'));
     assert!(!footer.contains("ctx "));
     assert!(!footer.contains("TBD"));
 }
@@ -373,7 +388,9 @@ fn terminal_footer_shows_unknown_context_with_configured_window() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("↑? ↓? ?%/128k"));
+    assert!(footer.contains("?%/128k"));
+    assert!(!footer.contains('↑'));
+    assert!(!footer.contains('↓'));
     assert!(!footer.contains("ctx "));
 }
 

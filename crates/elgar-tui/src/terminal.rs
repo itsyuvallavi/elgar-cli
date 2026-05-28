@@ -841,19 +841,20 @@ impl TerminalShellContext {
             .as_deref()
             .or(self.provider.as_deref())
             .unwrap_or("");
-        let context_label = self.footer_context_label();
-        let right = match (context_label, right.is_empty()) {
-            (Some(label), false) => format!("{label} · {right}"),
-            (Some(label), true) => label,
-            (None, _) => right.to_string(),
-        };
-        let first_line = if right.is_empty() {
+        if let Some(context_label) = self.footer_context_label() {
+            let second_line = if right.is_empty() {
+                context_label
+            } else {
+                format!("{context_label} · {right}")
+            };
+            return format!("{left}\n{second_line}");
+        }
+
+        if right.is_empty() {
             left
         } else {
-            align_footer_line(&left, &right, width)
-        };
-
-        first_line
+            align_footer_line(&left, right, width)
+        }
     }
 
     fn footer_context_label(&self) -> Option<String> {
@@ -862,34 +863,27 @@ impl TerminalShellContext {
             .context_window_tokens
             .map(compact_token_count)
             .unwrap_or_else(|| "?".to_string());
-        let (input, output) = match snapshot.source {
-            ContextWindowSource::Provider => self
-                .provider_metrics
-                .as_ref()
-                .and_then(|metrics| metrics.usage.as_ref())
-                .map(|usage| {
-                    (
-                        usage
-                            .prompt_tokens
-                            .map(compact_token_count)
-                            .unwrap_or_else(|| "?".to_string()),
-                        usage
-                            .completion_tokens
-                            .map(compact_token_count)
-                            .unwrap_or_else(|| "?".to_string()),
-                    )
-                })
-                .unwrap_or_else(|| ("?".to_string(), "?".to_string())),
-            ContextWindowSource::Estimate => (
-                snapshot
-                    .current_tokens
-                    .map(|tokens| format!("~{}", compact_token_count(tokens)))
-                    .unwrap_or_else(|| "?".to_string()),
-                "?".to_string(),
-            ),
-            ContextWindowSource::Unknown => ("?".to_string(), "?".to_string()),
-        };
         let percent = footer_percent_label(snapshot);
+        if snapshot.source != ContextWindowSource::Provider {
+            return Some(format!("{percent}/{window}"));
+        }
+        let (input, output) = self
+            .provider_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.usage.as_ref())
+            .map(|usage| {
+                (
+                    usage
+                        .prompt_tokens
+                        .map(compact_token_count)
+                        .unwrap_or_else(|| "?".to_string()),
+                    usage
+                        .completion_tokens
+                        .map(compact_token_count)
+                        .unwrap_or_else(|| "?".to_string()),
+                )
+            })
+            .unwrap_or_else(|| ("?".to_string(), "?".to_string()));
         Some(format!("↑{input} ↓{output} {percent}/{window}"))
     }
 

@@ -94,9 +94,12 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     assert!(top[1].starts_with("────"));
     assert_eq!(input, vec!["▸ /cancel▌"]);
     assert_eq!(bottom, vec![top[1].clone()]);
-    assert!(footer[0].contains("model-a"));
-    assert!(footer[0].contains("↑~4k ↓? ~25%/16k"));
-    assert_eq!(footer.len(), 1);
+    assert_eq!(footer.len(), 2);
+    assert_eq!(footer[0], "repo");
+    assert!(footer[1].contains("model-a"));
+    assert!(footer[1].contains("~25%/16k"));
+    assert!(!footer[1].contains('↑'));
+    assert!(!footer[1].contains('↓'));
     assert!(!footer.join("\n").contains("context:"));
 }
 
