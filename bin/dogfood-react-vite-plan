@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+project_dir="react-vite-plan-test-$stamp"
+input_file="$playground/.dogfood-react-vite-plan-$stamp.in"
+output_file="$playground/.dogfood-react-vite-plan-$stamp.out"
+final_plan_file="$playground/.dogfood-react-vite-plan-$stamp.final-plan"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+create only a project plan for a small but real React Vite app inside a new folder named $project_dir. Do not implement it yet. The app should be a task board with columns for Todo, In Progress, and Done. Users should be able to add tasks, move tasks between columns, and delete tasks. The plan must include: package.json with scripts needed for npm run dev; index.html; src/main.jsx or src/main.tsx; src/App.jsx or src/App.tsx; CSS; Vite config if needed; tests or a clear verification approach; README; verification steps; acceptance criteria. Only create the plan file. Do not create implementation files yet.
+/plan
+/reasoning
+/exit
+EOF
+
+echo "==> running live React/Vite plan dogfood"
+(
+  cd "$playground"
+  elgar tui <"$input_file"
+) | tee "$output_file"
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+
+[[ -d "$playground/$project_dir" ]] || fail "missing project directory $project_dir"
+find "$playground/$project_dir" -maxdepth 1 -iname '*plan*.md' -type f | grep -q . \
+  || fail "missing plan markdown file"
+
+awk '
+  $0 == "Plan Preview" { capture = 1; block = $0 "\n"; next }
+  capture && $0 == "" { latest = block; capture = 0; next }
+  capture { block = block $0 "\n" }
+  END {
+    if (capture) {
+      latest = block
+    }
+    printf "%s", latest
+  }
+' "$output_file" >"$final_plan_file"
+
+grep -q "Plan Preview" "$final_plan_file" || fail "final plan preview was empty"
+grep -q "contract review:" "$final_plan_file" || fail "plan contract review missing"
+grep -q "blocking issues: none" "$final_plan_file" || fail "plan contract still has blocking issues"
+grep -q "verification:" "$final_plan_file" || fail "verification section was not recognized"
+grep -q "acceptance criteria:" "$final_plan_file" || fail "acceptance criteria section was not recognized"
+
+for junk in 'scripts": {' 'dependencies": {' 'devDependencies": {' '<head>' '<body>' 'return ('; do
+  grep -qF "$junk" "$final_plan_file" && fail "plan preview contains snippet path: $junk"
+done
+
+grep -Eq -- "- (missing|ok) playground/$project_dir/src/(main|App)\\.(jsx|tsx)" "$final_plan_file" \
+  || fail "plan preview did not preserve src/main or src/App under src"
+grep -Eq -- "- (missing|ok) playground/$project_dir/(src/.+\\.css|src/styles/.+\\.css|styles/.+\\.css)" "$final_plan_file" \
+  || fail "plan preview did not include a CSS file under src or styles"
+grep -q -- "- ok playground/$project_dir/" "$final_plan_file" \
+  || fail "plan preview did not show the verified project root"
+
+grep -q '^Reasoning$' "$output_file" || fail "reasoning output missing"
+grep -q '^route:' "$output_file" || fail "reasoning route missing"
+grep -q '^runtime checks:' "$output_file" || fail "reasoning runtime checks missing"
+
+echo "==> dogfood passed"
+echo "project: $playground/$project_dir"
+echo "transcript: $output_file"
