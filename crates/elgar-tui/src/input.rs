@@ -22,6 +22,12 @@ impl TerminalInput {
         std::mem::take(&mut self.text)
     }
 
+    pub(crate) fn insert_text(&mut self, text: &str) {
+        self.cursor = floor_char_boundary(&self.text, self.cursor);
+        self.text.insert_str(self.cursor, text);
+        self.cursor += text.len();
+    }
+
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> TerminalInputAction {
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -33,6 +39,10 @@ impl TerminalInput {
             KeyCode::Esc => {
                 self.text.clear();
                 self.cursor = 0;
+                TerminalInputAction::Continue
+            }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.insert_text("\n");
                 TerminalInputAction::Continue
             }
             KeyCode::Enter => TerminalInputAction::Submit,
@@ -72,9 +82,7 @@ impl TerminalInput {
             }
             KeyCode::Char(character) => {
                 if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                    self.cursor = floor_char_boundary(&self.text, self.cursor);
-                    self.text.insert(self.cursor, character);
-                    self.cursor += character.len_utf8();
+                    self.insert_text(&character.to_string());
                 }
                 TerminalInputAction::Continue
             }
@@ -189,6 +197,33 @@ mod tests {
         );
         assert_eq!(input.drain(), "hi");
         assert_eq!(input.text(), "");
+    }
+
+    #[test]
+    fn shift_enter_inserts_newline_without_submitting() {
+        let mut input = TerminalInput::from_text("first");
+
+        assert_eq!(
+            input.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+            TerminalInputAction::Continue
+        );
+        input.handle_key(key(KeyCode::Char('s')));
+
+        assert_eq!(input.text(), "first\ns");
+    }
+
+    #[test]
+    fn pasted_multiline_text_inserts_without_submitting() {
+        let mut input = TerminalInput::from_text("before ");
+
+        input.insert_text("line one\nline two");
+
+        assert_eq!(input.text(), "before line one\nline two");
+        assert_eq!(
+            input.handle_key(key(KeyCode::Enter)),
+            TerminalInputAction::Submit
+        );
+        assert_eq!(input.drain(), "before line one\nline two");
     }
 
     #[test]

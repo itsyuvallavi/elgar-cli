@@ -28,7 +28,11 @@ use elgar_core::{
 };
 use ratatui::{backend::TestBackend, Terminal};
 
-use crate::{input::TerminalInput, panes::ConversationPane, TuiShell};
+use crate::{
+    input::{TerminalInput, TerminalInputAction},
+    panes::ConversationPane,
+    TuiShell,
+};
 
 use super::prompt::{
     live_response_ansi, LIVE_REASONING_PREVIEW_BYTES, LIVE_RESPONSE_PREVIEW_BYTES,

@@ -5,7 +5,8 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyEventKind},
+    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
+    execute,
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 use elgar_core::{
@@ -240,20 +241,17 @@ fn read_inline_prompt(
     renderer.render(input.text())?;
 
     loop {
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => match input.handle_key(key) {
-                TerminalInputAction::Continue => renderer.render(input.text())?,
-                TerminalInputAction::Submit => {
-                    let submitted = input.drain().trim().to_string();
-                    renderer.clear()?;
-                    return Ok(Some(submitted));
-                }
-                TerminalInputAction::Exit => {
-                    renderer.clear()?;
-                    return Ok(None);
-                }
-            },
-            _ => {}
+        match handle_terminal_input_event(event::read()?, &mut input) {
+            TerminalInputAction::Continue => renderer.render(input.text())?,
+            TerminalInputAction::Submit => {
+                let submitted = input.drain().trim().to_string();
+                renderer.clear()?;
+                return Ok(Some(submitted));
+            }
+            TerminalInputAction::Exit => {
+                renderer.clear()?;
+                return Ok(None);
+            }
         }
     }
 }
@@ -506,14 +504,7 @@ fn handle_active_provider_event(
     elapsed_secs: u64,
     live_output: &LiveProviderOutput,
 ) -> io::Result<()> {
-    let Event::Key(key) = event::read()? else {
-        return Ok(());
-    };
-    if key.kind != KeyEventKind::Press {
-        return Ok(());
-    }
-
-    match handle_active_provider_key(key, input) {
+    match handle_active_provider_input_event(event::read()?, input) {
         ActiveProviderKeyAction::Continue => {
             working.render(tick, elapsed_secs, input.text(), live_output)
         }
@@ -525,6 +516,20 @@ fn handle_active_provider_event(
             task.cancel();
             Ok(())
         }
+    }
+}
+
+fn handle_terminal_input_event(
+    event: crossterm::event::Event,
+    input: &mut TerminalInput,
+) -> TerminalInputAction {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => input.handle_key(key),
+        Event::Paste(text) => {
+            input.insert_text(&text);
+            TerminalInputAction::Continue
+        }
+        _ => TerminalInputAction::Continue,
     }
 }
 
@@ -553,6 +558,22 @@ fn handle_active_provider_key(
             }
         }
         TerminalInputAction::Exit => ActiveProviderKeyAction::Exit,
+    }
+}
+
+fn handle_active_provider_input_event(
+    event: crossterm::event::Event,
+    input: &mut TerminalInput,
+) -> ActiveProviderKeyAction {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            handle_active_provider_key(key, input)
+        }
+        Event::Paste(text) => {
+            input.insert_text(&text);
+            ActiveProviderKeyAction::Continue
+        }
+        _ => ActiveProviderKeyAction::Continue,
     }
 }
 
@@ -1180,16 +1201,20 @@ struct TerminalModeGuard;
 impl TerminalModeGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        write!(io::stdout(), "{ANSI_CURSOR_HIDE}")?;
-        io::stdout().flush()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnableBracketedPaste)?;
+        write!(stdout, "{ANSI_CURSOR_HIDE}")?;
+        stdout.flush()?;
         Ok(Self)
     }
 }
 
 impl Drop for TerminalModeGuard {
     fn drop(&mut self) {
-        let _ = write!(io::stdout(), "{ANSI_CURSOR_SHOW}");
-        let _ = io::stdout().flush();
+        let mut stdout = io::stdout();
+        let _ = execute!(stdout, DisableBracketedPaste);
+        let _ = write!(stdout, "{ANSI_CURSOR_SHOW}");
+        let _ = stdout.flush();
         let _ = disable_raw_mode();
     }
 }

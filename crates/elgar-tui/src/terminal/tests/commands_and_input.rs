@@ -225,6 +225,36 @@ fn terminal_provider_active_enter_preserves_non_cancel_draft() {
 }
 
 #[test]
+fn terminal_paste_event_inserts_multiline_text_without_submit() {
+    let mut input = TerminalInput::default();
+
+    assert_eq!(
+        super::super::handle_terminal_input_event(
+            crossterm::event::Event::Paste("first line\nsecond line".to_string()),
+            &mut input,
+        ),
+        TerminalInputAction::Continue
+    );
+
+    assert_eq!(input.text(), "first line\nsecond line");
+}
+
+#[test]
+fn terminal_provider_active_paste_preserves_multiline_draft() {
+    let mut input = TerminalInput::default();
+
+    assert_eq!(
+        super::super::handle_active_provider_input_event(
+            crossterm::event::Event::Paste("/cancel\nactually keep drafting".to_string()),
+            &mut input,
+        ),
+        super::super::ActiveProviderKeyAction::Continue
+    );
+
+    assert_eq!(input.text(), "/cancel\nactually keep drafting");
+}
+
+#[test]
 fn terminal_provider_active_enter_consumes_cancel_command() {
     let mut input = TerminalInput::default();
 
