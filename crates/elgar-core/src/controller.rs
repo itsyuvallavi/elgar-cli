@@ -194,7 +194,7 @@ pub struct TurnResult {
 }
 
 const HELP_MESSAGE: &str =
-    "Elgar supports provider chat plus explicit slash commands. Use /tool for tool-enabled turns.";
+    "Elgar supports provider chat, model-selected tool execution, and explicit slash commands.";
 const UNKNOWN_MESSAGE: &str = "Empty input was not sent to the provider.";
 
 fn push_controller_message(session: &mut Session, message: impl Into<String>) {

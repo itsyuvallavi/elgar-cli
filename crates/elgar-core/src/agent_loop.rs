@@ -57,6 +57,10 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
 );
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "You are Elgar. Decide how this normal user turn should proceed. ",
+    "You are connected to an Elgar harness that can run filesystem and shell tools after you choose the execute route. ",
+    "Normal user text may use that route; slash commands are optional explicit overrides, not required for normal requests. ",
+    "For capability questions, say you can help create, edit, move, delete files and run commands through the harness, subject to validation, permissions, and verified results. ",
+    "Do not say you lack filesystem access just because this first decision request has no tools attached. ",
     "Return only JSON using one of these shapes: ",
     "{\"route\":\"chat\",\"content\":\"...\"}, ",
     "{\"route\":\"execute\"}, or ",
@@ -606,7 +610,7 @@ fn guard_plan_creation_tool_outputs(
             ResolvedAgentToolOutput::Action(action) if plan_created_this_turn => {
                 ResolvedAgentToolOutput::Skipped {
                     tool_call_id: action.tool_call_id,
-                    message: "Skipped implementation tool calls after creating the verified plan. Run `/tool execute the plan` when you want to apply it.".to_string(),
+                    message: "Skipped implementation tool calls after creating the verified plan. Ask to execute the plan when you want to apply it.".to_string(),
                     visible: true,
                 }
             }
@@ -618,7 +622,7 @@ fn guard_plan_creation_tool_outputs(
             }
             ResolvedAgentToolOutput::Action(action) => ResolvedAgentToolOutput::Skipped {
                 tool_call_id: action.tool_call_id,
-                message: "Skipped extra implementation tool calls in this plan-creation turn. Run `/tool execute the plan` when you want to apply the verified plan.".to_string(),
+                message: "Skipped extra implementation tool calls in this plan-creation turn. Ask to execute the verified plan when you want to apply it.".to_string(),
                 visible: true,
             },
             other => other,
@@ -1316,7 +1320,7 @@ fn push_plain_provider_message_if_visible(session: &mut Session, message: impl I
     let message = message.into();
     if looks_like_raw_tool_protocol(&message) {
         session.push_event(Event::AssistantMessage(AssistantMessage::new(
-            "That was a plain chat turn, so no filesystem action was executed. Use `/tool <request>` to allow filesystem tools.",
+            "The model returned raw tool protocol as text, so no filesystem action was executed. Ask again normally so the model can choose the execute route.",
             AssistantMessageSource::Controller,
         )));
         return;
@@ -2872,6 +2876,13 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
         assert_eq!(requests[0].tool_count, 0);
+        assert!(requests[0].messages[0]
+            .content
+            .contains("Normal user text may use that route"));
+        assert!(requests[0].messages[0]
+            .content
+            .contains("slash commands are optional explicit overrides"));
+        assert!(!requests[0].messages[0].content.contains("Use `/tool"));
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
@@ -3139,8 +3150,8 @@ mod tests {
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.content.contains("plain chat turn")
-                    && message.content.contains("/tool <request>")
+                if message.content.contains("raw tool protocol")
+                    && message.content.contains("execute route")
         )));
         assert!(!session.events().iter().any(|event| matches!(
             event,
