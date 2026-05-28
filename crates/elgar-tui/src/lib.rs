@@ -10,6 +10,7 @@ mod shell_result;
 mod startup;
 pub mod terminal;
 mod theme;
+mod turn_metrics;
 
 pub use action_panel::{ActionApprovalPanel, ActionPanelState, PendingActionArea};
 pub use layout::LayoutRegion;

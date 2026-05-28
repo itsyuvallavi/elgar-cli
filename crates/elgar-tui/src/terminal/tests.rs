@@ -32,6 +32,7 @@ use ratatui::{backend::TestBackend, Terminal};
 use crate::{
     input::{TerminalInput, TerminalInputAction},
     panes::ConversationPane,
+    turn_metrics::aggregate_provider_token_usage,
     TuiShell,
 };
 
@@ -51,6 +52,42 @@ use super::{
 };
 
 static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn aggregates_provider_token_usage_for_visible_turn_cost() {
+    let mut first_metrics =
+        ProviderMetrics::new("request-1", Some("model-a".to_string()), false, 2, 100);
+    first_metrics.usage = Some(ProviderTokenUsage {
+        prompt_tokens: Some(1_000),
+        completion_tokens: Some(20),
+        total_tokens: Some(1_020),
+    });
+    let mut second_metrics =
+        ProviderMetrics::new("request-2", Some("model-a".to_string()), false, 3, 180);
+    second_metrics.usage = Some(ProviderTokenUsage {
+        prompt_tokens: Some(300),
+        completion_tokens: Some(40),
+        total_tokens: Some(340),
+    });
+
+    let usage = aggregate_provider_token_usage(&[
+        Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "request-1",
+            ProviderOutput::new("first").with_metrics(first_metrics),
+        )),
+        Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "request-2",
+            ProviderOutput::new("second").with_metrics(second_metrics),
+        )),
+    ])
+    .expect("provider usage should aggregate");
+
+    assert_eq!(usage.prompt_tokens, Some(1_300));
+    assert_eq!(usage.completion_tokens, Some(60));
+    assert_eq!(usage.total_tokens, Some(1_360));
+}
 
 struct EnvGuard {
     name: &'static str,

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use elgar_core::{
     action_gate::ActionGate, agent_runtime::AgentRuntime, controller::TurnResult, event::Event,
     policy::PermissionPolicyMode, provider::ControllerProvider, session::Session,
@@ -7,6 +9,7 @@ use crate::{
     action_panel::PendingActionArea,
     layout::{render_section, LayoutRegion},
     panes::{ConversationPane, CopyArea, InputArea, StatusLine},
+    turn_metrics::{aggregate_provider_token_usage, duration_millis},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,8 +121,13 @@ impl TuiShell {
     where
         P: ControllerProvider,
     {
+        let started = Instant::now();
         let result = runtime.turn(session, input, self.policy_mode);
         self.consume_events(&result.events);
+        self.conversation.push_turn_metrics(
+            duration_millis(started.elapsed()),
+            aggregate_provider_token_usage(&result.events).as_ref(),
+        );
         self.conversation.follow_latest();
         result
     }
@@ -133,8 +141,13 @@ impl TuiShell {
     where
         P: ControllerProvider,
     {
+        let started = Instant::now();
         let result = runtime.tool_turn(session, input, self.policy_mode);
         self.consume_events(&result.events);
+        self.conversation.push_turn_metrics(
+            duration_millis(started.elapsed()),
+            aggregate_provider_token_usage(&result.events).as_ref(),
+        );
         self.conversation.follow_latest();
         result
     }

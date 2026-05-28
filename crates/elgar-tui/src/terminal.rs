@@ -41,7 +41,9 @@ use crate::{
     },
     panes::{ConversationLineStyle, ConversationPane},
     startup::StartupBlock,
-    theme, TuiShell,
+    theme,
+    turn_metrics::{aggregate_provider_token_usage, duration_millis},
+    TuiShell,
 };
 
 mod commands;
@@ -408,6 +410,7 @@ fn run_inline_provider_turn<P>(
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
+    let turn_started = Instant::now();
     let before = shell.conversation.render_lines_with_styles().len();
     print_spacer()?;
     let visible_input = if tool_enabled {
@@ -439,11 +442,10 @@ where
     let mut live_output = LiveProviderOutput::default();
     live_output.suppress_reasoning_preview();
     live_output.suppress_response_preview();
-    let started = Instant::now();
     let mut tick = 0usize;
     working.render(
         tick,
-        started.elapsed().as_secs(),
+        turn_started.elapsed().as_secs(),
         input.text(),
         &live_output,
     )?;
@@ -467,7 +469,7 @@ where
                 if last_render.elapsed() >= IDLE_RENDER_INTERVAL {
                     working.render(
                         tick,
-                        started.elapsed().as_secs(),
+                        turn_started.elapsed().as_secs(),
                         input.text(),
                         &live_output,
                     )?;
@@ -481,7 +483,7 @@ where
                         &mut input,
                         &mut working,
                         tick,
-                        started.elapsed().as_secs(),
+                        turn_started.elapsed().as_secs(),
                         &live_output,
                     )?;
                 }
@@ -499,8 +501,13 @@ where
     working.clear()?;
     drop(guard);
     let completed = *completed;
+    let turn_duration_millis = duration_millis(turn_started.elapsed());
+    let turn_usage = aggregate_provider_token_usage(&completed.events);
     *session = completed.session;
     shell.consume_events(&completed.events);
+    shell
+        .conversation
+        .push_turn_metrics(turn_duration_millis, turn_usage.as_ref());
     shell.conversation.follow_latest();
     print_new_conversation_lines(shell, before, true, true)?;
     Ok(preserved_input)
