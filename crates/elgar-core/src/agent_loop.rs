@@ -278,6 +278,22 @@ where
             Ok(output) => output,
             Err(error) => {
                 if error.kind == ProviderErrorKind::EmptyResponse {
+                    if plan_execution_in_progress {
+                        if let Some(message) =
+                            plan_execution_repair_message_or_mark_complete(session)
+                        {
+                            session.push_reasoning_runtime_check(
+                                "empty tool response during plan execution; continued from verified missing paths",
+                            );
+                            messages.push(ChatMessage::system(message));
+                            continue;
+                        }
+                        session.push_reasoning_runtime_check(
+                            "plan execution completed after empty tool response; skipped plain fallback",
+                        );
+                        break;
+                    }
+
                     let fallback_request = provider.request_metadata();
                     session.push_event(Event::ProviderStarted(
                         ProviderStarted::new(
@@ -547,6 +563,10 @@ where
                 );
                 break;
             }
+            session.push_reasoning_runtime_check(
+                "plan execution completed after skipped tool feedback; skipped final provider synthesis",
+            );
+            break;
         }
         if plan_created_this_turn
             && !plan_creation_repair_in_progress
@@ -4377,15 +4397,11 @@ mod tests {
                 .runtime_status(),
             crate::session::StructuredProjectPlanStatus::Completed
         );
-        assert!(provider
-            .messages
-            .lock()
-            .unwrap()
-            .iter()
-            .flatten()
-            .any(|message| message
-                .content
-                .contains("Skipped tool call because it does not create a missing expected path")));
+        assert_eq!(
+            provider.messages.lock().unwrap().len(),
+            1,
+            "completed plan execution should not request a destructive follow-up round"
+        );
         assert_eq!(
             session
                 .latest_reasoning_trace()
@@ -4395,7 +4411,8 @@ mod tests {
         assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
             .runtime_checks
             .iter()
-            .any(|line| line == "plan execution paths detected")));
+            .any(|line| line
+                == "plan execution completed after skipped tool feedback; skipped final provider synthesis")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -4714,15 +4731,16 @@ mod tests {
                 .runtime_status(),
             crate::session::StructuredProjectPlanStatus::Completed
         );
-        assert!(provider
-            .messages
-            .lock()
-            .unwrap()
+        assert_eq!(
+            provider.messages.lock().unwrap().len(),
+            1,
+            "completed plan execution should not request a redundant follow-up round"
+        );
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
             .iter()
-            .flatten()
-            .any(|message| message
-                .content
-                .contains("Skipped tool call because it does not create a missing expected path")));
+            .any(|line| line
+                == "plan execution completed after skipped tool feedback; skipped final provider synthesis")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -5497,6 +5515,100 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    enum CapturedToolStep {
+        Output(crate::event::ProviderOutput),
+        EmptyResponse,
+    }
+
+    #[derive(Debug, Clone)]
+    struct CapturingProviderWithToolErrors {
+        requests: std::sync::Arc<std::sync::Mutex<Vec<CapturedProviderRequest>>>,
+        plain_outputs: std::sync::Arc<std::sync::Mutex<Vec<crate::event::ProviderOutput>>>,
+        tool_steps: std::sync::Arc<std::sync::Mutex<Vec<CapturedToolStep>>>,
+    }
+
+    impl CapturingProviderWithToolErrors {
+        fn new(
+            plain_outputs: Vec<crate::event::ProviderOutput>,
+            tool_steps: Vec<CapturedToolStep>,
+        ) -> Self {
+            Self {
+                requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                plain_outputs: std::sync::Arc::new(std::sync::Mutex::new(plain_outputs)),
+                tool_steps: std::sync::Arc::new(std::sync::Mutex::new(tool_steps)),
+            }
+        }
+
+        fn requests(&self) -> Vec<CapturedProviderRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        fn next_plain_output(&self) -> crate::event::ProviderOutput {
+            let mut outputs = self.plain_outputs.lock().unwrap();
+            if outputs.len() > 1 {
+                outputs.remove(0)
+            } else {
+                outputs.first().cloned().unwrap_or_else(|| {
+                    crate::event::ProviderOutput::new(
+                        "{\"route\":\"chat\",\"content\":\"Plain answer.\"}",
+                    )
+                })
+            }
+        }
+
+        fn next_tool_step(&self) -> CapturedToolStep {
+            let mut steps = self.tool_steps.lock().unwrap();
+            if steps.is_empty() {
+                CapturedToolStep::Output(crate::event::ProviderOutput::new("Done."))
+            } else {
+                steps.remove(0)
+            }
+        }
+    }
+
+    impl ControllerProvider for CapturingProviderWithToolErrors {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new("capture", Some("test-model".to_string()), "request")
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<crate::event::ProviderOutput, ProviderError> {
+            Ok(self.next_plain_output())
+        }
+
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            tools: Vec<ChatToolDefinition>,
+        ) -> Result<crate::event::ProviderOutput, ProviderError> {
+            self.requests.lock().unwrap().push(CapturedProviderRequest {
+                mode: CapturedProviderRequestMode::Tool,
+                messages,
+                tool_count: tools.len(),
+            });
+            match self.next_tool_step() {
+                CapturedToolStep::Output(output) => Ok(output),
+                CapturedToolStep::EmptyResponse => {
+                    Err(ProviderError::empty_response("empty tool response"))
+                }
+            }
+        }
+
+        fn chat_messages_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+        ) -> Result<crate::event::ProviderOutput, ProviderError> {
+            self.requests.lock().unwrap().push(CapturedProviderRequest {
+                mode: CapturedProviderRequestMode::Plain,
+                messages,
+                tool_count: 0,
+            });
+            Ok(self.next_plain_output())
+        }
+    }
+
     fn joined_request_messages(request: &CapturedProviderRequest) -> String {
         request
             .messages
@@ -6143,6 +6255,89 @@ mod tests {
             .skip(1)
             .any(|request| joined_request_messages(request)
                 .contains("call the needed file and directory tools in one assistant response")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_execution_empty_tool_response_continues_without_plain_fallback() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-empty-tool-no-fallback",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProviderWithToolErrors::new(
+            vec![crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            )],
+            vec![
+                CapturedToolStep::Output(
+                    crate::event::ProviderOutput::new("Creating plan first.").with_tool_calls(
+                        vec![RawModelToolCall {
+                            id: "empty-response-plan".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "NotesCLI/PROJECT_PLAN.md",
+                                "contents": "# Notes Plan\n\n```text\nREADME.md\nsrc/main.py\n```\n\n## Verification\n- `README.md` and `src/main.py` exist.\n\n## Acceptance Criteria\n- Running `python -m src.main` prints a notes CLI help message.\n"
+                            }),
+                            assistant_summary: Some("create plan".to_string()),
+                        }],
+                    ),
+                ),
+                CapturedToolStep::EmptyResponse,
+                CapturedToolStep::Output(
+                    crate::event::ProviderOutput::new("Creating all missing files.")
+                        .with_tool_calls(vec![
+                            RawModelToolCall {
+                                id: "empty-response-readme".to_string(),
+                                name: RawModelToolName::Known(ModelToolName::CreateFile),
+                                arguments: json!({
+                                    "target_path": "NotesCLI/README.md",
+                                    "contents": "# Notes CLI\n"
+                                }),
+                                assistant_summary: Some("create README".to_string()),
+                            },
+                            RawModelToolCall {
+                                id: "empty-response-main".to_string(),
+                                name: RawModelToolName::Known(ModelToolName::CreateFile),
+                                arguments: json!({
+                                    "target_path": "NotesCLI/src/main.py",
+                                    "contents": "def main():\n    print('notes')\n\nif __name__ == '__main__':\n    main()\n"
+                                }),
+                                assistant_summary: Some("create main".to_string()),
+                            },
+                        ]),
+                ),
+            ],
+        );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a notes plan and execute it",
+        );
+
+        assert!(root.join("NotesCLI/PROJECT_PLAN.md").is_file());
+        assert!(root.join("NotesCLI/README.md").is_file());
+        assert!(root.join("NotesCLI/src/main.py").is_file());
+        let requests = provider.requests();
+        assert_eq!(
+            requests.len(),
+            4,
+            "plain route plus three tool attempts; no plain fallback request"
+        );
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert!(requests[1..]
+            .iter()
+            .all(|request| request.mode == CapturedProviderRequestMode::Tool));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains(
+                "empty tool response during plan execution; continued from verified missing paths"
+            ))));
 
         let _ = std::fs::remove_dir_all(&root);
     }
