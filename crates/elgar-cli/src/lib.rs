@@ -1551,7 +1551,9 @@ mod tests {
 
         assert!(!target.exists());
         assert!(rendered.contains("> create file hello.py"));
-        assert!(rendered.contains("stub provider response"));
+        assert!(rendered.contains(
+            "The model did not return any tool actions, so no files or commands were changed."
+        ));
         assert!(rendered.contains("Status\nactions: 0\npending: none"));
         assert!(!rendered.contains("Wrote "));
         assert!(rendered.contains("Pending Action\nnone"));

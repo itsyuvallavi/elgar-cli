@@ -104,6 +104,7 @@ struct AgentExecutionIntent {
     plan_execution: bool,
     plan_creation_execution: bool,
     after_plan_creation_decision: bool,
+    explicit_tool_command: bool,
 }
 
 pub fn run_permissive_agent_turn<P>(provider: &P, session: &mut Session, input: &str) -> TurnResult
@@ -157,7 +158,10 @@ where
         tool_input,
         policy_mode,
         start_index,
-        AgentExecutionIntent::default(),
+        AgentExecutionIntent {
+            explicit_tool_command: true,
+            ..AgentExecutionIntent::default()
+        },
     )
 }
 
@@ -260,6 +264,10 @@ where
     let mut plan_creation_repair_in_progress = false;
     let mut allow_implementation_after_plan_creation = intent.plan_creation_execution;
     let mut visible_skipped_tool_notice_shown = false;
+    let mut no_tool_response_repair_attempted = false;
+    let mut verified_actions_this_tool_turn = 0usize;
+    let mut tool_call_rounds_this_tool_turn = 0usize;
+    let allow_no_tool_response_repair = !intent.explicit_tool_command;
 
     for _round in 0..MAX_AGENT_TOOL_ROUNDS {
         let request = provider.request_metadata();
@@ -327,9 +335,32 @@ where
                     continue;
                 }
             }
+            if allow_no_tool_response_repair
+                && verified_actions_this_tool_turn == 0
+                && tool_call_rounds_this_tool_turn == 0
+            {
+                if !no_tool_response_repair_attempted {
+                    no_tool_response_repair_attempted = true;
+                    session.push_reasoning_runtime_check(
+                        "execute route returned no tool calls; requested tool repair",
+                    );
+                    messages.push(ChatMessage::system(no_tool_action_repair_message()));
+                    continue;
+                }
+                session.push_reasoning_runtime_check(
+                    "execute route returned no tool calls after repair; stopped",
+                );
+                session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                    "The model did not return any tool actions, so no files or commands were changed.",
+                    AssistantMessageSource::Controller,
+                )));
+                break;
+            }
             push_provider_message_after_tool_turn_if_visible(session, start_index, assistant_text);
             break;
         }
+
+        tool_call_rounds_this_tool_turn += 1;
 
         tool_calls.retain(|tool_call| handled_tool_call_ids.insert(tool_call.id.clone()));
         if tool_calls.is_empty() {
@@ -505,6 +536,14 @@ where
                         policy_mode,
                     );
                     session.push_reasoning_runtime_check(format!("action result: {result}"));
+                    if session
+                        .actions()
+                        .last()
+                        .and_then(|record| record.verified_result.as_ref())
+                        .is_some()
+                    {
+                        verified_actions_this_tool_turn += 1;
+                    }
                     if is_plan_creation
                         && session
                             .actions()
@@ -876,6 +915,7 @@ where
                     Some(NormalTurnExecuteIntent::PlanCreationAndExecution)
                 ),
                 after_plan_creation_decision: intent.is_none(),
+                explicit_tool_command: false,
             };
             session.record_reasoning_route("execute");
             if execution_intent.plan_execution {
@@ -1666,6 +1706,10 @@ fn plan_creation_non_plan_repair_skip_message() -> String {
 fn plan_creation_first_message() -> String {
     "Create the project plan file first, then create implementation files from the verified plan."
         .to_string()
+}
+
+fn no_tool_action_repair_message() -> String {
+    "This route requires tool actions. Use the available tools to make the requested filesystem or shell changes, or ask concise guidance if a required target is missing.".to_string()
 }
 
 fn plan_creation_repair_message(session: &Session) -> String {
@@ -5689,9 +5733,10 @@ mod tests {
             "# Project Plan\n\n```text\n├── src\n│   └── main.py\n└── requirements.txt\n```\n\n## Verification\n- `src/main.py` and `requirements.txt` exist.\n\n## Acceptance Criteria\n- Expected files exist under the plan root.\n",
         )
         .unwrap();
-        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
-            "I found the verified plan.",
-        )]);
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("I found the verified plan."),
+            crate::event::ProviderOutput::new("I still need tool actions."),
+        ]);
         let mut session = Session::new("session", &root, &cwd);
         session.record_verified_folder_reference(crate::session::VerifiedFolderReference {
             path: cwd.join("tui-state-test"),
@@ -5767,9 +5812,10 @@ mod tests {
         let child = project.join("notes");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&child).unwrap();
-        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
-            "I found the workspace.",
-        )]);
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("I found the workspace."),
+            crate::event::ProviderOutput::new("I still need tool actions."),
+        ]);
         let mut session = Session::new("session", &root, &cwd);
         session.record_verified_folder_reference(crate::session::VerifiedFolderReference {
             path: project.clone(),
@@ -5820,8 +5866,10 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(&plan_path, "# Plan\n").unwrap();
         std::fs::write(&readme_path, "old\n").unwrap();
-        let provider =
-            SequenceProvider::new(vec![crate::event::ProviderOutput::new("I can update it.")]);
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("I can update it."),
+            crate::event::ProviderOutput::new("I still need tool actions."),
+        ]);
         let mut session = Session::new("session", &root, &cwd);
         session.record_verified_plan_reference(crate::session::VerifiedPlanReference {
             path: plan_path.clone(),
@@ -7274,6 +7322,71 @@ mod tests {
             .runtime_checks
             .iter()
             .any(|line| line.contains("Create the project plan file first")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn execute_no_tool_text_response_retries_without_rendering_fake_claim() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-no-tool-retry",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new(
+                    "Plan created for playground/FakePlan. Files added: README.md, src/main.py.",
+                ),
+                crate::event::ProviderOutput::new("Creating the plan file.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "no-tool-retry-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "playground/FakePlan/plan.md",
+                            "contents": "# Fake Plan\n\n```text\nREADME.md\nsrc/main.py\n```\n\n## Verification\n- Check expected files.\n\n## Acceptance Criteria\n- Expected files exist.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create only a project plan inside playground/FakePlan",
+        );
+
+        assert!(root.join("playground/FakePlan/plan.md").is_file());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.contains("Files added")
+        )));
+        let requests = provider.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.mode == CapturedProviderRequestMode::Tool)
+                .count(),
+            2
+        );
+        assert!(joined_request_messages(
+            requests
+                .iter()
+                .filter(|request| request.mode == CapturedProviderRequestMode::Tool)
+                .nth(1)
+                .expect("second tool request should exist")
+        )
+        .contains("This route requires tool actions"));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("execute route returned no tool calls"))));
 
         let _ = std::fs::remove_dir_all(&root);
     }
