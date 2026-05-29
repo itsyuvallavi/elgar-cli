@@ -214,7 +214,6 @@ where
     if let Some(context) = agent_context.prompt_context.clone() {
         messages.push(ChatMessage::system(context));
     }
-    messages.push(ChatMessage::user(input));
     if intent.plan_execution
         && session
             .project_memory()
@@ -234,6 +233,17 @@ where
             events: session.events()[start_index..].to_vec(),
         };
     }
+    if intent.plan_execution {
+        if let Some(message) = missing_expected_plan_paths_message(session) {
+            session.push_reasoning_runtime_check(
+                "seeded verified plan execution contract before first tool request",
+            );
+            messages.push(ChatMessage::system(format!(
+                "Verified plan execution contract:\n{message}\nCreate all missing expected paths in one tool response when possible."
+            )));
+        }
+    }
+    messages.push(ChatMessage::user(input));
     let tools = elgar_model_tool_definitions();
     let mut handled_tool_call_ids = HashSet::new();
     let mut plan_created_this_turn = false;
@@ -822,66 +832,72 @@ where
 
 fn looks_like_misrouted_artifact_chat(content: &str) -> bool {
     let trimmed = content.trim_start();
-    trimmed.len() > 1000
-        && (trimmed.starts_with('{')
-            || trimmed.starts_with('[')
-            || local_path_like_token_count(trimmed) >= 3)
+    let path_count = local_path_like_token_count(trimmed);
+    ((trimmed.starts_with('{') || trimmed.starts_with('[')) && path_count >= 2)
+        || (trimmed.len() > 1000 && path_count >= 3)
 }
 
 fn looks_like_misrouted_artifact_chat_after_retry(content: &str) -> bool {
     let trimmed = content.trim_start();
-    trimmed.len() > 500 && local_path_like_token_count(trimmed) >= 3
+    let path_count = local_path_like_token_count(trimmed);
+    ((trimmed.starts_with('{') || trimmed.starts_with('[')) && path_count >= 2)
+        || (trimmed.len() > 500 && path_count >= 3)
 }
 
 fn local_path_like_token_count(content: &str) -> usize {
     let mut paths = Vec::<String>::new();
     for line in content.lines() {
-        let token = line
-            .trim()
-            .trim_start_matches(|ch: char| {
-                matches!(
-                    ch,
-                    '-' | '*' | '+' | '|' | '`' | '"' | '\'' | '[' | ']' | '('
-                ) || ch.is_ascii_digit()
-                    || ch == '.'
-            })
+        let line = line.trim().trim_start_matches(|ch: char| {
+            matches!(
+                ch,
+                '-' | '*' | '+' | '|' | '`' | '"' | '\'' | '[' | ']' | '(' | '├' | '└' | '│' | '─'
+            ) || ch.is_ascii_digit()
+                || ch == '.'
+                || ch.is_whitespace()
+        });
+        for token in line
             .split(|ch: char| {
                 ch.is_whitespace()
                     || matches!(
                         ch,
-                        '|' | ',' | ';' | ':' | ')' | '(' | '[' | ']' | '"' | '\''
+                        '|' | ',' | ';' | ':' | ')' | '(' | '[' | ']' | '"' | '\'' | '{' | '}'
                     )
             })
-            .next()
-            .unwrap_or_default()
-            .trim_matches('`')
-            .trim_end_matches('/');
-        if token.is_empty()
-            || token.contains("://")
-            || token.contains('=')
-            || token.starts_with('$')
-            || token.starts_with('~')
+            .filter(|part| !part.is_empty())
         {
-            continue;
-        }
-        let path = std::path::Path::new(token);
-        let path_like = token.contains('/')
-            || path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.starts_with('.')
-                        || path
-                            .extension()
-                            .and_then(|extension| extension.to_str())
-                            .is_some_and(|extension| {
-                                !extension.is_empty()
-                                    && extension.len() <= 12
-                                    && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
-                            })
-                });
-        if path_like && !paths.iter().any(|seen| seen == token) {
-            paths.push(token.to_string());
+            let token = token
+                .trim_start_matches(|ch: char| {
+                    matches!(ch, '-' | '*' | '+' | '├' | '└' | '│' | '─')
+                })
+                .trim_matches('`')
+                .trim_end_matches('/');
+            if token.is_empty()
+                || token.contains("://")
+                || token.contains('=')
+                || token.starts_with('$')
+                || token.starts_with('~')
+            {
+                continue;
+            }
+            let path = std::path::Path::new(token);
+            let path_like = token.contains('/')
+                || path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with('.')
+                            || path
+                                .extension()
+                                .and_then(|extension| extension.to_str())
+                                .is_some_and(|extension| {
+                                    !extension.is_empty()
+                                        && extension.len() <= 12
+                                        && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
+                                })
+                    });
+            if path_like && !paths.iter().any(|seen| seen == token) {
+                paths.push(token.to_string());
+            }
         }
     }
     paths.len()
@@ -2261,6 +2277,12 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
+        }
+        if !missing_directories.is_empty() || !missing_files.is_empty() {
+            lines.push(
+                "- when applying this incomplete structured plan, create all missing expected paths in one tool response when possible"
+                    .to_string(),
+            );
         }
         if missing_directories.is_empty() && missing_files.is_empty() {
             lines.push("- latest structured plan expected paths are complete".to_string());
@@ -5639,6 +5661,100 @@ mod tests {
     }
 
     #[test]
+    fn compact_json_plan_chat_routes_to_execute_instead_of_rendering() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-compact-json-artifact-chat",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let compact_plan_json = r#"{
+  "project_name": "CompactJsonPlan",
+  "structure": {
+    "README.md": "Project overview.",
+    "src/main.py": "CLI entry point.",
+    "requirements.txt": "Runtime dependencies."
+  },
+  "verification": "Run python src/main.py --help.",
+  "acceptance_criteria": ["All listed files exist."]
+}"#;
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new(
+                    serde_json::json!({
+                        "route": "chat",
+                        "content": compact_plan_json,
+                    })
+                    .to_string(),
+                ),
+                crate::event::ProviderOutput::new("{\"route\":\"execute\"}"),
+            ])
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating only the plan.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "compact-json-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "CompactJsonPlan/PLAN.md",
+                            "contents": "# Project Plan\n\n```text\nREADME.md\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Run python src/main.py --help after execution.\n\n## Acceptance Criteria\n- All listed files exist.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create only a project plan for a tiny app",
+        );
+
+        assert!(root.join("CompactJsonPlan/PLAN.md").is_file());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.contains("\"project_name\"")
+        )));
+        let trace = session
+            .latest_reasoning_trace()
+            .expect("reasoning trace should exist");
+        assert!(trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains("artifact-like chat")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn numbered_tree_plan_chat_counts_local_paths_as_artifact_shape() {
+        let artifact_markdown = r#"Project Plan: Tiny Python CLI Todo App
+1. Folder Structure
+   - playground/ManualEfficiencyFollowupCodex3/
+     ├── README.md
+     ├── src/
+     │   └── main.py
+     └── requirements.txt`
+2. README.md
+   - Project title and brief description.
+3. src/main.py
+   - Entry point for CLI using argparse.
+4. requirements.txt
+   - No external dependency.
+5. Verification & Acceptance Criteria
+   - python src/main.py add "Task description" adds a task.
+   - python src/main.py list displays all tasks with IDs.
+"#;
+
+        assert!(local_path_like_token_count(artifact_markdown) >= 3);
+        assert!(looks_like_misrouted_artifact_chat_after_retry(
+            artifact_markdown
+        ));
+    }
+
+    #[test]
     fn artifact_like_chat_after_route_retry_executes_instead_of_rendering() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-artifact-chat-after-route-retry",
@@ -5883,13 +5999,22 @@ mod tests {
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
         assert!(!joined_request_messages(&requests[0]).contains("latest verified plan"));
         assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
-        assert!(joined_request_messages(&requests[1])
-            .contains("latest verified plan: CalculatorUI/plan.md"));
+        let context_retry_request = joined_request_messages(&requests[1]);
+        assert!(context_retry_request.contains("latest verified plan: CalculatorUI/plan.md"));
+        assert!(context_retry_request.contains("create all missing expected paths"));
         assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
-        assert!(requests[2]
-            .messages
-            .iter()
-            .any(|message| message.content.contains("missing expected files")));
+        let first_tool_request = joined_request_messages(&requests[2]);
+        assert!(first_tool_request.contains("Verified plan execution contract"));
+        for path in [
+            "CalculatorUI/README.md",
+            "CalculatorUI/calculator.py",
+            "CalculatorUI/ui.py",
+        ] {
+            assert!(
+                first_tool_request.contains(path),
+                "first tool request did not include missing path {path}"
+            );
+        }
         let plan = session
             .project_memory()
             .latest_structured_plan()
@@ -5901,6 +6026,8 @@ mod tests {
         let trace = session
             .latest_reasoning_trace()
             .expect("reasoning trace should exist");
+        assert!(trace.runtime_checks.iter().any(|line| line
+            .contains("seeded verified plan execution contract before first tool request")));
         assert!(trace
             .runtime_checks
             .iter()
