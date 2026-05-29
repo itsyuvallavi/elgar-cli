@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::{
     event::ProviderOutput,
@@ -92,6 +93,9 @@ impl ControllerProvider for ProviderStub {
         _metadata: &ProviderRequestMetadata,
     ) -> Result<ProviderOutput, ProviderError> {
         let prompt = latest_user_message(&messages);
+        if is_route_json_request(&messages) {
+            return Ok(ProviderOutput::new(route_chat_response_text(prompt)));
+        }
         Ok(ProviderOutput::new(stub_response_text(prompt)))
     }
 }
@@ -118,11 +122,30 @@ fn visible_user_prompt(prompt: &str) -> &str {
         .unwrap_or_else(|| prompt.trim())
 }
 
+fn is_route_json_request(messages: &[ChatMessage]) -> bool {
+    messages.iter().any(|message| {
+        matches!(message.role, ChatRole::System)
+            && message
+                .content
+                .contains("Return exactly one compact JSON object")
+            && (message.content.contains("Use {\"route\":\"chat\"")
+                || message.content.contains("routing schema"))
+    })
+}
+
 fn stub_response_text(prompt: &str) -> String {
     format!(
         "stub provider response (no-network) to: {}. No live provider call was made.",
         prompt.trim()
     )
+}
+
+fn route_chat_response_text(prompt: &str) -> String {
+    json!({
+        "route": "chat",
+        "content": stub_response_text(prompt),
+    })
+    .to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,7 +159,7 @@ pub struct ProviderStubResponse {
 #[cfg(test)]
 mod tests {
     use super::ProviderStub;
-    use crate::provider::{ControllerProvider, ProviderRequestMetadata};
+    use crate::provider::{ChatMessage, ControllerProvider, ProviderRequestMetadata};
 
     #[test]
     fn stub_tool_request_does_not_infer_tool_calls_from_text() {
@@ -158,5 +181,24 @@ mod tests {
 
         assert_eq!(output.tool_calls.len(), 0);
         assert!(output.text.contains("hello"));
+    }
+
+    #[test]
+    fn stub_route_request_returns_json_chat_response() {
+        let output = ProviderStub::default()
+            .chat_messages_with_metadata(
+                vec![
+                    ChatMessage::system(
+                        "Return exactly one compact JSON object using the routing schema.",
+                    ),
+                    ChatMessage::user("hello"),
+                ],
+                &ProviderRequestMetadata::new("stub-provider", None, "request-1"),
+            )
+            .unwrap();
+
+        assert!(output.tool_calls.is_empty());
+        assert!(output.text.contains("\"route\":\"chat\""));
+        assert!(output.text.contains("No live provider call was made."));
     }
 }

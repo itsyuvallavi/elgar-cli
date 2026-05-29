@@ -292,10 +292,16 @@ impl ControllerProvider for ScriptedToolProvider {
         messages: Vec<ChatMessage>,
         _metadata: &ProviderRequestMetadata,
     ) -> Result<ProviderOutput, ProviderError> {
-        Ok(ProviderOutput::new(format!(
-            "scripted provider response to: {}",
-            latest_user_message(&messages).trim()
-        )))
+        Ok(ProviderOutput::new(
+            serde_json::json!({
+                "route": "chat",
+                "content": format!(
+                    "scripted provider response to: {}",
+                    latest_user_message(&messages).trim()
+                )
+            })
+            .to_string(),
+        ))
     }
 
     fn chat_messages_with_tools_with_metadata(

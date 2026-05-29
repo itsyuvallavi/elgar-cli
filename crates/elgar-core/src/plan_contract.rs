@@ -214,6 +214,9 @@ impl PlanContract {
             match check.kind {
                 PlanVerificationCheckKind::PathExists { path }
                 | PlanVerificationCheckKind::TestPath { path } => {
+                    if path == self.source_plan_path {
+                        continue;
+                    }
                     if !scope_contains_referenced_path(&scope_paths, &path, &self.project_root) {
                         issues.push(PlanContractDraftIssue {
                             severity: PlanContractDraftIssueSeverity::Blocking,
@@ -384,6 +387,13 @@ fn markdown_heading_matches(current: &str, expected: &str) -> bool {
                     | "verification approach"
                     | "verification strategy"
                     | "verification checks"
+                    | "verification and acceptance criteria"
+                    | "verification & acceptance criteria"
+            ))
+        || (expected == "acceptance criteria"
+            && matches!(
+                current,
+                "verification and acceptance criteria" | "verification & acceptance criteria"
             ))
 }
 
@@ -429,7 +439,7 @@ fn verification_checks_from_items(
     project_root: &Path,
 ) -> Vec<PlanVerificationCheck> {
     let mut checks = Vec::new();
-    for item in verification_steps.iter().chain(acceptance_criteria.iter()) {
+    for item in verification_steps {
         for path in referenced_scope_paths(item, project_root) {
             let kind = if references_test_command_for_path(item, &path) {
                 PlanVerificationCheckKind::TestPath { path }
@@ -439,6 +449,15 @@ fn verification_checks_from_items(
             push_verification_check(&mut checks, kind, item);
         }
 
+        for module in python_module_references(item) {
+            push_verification_check(
+                &mut checks,
+                PlanVerificationCheckKind::PythonModule { module },
+                item,
+            );
+        }
+    }
+    for item in acceptance_criteria {
         for module in python_module_references(item) {
             push_verification_check(
                 &mut checks,
@@ -909,6 +928,49 @@ mod tests {
         assert_eq!(
             contract.scope.acceptance_criteria,
             vec!["The Vite app starts successfully."]
+        );
+        assert!(contract.review_draft().is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_contract_accepts_combined_verification_acceptance_heading() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-combined-review-heading-{}",
+            std::process::id()
+        ));
+        let project = root.join("combined-review-plan-test");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n```text\nREADME.md\nsrc/main.py\n```\n\n## Verification and Acceptance Criteria\n- `README.md` explains usage.\n- `src/main.py` runs without syntax errors.\n",
+        )
+        .unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![project.join("README.md"), project.join("src/main.py")],
+        };
+
+        let contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+
+        assert_eq!(
+            contract.scope.verification_steps,
+            vec![
+                "`README.md` explains usage.",
+                "`src/main.py` runs without syntax errors."
+            ]
+        );
+        assert_eq!(
+            contract.scope.acceptance_criteria,
+            contract.scope.verification_steps
         );
         assert!(contract.review_draft().is_approvable());
 
@@ -1436,6 +1498,98 @@ mod tests {
         assert!(review.issues.iter().any(|issue| {
             issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
                 && issue.path.as_ref() == Some(&project.join("src/tasktracker/cli.py"))
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_allows_plan_file_self_reference() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-review-plan-self-reference-{}",
+            std::process::id()
+        ));
+        let project = root.join("self-reference-plan-test");
+        let plan_path = project.join("PLAN.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n## Verification\n- `README.md` exists.\n\n## Acceptance Criteria\n- The plan file itself (`PLAN.md`) documents the structure.\n",
+        )
+        .unwrap();
+        let contract = PlanContract {
+            id: "contract-plan-self-reference".to_string(),
+            source_plan_path: plan_path.clone(),
+            project_root: project.clone(),
+            source_action_id: Some("action-plan".to_string()),
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: Vec::new(),
+                allowed_files: vec![project.join("README.md")],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec!["`README.md` exists.".to_string()],
+                verification_checks: Vec::new(),
+                acceptance_criteria: vec![
+                    "The plan file itself (`PLAN.md`) documents the structure.".to_string(),
+                ],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+
+        let review = contract.review_draft();
+
+        assert!(review
+            .issues
+            .iter()
+            .all(|issue| issue.path.as_ref() != Some(&plan_path)));
+        assert!(review.is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_does_not_block_runtime_data_file_in_acceptance_criteria() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-review-runtime-data-reference-{}",
+            std::process::id()
+        ));
+        let project = root.join("runtime-data-plan-test");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n## Verification\n- `README.md` exists.\n\n## Acceptance Criteria\n- The app stores tasks in `tasks.json` during normal use.\n",
+        )
+        .unwrap();
+        let contract = PlanContract {
+            id: "contract-runtime-data-reference".to_string(),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            source_action_id: Some("action-plan".to_string()),
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: Vec::new(),
+                allowed_files: vec![project.join("README.md")],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec!["`README.md` exists.".to_string()],
+                verification_checks: Vec::new(),
+                acceptance_criteria: vec![
+                    "The app stores tasks in `tasks.json` during normal use.".to_string(),
+                ],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+
+        let review = contract.review_draft();
+
+        assert!(review.is_approvable());
+        assert!(!review.issues.iter().any(|issue| {
+            issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
+                && issue.path.as_ref() == Some(&project.join("tasks.json"))
         }));
 
         let _ = fs::remove_dir_all(root);

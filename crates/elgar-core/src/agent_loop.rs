@@ -63,12 +63,18 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
 );
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "You are Elgar. No tools yet. ",
-    "Reply briefly for text-only turns. ",
-    "Return JSON only for routing: {\"route\":\"execute\"} for filesystem/shell/artifact work; ",
+    "Return exactly one compact JSON object for every input; no prose outside JSON. ",
+    "Use {\"route\":\"chat\",\"content\":\"...\"} only when no filesystem, shell, artifact, plan, or project work is requested. ",
+    "Use {\"route\":\"execute\"} for filesystem/shell/artifact/plan/project work; ",
     "{\"route\":\"execute\",\"intent\":\"plan_execution\"} for plan execution; ",
     "{\"route\":\"state\",\"answer_kind\":\"...\"} for verified-state inspection; ",
     "{\"route\":\"ask_guidance\",\"question\":\"...\"} if a required detail is missing. ",
-    "Runtime supplies verified context after routing. Do not claim completed work."
+    "Do not draft artifacts in this no-tool routing step. Runtime supplies verified context after routing. Do not claim completed work."
+);
+const AGENT_ROUTE_JSON_REPAIR_PROMPT: &str = concat!(
+    "The previous no-tool routing response was not valid route JSON. ",
+    "Return exactly one compact JSON object for the original user request using the routing schema. ",
+    "Do not answer in prose and do not draft artifacts."
 );
 const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
     "The previous tool-enabled provider request returned no usable response. ",
@@ -585,7 +591,7 @@ where
         Ok(output) => {
             let assistant_text = output.text.clone();
             push_provider_finished(session, request.provider, request.request_id, output);
-            handle_plain_agent_decision(provider, session, input, assistant_text, true)
+            handle_plain_agent_decision(provider, session, input, assistant_text, true, true)
         }
         Err(error) => {
             session.push_event(Event::Error(ErrorEvent::new(format!(
@@ -626,11 +632,46 @@ where
         Ok(output) => {
             let assistant_text = output.text.clone();
             push_provider_finished(session, request.provider, request.request_id, output);
-            handle_plain_agent_decision(provider, session, input, assistant_text, false)
+            handle_plain_agent_decision(provider, session, input, assistant_text, false, true)
         }
         Err(error) => {
             session.push_event(Event::Error(ErrorEvent::new(format!(
                 "{} provider context retry request {} failed: {error}",
+                request.provider, request.request_id
+            ))));
+            PlainAgentChatOutcome::Finished
+        }
+    }
+}
+
+fn retry_plain_agent_chat_for_route_json<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+) -> PlainAgentChatOutcome
+where
+    P: ControllerProvider,
+{
+    let request = provider.request_metadata();
+    session.push_event(Event::ProviderStarted(
+        ProviderStarted::new(request.provider.clone(), request.request_id.clone())
+            .with_request_details(request.model.clone(), "plain_route_retry", 0),
+    ));
+    let messages = vec![
+        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
+        ChatMessage::system(AGENT_ROUTE_JSON_REPAIR_PROMPT),
+        ChatMessage::user(input),
+    ];
+
+    match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
+        Ok(output) => {
+            let assistant_text = output.text.clone();
+            push_provider_finished(session, request.provider, request.request_id, output);
+            handle_plain_agent_decision(provider, session, input, assistant_text, false, false)
+        }
+        Err(error) => {
+            session.push_event(Event::Error(ErrorEvent::new(format!(
+                "{} provider route retry request {} failed: {error}",
                 request.provider, request.request_id
             ))));
             PlainAgentChatOutcome::Finished
@@ -644,6 +685,7 @@ fn handle_plain_agent_decision<P>(
     input: &str,
     assistant_text: String,
     allow_context_retry: bool,
+    allow_route_retry: bool,
 ) -> PlainAgentChatOutcome
 where
     P: ControllerProvider,
@@ -698,11 +740,19 @@ where
             PlainAgentChatOutcome::Finished
         }
         None => {
-            session.record_reasoning_route("chat");
+            if allow_route_retry {
+                session.push_reasoning_model_decision(
+                    "normal turn decision did not return structured JSON; retrying route JSON",
+                );
+                return retry_plain_agent_chat_for_route_json(provider, session, input);
+            }
+            session.record_reasoning_route("ask_guidance");
             session.push_reasoning_model_decision(
-                "normal turn decision did not return structured JSON; treated as chat",
+                "normal turn decision did not return structured JSON after retry",
             );
-            push_plain_provider_message_if_visible(session, assistant_text);
+            session.push_event(Event::Error(ErrorEvent::new(
+                "Model routing response was not valid JSON; no filesystem action was applied.",
+            )));
             PlainAgentChatOutcome::Finished
         }
     }
@@ -4818,7 +4868,9 @@ mod tests {
             Self {
                 requests: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                 plain_outputs: std::sync::Arc::new(std::sync::Mutex::new(vec![
-                    crate::event::ProviderOutput::new("Plain answer."),
+                    crate::event::ProviderOutput::new(
+                        "{\"route\":\"chat\",\"content\":\"Plain answer.\"}",
+                    ),
                 ])),
                 tool_output: crate::event::ProviderOutput::new("I'll create it."),
             }
@@ -4848,10 +4900,11 @@ mod tests {
             if outputs.len() > 1 {
                 outputs.remove(0)
             } else {
-                outputs
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| crate::event::ProviderOutput::new("Plain answer."))
+                outputs.first().cloned().unwrap_or_else(|| {
+                    crate::event::ProviderOutput::new(
+                        "{\"route\":\"chat\",\"content\":\"Plain answer.\"}",
+                    )
+                })
             }
         }
     }
@@ -4930,7 +4983,7 @@ mod tests {
             assert_eq!(requests[0].tool_count, 0);
             assert_eq!(requests[0].messages.last(), Some(&ChatMessage::user(input)));
             let joined = joined_request_messages(&requests[0]);
-            assert!(joined.len() <= 520, "plain route prompt grew: {joined}");
+            assert!(joined.len() <= 700, "plain route prompt grew: {joined}");
             assert!(!joined.contains("latest verified folder"));
             assert!(!joined.contains("latest verified plan"));
             assert!(!joined.contains("Verified filesystem context"));
@@ -4995,6 +5048,75 @@ mod tests {
                         if path.ends_with("model-selected-folder")
                 )
         )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unstructured_route_response_retries_json_before_accepting_chat() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-route-json-repair",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new(
+                    "# Project Plan\n\n```text\nRepairPlan/\nREADME.md\n```\n\n## Verification\n- Check files.\n\n## Acceptance Criteria\n- Files exist.\n",
+                ),
+                crate::event::ProviderOutput::new("{\"route\":\"execute\"}"),
+            ])
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating only the plan.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "route-repair-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "RepairPlan/PLAN.md",
+                            "contents": "# Project Plan\n\n```text\nREADME.md\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Check README.md, src/main.py, and requirements.txt exist after execution.\n\n## Acceptance Criteria\n- The project matches the listed file tree.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create only a project plan for a tiny app",
+        );
+
+        assert!(root.join("RepairPlan/PLAN.md").is_file());
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[0].tool_count, 0);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].tool_count, 0);
+        assert!(
+            joined_request_messages(&requests[1])
+                .contains("previous no-tool routing response was not valid route JSON")
+                || joined_request_messages(&requests[1])
+                    .contains("Previous no-tool routing response was not valid route JSON")
+        );
+        assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
+        assert!(requests[2].tool_count > 0);
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.content.contains("# Project Plan")
+                    && message.source == AssistantMessageSource::Provider
+        )));
+        let trace = session
+            .latest_reasoning_trace()
+            .expect("reasoning trace should exist");
+        assert!(trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains("retrying route JSON")));
+        assert_eq!(trace.route.as_deref(), Some("plan_creation"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -5196,8 +5318,9 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let provider = CapturingProvider::new()
-            .with_plain_output(crate::event::ProviderOutput::new("Hello there."));
+        let provider = CapturingProvider::new().with_plain_output(
+            crate::event::ProviderOutput::new("{\"route\":\"chat\",\"content\":\"Hello there.\"}"),
+        );
         let mut session = Session::new("session", &root, &root);
 
         run_permissive_agent_turn(&provider, &mut session, "hello");
@@ -5212,8 +5335,8 @@ mod tests {
             .contains("{\"route\":\"execute\"}"));
         assert!(requests[0].messages[0]
             .content
-            .contains("Reply briefly for text-only turns"));
-        assert!(requests[0].messages[0].content.len() <= 520);
+            .contains("Return exactly one compact JSON object"));
+        assert!(requests[0].messages[0].content.len() <= 700);
         assert!(!requests[0].messages[0].content.contains("Use `/tool"));
         assert!(session.events().iter().any(|event| matches!(
             event,
@@ -5238,8 +5361,9 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("remembered")).unwrap();
-        let provider =
-            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new("Hello."));
+        let provider = CapturingProvider::new().with_plain_output(
+            crate::event::ProviderOutput::new("{\"route\":\"chat\",\"content\":\"Hello.\"}"),
+        );
         let mut session = Session::new("session", &root, &root);
         let folder_action = Action::proposed(
             "action-folder",
@@ -5584,7 +5708,9 @@ mod tests {
         )
         .unwrap();
         let provider = CapturingProvider::new()
-            .with_plain_output(crate::event::ProviderOutput::new("Ok."))
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"chat\",\"content\":\"Ok.\"}",
+            ))
             .with_tool_output(
                 crate::event::ProviderOutput::new("Creating project files.").with_tool_calls(vec![
                     RawModelToolCall {

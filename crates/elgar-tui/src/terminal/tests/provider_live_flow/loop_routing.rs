@@ -104,7 +104,13 @@ fn terminal_loop_normal_action_like_text_stays_plain_without_tools() {
             _messages: Vec<ChatMessage>,
             _metadata: &ProviderRequestMetadata,
         ) -> Result<ProviderOutput, ProviderError> {
-            Ok(ProviderOutput::new("plain runtime response"))
+            Ok(ProviderOutput::new(
+                serde_json::json!({
+                    "route": "chat",
+                    "content": "plain runtime response"
+                })
+                .to_string(),
+            ))
         }
 
         fn chat_messages_with_tools_with_metadata(
@@ -616,7 +622,11 @@ fn terminal_loop_explicit_desktop_folder_guidance_prose_does_not_mutate_without_
 
         fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
             Ok(ProviderOutput::new(
-                "Do you want the folder created in your home Desktop directory?",
+                serde_json::json!({
+                    "route": "chat",
+                    "content": "Do you want the folder created in your home Desktop directory?"
+                })
+                .to_string(),
             ))
         }
 

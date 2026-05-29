@@ -924,8 +924,10 @@ mod tests {
         }
 
         fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
-            Ok(ProviderOutput::new("visible answer")
-                .with_thinking("Internal reasoning should stay hidden."))
+            Ok(
+                ProviderOutput::new("{\"route\":\"chat\",\"content\":\"visible answer\"}")
+                    .with_thinking("Internal reasoning should stay hidden."),
+            )
         }
 
         fn chat_messages_with_metadata(

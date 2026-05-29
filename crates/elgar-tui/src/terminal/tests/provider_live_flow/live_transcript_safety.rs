@@ -15,7 +15,21 @@ fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_sa
         }
 
         fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
-            Ok(ProviderOutput::new("Provider suggests creating hidden.py"))
+            Ok(ProviderOutput::new(
+                serde_json::json!({
+                    "route": "chat",
+                    "content": "Provider suggests creating hidden.py"
+                })
+                .to_string(),
+            ))
+        }
+
+        fn chat_messages_with_metadata(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+        ) -> Result<ProviderOutput, ProviderError> {
+            self.chat("")
         }
 
         fn chat_with_tools_with_metadata(
@@ -214,11 +228,21 @@ fn terminal_provider_visible_transcript_keeps_plain_tool_like_prose_without_exec
             let user_request = latest_user_message(&messages);
             if user_request.contains("show tool chatter") {
                 return Ok(ProviderOutput::new(
-                    "Use create_file tool. Provide tool calls. Create files: package.json?",
+                    serde_json::json!({
+                        "route": "chat",
+                        "content": "Use create_file tool. Provide tool calls. Create files: package.json?"
+                    })
+                    .to_string(),
                 ));
             }
 
-            Ok(ProviderOutput::new("Here is the useful provider answer."))
+            Ok(ProviderOutput::new(
+                serde_json::json!({
+                    "route": "chat",
+                    "content": "Here is the useful provider answer."
+                })
+                .to_string(),
+            ))
         }
 
         fn chat_with_tools_with_metadata(
