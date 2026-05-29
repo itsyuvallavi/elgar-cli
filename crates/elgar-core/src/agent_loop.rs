@@ -985,6 +985,13 @@ where
                 );
                 return retry_plain_agent_chat_for_route_json(provider, session, input);
             }
+            if looks_like_misrouted_artifact_chat_after_retry(&assistant_text) {
+                session.record_reasoning_route("execute");
+                session.push_reasoning_model_decision(
+                    "normal turn decision returned raw artifact-like text after retry; routed to execute",
+                );
+                return PlainAgentChatOutcome::Execute(AgentExecutionIntent::default());
+            }
             session.record_reasoning_route("ask_guidance");
             session.push_reasoning_model_decision(
                 "normal turn decision did not return structured JSON after retry",
@@ -6806,6 +6813,83 @@ mod tests {
             .model_decisions
             .iter()
             .any(|line| line.contains("compact artifact-like chat after retry")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn raw_artifact_text_after_route_retry_executes_instead_of_erroring() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-raw-artifact-after-route-retry",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let artifact_markdown = format!(
+            "{}\n{}",
+            r#"Project Plan - Tiny Notes CLI
+
+File tree:
+playground/RawArtifactRetryPlan/
+├── README.md
+├── requirements.txt
+└── src/
+    └── main.py
+
+Verification:
+- Check that README.md exists.
+- Check that requirements.txt exists.
+- Check that src/main.py exists.
+
+Acceptance Criteria:
+- The plan file exists.
+- The future implementation files are listed.
+"#,
+            "The README should document installation, usage, verification, and acceptance criteria for the future implementation.\n".repeat(8)
+        );
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new("I will draft the project plan."),
+                crate::event::ProviderOutput::new(artifact_markdown),
+            ])
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating only the plan file.")
+                    .with_tool_calls(vec![RawModelToolCall {
+                        id: "raw-artifact-retry-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "playground/RawArtifactRetryPlan/PLAN.md",
+                            "contents": "# Raw Artifact Retry Plan\n\n```text\nREADME.md\nrequirements.txt\nsrc/main.py\n```\n\n## Verification\n- Check expected files.\n\n## Acceptance Criteria\n- Expected files are listed.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    }]),
+            );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create only a project plan for a tiny notes cli",
+        );
+
+        assert!(root
+            .join("playground/RawArtifactRetryPlan/PLAN.md")
+            .is_file());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::Error(error)
+                if error
+                    .message
+                    .contains("Model routing response was not valid JSON")
+        )));
+        let trace = session
+            .latest_reasoning_trace()
+            .expect("reasoning trace should exist");
+        assert_eq!(trace.route.as_deref(), Some("plan_creation"));
+        assert!(trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains("raw artifact-like text after retry")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
