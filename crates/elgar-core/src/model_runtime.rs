@@ -181,7 +181,7 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
         ),
         model_tool_definition(
             ModelToolName::ShellCommand,
-            "Draft a shell command for explicit review before execution.",
+            "Draft a shell command for explicit review before execution. For compile, test, lint, or verification commands, rely on exit status and optional expected_effect; do not use expected_file for generated caches or bytecode artifacts.",
             object_parameters(
                 &[
                     (
@@ -201,7 +201,9 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
                     ),
                     (
                         "expected_effect",
-                        string_property("Optional expected command effect."),
+                        string_property(
+                            "Optional expected command effect. Use this for compile/test/lint verification when exit status is the proof.",
+                        ),
                     ),
                     (
                         "risk_notes",
@@ -209,7 +211,9 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
                     ),
                     (
                         "expected_file",
-                        string_property("Optional project-relative file expected after execution."),
+                        string_property(
+                            "Optional durable project-relative file expected after execution. Do not use for generated caches, Python bytecode, or other unstable verification artifacts.",
+                        ),
                     ),
                     (
                         "expected_directory",
@@ -867,6 +871,7 @@ mod tests {
     use crate::action::{
         ActionRequest, SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS, SHELL_COMMAND_MAX_TIMEOUT_SECONDS,
     };
+    use crate::provider::ChatToolDefinition;
 
     #[test]
     fn model_tool_name_serde_names_roundtrip() {
@@ -1018,6 +1023,23 @@ mod tests {
         assert!(schema["properties"].get("risk_notes").is_some());
         assert!(schema["properties"].get("expected_file").is_some());
         assert!(schema["properties"].get("expected_directory").is_some());
+    }
+
+    #[test]
+    fn shell_command_tool_schema_steers_verification_away_from_cache_files() {
+        let definition = tool_definition("shell_command");
+        assert!(definition
+            .function
+            .description
+            .contains("compile, test, lint, or verification"));
+
+        let schema = definition.function.parameters;
+        assert!(schema["properties"]["expected_effect"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("exit status is the proof")));
+        assert!(schema["properties"]["expected_file"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("Do not use for generated caches")));
     }
 
     #[test]
@@ -1332,12 +1354,14 @@ mod tests {
     }
 
     fn tool_parameters(name: &str) -> serde_json::Value {
+        tool_definition(name).function.parameters
+    }
+
+    fn tool_definition(name: &str) -> ChatToolDefinition {
         elgar_model_tool_definitions()
             .into_iter()
             .find(|definition| definition.function.name == name)
             .unwrap_or_else(|| panic!("missing tool definition {name}"))
-            .function
-            .parameters
     }
 
     fn required_names(schema: &serde_json::Value) -> Vec<&str> {

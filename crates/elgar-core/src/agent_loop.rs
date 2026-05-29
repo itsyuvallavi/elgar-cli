@@ -56,6 +56,7 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "If the user asks you to choose, choose a reasonable option and continue the prior request. ",
     "If the user asks for a plan and says to share it before implementation, create or update a plan file and summarize it; do not implement project files until asked. ",
     "If the user asks to create only a plan file with a future file tree, create only that plan file; do not ask whether to create the listed future files. ",
+    "If the user requests planning and implementation in the same turn, create the plan file first, then implement the planned files. ",
     "Plan files must include a concrete file tree, a Verification section, and an Acceptance Criteria section before implementation. ",
     "Verified plans guide runtime validation but do not make completed files immutable; if the user requests an edit under a verified plan root, use the appropriate file tool and let runtime validation, policy, and executors decide. ",
     "If the user asks what the plan is, summarize the existing plan; do not implement it. ",
@@ -70,7 +71,7 @@ const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "{\"route\":\"execute\"}=local file/shell/artifact/plan work. ",
     "{\"route\":\"chat\",\"content\":\"...\"}=text only. ",
     "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=apply an existing verified plan. ",
-    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=both create/update a plan and implement files now. ",
+    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=the request requires both a plan artifact and implementation/execution in this turn. ",
     "For plan-only work, use execute without that intent. ",
     "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified-state inspection. ",
     "{\"route\":\"ask_guidance\",\"question\":\"...\"}=missing required detail. ",
@@ -2985,6 +2986,14 @@ mod tests {
             self.messages.lock().unwrap().push(messages);
             Ok(self.outputs.lock().unwrap().remove(0))
         }
+    }
+
+    #[test]
+    fn agent_prompts_describe_plan_artifact_before_same_turn_execution() {
+        assert!(AGENT_SYSTEM_PROMPT
+            .contains("create the plan file first, then implement the planned files"));
+        assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT
+            .contains("both a plan artifact and implementation/execution"));
     }
 
     #[test]
