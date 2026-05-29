@@ -385,7 +385,6 @@ where
             resolved_outputs,
             plan_created_this_turn,
             plan_creation_repair_in_progress,
-            intent.plan_execution,
         );
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
         let plan_execution_batch =
@@ -497,13 +496,6 @@ where
                         plan_created_this_turn = true;
                         plan_creation_repair_in_progress =
                             latest_plan_contract_needs_repair(session);
-                        if intent.plan_execution && !plan_creation_repair_in_progress {
-                            plan_execution_in_progress = true;
-                            session.push_reasoning_runtime_check(
-                                "new verified plan created during plan execution turn",
-                            );
-                            session.mark_latest_structured_project_plan_executing();
-                        }
                         if plan_creation_repair_in_progress {
                             messages
                                 .push(ChatMessage::system(plan_creation_repair_message(session)));
@@ -538,7 +530,6 @@ where
         if plan_created_this_turn
             && !plan_creation_repair_in_progress
             && !plan_execution_in_progress
-            && !tool_results_need_provider_followup
         {
             session.push_reasoning_runtime_check(
                 "plan creation completed; skipped final provider synthesis",
@@ -987,7 +978,6 @@ fn guard_plan_creation_tool_outputs(
     outputs: Vec<ResolvedAgentToolOutput>,
     plan_created_this_turn: bool,
     plan_creation_repair_in_progress: bool,
-    allow_implementation_after_plan_creation: bool,
 ) -> Vec<ResolvedAgentToolOutput> {
     if plan_creation_repair_in_progress {
         return outputs
@@ -1034,7 +1024,7 @@ fn guard_plan_creation_tool_outputs(
         .map(|output| match output {
             ResolvedAgentToolOutput::Action(action)
                 if (plan_created_this_turn || plan_creation_repair_in_progress)
-                    && !allow_implementation_after_plan_creation =>
+            =>
             {
                 ResolvedAgentToolOutput::Skipped {
                     tool_call_id: action.tool_call_id,
@@ -1067,11 +1057,8 @@ fn guard_plan_creation_tool_outputs(
                 ResolvedAgentToolOutput::Skipped {
                     tool_call_id: action.tool_call_id,
                     message: "Skipped extra implementation tool calls in this plan-creation turn. Ask to execute the verified plan when you want to apply it.".to_string(),
-                    visible: !allow_implementation_after_plan_creation,
+                    visible: true,
                 }
-            }
-            ResolvedAgentToolOutput::Action(action) if allow_implementation_after_plan_creation => {
-                ResolvedAgentToolOutput::Action(action)
             }
             ResolvedAgentToolOutput::Action(action) => ResolvedAgentToolOutput::Skipped {
                 tool_call_id: action.tool_call_id,
@@ -2879,7 +2866,7 @@ mod tests {
                     .message
                     .contains("Provider did not return the required filesystem tool calls")
         )));
-        assert_eq!(provider.messages.lock().unwrap().len(), 2);
+        assert_eq!(provider.messages.lock().unwrap().len(), 1);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -5819,7 +5806,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_text_plan_execution_intent_can_create_plan_and_expected_files() {
+    fn newly_created_plan_is_not_executed_in_same_turn_even_with_execution_intent() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plan-execution-intent",
             std::process::id()
@@ -5888,16 +5875,16 @@ mod tests {
         run_permissive_agent_turn(&provider, &mut session, "execute the plan you just created");
 
         assert!(root.join("CalculatorUI/plan.md").is_file());
-        assert!(root.join("CalculatorUI/README.md").is_file());
-        assert!(root.join("CalculatorUI/calculator.py").is_file());
-        assert!(root.join("CalculatorUI/ui.py").is_file());
+        assert!(!root.join("CalculatorUI/README.md").exists());
+        assert!(!root.join("CalculatorUI/calculator.py").exists());
+        assert!(!root.join("CalculatorUI/ui.py").exists());
         let plan = session
             .project_memory()
             .latest_structured_plan()
             .expect("plan should be recorded");
         assert_eq!(
             plan.status,
-            crate::session::StructuredProjectPlanStatus::Completed
+            crate::session::StructuredProjectPlanStatus::Verified
         );
         let trace = session
             .latest_reasoning_trace()
@@ -5906,10 +5893,15 @@ mod tests {
             .model_decisions
             .iter()
             .any(|line| line.contains("execute intent plan_execution")));
-        assert!(trace
-            .runtime_checks
-            .iter()
-            .any(|line| line.contains("new verified plan created during plan execution turn")));
+        assert!(
+            trace
+                .runtime_checks
+                .iter()
+                .any(|line| line
+                    .contains("plan creation completed; skipped final provider synthesis"))
+        );
+        assert!(trace.runtime_checks.iter().any(|line| line
+            .contains("Skipped extra implementation tool calls in this plan-creation turn")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

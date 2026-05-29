@@ -99,7 +99,9 @@ fn record_verified_plan_memory(session: &mut Session, action_id: &str, path: Pat
 
 fn structured_plan_from_verified_plan(reference: &VerifiedPlanReference) -> StructuredProjectPlan {
     let (expected_directories, expected_files) = fs::read_to_string(&reference.path)
-        .map(|contents| extract_expected_plan_paths(&contents, &reference.project_root))
+        .map(|contents| {
+            extract_expected_plan_paths(&contents, &reference.project_root, &reference.path)
+        })
         .unwrap_or_else(|_| (Vec::new(), Vec::new()));
 
     StructuredProjectPlan {
@@ -116,6 +118,7 @@ fn structured_plan_from_verified_plan(reference: &VerifiedPlanReference) -> Stru
 fn extract_expected_plan_paths(
     contents: &str,
     project_root: &Path,
+    source_plan_path: &Path,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut expected_directories = Vec::new();
     let mut expected_files = Vec::new();
@@ -140,6 +143,7 @@ fn extract_expected_plan_paths(
             plain_indent_stack.push((0, root_path.clone()));
             push_plan_path(
                 project_root,
+                source_plan_path,
                 root_path,
                 PlanPathKind::Directory,
                 &mut expected_directories,
@@ -153,6 +157,7 @@ fn extract_expected_plan_paths(
         if let Some((path, kind)) = tree_path_from_line(line, &mut tree_stack, infer_directory) {
             push_plan_path(
                 project_root,
+                source_plan_path,
                 path,
                 kind,
                 &mut expected_directories,
@@ -168,6 +173,7 @@ fn extract_expected_plan_paths(
         {
             push_plan_path(
                 project_root,
+                source_plan_path,
                 path,
                 kind,
                 &mut expected_directories,
@@ -179,6 +185,7 @@ fn extract_expected_plan_paths(
         if let Some((path, kind)) = inline_path_from_line(line) {
             push_plan_path(
                 project_root,
+                source_plan_path,
                 path,
                 kind,
                 &mut expected_directories,
@@ -198,6 +205,7 @@ enum PlanPathKind {
 
 fn push_plan_path(
     project_root: &Path,
+    source_plan_path: &Path,
     path: PathBuf,
     kind: PlanPathKind,
     expected_directories: &mut Vec<PathBuf>,
@@ -206,6 +214,9 @@ fn push_plan_path(
     let Some(path) = resolve_plan_path(project_root, &path) else {
         return;
     };
+    if is_plan_self_reference(source_plan_path, &path) {
+        return;
+    }
 
     if matches!(kind, PlanPathKind::File) {
         push_parent_plan_directories(project_root, &path, expected_directories);
@@ -218,6 +229,13 @@ fn push_plan_path(
     if !bucket.contains(&path) {
         bucket.push(path);
     }
+}
+
+fn is_plan_self_reference(source_plan_path: &Path, candidate: &Path) -> bool {
+    let Some(source_name) = source_plan_path.file_name() else {
+        return false;
+    };
+    candidate.file_name() == Some(source_name) && is_plan_path(candidate)
 }
 
 fn push_parent_plan_directories(
@@ -1203,13 +1221,13 @@ mod tests {
             "tests/test_storage.py",
             "README.md",
             "pyproject.toml",
-            "plan.md",
         ] {
             assert!(
                 structured.expected_files.contains(&project.join(file)),
                 "missing file {file}"
             );
         }
+        assert!(!structured.expected_files.contains(&project.join("plan.md")));
         assert!(!structured
             .expected_files
             .iter()
@@ -1348,6 +1366,7 @@ mod tests {
         assert!(structured
             .expected_files
             .contains(&project.join("requirements.txt")));
+        assert!(!structured.expected_files.contains(&project.join("PLAN.md")));
         for dependency in ["click==8.1.7", "pathlib2==2.3.6"] {
             assert!(
                 !structured
@@ -1403,13 +1422,14 @@ mod tests {
         assert!(structured
             .expected_directories
             .contains(&project.join("src")));
-        for file in ["README.md", "src/main.py", "requirements.txt", "plan.md"] {
+        for file in ["README.md", "src/main.py", "requirements.txt"] {
             assert!(
                 structured.expected_files.contains(&project.join(file)),
                 "missing expected file {file}; got {:#?}",
                 structured.expected_files
             );
         }
+        assert!(!structured.expected_files.contains(&project.join("plan.md")));
         assert!(!structured
             .expected_files
             .iter()
