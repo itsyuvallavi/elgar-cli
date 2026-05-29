@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+project_dir="plain-memory-regression-$stamp"
+input_file="$playground/.dogfood-plain-memory-regression-$stamp.in"
+output_file="$playground/.dogfood-plain-memory-regression-$stamp.out"
+hello_tokens_file="$playground/.dogfood-plain-memory-regression-$stamp.hello-tokens"
+hello_reasoning_file="$playground/.dogfood-plain-memory-regression-$stamp.hello-reasoning"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+create only a project plan for a tiny Python CLI todo app inside a new folder named $project_dir. Do not implement it yet. The plan must include README.md, src/main.py, and requirements.txt, plus verification and acceptance criteria.
+/plan
+/memory
+hello
+/tokens
+/reasoning
+/exit
+EOF
+
+echo "==> running live plain-chat-after-memory dogfood"
+(
+  cd "$playground"
+  elgar tui <"$input_file"
+) | tee "$output_file"
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+
+[[ -d "$playground/$project_dir" ]] || fail "missing project directory $project_dir"
+find "$playground/$project_dir" -maxdepth 1 -iname '*plan*.md' -type f | grep -q . \
+  || fail "missing plan markdown file"
+
+grep -q '^Plan Preview$' "$output_file" || fail "plan preview missing"
+grep -q "blocking issues: none" "$output_file" || fail "plan contract still has blocking issues"
+grep -q "verification:" "$output_file" || fail "verification section was not recognized"
+grep -q "acceptance criteria:" "$output_file" || fail "acceptance criteria section was not recognized"
+grep -q '^Memory$' "$output_file" || fail "memory output missing"
+grep -q "structured plans" "$output_file" || fail "structured plan memory missing"
+grep -q "$project_dir" "$output_file" || fail "transcript did not mention project directory"
+
+awk '
+  $0 == "> hello" { seen_hello = 1; next }
+  seen_hello && $0 == "Tokens" { capture = 1; block = $0 "\n"; next }
+  capture && $0 ~ /^> / { printf "%s", block; exit }
+  capture { block = block $0 "\n" }
+  END {
+    if (capture) {
+      printf "%s", block
+    }
+  }
+' "$output_file" >"$hello_tokens_file"
+
+grep -q '^Tokens$' "$hello_tokens_file" || fail "tokens output after hello missing"
+grep -q "last turn requests:" "$hello_tokens_file" || fail "hello tokens missing request breakdown"
+grep -q "plain_chat" "$hello_tokens_file" || fail "hello did not use plain_chat"
+grep -q "tools 0" "$hello_tokens_file" || fail "hello attached tools"
+grep -q "tool calls no" "$hello_tokens_file" || fail "hello emitted tool calls"
+grep -q "tool_enabled" "$hello_tokens_file" && fail "hello used tool-enabled request"
+grep -q "plain_state_classifier" "$hello_tokens_file" && fail "hello used state classifier"
+
+awk '
+  $0 == "> hello" { seen_hello = 1; next }
+  seen_hello && $0 == "Reasoning" { capture = 1; block = $0 "\n"; next }
+  capture && $0 ~ /^> / { printf "%s", block; exit }
+  capture { block = block $0 "\n" }
+  END {
+    if (capture) {
+      printf "%s", block
+    }
+  }
+' "$output_file" >"$hello_reasoning_file"
+
+grep -q '^Reasoning$' "$hello_reasoning_file" || fail "reasoning output after hello missing"
+grep -q "provider prompt memory" "$hello_reasoning_file" \
+  && fail "plain hello reasoning shows injected prompt memory"
+
+echo "==> dogfood passed"
+echo "project: $playground/$project_dir"
+echo "transcript: $output_file"
