@@ -408,6 +408,8 @@ where
             resolve_agent_tool_outputs(outputs, &path_resolution),
         );
         let resolved_outputs = anchor_verified_plan_tool_outputs(session, resolved_outputs);
+        let resolved_outputs =
+            anchor_bare_plan_artifacts_to_batch_project_root(session, resolved_outputs);
         let resolved_outputs = guard_plan_creation_tool_outputs(
             session,
             resolved_outputs,
@@ -1121,6 +1123,201 @@ fn anchor_verified_plan_tool_outputs(
             }
         })
         .collect()
+}
+
+fn anchor_bare_plan_artifacts_to_batch_project_root(
+    session: &Session,
+    outputs: Vec<ResolvedAgentToolOutput>,
+) -> Vec<ResolvedAgentToolOutput> {
+    let Some(project_root) = infer_batch_project_root_for_bare_plan_artifact(session, &outputs)
+    else {
+        return outputs;
+    };
+
+    outputs
+        .into_iter()
+        .map(|output| match output {
+            ResolvedAgentToolOutput::Action(mut action) => {
+                action.request =
+                    anchor_bare_plan_artifact_request(session, action.request, &project_root);
+                action.target_label = action.request.approval_target();
+                ResolvedAgentToolOutput::Action(action)
+            }
+            other => other,
+        })
+        .collect()
+}
+
+fn infer_batch_project_root_for_bare_plan_artifact(
+    session: &Session,
+    outputs: &[ResolvedAgentToolOutput],
+) -> Option<PathBuf> {
+    for request in outputs.iter().filter_map(|output| match output {
+        ResolvedAgentToolOutput::Action(action)
+            if is_bare_plan_artifact_request(&action.request) =>
+        {
+            Some(&action.request)
+        }
+        ResolvedAgentToolOutput::Action(_)
+        | ResolvedAgentToolOutput::Guidance(_)
+        | ResolvedAgentToolOutput::Skipped { .. } => None,
+    }) {
+        if let Some(root) = infer_project_root_from_plan_artifact_contents(session, request) {
+            return Some(root);
+        }
+    }
+
+    common_batch_project_root(session, outputs)
+}
+
+fn is_bare_plan_artifact_request(request: &ActionRequest) -> bool {
+    let path = match request {
+        ActionRequest::CreateFile(action)
+            if is_plan_path_or_contents(&action.target_path, &action.contents) =>
+        {
+            &action.target_path
+        }
+        ActionRequest::OverwriteFile(action)
+            if is_plan_path_or_contents(&action.target_path, &action.contents) =>
+        {
+            &action.target_path
+        }
+        _ => return false,
+    };
+
+    !path.is_absolute() && path_has_no_meaningful_parent(path)
+}
+
+fn infer_project_root_from_plan_artifact_contents(
+    session: &Session,
+    request: &ActionRequest,
+) -> Option<PathBuf> {
+    let contents = match request {
+        ActionRequest::CreateFile(action) => &action.contents,
+        ActionRequest::OverwriteFile(action) => &action.contents,
+        ActionRequest::CreateDirectory(_)
+        | ActionRequest::PatchFile(_)
+        | ActionRequest::DeleteFile(_)
+        | ActionRequest::MoveFile(_)
+        | ActionRequest::ShellCommand(_) => return None,
+    };
+
+    contents.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("```")
+            || trimmed.starts_with('|')
+            || trimmed.contains("──")
+            || trimmed.chars().any(char::is_whitespace)
+            || !trimmed.ends_with('/')
+        {
+            return None;
+        }
+
+        let root = trimmed.trim_end_matches('/');
+        let path = Path::new(root);
+        if path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        }) {
+            return None;
+        }
+
+        let root = absolute_session_path(session, path);
+        (root != session.cwd && path_is_within(&root, &session.project_root)).then_some(root)
+    })
+}
+
+fn common_batch_project_root(
+    session: &Session,
+    outputs: &[ResolvedAgentToolOutput],
+) -> Option<PathBuf> {
+    let mut roots = outputs
+        .iter()
+        .filter_map(|output| match output {
+            ResolvedAgentToolOutput::Action(action)
+                if !is_bare_plan_artifact_request(&action.request) =>
+            {
+                batch_project_root_candidate(session, &action.request)
+            }
+            ResolvedAgentToolOutput::Action(_)
+            | ResolvedAgentToolOutput::Guidance(_)
+            | ResolvedAgentToolOutput::Skipped { .. } => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut common = roots.pop()?;
+    for root in roots {
+        common = common_path_prefix(&common, &root)?;
+    }
+
+    (common != session.cwd && path_is_within(&common, &session.project_root)).then_some(common)
+}
+
+fn batch_project_root_candidate(session: &Session, request: &ActionRequest) -> Option<PathBuf> {
+    let path = match request {
+        ActionRequest::CreateFile(action) => absolute_session_path(session, &action.target_path)
+            .parent()
+            .map(Path::to_path_buf),
+        ActionRequest::OverwriteFile(action) => absolute_session_path(session, &action.target_path)
+            .parent()
+            .map(Path::to_path_buf),
+        ActionRequest::CreateDirectory(action) => {
+            Some(absolute_session_path(session, &action.target_path))
+        }
+        ActionRequest::PatchFile(_)
+        | ActionRequest::DeleteFile(_)
+        | ActionRequest::MoveFile(_)
+        | ActionRequest::ShellCommand(_) => None,
+    }?;
+
+    if path == session.cwd {
+        return None;
+    }
+    path_is_within(&path, &session.project_root).then_some(path)
+}
+
+fn common_path_prefix(left: &Path, right: &Path) -> Option<PathBuf> {
+    let mut common = PathBuf::new();
+    for (left, right) in left.components().zip(right.components()) {
+        if left != right {
+            break;
+        }
+        common.push(left.as_os_str());
+    }
+    (!common.as_os_str().is_empty()).then_some(common)
+}
+
+fn anchor_bare_plan_artifact_request(
+    session: &Session,
+    request: ActionRequest,
+    project_root: &Path,
+) -> ActionRequest {
+    match request {
+        ActionRequest::CreateFile(mut action)
+            if path_has_no_meaningful_parent(&action.target_path) =>
+        {
+            action.target_path =
+                cwd_relative_path(session, &project_root.join(&action.target_path));
+            ActionRequest::CreateFile(action)
+        }
+        ActionRequest::OverwriteFile(mut action)
+            if path_has_no_meaningful_parent(&action.target_path) =>
+        {
+            action.target_path =
+                cwd_relative_path(session, &project_root.join(&action.target_path));
+            ActionRequest::OverwriteFile(action)
+        }
+        other => other,
+    }
+}
+
+fn path_has_no_meaningful_parent(path: &Path) -> bool {
+    path.parent()
+        .is_none_or(|parent| parent.as_os_str().is_empty())
 }
 
 fn guard_plan_creation_tool_outputs(
@@ -6535,6 +6732,94 @@ mod tests {
                 .latest_structured_plan()
                 .expect("plan should remain recorded")
                 .runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bare_plan_artifact_is_anchored_to_batch_project_root() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-bare-plan-batch-root",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating plan.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "bare-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "PLAN.md",
+                            "contents": "# Greeter Plan\n\n## File Tree\n```text\nplayground/GreeterCLI/\n├── README.md\n├── requirements.txt\n├── src/\n│   └── main.py\n└── tests/\n    └── test_main.py\n```\n\n## Verification\n- Run `python -m py_compile src/main.py tests/test_main.py`.\n\n## Acceptance Criteria\n- The greeter runs and tests pass.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Creating files.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "bare-plan-files".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                        arguments: json!({
+                            "directories": [
+                                "tests",
+                                "playground/GreeterCLI/src",
+                                "playground/GreeterCLI/tests"
+                            ],
+                            "files": [
+                                {
+                                    "target_path": "playground/GreeterCLI/README.md",
+                                    "contents": "# Greeter CLI\n"
+                                },
+                                {
+                                    "target_path": "playground/GreeterCLI/requirements.txt",
+                                    "contents": ""
+                                },
+                                {
+                                    "target_path": "playground/GreeterCLI/src/main.py",
+                                    "contents": "def main():\n    print('hello')\n\nif __name__ == '__main__':\n    main()\n"
+                                },
+                                {
+                                    "target_path": "playground/GreeterCLI/tests/test_main.py",
+                                    "contents": "def test_smoke():\n    assert True\n"
+                                }
+                            ]
+                        }),
+                        assistant_summary: Some("create files".to_string()),
+                    },
+                ]),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a greeter project in playground and execute it",
+        );
+
+        assert!(!root.join("PLAN.md").exists());
+        assert!(root.join("playground/GreeterCLI/PLAN.md").is_file());
+        for path in [
+            "playground/GreeterCLI/README.md",
+            "playground/GreeterCLI/requirements.txt",
+            "playground/GreeterCLI/src/main.py",
+            "playground/GreeterCLI/tests/test_main.py",
+        ] {
+            assert!(root.join(path).is_file(), "missing {path}");
+        }
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("anchored plan should be recorded");
+        assert_eq!(plan.project_root, root.join("playground/GreeterCLI"));
+        assert_eq!(
+            plan.runtime_status(),
             crate::session::StructuredProjectPlanStatus::Completed
         );
 
