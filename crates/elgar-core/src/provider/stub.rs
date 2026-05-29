@@ -124,11 +124,13 @@ fn visible_user_prompt(prompt: &str) -> &str {
 
 fn is_route_json_request(messages: &[ChatMessage]) -> bool {
     messages.iter().any(|message| {
+        let content = message.content.to_ascii_lowercase();
         matches!(message.role, ChatRole::System)
-            && message.content.contains("compact JSON object")
-            && (message.content.contains("Use chat")
-                || message.content.contains("Use {\"route\":\"chat\"")
-                || message.content.contains("routing schema"))
+            && content.contains("compact json object")
+            && (content.contains("default to {\"route\":\"chat\"")
+                || content.contains("use chat")
+                || content.contains("use {\"route\":\"chat\"")
+                || content.contains("routing schema"))
     })
 }
 

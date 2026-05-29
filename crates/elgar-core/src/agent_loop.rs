@@ -63,14 +63,15 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "After tools run, answer naturally and briefly with what happened."
 );
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
-    "You are Elgar. No tools yet. ",
+    "You are Elgar. ",
     "Return one compact JSON object; no prose. ",
-    "Use chat only when no filesystem, shell, artifact, plan, or project work is requested: {\"route\":\"chat\",\"content\":\"...\"}. ",
-    "Use {\"route\":\"execute\"} for filesystem/shell/artifact/plan/project work. ",
+    "Route by required capability; do not draft artifacts here. ",
+    "Use {\"route\":\"execute\"} when the request needs a persistent local change or verified filesystem, shell, artifact, plan, or project result. ",
+    "Use {\"route\":\"chat\",\"content\":\"...\"} only for text answers with no local side effect. ",
     "Use {\"route\":\"execute\",\"intent\":\"plan_execution\"} only when applying a plan now; plan-only creation/update is execute. ",
     "Use {\"route\":\"state\",\"answer_kind\":\"...\"} for verified-state inspection. ",
     "Use {\"route\":\"ask_guidance\",\"question\":\"...\"} if a required detail is missing. ",
-    "Do not draft artifacts here. Runtime supplies verified context after routing."
+    "Runtime supplies verified context after routing."
 );
 const AGENT_ROUTE_JSON_REPAIR_PROMPT: &str = concat!(
     "The previous no-tool routing response was not valid route JSON. ",
@@ -1970,8 +1971,6 @@ fn push_plain_provider_message_if_visible(session: &mut Session, message: impl I
 
 fn looks_like_raw_tool_protocol(message: &str) -> bool {
     [
-        "<|channel|>",
-        "<|message|>",
         "to=filesystem.",
         "filesystem.create",
         "filesystem.write",
@@ -5617,10 +5616,12 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
         assert_eq!(requests[0].tool_count, 0);
-        assert!(requests[0].messages[0].content.contains("No tools yet"));
         assert!(requests[0].messages[0]
             .content
             .contains("{\"route\":\"execute\"}"));
+        assert!(requests[0].messages[0]
+            .content
+            .contains("persistent local change"));
         assert!(requests[0].messages[0]
             .content
             .contains("Return one compact JSON object"));
@@ -5637,6 +5638,40 @@ mod tests {
             Event::AssistantMessage(message) if message.content.contains("\"route\"")
         )));
         assert!(session.actions().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wrapped_chat_route_does_not_trigger_tool_protocol_fallback() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-wrapped-chat-route",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "<|channel|>final<|message|>{\"route\":\"chat\",\"content\":\"Hello.\"}",
+            ));
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "hello");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content == "Hello."
+        )));
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::ProviderStarted(started)
+                if started.request_mode.as_deref() == Some("tool_enabled")
+        )));
 
         let _ = std::fs::remove_dir_all(&root);
     }

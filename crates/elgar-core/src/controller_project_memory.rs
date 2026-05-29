@@ -391,6 +391,7 @@ fn clean_plan_path_token_with_inference(
         || token == "."
         || token.contains("://")
         || token.contains("...")
+        || token.contains('=')
         || token.starts_with('$')
         || token.starts_with('~')
     {
@@ -476,7 +477,9 @@ fn resolve_plan_path(project_root: &Path, path: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    let path = if path
+    let path = if let Some(path) = strip_cwd_relative_project_root_prefix(project_root, path) {
+        project_root.join(path)
+    } else if path
         .components()
         .next()
         .and_then(|component| match component {
@@ -494,6 +497,38 @@ fn resolve_plan_path(project_root: &Path, path: &Path) -> Option<PathBuf> {
     };
 
     Some(path)
+}
+
+fn strip_cwd_relative_project_root_prefix(project_root: &Path, path: &Path) -> Option<PathBuf> {
+    let path_components = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(segment) => Some(segment.to_os_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let root_components = project_root
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(segment) => Some(segment.to_os_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    for prefix_len in (2..=path_components.len()).rev() {
+        if prefix_len > root_components.len() {
+            continue;
+        }
+        if root_components[root_components.len() - prefix_len..] == path_components[..prefix_len] {
+            let mut stripped = PathBuf::new();
+            for component in &path_components[prefix_len..] {
+                stripped.push(component);
+            }
+            return Some(stripped);
+        }
+    }
+
+    None
 }
 
 fn verified_directory_path(session: &Session, result: &VerifiedActionResult) -> Option<PathBuf> {
@@ -1262,6 +1297,126 @@ mod tests {
                 "unexpected snippet path {junk}"
             );
         }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extracts_file_tree_without_requirements_contents_as_files() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-requirements-content-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("ManualMemoryPlan1")).unwrap();
+        fs::write(
+            root.join("ManualMemoryPlan1/PLAN.md"),
+            "# ManualMemoryPlan1 Project Plan\n\n## File Tree\n```\nManualMemoryPlan1/\n├── README.md\n├── src/\n│   └── main.py\n├── requirements.txt\n└── PLAN.md  (this file)\n```\n\n## requirements.txt Content\n```text\nclick==8.1.7\npathlib2==2.3.6  # for older Python compatibility, optional\n```\n\n## Verification Plan\n1. **Manual Check** - Install dependencies and run the CLI.\n\n## Acceptance Criteria\n- `README.md`, `src/main.py`, and `requirements.txt` exist.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("ManualMemoryPlan1/PLAN.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("ManualMemoryPlan1/PLAN.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified plan should create structured state");
+        let project = root.join("ManualMemoryPlan1");
+        assert!(structured
+            .expected_directories
+            .contains(&project.join("src")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("README.md")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("src/main.py")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("requirements.txt")));
+        for dependency in ["click==8.1.7", "pathlib2==2.3.6"] {
+            assert!(
+                !structured
+                    .expected_files
+                    .iter()
+                    .chain(structured.expected_directories.iter())
+                    .any(|path| path.to_string_lossy().contains(dependency)),
+                "dependency line was extracted as a path: {dependency}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extracts_cwd_relative_project_root_tree_without_duplication() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-cwd-relative-project-root-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("playground/ManualMemoryPlanSmokeFix")).unwrap();
+        fs::write(
+            root.join("playground/ManualMemoryPlanSmokeFix/plan.md"),
+            "# Project Plan\n\n## File Tree\n```\nplayground/ManualMemoryPlanSmokeFix/\n├── README.md\n├── src/\n│   └── main.py\n├── requirements.txt\n└── plan.md\n```\n\n## Verification\n- Check files.\n\n## Acceptance Criteria\n- Expected files exist.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("playground/ManualMemoryPlanSmokeFix/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root
+                .join("playground/ManualMemoryPlanSmokeFix/plan.md")
+                .display()
+                .to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified plan should create structured state");
+        let project = root.join("playground/ManualMemoryPlanSmokeFix");
+        assert!(structured
+            .expected_directories
+            .contains(&project.join("src")));
+        for file in ["README.md", "src/main.py", "requirements.txt", "plan.md"] {
+            assert!(
+                structured.expected_files.contains(&project.join(file)),
+                "missing expected file {file}; got {:#?}",
+                structured.expected_files
+            );
+        }
+        assert!(!structured
+            .expected_files
+            .iter()
+            .chain(structured.expected_directories.iter())
+            .any(|path| path
+                .to_string_lossy()
+                .contains("ManualMemoryPlanSmokeFix/playground/ManualMemoryPlanSmokeFix")));
 
         let _ = fs::remove_dir_all(&root);
     }

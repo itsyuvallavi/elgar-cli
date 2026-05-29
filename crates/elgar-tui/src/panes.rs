@@ -608,7 +608,7 @@ fn render_turn_metrics_summary(
             .map(compact_token_count)
             .unwrap_or_else(|| "?".to_string());
         parts.push(format!("↑{input} ↓{output}"));
-        parts.push(format!("{total} tokens"));
+        parts.push(format!("{total} provider tokens"));
     }
 
     Some(parts.join(" · "))
@@ -1172,7 +1172,7 @@ mod tests {
 
         let rendered = conversation.render_body();
 
-        assert!(rendered.contains("response 11.0s · ↑2.2k ↓24 · 2.2k tokens"));
+        assert!(rendered.contains("response 11.0s · ↑2.2k ↓24 · 2.2k provider tokens"));
         assert!(rendered.contains("final answer"));
         assert!(!rendered.contains("request-1"));
     }

@@ -217,6 +217,9 @@ impl PlanContract {
                     if path == self.source_plan_path {
                         continue;
                     }
+                    if is_runtime_data_file_reference(&path, &self.project_root, &scope_paths) {
+                        continue;
+                    }
                     if !scope_contains_referenced_path(&scope_paths, &path, &self.project_root) {
                         if referenced_path_is_in_executable_scope_area(
                             &self.scope.allowed_directories,
@@ -274,6 +277,49 @@ impl PlanContract {
 
         Ok(())
     }
+}
+
+fn is_runtime_data_file_reference(
+    path: &Path,
+    project_root: &Path,
+    scope_paths: &[&PathBuf],
+) -> bool {
+    if scope_paths
+        .iter()
+        .any(|scope_path| scope_path.as_path() == path)
+    {
+        return false;
+    }
+    let Ok(relative) = path.strip_prefix(project_root) else {
+        return false;
+    };
+    if relative.components().count() != 1 {
+        return false;
+    }
+    let Some(file_name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if is_known_project_config_file(file_name) {
+        return false;
+    }
+    relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "json" | "db" | "sqlite" | "sqlite3"))
+}
+
+fn is_known_project_config_file(file_name: &str) -> bool {
+    matches!(
+        file_name,
+        "package.json"
+            | "tsconfig.json"
+            | "jsconfig.json"
+            | "deno.json"
+            | "composer.json"
+            | "manifest.json"
+            | "Cargo.lock"
+            | "package-lock.json"
+    )
 }
 
 fn scope_contains_referenced_path(
@@ -405,6 +451,7 @@ fn markdown_heading_matches(current: &str, expected: &str) -> bool {
                 current,
                 "verification steps"
                     | "verification approach"
+                    | "verification plan"
                     | "verification strategy"
                     | "verification checks"
                     | "verification and acceptance criteria"
@@ -948,6 +995,49 @@ mod tests {
         assert_eq!(
             contract.scope.acceptance_criteria,
             vec!["The Vite app starts successfully."]
+        );
+        assert!(contract.review_draft().is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_contract_accepts_verification_plan_heading() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-verification-plan-{}",
+            std::process::id()
+        ));
+        let project = root.join("manual-memory-plan");
+        let plan_path = project.join("PLAN.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n```text\nREADME.md\nsrc/main.py\nrequirements.txt\n```\n\n## Verification Plan\n1. **Unit Tests** - Write tests for each command.\n2. **Manual Check** - Run each command.\n\n## Acceptance Criteria\n- `README.md`, `src/main.py`, and `requirements.txt` exist.\n",
+        )
+        .unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![
+                project.join("README.md"),
+                project.join("src/main.py"),
+                project.join("requirements.txt"),
+            ],
+        };
+
+        let contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+
+        assert_eq!(
+            contract.scope.verification_steps,
+            vec![
+                "**Unit Tests** - Write tests for each command.",
+                "**Manual Check** - Run each command."
+            ]
         );
         assert!(contract.review_draft().is_approvable());
 
@@ -1654,6 +1744,52 @@ mod tests {
         assert!(!review.issues.iter().any(|issue| {
             issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
                 && issue.path.as_ref() == Some(&project.join("tasks.json"))
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_does_not_block_runtime_data_file_in_verification() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-review-runtime-root-data-reference-{}",
+            std::process::id()
+        ));
+        let project = root.join("runtime-root-data-plan-test");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n## Verification\n- Add a note: `python src/main.py add \"Test note\"` should create or update `notes.json`.\n\n## Acceptance Criteria\n- `README.md` exists.\n",
+        )
+        .unwrap();
+        let contract = PlanContract {
+            id: "contract-runtime-root-data-reference".to_string(),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            source_action_id: Some("action-plan".to_string()),
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: vec![project.join("src")],
+                allowed_files: vec![project.join("README.md"), project.join("src/main.py")],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec![
+                    "Add a note: `python src/main.py add \"Test note\"` should create or update `notes.json`.".to_string(),
+                ],
+                verification_checks: Vec::new(),
+                acceptance_criteria: vec!["`README.md` exists.".to_string()],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+
+        let review = contract.review_draft();
+
+        assert!(review.is_approvable());
+        assert!(!review.issues.iter().any(|issue| {
+            issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
+                && issue.path.as_ref() == Some(&project.join("notes.json"))
         }));
 
         let _ = fs::remove_dir_all(root);
