@@ -453,19 +453,24 @@ mod tests {
         let value = serde_json::to_value(&request).unwrap();
 
         assert_eq!(value["tool_choice"], "auto");
-        assert_eq!(value["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(value["tools"].as_array().unwrap().len(), 9);
         assert_eq!(value["tools"][0]["type"], "function");
         assert_eq!(value["tools"][0]["function"]["name"], "ask_guidance");
-        assert_eq!(value["tools"][1]["function"]["name"], "create_file");
+        assert_eq!(value["tools"][1]["function"]["name"], "create_files");
         assert_eq!(
             value["tools"][1]["function"]["parameters"]["required"],
+            json!(["files"])
+        );
+        assert_eq!(value["tools"][2]["function"]["name"], "create_file");
+        assert_eq!(
+            value["tools"][2]["function"]["parameters"]["required"],
             json!(["target_path", "contents"])
         );
-        assert_eq!(value["tools"][7]["function"]["name"], "shell_command");
-        assert!(value["tools"][7]["function"]["parameters"]["properties"]
+        assert_eq!(value["tools"][8]["function"]["name"], "shell_command");
+        assert!(value["tools"][8]["function"]["parameters"]["properties"]
             .get("command")
             .is_some());
-        assert!(value["tools"][7]["function"]["parameters"]["properties"]
+        assert!(value["tools"][8]["function"]["parameters"]["properties"]
             .get("cwd")
             .is_some());
     }
@@ -488,7 +493,7 @@ mod tests {
         let tool_value = serde_json::from_str::<serde_json::Value>(&tool_body).unwrap();
 
         assert_eq!(tool_value["tool_choice"], "auto");
-        assert_eq!(tool_value["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(tool_value["tools"].as_array().unwrap().len(), 9);
     }
 
     #[test]

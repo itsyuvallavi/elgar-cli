@@ -13,6 +13,7 @@ use crate::provider::ChatToolDefinition;
 #[serde(rename_all = "snake_case")]
 pub enum ModelToolName {
     AskGuidance,
+    CreateFiles,
     CreateFile,
     CreateDirectory,
     OverwriteFile,
@@ -26,6 +27,7 @@ impl ModelToolName {
     fn label(self) -> &'static str {
         match self {
             Self::AskGuidance => "ask_guidance",
+            Self::CreateFiles => "create_files",
             Self::CreateFile => "create_file",
             Self::CreateDirectory => "create_directory",
             Self::OverwriteFile => "overwrite_file",
@@ -54,6 +56,38 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
                     ),
                 ],
                 &["question"],
+            ),
+        ),
+        model_tool_definition(
+            ModelToolName::CreateFiles,
+            "Draft creation of multiple new directories and files in one validated batch. Prefer this for small project scaffolds and verified-plan execution when several expected paths are missing.",
+            object_parameters(
+                &[
+                    (
+                        "directories",
+                        array_property(
+                            "Optional directory paths to create before files.",
+                            string_property("Directory path to create."),
+                        ),
+                    ),
+                    (
+                        "files",
+                        array_property(
+                            "Files to create.",
+                            object_parameters(
+                                &[
+                                    (
+                                        "target_path",
+                                        string_property("Path for the new file."),
+                                    ),
+                                    ("contents", string_property("Full contents to write.")),
+                                ],
+                                &["target_path", "contents"],
+                            ),
+                        ),
+                    ),
+                ],
+                &["files"],
             ),
         ),
         model_tool_definition(
@@ -231,6 +265,14 @@ fn integer_property(description: &'static str, maximum: Option<u64>) -> Value {
     schema
 }
 
+fn array_property(description: &'static str, items: Value) -> Value {
+    json!({
+        "type": "array",
+        "description": description,
+        "items": items
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RawModelToolName {
@@ -370,10 +412,14 @@ pub fn validate_exactly_one_model_tool_call(
 ) -> Result<Option<ValidatedModelToolAction>, ModelToolValidationError> {
     match tool_calls {
         [] => Ok(None),
-        [tool_call] => match validate_model_tool_call(tool_call)? {
-            ValidatedModelToolOutput::Action(action) => Ok(Some(action)),
-            ValidatedModelToolOutput::Guidance(_) => Ok(None),
-        },
+        [tool_call] => {
+            let outputs = validate_model_tool_call(tool_call)?;
+            match outputs.as_slice() {
+                [ValidatedModelToolOutput::Action(action)] => Ok(Some(action.clone())),
+                [ValidatedModelToolOutput::Guidance(_)] => Ok(None),
+                outputs => Err(ModelToolValidationError::multiple_tool_calls(outputs.len())),
+            }
+        }
         calls => Err(ModelToolValidationError::multiple_tool_calls(calls.len())),
     }
 }
@@ -395,7 +441,11 @@ pub fn validate_model_tool_calls(
 pub fn validate_model_tool_outputs(
     tool_calls: &[RawModelToolCall],
 ) -> Result<Vec<ValidatedModelToolOutput>, ModelToolValidationError> {
-    tool_calls.iter().map(validate_model_tool_call).collect()
+    let mut outputs = Vec::new();
+    for tool_call in tool_calls {
+        outputs.extend(validate_model_tool_call(tool_call)?);
+    }
+    Ok(outputs)
 }
 
 pub fn validate_provider_prose_only(
@@ -405,24 +455,30 @@ pub fn validate_provider_prose_only(
 
 fn validate_model_tool_call(
     tool_call: &RawModelToolCall,
-) -> Result<ValidatedModelToolOutput, ModelToolValidationError> {
+) -> Result<Vec<ValidatedModelToolOutput>, ModelToolValidationError> {
     let tool_name = tool_call.name.known().map_err(|mut error| {
         error.tool_call_id = Some(tool_call.id.clone());
         error
     })?;
     let arguments = arguments_object(tool_call)?;
     if tool_name == ModelToolName::AskGuidance {
-        return Ok(ValidatedModelToolOutput::Guidance(
+        return Ok(vec![ValidatedModelToolOutput::Guidance(
             ValidatedModelGuidanceRequest {
                 tool_call_id: tool_call.id.clone(),
                 question: required_non_empty_string(tool_call, arguments, tool_name, "question")?,
                 reason: optional_non_empty_string(tool_call, arguments, tool_name, "reason")?,
             },
-        ));
+        )]);
+    }
+    if tool_name == ModelToolName::CreateFiles {
+        return validate_create_files(tool_call, arguments, tool_name);
     }
 
     let request = match tool_name {
         ModelToolName::AskGuidance => unreachable!("ask_guidance returned before action parsing"),
+        ModelToolName::CreateFiles => {
+            unreachable!("create_files returned before single action parsing")
+        }
         ModelToolName::CreateFile => ActionRequest::CreateFile(CreateFileAction {
             target_path: required_path(tool_call, arguments, tool_name, "target_path")?,
             contents: required_string(tool_call, arguments, tool_name, "contents")?,
@@ -455,12 +511,98 @@ fn validate_model_tool_call(
         .filter(|summary| !summary.trim().is_empty())
         .unwrap_or_else(|| format!("Drafted {} action for {target_label}", tool_name.label()));
 
-    Ok(ValidatedModelToolOutput::Action(ValidatedModelToolAction {
-        tool_call_id: tool_call.id.clone(),
-        request,
-        summary,
-        target_label,
-    }))
+    Ok(vec![ValidatedModelToolOutput::Action(
+        ValidatedModelToolAction {
+            tool_call_id: tool_call.id.clone(),
+            request,
+            summary,
+            target_label,
+        },
+    )])
+}
+
+fn validate_create_files(
+    tool_call: &RawModelToolCall,
+    arguments: &Map<String, Value>,
+    tool_name: ModelToolName,
+) -> Result<Vec<ValidatedModelToolOutput>, ModelToolValidationError> {
+    let mut outputs = Vec::new();
+
+    if let Some(directories) = optional_array(tool_call, arguments, tool_name, "directories")? {
+        for (index, value) in directories.iter().enumerate() {
+            let Some(path) = value.as_str().filter(|value| !value.trim().is_empty()) else {
+                return Err(ModelToolValidationError::malformed_argument(
+                    tool_call.id.clone(),
+                    tool_name.label(),
+                    "directories",
+                    "an array of non-empty path strings",
+                ));
+            };
+            if path_contains_ellipsis_placeholder(path) {
+                return Err(ModelToolValidationError::malformed_argument(
+                    tool_call.id.clone(),
+                    tool_name.label(),
+                    "directories",
+                    "complete paths without ellipsis placeholders",
+                ));
+            }
+            let request = ActionRequest::CreateDirectory(CreateDirectoryAction {
+                target_path: PathBuf::from(path),
+            });
+            let target_label = request.approval_target();
+            outputs.push(ValidatedModelToolOutput::Action(ValidatedModelToolAction {
+                tool_call_id: tool_call.id.clone(),
+                request,
+                summary: format!(
+                    "Drafted create_files directory action {index} for {target_label}"
+                ),
+                target_label,
+            }));
+        }
+    }
+
+    let files = required_array(tool_call, arguments, tool_name, "files")?;
+    if files.is_empty() {
+        return Err(ModelToolValidationError::malformed_argument(
+            tool_call.id.clone(),
+            tool_name.label(),
+            "files",
+            "a non-empty array of file objects",
+        ));
+    }
+    for (index, value) in files.iter().enumerate() {
+        let Some(file) = value.as_object() else {
+            return Err(ModelToolValidationError::malformed_argument(
+                tool_call.id.clone(),
+                tool_name.label(),
+                "files",
+                "an array of file objects",
+            ));
+        };
+        let target_path = string_field_from_object(tool_call, tool_name, file, "target_path")?;
+        if path_contains_ellipsis_placeholder(&target_path) {
+            return Err(ModelToolValidationError::malformed_argument(
+                tool_call.id.clone(),
+                tool_name.label(),
+                "target_path",
+                "a complete path without ellipsis placeholders",
+            ));
+        }
+        let contents = string_field_from_object(tool_call, tool_name, file, "contents")?;
+        let request = ActionRequest::CreateFile(CreateFileAction {
+            target_path: PathBuf::from(target_path),
+            contents,
+        });
+        let target_label = request.approval_target();
+        outputs.push(ValidatedModelToolOutput::Action(ValidatedModelToolAction {
+            tool_call_id: tool_call.id.clone(),
+            request,
+            summary: format!("Drafted create_files file action {index} for {target_label}"),
+            target_label,
+        }));
+    }
+
+    Ok(outputs)
 }
 
 fn validate_shell_command(
@@ -645,6 +787,71 @@ fn optional_u64(
     })
 }
 
+fn required_array<'a>(
+    tool_call: &RawModelToolCall,
+    arguments: &'a Map<String, Value>,
+    tool_name: ModelToolName,
+    key: &str,
+) -> Result<&'a Vec<Value>, ModelToolValidationError> {
+    let Some(value) = arguments.get(key) else {
+        return Err(ModelToolValidationError::missing_argument(
+            tool_call.id.clone(),
+            tool_name.label(),
+            key,
+        ));
+    };
+    value.as_array().ok_or_else(|| {
+        ModelToolValidationError::malformed_argument(
+            tool_call.id.clone(),
+            tool_name.label(),
+            key,
+            "an array",
+        )
+    })
+}
+
+fn optional_array<'a>(
+    tool_call: &RawModelToolCall,
+    arguments: &'a Map<String, Value>,
+    tool_name: ModelToolName,
+    key: &str,
+) -> Result<Option<&'a Vec<Value>>, ModelToolValidationError> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    value.as_array().map(Some).ok_or_else(|| {
+        ModelToolValidationError::malformed_argument(
+            tool_call.id.clone(),
+            tool_name.label(),
+            key,
+            "an array",
+        )
+    })
+}
+
+fn string_field_from_object(
+    tool_call: &RawModelToolCall,
+    tool_name: ModelToolName,
+    object: &Map<String, Value>,
+    key: &str,
+) -> Result<String, ModelToolValidationError> {
+    let Some(value) = object.get(key) else {
+        return Err(ModelToolValidationError::missing_argument(
+            tool_call.id.clone(),
+            tool_name.label(),
+            key,
+        ));
+    };
+    value.as_str().map(ToString::to_string).ok_or_else(|| {
+        ModelToolValidationError::malformed_argument(
+            tool_call.id.clone(),
+            tool_name.label(),
+            key,
+            "a string",
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -665,6 +872,7 @@ mod tests {
     fn model_tool_name_serde_names_roundtrip() {
         let value = serde_json::to_value([
             ModelToolName::AskGuidance,
+            ModelToolName::CreateFiles,
             ModelToolName::CreateFile,
             ModelToolName::CreateDirectory,
             ModelToolName::OverwriteFile,
@@ -679,6 +887,7 @@ mod tests {
             value,
             json!([
                 "ask_guidance",
+                "create_files",
                 "create_file",
                 "create_directory",
                 "overwrite_file",
@@ -695,6 +904,7 @@ mod tests {
             names,
             vec![
                 ModelToolName::AskGuidance,
+                ModelToolName::CreateFiles,
                 ModelToolName::CreateFile,
                 ModelToolName::CreateDirectory,
                 ModelToolName::OverwriteFile,
@@ -715,6 +925,7 @@ mod tests {
             .collect::<Vec<_>>();
         let expected_value = serde_json::to_value([
             ModelToolName::AskGuidance,
+            ModelToolName::CreateFiles,
             ModelToolName::CreateFile,
             ModelToolName::CreateDirectory,
             ModelToolName::OverwriteFile,
@@ -732,6 +943,48 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn create_files_tool_expands_to_directory_and_file_actions() {
+        let outputs = validate_model_tool_outputs(&[raw_call(
+            "batch-1",
+            RawModelToolName::Known(ModelToolName::CreateFiles),
+            json!({
+                "directories": ["demo/src"],
+                "files": [
+                    {
+                        "target_path": "demo/README.md",
+                        "contents": "# Demo\n"
+                    },
+                    {
+                        "target_path": "demo/src/main.py",
+                        "contents": "print('demo')\n"
+                    }
+                ]
+            }),
+        )])
+        .expect("validate create_files");
+
+        assert_eq!(outputs.len(), 3);
+        assert!(matches!(
+            &outputs[0],
+            ValidatedModelToolOutput::Action(action)
+                if matches!(action.request, ActionRequest::CreateDirectory(_))
+                    && action.tool_call_id == "batch-1"
+        ));
+        assert!(matches!(
+            &outputs[1],
+            ValidatedModelToolOutput::Action(action)
+                if matches!(action.request, ActionRequest::CreateFile(_))
+                    && action.tool_call_id == "batch-1"
+        ));
+        assert!(matches!(
+            &outputs[2],
+            ValidatedModelToolOutput::Action(action)
+                if matches!(action.request, ActionRequest::CreateFile(_))
+                    && action.tool_call_id == "batch-1"
+        ));
     }
 
     #[test]

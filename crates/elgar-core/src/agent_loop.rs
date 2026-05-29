@@ -426,7 +426,7 @@ where
                 session.push_reasoning_runtime_check(message.clone());
                 plan_creation_repair_in_progress = true;
                 for tool_call_id in resolved_outputs_tool_call_ids(&resolved_outputs) {
-                    messages.push(ChatMessage::tool(tool_call_id, message.clone()));
+                    append_tool_feedback_message(&mut messages, tool_call_id, message.clone());
                 }
                 messages.push(ChatMessage::system(plan_creation_repair_message(session)));
                 continue;
@@ -480,7 +480,11 @@ where
                         guidance.question
                     ));
                     push_provider_message_if_visible(session, guidance.question.clone());
-                    messages.push(ChatMessage::tool(guidance.tool_call_id, guidance.question));
+                    append_tool_feedback_message(
+                        &mut messages,
+                        guidance.tool_call_id,
+                        guidance.question,
+                    );
                 }
                 ResolvedAgentToolOutput::Skipped {
                     tool_call_id,
@@ -496,7 +500,7 @@ where
                         )));
                         visible_skipped_tool_notice_shown = true;
                     }
-                    messages.push(ChatMessage::tool(tool_call_id, message));
+                    append_tool_feedback_message(&mut messages, tool_call_id, message);
                 }
                 ResolvedAgentToolOutput::Action(action) => {
                     let is_plan_creation =
@@ -538,7 +542,7 @@ where
                                 .push(ChatMessage::system(plan_creation_repair_message(session)));
                         }
                     }
-                    messages.push(ChatMessage::tool(action.tool_call_id, result));
+                    append_tool_feedback_message(&mut messages, action.tool_call_id, result);
                     if !matches!(
                         session.pending_action_selection(),
                         PendingActionSelection::None
@@ -653,6 +657,26 @@ fn record_validated_tool_output_trace(session: &mut Session, outputs: &[Validate
             }
         }
     }
+}
+
+fn append_tool_feedback_message(
+    messages: &mut Vec<ChatMessage>,
+    tool_call_id: String,
+    content: String,
+) {
+    if let Some(existing) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some(tool_call_id.as_str()))
+    {
+        if !existing.content.is_empty() {
+            existing.content.push('\n');
+        }
+        existing.content.push_str(&content);
+        return;
+    }
+
+    messages.push(ChatMessage::tool(tool_call_id, content));
 }
 
 fn action_request_kind_label(request: &ActionRequest) -> &'static str {
@@ -1862,7 +1886,7 @@ fn missing_expected_plan_paths_message(session: &Session) -> Option<String> {
                 .map(|path| format!("- {}", display_agent_context_path(session, path))),
         );
     }
-    lines.push("Use create_directory for missing expected directories and create_file for missing expected files under the verified plan root. Do not ask whether to create expected paths.".to_string());
+    lines.push("Use create_files for multiple missing expected paths when possible; otherwise use create_directory for missing expected directories and create_file for missing expected files under the verified plan root. Do not ask whether to create expected paths.".to_string());
     lines.push(
         "When multiple expected paths are missing, call the needed file and directory tools in one assistant response when possible."
             .to_string(),
@@ -6255,6 +6279,98 @@ mod tests {
             .skip(1)
             .any(|request| joined_request_messages(request)
                 .contains("call the needed file and directory tools in one assistant response")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explicit_plan_creation_execution_can_use_create_files_batch() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-create-execute-batch",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating plan first.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "batch-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "NotesCLI/plan.md",
+                            "contents": "# Notes Plan\n\n```text\nREADME.md\nrequirements.txt\nsrc/main.py\ntests/test_main.py\n```\n\n## Verification\n- Run `python -m src.main`.\n- Run `pytest tests/test_main.py`.\n\n## Acceptance Criteria\n- Expected files exist and tests pass.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Creating project files.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "batch-files".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                        arguments: json!({
+                            "directories": ["NotesCLI/src", "NotesCLI/tests"],
+                            "files": [
+                                {
+                                    "target_path": "NotesCLI/README.md",
+                                    "contents": "# Notes CLI\n"
+                                },
+                                {
+                                    "target_path": "NotesCLI/requirements.txt",
+                                    "contents": ""
+                                },
+                                {
+                                    "target_path": "NotesCLI/src/main.py",
+                                    "contents": "def main():\n    print('notes')\n\nif __name__ == '__main__':\n    main()\n"
+                                },
+                                {
+                                    "target_path": "NotesCLI/tests/test_main.py",
+                                    "contents": "def test_smoke():\n    assert True\n"
+                                }
+                            ]
+                        }),
+                        assistant_summary: Some("create files".to_string()),
+                    },
+                ]),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a notes project plan and execute it",
+        );
+
+        for path in [
+            "NotesCLI/plan.md",
+            "NotesCLI/README.md",
+            "NotesCLI/requirements.txt",
+            "NotesCLI/src/main.py",
+            "NotesCLI/tests/test_main.py",
+        ] {
+            assert!(root.join(path).is_file(), "missing {path}");
+        }
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
+        assert_eq!(
+            session.actions().len(),
+            5,
+            "plan plus four expected files should be applied without another provider round"
+        );
+        assert_eq!(
+            session
+                .project_memory()
+                .latest_structured_plan()
+                .expect("plan should remain recorded")
+                .runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
