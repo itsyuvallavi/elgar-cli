@@ -89,10 +89,6 @@ const AGENT_AFTER_PLAN_CREATION_DECISION_PROMPT: &str = concat!(
     "{\"route\":\"chat\",\"content\":\"done\"}=the original request only required creating the plan artifact. ",
     "Do not draft artifacts in this response."
 );
-const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
-    "The previous tool-enabled provider request returned no usable response. ",
-    "Answer normally in prose. Do not claim filesystem or shell changes unless they were already reported by verified tool results."
-);
 
 const MAX_AGENT_TOOL_ROUNDS: usize = 16;
 const TOOL_COMMAND_PREFIX: &str = "/tool";
@@ -257,6 +253,7 @@ where
     }
     messages.push(ChatMessage::user(input));
     let tools = elgar_model_tool_definitions();
+    let prompt_project_root = explicit_project_root_from_input(session, input);
     let mut handled_tool_call_ids = HashSet::new();
     let mut plan_created_this_turn = false;
     let mut plan_execution_in_progress = false;
@@ -295,51 +292,14 @@ where
                         break;
                     }
 
-                    let fallback_request = provider.request_metadata();
-                    session.push_event(Event::ProviderStarted(
-                        ProviderStarted::new(
-                            fallback_request.provider.clone(),
-                            fallback_request.request_id.clone(),
-                        )
-                        .with_request_details(
-                            fallback_request.model.clone(),
-                            "plain_fallback",
-                            0,
-                        ),
-                    ));
-                    let mut fallback_messages = messages.clone();
-                    fallback_messages.push(ChatMessage::system(AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT));
-                    match provider.chat_messages_with_metadata(fallback_messages, &fallback_request)
-                    {
-                        Ok(output) => {
-                            let assistant_text = output.text.clone();
-                            push_provider_finished(
-                                session,
-                                fallback_request.provider,
-                                fallback_request.request_id,
-                                output,
-                            );
-                            if plan_execution_in_progress {
-                                if let Some(message) =
-                                    plan_execution_repair_message_or_mark_complete(session)
-                                {
-                                    messages.push(ChatMessage::system(message));
-                                    continue;
-                                }
-                            }
-                            push_plain_provider_message_if_visible(session, assistant_text);
-                            break;
-                        }
-                        Err(fallback_error) => {
-                            session.push_event(Event::Error(ErrorEvent::new(format!(
-                                "{} provider request {} failed: {error}; plain fallback request {} failed: {fallback_error}",
-                                request.provider,
-                                request.request_id,
-                                fallback_request.request_id
-                            ))));
-                            break;
-                        }
-                    }
+                    session.push_reasoning_runtime_check(
+                        "empty tool response on execute route; skipped plain fallback",
+                    );
+                    session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                        "The model did not return any tool actions, so no files or commands were changed.",
+                        AssistantMessageSource::Controller,
+                    )));
+                    break;
                 }
 
                 session.push_event(Event::Error(ErrorEvent::new(format!(
@@ -409,6 +369,11 @@ where
             resolve_agent_tool_outputs(outputs, &path_resolution),
         );
         let resolved_outputs = anchor_verified_plan_tool_outputs(session, resolved_outputs);
+        let resolved_outputs = anchor_prompt_project_root_tool_outputs(
+            session,
+            resolved_outputs,
+            prompt_project_root.as_deref(),
+        );
         let resolved_outputs =
             anchor_bare_plan_artifacts_to_batch_project_root(session, resolved_outputs);
         let resolved_outputs = guard_plan_creation_tool_outputs(
@@ -419,6 +384,7 @@ where
             allow_implementation_after_plan_creation,
         );
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
+        let resolved_outputs = prioritize_plan_creation_tool_outputs(session, resolved_outputs);
         let plan_execution_batch =
             resolved_outputs_touch_structured_plan(session, &resolved_outputs);
         let plan_execution_batch_completes_missing_paths = plan_execution_batch
@@ -458,6 +424,11 @@ where
             session.push_reasoning_runtime_check("latest structured plan marked executing");
             session.mark_latest_structured_project_plan_executing();
         }
+        let plan_missing_before_tool_results = if plan_execution_in_progress {
+            Some(missing_expected_plan_path_counts(session))
+        } else {
+            None
+        };
 
         if policy_mode == PermissionPolicyMode::ReviewAll {
             if let Some(action) =
@@ -509,6 +480,15 @@ where
                     append_tool_feedback_message(&mut messages, tool_call_id, message);
                 }
                 ResolvedAgentToolOutput::Action(action) => {
+                    if plan_creation_repair_in_progress
+                        && !is_latest_verified_plan_file_action(session, &action.request)
+                    {
+                        tool_results_need_provider_followup = true;
+                        let message = plan_creation_non_plan_repair_skip_message();
+                        session.push_reasoning_runtime_check(format!("skipped: {message}"));
+                        append_tool_feedback_message(&mut messages, action.tool_call_id, message);
+                        continue;
+                    }
                     let is_plan_creation =
                         plan_creation_root_for_action(session, &action.request).is_some();
                     if is_plan_creation {
@@ -563,6 +543,23 @@ where
         }
 
         if plan_execution_in_progress {
+            if let Some(before) = plan_missing_before_tool_results {
+                let after = missing_expected_plan_path_counts(session);
+                if before == after && before.total() > 0 && tool_results_need_provider_followup {
+                    let message =
+                        plan_execution_no_progress_message(session).unwrap_or_else(|| {
+                            "Plan execution made no progress; stopped provider loop.".to_string()
+                        });
+                    session.push_reasoning_runtime_check(
+                        "plan execution made no progress; stopped provider loop",
+                    );
+                    session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                        message,
+                        AssistantMessageSource::Controller,
+                    )));
+                    break;
+                }
+            }
             if let Some(message) = plan_execution_repair_message_or_mark_complete(session) {
                 messages.push(ChatMessage::system(message));
                 continue;
@@ -1035,6 +1032,50 @@ fn local_path_like_token_count(content: &str) -> usize {
     paths.len()
 }
 
+fn explicit_project_root_from_input(session: &Session, input: &str) -> Option<PathBuf> {
+    input
+        .split_whitespace()
+        .find_map(|token| explicit_project_root_token(session, token))
+}
+
+fn explicit_project_root_token(session: &Session, token: &str) -> Option<PathBuf> {
+    let token = token.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';'
+        )
+    });
+    if token.is_empty()
+        || token.contains('*')
+        || token.contains('?')
+        || !(token.contains('/') || token.starts_with('/'))
+    {
+        return None;
+    }
+
+    let path = Path::new(token);
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains('.'))
+    {
+        return None;
+    }
+    if !path.is_absolute()
+        && path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+    {
+        return None;
+    }
+
+    let root = normalize_path(&absolute_session_path(session, path));
+    (root != session.cwd && path_is_within(&root, &session.project_root)).then_some(root)
+}
+
 fn numbered_artifact_line_count(content: &str) -> usize {
     content
         .lines()
@@ -1127,6 +1168,89 @@ fn anchor_verified_plan_tool_outputs(
             }
         })
         .collect()
+}
+
+fn anchor_prompt_project_root_tool_outputs(
+    session: &Session,
+    outputs: Vec<ResolvedAgentToolOutput>,
+    prompt_project_root: Option<&Path>,
+) -> Vec<ResolvedAgentToolOutput> {
+    let Some(prompt_project_root) = prompt_project_root else {
+        return outputs;
+    };
+
+    outputs
+        .into_iter()
+        .map(|output| match output {
+            ResolvedAgentToolOutput::Action(mut action) => {
+                action.request = anchor_prompt_project_root_action_request(
+                    session,
+                    action.request,
+                    prompt_project_root,
+                );
+                action.target_label = action.request.approval_target();
+                ResolvedAgentToolOutput::Action(action)
+            }
+            other => other,
+        })
+        .collect()
+}
+
+fn anchor_prompt_project_root_action_request(
+    session: &Session,
+    request: ActionRequest,
+    prompt_project_root: &Path,
+) -> ActionRequest {
+    match request {
+        ActionRequest::CreateFile(mut action) => {
+            action.target_path =
+                anchor_prompt_project_root_path(session, &action.target_path, prompt_project_root);
+            ActionRequest::CreateFile(action)
+        }
+        ActionRequest::CreateDirectory(mut action) => {
+            action.target_path =
+                anchor_prompt_project_root_path(session, &action.target_path, prompt_project_root);
+            ActionRequest::CreateDirectory(action)
+        }
+        ActionRequest::OverwriteFile(mut action) => {
+            action.target_path =
+                anchor_prompt_project_root_path(session, &action.target_path, prompt_project_root);
+            ActionRequest::OverwriteFile(action)
+        }
+        ActionRequest::PatchFile(mut action) => {
+            action.target_path =
+                anchor_prompt_project_root_path(session, &action.target_path, prompt_project_root);
+            ActionRequest::PatchFile(action)
+        }
+        ActionRequest::ShellCommand(mut action) => {
+            action.cwd = anchor_prompt_project_root_path(session, &action.cwd, prompt_project_root);
+            ActionRequest::ShellCommand(action)
+        }
+        ActionRequest::DeleteFile(_) | ActionRequest::MoveFile(_) => request,
+    }
+}
+
+fn anchor_prompt_project_root_path(
+    session: &Session,
+    path: &Path,
+    prompt_project_root: &Path,
+) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let current_target = absolute_session_path(session, path);
+    if path_is_within(&current_target, prompt_project_root) {
+        return path.to_path_buf();
+    }
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+        )
+    }) {
+        return path.to_path_buf();
+    }
+    cwd_relative_path(session, &normalize_path(prompt_project_root.join(path)))
 }
 
 fn anchor_bare_plan_artifacts_to_batch_project_root(
@@ -1367,6 +1491,26 @@ fn guard_plan_creation_tool_outputs(
         })
         .collect::<Vec<_>>();
     if plan_roots.is_empty() && !plan_created_this_turn && !plan_creation_repair_in_progress {
+        if allow_implementation_after_plan_creation {
+            return outputs
+                .into_iter()
+                .map(|output| match output {
+                    ResolvedAgentToolOutput::Guidance(guidance) => {
+                        ResolvedAgentToolOutput::Skipped {
+                            tool_call_id: guidance.tool_call_id,
+                            message: plan_creation_first_message(),
+                            visible: false,
+                        }
+                    }
+                    ResolvedAgentToolOutput::Action(action) => ResolvedAgentToolOutput::Skipped {
+                        tool_call_id: action.tool_call_id,
+                        message: plan_creation_first_message(),
+                        visible: false,
+                    },
+                    skipped => skipped,
+                })
+                .collect();
+        }
         return outputs;
     }
 
@@ -1435,6 +1579,51 @@ fn guard_plan_creation_tool_outputs(
         .collect()
 }
 
+fn prioritize_plan_creation_tool_outputs(
+    session: &Session,
+    outputs: Vec<ResolvedAgentToolOutput>,
+) -> Vec<ResolvedAgentToolOutput> {
+    let plan_roots = outputs
+        .iter()
+        .filter_map(|output| match output {
+            ResolvedAgentToolOutput::Action(action) => {
+                plan_creation_root_for_action(session, &action.request)
+            }
+            ResolvedAgentToolOutput::Guidance(_) | ResolvedAgentToolOutput::Skipped { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if plan_roots.is_empty() {
+        return outputs;
+    }
+
+    let mut setup = Vec::new();
+    let mut plans = Vec::new();
+    let mut rest = Vec::new();
+    for output in outputs {
+        match &output {
+            ResolvedAgentToolOutput::Action(action)
+                if is_plan_parent_setup_action(session, &action.request, &plan_roots) =>
+            {
+                setup.push(output);
+            }
+            ResolvedAgentToolOutput::Action(action)
+                if plan_creation_root_for_action(session, &action.request).is_some() =>
+            {
+                plans.push(output);
+            }
+            ResolvedAgentToolOutput::Guidance(_)
+            | ResolvedAgentToolOutput::Skipped { .. }
+            | ResolvedAgentToolOutput::Action(_) => {
+                rest.push(output);
+            }
+        }
+    }
+
+    setup.extend(plans);
+    setup.extend(rest);
+    setup
+}
+
 fn resolved_outputs_tool_call_ids(outputs: &[ResolvedAgentToolOutput]) -> Vec<String> {
     outputs
         .iter()
@@ -1467,6 +1656,16 @@ fn is_latest_verified_plan_file_action(session: &Session, request: &ActionReques
     };
 
     absolute_session_path(session, target_path) == normalize_path(&contract.source_plan_path)
+}
+
+fn plan_creation_non_plan_repair_skip_message() -> String {
+    "Skipped non-plan repair action. Update the same verified plan file before execution."
+        .to_string()
+}
+
+fn plan_creation_first_message() -> String {
+    "Create the project plan file first, then create implementation files from the verified plan."
+        .to_string()
 }
 
 fn plan_creation_repair_message(session: &Session) -> String {
@@ -2220,6 +2419,33 @@ fn missing_expected_plan_paths_message(session: &Session) -> Option<String> {
             .to_string(),
     );
     Some(lines.join("\n"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MissingPlanPathCounts {
+    directories: usize,
+    files: usize,
+}
+
+impl MissingPlanPathCounts {
+    fn total(self) -> usize {
+        self.directories + self.files
+    }
+}
+
+fn missing_expected_plan_path_counts(session: &Session) -> MissingPlanPathCounts {
+    MissingPlanPathCounts {
+        directories: missing_expected_plan_directories(session).len(),
+        files: missing_expected_plan_files(session).len(),
+    }
+}
+
+fn plan_execution_no_progress_message(session: &Session) -> Option<String> {
+    missing_expected_plan_paths_message(session).map(|message| {
+        format!(
+            "{message}\nStopped because the last tool response did not create any remaining expected plan paths."
+        )
+    })
 }
 
 fn plan_execution_repair_message_or_mark_complete(session: &mut Session) -> Option<String> {
@@ -6826,6 +7052,285 @@ mod tests {
     }
 
     #[test]
+    fn plan_creation_execution_blocks_implementation_when_new_plan_needs_repair() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-create-exec-bad-plan",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating files before the plan.")
+                    .with_tool_calls(vec![
+                        RawModelToolCall {
+                            id: "bad-plan-early-readme".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "GreeterCLI/README.md",
+                                "contents": "# Greeter CLI\n"
+                            }),
+                            assistant_summary: Some("create README too early".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "bad-plan-file".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "GreeterCLI/project_plan.txt",
+                                "contents": "Create README.md, requirements.txt, src/main.py, and tests/test_main.py.\n"
+                            }),
+                            assistant_summary: Some("create incomplete plan".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "bad-plan-requirements".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "GreeterCLI/requirements.txt",
+                                "contents": ""
+                            }),
+                            assistant_summary: Some("create requirements too early".to_string()),
+                        },
+                    ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a greeter project, execute it, and run verification",
+        );
+
+        assert!(root.join("GreeterCLI/project_plan.txt").is_file());
+        assert!(!root.join("GreeterCLI/README.md").exists());
+        assert!(!root.join("GreeterCLI/requirements.txt").exists());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("The plan needs revision before execution")
+        )));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Skipped non-plan repair action"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explicit_prompt_project_root_anchors_bare_project_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-prompt-root-anchor",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating project with bare paths.")
+                    .with_tool_calls(vec![
+                        RawModelToolCall {
+                            id: "prompt-root-plan".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "project_plan.md",
+                                "contents": "# Greeter Plan\n\n```text\nREADME.md\nrequirements.txt\nsrc/main.py\ntests/test_main.py\n```\n\n## Verification\n- Run `python3 -m py_compile src/main.py tests/test_main.py`.\n\n## Acceptance Criteria\n- Expected files exist and compile.\n"
+                            }),
+                            assistant_summary: Some("create plan".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "prompt-root-files".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                            arguments: json!({
+                                "directories": ["src", "tests"],
+                                "files": [
+                                    {
+                                        "target_path": "README.md",
+                                        "contents": "# Greeter CLI\n"
+                                    },
+                                    {
+                                        "target_path": "requirements.txt",
+                                        "contents": ""
+                                    },
+                                    {
+                                        "target_path": "src/main.py",
+                                        "contents": "def main():\n    print('hello')\n\nif __name__ == '__main__':\n    main()\n"
+                                    },
+                                    {
+                                        "target_path": "tests/test_main.py",
+                                        "contents": "def test_smoke():\n    assert True\n"
+                                    }
+                                ]
+                            }),
+                            assistant_summary: Some("create files".to_string()),
+                        },
+                    ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a greeter project inside playground/GreeterPromptRoot and execute it",
+        );
+
+        for path in [
+            "playground/GreeterPromptRoot/project_plan.md",
+            "playground/GreeterPromptRoot/README.md",
+            "playground/GreeterPromptRoot/requirements.txt",
+            "playground/GreeterPromptRoot/src/main.py",
+            "playground/GreeterPromptRoot/tests/test_main.py",
+        ] {
+            assert!(root.join(path).is_file(), "missing {path}");
+        }
+        assert!(!root.join("project_plan.md").exists());
+        assert!(!root.join("README.md").exists());
+        assert!(!root.join("src/main.py").exists());
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("plan should be recorded");
+        assert_eq!(plan.project_root, root.join("playground/GreeterPromptRoot"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_creation_execution_requires_plan_before_implementation() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-required-first",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Implementing without a plan.")
+                    .with_tool_calls(vec![RawModelToolCall {
+                        id: "plan-required-early-readme".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "GreeterCLI/README.md",
+                            "contents": "# Greeter CLI\n"
+                        }),
+                        assistant_summary: Some("create README too early".to_string()),
+                    }]),
+                crate::event::ProviderOutput::new("Creating plan and files.").with_tool_calls(
+                    vec![
+                        RawModelToolCall {
+                            id: "plan-required-plan".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "GreeterCLI/plan.md",
+                                "contents": "# Greeter Plan\n\n```text\nREADME.md\nsrc/main.py\n```\n\n## Verification\n- Run `python3 -m py_compile src/main.py`.\n\n## Acceptance Criteria\n- Expected files exist.\n"
+                            }),
+                            assistant_summary: Some("create plan".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "plan-required-readme".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "GreeterCLI/README.md",
+                                "contents": "# Greeter CLI\n"
+                            }),
+                            assistant_summary: Some("create README".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "plan-required-main".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "GreeterCLI/src/main.py",
+                                "contents": "print('hello')\n"
+                            }),
+                            assistant_summary: Some("create main".to_string()),
+                        },
+                    ],
+                ),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a greeter project, first create a plan, then execute it",
+        );
+
+        assert!(root.join("GreeterCLI/plan.md").is_file());
+        assert!(root.join("GreeterCLI/README.md").is_file());
+        assert!(root.join("GreeterCLI/src/main.py").is_file());
+        let trace = session
+            .latest_reasoning_trace()
+            .expect("reasoning trace should exist");
+        assert!(trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Create the project plan file first")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn execute_empty_tool_response_does_not_plain_fallback_to_fake_completion() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-execute-empty-no-fallback",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProviderWithToolErrors::new(
+            vec![
+                crate::event::ProviderOutput::new(
+                    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+                ),
+                crate::event::ProviderOutput::new(
+                    "Created project files and ran verification successfully.",
+                ),
+            ],
+            vec![CapturedToolStep::EmptyResponse],
+        );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a greeter project, execute it, and run verification",
+        );
+
+        assert!(!root.join("GreeterCLI").exists());
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.contains("Created project files")
+        )));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("did not return any tool actions")
+        )));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("empty tool response on execute route"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn bare_plan_artifact_is_anchored_to_batch_project_root() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-bare-plan-batch-root",
@@ -6997,6 +7502,133 @@ mod tests {
             .runtime_checks
             .iter()
             .any(|line| line.contains("Skipped shell command during verified plan execution"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_execution_stops_after_no_progress_off_plan_tool_round() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-no-progress",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating plan first.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "no-progress-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "GreeterCLI/plan.md",
+                            "contents": "# Greeter Plan\n\n```text\nREADME.md\nrequirements.txt\nsrc/main.py\ntests/test_main.py\n```\n\n## Verification\n- Run `python3 -m py_compile src/main.py tests/test_main.py`.\n\n## Acceptance Criteria\n- The greeter files exist and compile.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Creating part of the project.")
+                    .with_tool_calls(vec![
+                        RawModelToolCall {
+                            id: "no-progress-readme".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "GreeterCLI/README.md",
+                                "contents": "# Greeter CLI\n"
+                            }),
+                            assistant_summary: Some("create README".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "no-progress-main".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "GreeterCLI/src/main.py",
+                                "contents": "def main():\n    print('hello')\n\nif __name__ == '__main__':\n    main()\n"
+                            }),
+                            assistant_summary: Some("create main".to_string()),
+                        },
+                    ]),
+                crate::event::ProviderOutput::new("Trying wrong paths and verification.")
+                    .with_tool_calls(vec![
+                        RawModelToolCall {
+                            id: "no-progress-wrong-test".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "Greeter/tests/test_main.py",
+                                "contents": "def test_smoke():\n    assert True\n"
+                            }),
+                            assistant_summary: Some("create wrong test".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "no-progress-wrong-requirements".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "Greeter/requirements.txt",
+                                "contents": ""
+                            }),
+                            assistant_summary: Some("create wrong requirements".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "no-progress-shell".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                            arguments: json!({
+                                "command": "python3 -m py_compile src/main.py tests/test_main.py",
+                                "cwd": root.join("GreeterCLI").display().to_string(),
+                                "expected_effect": "Python files compile"
+                            }),
+                            assistant_summary: Some("compile Python files".to_string()),
+                        },
+                    ]),
+                crate::event::ProviderOutput::new("This request should not be reached.")
+                    .with_tool_calls(vec![RawModelToolCall {
+                        id: "no-progress-late-test".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "GreeterCLI/tests/test_main.py",
+                            "contents": "def test_late():\n    assert True\n"
+                        }),
+                        assistant_summary: Some("late test".to_string()),
+                    }]),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a greeter project, execute it, and run verification",
+        );
+
+        assert!(root.join("GreeterCLI/plan.md").is_file());
+        assert!(root.join("GreeterCLI/README.md").is_file());
+        assert!(root.join("GreeterCLI/src/main.py").is_file());
+        assert!(!root.join("GreeterCLI/tests/test_main.py").exists());
+        assert!(!root.join("GreeterCLI/requirements.txt").exists());
+        assert!(!root.join("Greeter/tests/test_main.py").exists());
+        assert_eq!(
+            provider
+                .requests()
+                .iter()
+                .filter(|request| request.mode == CapturedProviderRequestMode::Tool)
+                .count(),
+            3,
+            "the no-progress skipped/off-plan round should stop the loop"
+        );
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("Stopped because the last tool response")
+                    && message.content.contains("GreeterCLI/tests/test_main.py")
+                    && message.content.contains("GreeterCLI/requirements.txt")
+        )));
+        assert!(session
+            .latest_reasoning_trace()
+            .is_some_and(|trace| trace.runtime_checks.iter().any(
+                |line| line.contains("plan execution made no progress; stopped provider loop")
+            )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
