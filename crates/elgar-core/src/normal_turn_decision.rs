@@ -2,9 +2,20 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NormalTurnDecision {
-    Chat { content: String },
-    Execute,
-    AskGuidance { question: String },
+    Chat {
+        content: String,
+    },
+    Execute {
+        intent: Option<NormalTurnExecuteIntent>,
+    },
+    AskGuidance {
+        question: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NormalTurnExecuteIntent {
+    PlanExecution,
 }
 
 pub(crate) fn parse_normal_turn_decision(message: &str) -> Option<NormalTurnDecision> {
@@ -16,13 +27,22 @@ pub(crate) fn parse_normal_turn_decision(message: &str) -> Option<NormalTurnDeci
                 content: content.to_string(),
             })
         }
-        "execute" => Some(NormalTurnDecision::Execute),
+        "execute" => Some(NormalTurnDecision::Execute {
+            intent: parse_execute_intent(&value),
+        }),
         "ask_guidance" => {
             let question = value.get("question").and_then(Value::as_str)?.trim();
             (!question.is_empty()).then(|| NormalTurnDecision::AskGuidance {
                 question: question.to_string(),
             })
         }
+        _ => None,
+    }
+}
+
+fn parse_execute_intent(value: &Value) -> Option<NormalTurnExecuteIntent> {
+    match value.get("intent").and_then(Value::as_str)?.trim() {
+        "plan_execution" => Some(NormalTurnExecuteIntent::PlanExecution),
         _ => None,
     }
 }
@@ -41,13 +61,19 @@ fn parse_json_value(message: &str) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_normal_turn_decision, NormalTurnDecision};
+    use super::{parse_normal_turn_decision, NormalTurnDecision, NormalTurnExecuteIntent};
 
     #[test]
     fn parses_model_selected_execute_route() {
         assert_eq!(
             parse_normal_turn_decision("{\"route\":\"execute\"}"),
-            Some(NormalTurnDecision::Execute)
+            Some(NormalTurnDecision::Execute { intent: None })
+        );
+        assert_eq!(
+            parse_normal_turn_decision("{\"route\":\"execute\",\"intent\":\"plan_execution\"}"),
+            Some(NormalTurnDecision::Execute {
+                intent: Some(NormalTurnExecuteIntent::PlanExecution)
+            })
         );
     }
 

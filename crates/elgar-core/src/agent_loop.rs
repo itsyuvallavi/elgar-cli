@@ -24,7 +24,9 @@ use crate::{
         RawModelToolCall, ValidatedModelGuidanceRequest, ValidatedModelToolAction,
         ValidatedModelToolOutput,
     },
-    normal_turn_decision::{parse_normal_turn_decision, NormalTurnDecision},
+    normal_turn_decision::{
+        parse_normal_turn_decision, NormalTurnDecision, NormalTurnExecuteIntent,
+    },
     path_resolution::{
         allowed_root_for_action, resolve_agent_action_paths,
         resolve_shell_action_paths_for_session, AgentPathResolution,
@@ -63,12 +65,13 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "After tools run, answer naturally and briefly with what happened."
 );
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
-    "You are Elgar. No tools are attached yet. ",
-    "Answer briefly for text-only turns. ",
-    "Return {\"route\":\"execute\"} for filesystem or shell work. ",
-    "Return {\"route\":\"ask_guidance\",\"question\":\"...\"} only when a required detail is missing. ",
-    "For capability questions, say Elgar can create, edit, move, delete files and run commands via the harness, subject to validation and permissions. ",
-    "Do not claim filesystem or shell work was completed."
+    "You are Elgar. No tools yet. ",
+    "Reply briefly for text-only turns. ",
+    "Return {\"route\":\"execute\"} for filesystem, shell, or file-artifact work. ",
+    "Return {\"route\":\"execute\",\"intent\":\"plan_execution\"} to execute an existing or just-created plan. ",
+    "Return {\"route\":\"ask_guidance\",\"question\":\"...\"} only if a required detail is missing. ",
+    "Capabilities: Elgar can create/edit/move/delete files and run commands via the harness, subject to validation/permissions. ",
+    "Do not claim work completed."
 );
 const AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT: &str = concat!(
     "Classify which verified runtime state answer, if any, the user needs from this current session. ",
@@ -89,7 +92,12 @@ const TOOL_COMMAND_PREFIX: &str = "/tool";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlainAgentChatOutcome {
     Finished,
-    Execute,
+    Execute(AgentExecutionIntent),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AgentExecutionIntent {
+    plan_execution: bool,
 }
 
 pub fn run_permissive_agent_turn<P>(provider: &P, session: &mut Session, input: &str) -> TurnResult
@@ -113,8 +121,10 @@ where
     session.start_reasoning_trace(input);
 
     let Some(tool_input) = explicit_tool_command_input(input) else {
-        if run_plain_agent_chat(provider, session, input) == PlainAgentChatOutcome::Execute {
-            return run_agent_tool_chat(provider, session, input, policy_mode, start_index);
+        if let PlainAgentChatOutcome::Execute(intent) =
+            run_plain_agent_chat(provider, session, input)
+        {
+            return run_agent_tool_chat(provider, session, input, policy_mode, start_index, intent);
         }
         return TurnResult {
             route: Route::AskModel,
@@ -135,7 +145,14 @@ where
 
     session.record_reasoning_route("execute");
     session.push_reasoning_model_decision("explicit /tool route selected");
-    run_agent_tool_chat(provider, session, tool_input, policy_mode, start_index)
+    run_agent_tool_chat(
+        provider,
+        session,
+        tool_input,
+        policy_mode,
+        start_index,
+        AgentExecutionIntent::default(),
+    )
 }
 
 pub fn run_agent_tool_turn_with_policy<P>(
@@ -152,7 +169,14 @@ where
     session.start_reasoning_trace(input);
     session.record_reasoning_route("execute");
     session.push_reasoning_model_decision("tool-enabled turn started");
-    run_agent_tool_chat(provider, session, input, policy_mode, start_index)
+    run_agent_tool_chat(
+        provider,
+        session,
+        input,
+        policy_mode,
+        start_index,
+        AgentExecutionIntent::default(),
+    )
 }
 
 fn push_provider_finished(
@@ -175,6 +199,7 @@ fn run_agent_tool_chat<P>(
     input: &str,
     policy_mode: PermissionPolicyMode,
     start_index: usize,
+    intent: AgentExecutionIntent,
 ) -> TurnResult
 where
     P: ControllerProvider,
@@ -332,6 +357,7 @@ where
             resolved_outputs,
             plan_created_this_turn,
             plan_creation_repair_in_progress,
+            intent.plan_execution,
         );
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
         let plan_execution_batch =
@@ -440,6 +466,13 @@ where
                         plan_created_this_turn = true;
                         plan_creation_repair_in_progress =
                             latest_plan_contract_needs_repair(session);
+                        if intent.plan_execution && !plan_creation_repair_in_progress {
+                            plan_execution_in_progress = true;
+                            session.push_reasoning_runtime_check(
+                                "new verified plan created during plan execution turn",
+                            );
+                            session.mark_latest_structured_project_plan_executing();
+                        }
                         if plan_creation_repair_in_progress {
                             messages
                                 .push(ChatMessage::system(plan_creation_repair_message(session)));
@@ -578,13 +611,26 @@ where
                 session.push_reasoning_model_decision(
                     "normal turn decision returned raw tool protocol; routed to execute",
                 );
-                return PlainAgentChatOutcome::Execute;
+                return PlainAgentChatOutcome::Execute(AgentExecutionIntent::default());
             }
             match parse_normal_turn_decision(&assistant_text) {
-                Some(NormalTurnDecision::Execute) => {
+                Some(NormalTurnDecision::Execute { intent }) => {
+                    let execution_intent = AgentExecutionIntent {
+                        plan_execution: matches!(
+                            intent,
+                            Some(NormalTurnExecuteIntent::PlanExecution)
+                        ),
+                    };
                     session.record_reasoning_route("execute");
-                    session.push_reasoning_model_decision("normal turn decision selected execute");
-                    PlainAgentChatOutcome::Execute
+                    if execution_intent.plan_execution {
+                        session.push_reasoning_model_decision(
+                            "normal turn decision selected execute intent plan_execution",
+                        );
+                    } else {
+                        session
+                            .push_reasoning_model_decision("normal turn decision selected execute");
+                    }
+                    PlainAgentChatOutcome::Execute(execution_intent)
                 }
                 Some(NormalTurnDecision::Chat { content }) => {
                     session.record_reasoning_route("chat");
@@ -738,6 +784,7 @@ fn guard_plan_creation_tool_outputs(
     outputs: Vec<ResolvedAgentToolOutput>,
     plan_created_this_turn: bool,
     plan_creation_repair_in_progress: bool,
+    allow_implementation_after_plan_creation: bool,
 ) -> Vec<ResolvedAgentToolOutput> {
     if plan_creation_repair_in_progress {
         return outputs
@@ -782,7 +829,8 @@ fn guard_plan_creation_tool_outputs(
         .into_iter()
         .map(|output| match output {
             ResolvedAgentToolOutput::Action(action)
-                if plan_created_this_turn || plan_creation_repair_in_progress =>
+                if (plan_created_this_turn || plan_creation_repair_in_progress)
+                    && !allow_implementation_after_plan_creation =>
             {
                 ResolvedAgentToolOutput::Skipped {
                     tool_call_id: action.tool_call_id,
@@ -794,6 +842,9 @@ fn guard_plan_creation_tool_outputs(
                 if plan_creation_root_for_action(session, &action.request).is_some()
                     || is_plan_parent_setup_action(session, &action.request, &plan_roots) =>
             {
+                ResolvedAgentToolOutput::Action(action)
+            }
+            ResolvedAgentToolOutput::Action(action) if allow_implementation_after_plan_creation => {
                 ResolvedAgentToolOutput::Action(action)
             }
             ResolvedAgentToolOutput::Action(action) => ResolvedAgentToolOutput::Skipped {
@@ -4958,6 +5009,91 @@ mod tests {
     }
 
     #[test]
+    fn normal_text_plan_execution_intent_can_create_plan_and_expected_files() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-execution-intent",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating plan and files.").with_tool_calls(
+                    vec![
+                        RawModelToolCall {
+                            id: "plan-exec-intent-plan".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/plan.md",
+                                "contents": "# Calculator Plan\n\n```text\nREADME.md\ncalculator.py\nui.py\n```\n\n## Verification\n- `calculator.py`, `ui.py`, and `README.md` exist.\n\n## Acceptance Criteria\n- Running `python ui.py` launches the calculator UI.\n"
+                            }),
+                            assistant_summary: Some("create plan".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "plan-exec-intent-readme".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/README.md",
+                                "contents": "# Calculator UI\n"
+                            }),
+                            assistant_summary: Some("create README".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "plan-exec-intent-calc".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/calculator.py",
+                                "contents": "class Calculator:\n    pass\n"
+                            }),
+                            assistant_summary: Some("create calculator".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "plan-exec-intent-ui".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/ui.py",
+                                "contents": "from calculator import Calculator\n"
+                            }),
+                            assistant_summary: Some("create ui".to_string()),
+                        },
+                    ],
+                ),
+            );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "execute the plan you just created");
+
+        assert!(root.join("CalculatorUI/plan.md").is_file());
+        assert!(root.join("CalculatorUI/README.md").is_file());
+        assert!(root.join("CalculatorUI/calculator.py").is_file());
+        assert!(root.join("CalculatorUI/ui.py").is_file());
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("plan should be recorded");
+        assert_eq!(
+            plan.status,
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
+        let trace = session
+            .latest_reasoning_trace()
+            .expect("reasoning trace should exist");
+        assert!(trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains("execute intent plan_execution")));
+        assert!(trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("new verified plan created during plan execution turn")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn normal_text_model_plain_answer_renders_without_tools() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-normal-chat-decision",
@@ -4975,16 +5111,14 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
         assert_eq!(requests[0].tool_count, 0);
-        assert!(requests[0].messages[0]
-            .content
-            .contains("No tools are attached yet"));
+        assert!(requests[0].messages[0].content.contains("No tools yet"));
         assert!(requests[0].messages[0]
             .content
             .contains("Return {\"route\":\"execute\"}"));
         assert!(requests[0].messages[0]
             .content
-            .contains("Answer briefly for text-only turns"));
-        assert!(requests[0].messages[0].content.len() <= 460);
+            .contains("Reply briefly for text-only turns"));
+        assert!(requests[0].messages[0].content.len() <= 520);
         assert!(!requests[0].messages[0].content.contains("Return only JSON"));
         assert!(!requests[0].messages[0].content.contains("Use `/tool"));
         assert!(session.events().iter().any(|event| matches!(
