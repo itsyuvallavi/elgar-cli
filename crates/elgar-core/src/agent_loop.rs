@@ -1566,13 +1566,18 @@ fn guard_plan_execution_tool_outputs(
                     visible: false,
                 }
             }
-            ResolvedAgentToolOutput::Action(action)
-                if is_nonconstructive_plan_execution_action(session, plan, &action.request) =>
-            {
-                ResolvedAgentToolOutput::Skipped {
-                    tool_call_id: action.tool_call_id,
-                    message: "Skipped tool call because it does not create a missing expected path from the verified plan.".to_string(),
-                    visible: false,
+            ResolvedAgentToolOutput::Action(action) => {
+                if let Some(message) =
+                    nonconstructive_plan_execution_skip_message(session, plan, &action.request)
+                {
+                    let visible = is_off_plan_file_creation_attempt(session, plan, &action.request);
+                    ResolvedAgentToolOutput::Skipped {
+                        tool_call_id: action.tool_call_id,
+                        message,
+                        visible,
+                    }
+                } else {
+                    ResolvedAgentToolOutput::Action(action)
                 }
             }
             other => other,
@@ -1604,7 +1609,47 @@ fn is_existing_plan_execution_directory(
     structured_plan_expects_path(plan, &target_path) && target_path.is_dir()
 }
 
-fn is_nonconstructive_plan_execution_action(
+fn nonconstructive_plan_execution_skip_message(
+    session: &Session,
+    plan: &crate::session::StructuredProjectPlan,
+    request: &ActionRequest,
+) -> Option<String> {
+    match request {
+        ActionRequest::CreateFile(action) => {
+            let target_path = absolute_session_path(session, &action.target_path);
+            if !structured_plan_expects_path(plan, &target_path) {
+                return Some(off_plan_file_creation_skip_message(session, &target_path));
+            }
+            target_path.is_file().then(|| {
+                "Skipped tool call because the expected file already exists in the verified plan."
+                    .to_string()
+            })
+        }
+        ActionRequest::OverwriteFile(action) => {
+            let target_path = absolute_session_path(session, &action.target_path);
+            if !structured_plan_expects_path(plan, &target_path) {
+                return Some(off_plan_file_creation_skip_message(session, &target_path));
+            }
+            target_path.is_file().then(|| {
+                "Skipped tool call because the expected file already exists in the verified plan."
+                    .to_string()
+            })
+        }
+        ActionRequest::CreateDirectory(_) => None,
+        ActionRequest::PatchFile(_)
+        | ActionRequest::DeleteFile(_)
+        | ActionRequest::MoveFile(_) => Some(
+            "Skipped tool call because it does not create a missing expected path from the verified plan."
+                .to_string(),
+        ),
+        ActionRequest::ShellCommand(_) => Some(
+            "Skipped shell command during verified plan execution; verification commands are recorded in the plan and should be run separately unless the plan explicitly includes a generated script or output path."
+                .to_string(),
+        ),
+    }
+}
+
+fn is_off_plan_file_creation_attempt(
     session: &Session,
     plan: &crate::session::StructuredProjectPlan,
     request: &ActionRequest,
@@ -1612,18 +1657,25 @@ fn is_nonconstructive_plan_execution_action(
     match request {
         ActionRequest::CreateFile(action) => {
             let target_path = absolute_session_path(session, &action.target_path);
-            !structured_plan_expects_path(plan, &target_path) || target_path.is_file()
+            !structured_plan_expects_path(plan, &target_path)
         }
         ActionRequest::OverwriteFile(action) => {
             let target_path = absolute_session_path(session, &action.target_path);
-            !structured_plan_expects_path(plan, &target_path) || target_path.is_file()
+            !structured_plan_expects_path(plan, &target_path)
         }
-        ActionRequest::CreateDirectory(_) => false,
-        ActionRequest::PatchFile(_)
+        ActionRequest::CreateDirectory(_)
+        | ActionRequest::PatchFile(_)
         | ActionRequest::DeleteFile(_)
         | ActionRequest::MoveFile(_)
-        | ActionRequest::ShellCommand(_) => true,
+        | ActionRequest::ShellCommand(_) => false,
     }
+}
+
+fn off_plan_file_creation_skip_message(session: &Session, target_path: &Path) -> String {
+    format!(
+        "Skipped off-plan file `{}` because it is not listed in the verified plan. Verification commands can stay in the plan's Verification section; create a script file only when that file is explicitly included in the plan scope.",
+        display_agent_context_path(session, target_path)
+    )
 }
 
 fn created_file_target_path(session: &Session, request: &ActionRequest) -> Option<PathBuf> {
@@ -4437,6 +4489,120 @@ mod tests {
             .iter()
             .any(|line| line
                 == "plan execution completed after skipped tool feedback; skipped final provider synthesis")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_execution_reports_off_plan_verification_script_attempt() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-off-plan-verify-script",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("greeter")).unwrap();
+        std::fs::write(
+            cwd.join("greeter/plan.md"),
+            "# Project Plan\n\n```text\nREADME.md\nrequirements.txt\nsrc/main.py\ntests/test_main.py\n```\n\n## Verification\n- Run `python -m py_compile src/main.py tests/test_main.py`.\n\n## Acceptance Criteria\n- Expected files exist.\n",
+        )
+        .unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating project files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "verify-readme-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "README.md",
+                        "contents": "# Greeter\n"
+                    }),
+                    assistant_summary: Some("create readme".to_string()),
+                },
+                RawModelToolCall {
+                    id: "verify-requirements-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "requirements.txt",
+                        "contents": ""
+                    }),
+                    assistant_summary: Some("create requirements".to_string()),
+                },
+                RawModelToolCall {
+                    id: "verify-main-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "src/main.py",
+                        "contents": "print('hello')\n"
+                    }),
+                    assistant_summary: Some("create main".to_string()),
+                },
+                RawModelToolCall {
+                    id: "verify-test-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "tests/test_main.py",
+                        "contents": "def test_smoke():\n    assert True\n"
+                    }),
+                    assistant_summary: Some("create test".to_string()),
+                },
+                RawModelToolCall {
+                    id: "verify-script-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "shell_verify.sh",
+                        "contents": "python -m py_compile src/main.py tests/test_main.py\n"
+                    }),
+                    assistant_summary: Some("create verification script".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("greeter/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "greeter/plan.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(cwd.join("greeter/README.md").is_file());
+        assert!(cwd.join("greeter/requirements.txt").is_file());
+        assert!(cwd.join("greeter/src/main.py").is_file());
+        assert!(cwd.join("greeter/tests/test_main.py").is_file());
+        assert!(!cwd.join("greeter/shell_verify.sh").exists());
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.content.contains("Skipped off-plan file")
+                    && message.content.contains("shell_verify.sh")
+                    && message
+                        .content
+                        .contains("Verification commands can stay in the plan's Verification section")
+        )));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(
+                |line| line.contains("Skipped off-plan file") && line.contains("shell_verify.sh")
+            )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
