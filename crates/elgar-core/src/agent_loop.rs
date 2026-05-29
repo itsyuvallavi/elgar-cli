@@ -44,9 +44,7 @@ use crate::{
         ProviderPromptMemorySelection, Session, VerifiedPlanReference,
     },
     shell::ShellExecutor,
-    verified_state_answer::{
-        parse_verified_state_classification_output, verified_session_state_answer,
-    },
+    verified_state_answer::verified_session_state_answer,
 };
 
 const AGENT_SYSTEM_PROMPT: &str = concat!(
@@ -66,20 +64,11 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "You are Elgar. No tools yet. ",
     "Reply briefly for text-only turns. ",
-    "Return {\"route\":\"execute\"} for filesystem, shell, or file-artifact work. ",
-    "Return {\"route\":\"execute\",\"intent\":\"plan_execution\"} to execute an existing or just-created plan. ",
-    "Return {\"route\":\"ask_guidance\",\"question\":\"...\"} only if a required detail is missing. ",
-    "Capabilities: Elgar can create/edit/move/delete files and run commands via the harness, subject to validation/permissions. ",
-    "Do not claim work completed."
-);
-const AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT: &str = concat!(
-    "Classify which verified runtime state answer, if any, the user needs from this current session. ",
-    "Return only JSON with this exact shape: {\"answer_kind\":\"none\",\"needs_runtime_context\":false}. ",
-    "Allowed answer_kind values are: none, latest_folder, latest_file, created_summary, pending, plan, status, memory, summary. ",
-    "Choose a state answer only when the user is asking to inspect or report already verified session state. ",
-    "Choose none when the user is asking for a new action, artifact, plan, implementation, or execution, even if the request mentions an existing folder or plan. ",
-    "Set needs_runtime_context true when the user is asking to act on prior verified work and the route decision needs that verified state. ",
-    "Choose none when the answer does not require verified session state."
+    "Return JSON only for routing: {\"route\":\"execute\"} for filesystem/shell/artifact work; ",
+    "{\"route\":\"execute\",\"intent\":\"plan_execution\"} for plan execution; ",
+    "{\"route\":\"state\",\"answer_kind\":\"...\"} for verified-state inspection; ",
+    "{\"route\":\"ask_guidance\",\"question\":\"...\"} if a required detail is missing. ",
+    "Runtime supplies verified context after routing. Do not claim completed work."
 );
 const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
     "The previous tool-enabled provider request returned no usable response. ",
@@ -582,87 +571,21 @@ fn run_plain_agent_chat<P>(
 where
     P: ControllerProvider,
 {
-    let mut needs_runtime_context = false;
-    if has_verified_session_state(session) {
-        let classification = classify_verified_state_turn(provider, session, input);
-        if let Some(answer_kind) = classification.answer_kind {
-            session.push_event(Event::AssistantMessage(AssistantMessage::new(
-                verified_session_state_answer(session, answer_kind),
-                AssistantMessageSource::Controller,
-            )));
-            return PlainAgentChatOutcome::Finished;
-        }
-        needs_runtime_context = classification.needs_runtime_context;
-    }
-
     let request = provider.request_metadata();
     session.push_event(Event::ProviderStarted(
         ProviderStarted::new(request.provider.clone(), request.request_id.clone())
             .with_request_details(request.model.clone(), "plain_chat", 0),
     ));
-    let mut messages = vec![ChatMessage::system(
-        AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT,
-    )];
-    if needs_runtime_context {
-        if let Some(context) = agent_verified_memory_context(session).prompt_context {
-            messages.push(ChatMessage::system(context));
-        }
-    }
-    messages.push(ChatMessage::user(input));
+    let messages = vec![
+        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
+        ChatMessage::user(input),
+    ];
 
     match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
         Ok(output) => {
             let assistant_text = output.text.clone();
             push_provider_finished(session, request.provider, request.request_id, output);
-            if looks_like_raw_tool_protocol(&assistant_text) {
-                session.record_reasoning_route("execute");
-                session.push_reasoning_model_decision(
-                    "normal turn decision returned raw tool protocol; routed to execute",
-                );
-                return PlainAgentChatOutcome::Execute(AgentExecutionIntent::default());
-            }
-            match parse_normal_turn_decision(&assistant_text) {
-                Some(NormalTurnDecision::Execute { intent }) => {
-                    let execution_intent = AgentExecutionIntent {
-                        plan_execution: matches!(
-                            intent,
-                            Some(NormalTurnExecuteIntent::PlanExecution)
-                        ),
-                    };
-                    session.record_reasoning_route("execute");
-                    if execution_intent.plan_execution {
-                        session.push_reasoning_model_decision(
-                            "normal turn decision selected execute intent plan_execution",
-                        );
-                    } else {
-                        session
-                            .push_reasoning_model_decision("normal turn decision selected execute");
-                    }
-                    PlainAgentChatOutcome::Execute(execution_intent)
-                }
-                Some(NormalTurnDecision::Chat { content }) => {
-                    session.record_reasoning_route("chat");
-                    session.push_reasoning_model_decision("normal turn decision selected chat");
-                    push_plain_provider_message_if_visible(session, content);
-                    PlainAgentChatOutcome::Finished
-                }
-                Some(NormalTurnDecision::AskGuidance { question }) => {
-                    session.record_reasoning_route("ask_guidance");
-                    session.push_reasoning_model_decision(
-                        "normal turn decision selected ask_guidance",
-                    );
-                    push_plain_provider_message_if_visible(session, question);
-                    PlainAgentChatOutcome::Finished
-                }
-                None => {
-                    session.record_reasoning_route("chat");
-                    session.push_reasoning_model_decision(
-                        "normal turn decision did not return structured JSON; treated as chat",
-                    );
-                    push_plain_provider_message_if_visible(session, assistant_text);
-                    PlainAgentChatOutcome::Finished
-                }
-            }
+            handle_plain_agent_decision(provider, session, input, assistant_text, true)
         }
         Err(error) => {
             session.push_event(Event::Error(ErrorEvent::new(format!(
@@ -674,36 +597,113 @@ where
     }
 }
 
-fn classify_verified_state_turn<P>(
+fn retry_plain_agent_chat_with_verified_context<P>(
     provider: &P,
     session: &mut Session,
     input: &str,
-) -> crate::verified_state_answer::VerifiedStateClassification
+) -> PlainAgentChatOutcome
 where
     P: ControllerProvider,
 {
+    let Some(context) = agent_verified_memory_context(session).prompt_context else {
+        return PlainAgentChatOutcome::Finished;
+    };
     let request = provider.request_metadata();
     session.push_event(Event::ProviderStarted(
         ProviderStarted::new(request.provider.clone(), request.request_id.clone())
-            .with_request_details(request.model.clone(), "plain_state_classifier", 0),
+            .with_request_details(request.model.clone(), "plain_chat_context", 0),
     ));
     let messages = vec![
-        ChatMessage::system(AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT),
+        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
+        ChatMessage::system(context),
+        ChatMessage::system(
+            "Verified context is available for this retry. If it resolves the missing detail, choose the appropriate route instead of asking for guidance.",
+        ),
         ChatMessage::user(input),
     ];
 
-    match provider.chat_messages_with_metadata(messages, &request) {
+    match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
         Ok(output) => {
-            let decision = parse_verified_state_classification_output(&output.text);
+            let assistant_text = output.text.clone();
             push_provider_finished(session, request.provider, request.request_id, output);
-            decision
+            handle_plain_agent_decision(provider, session, input, assistant_text, false)
         }
         Err(error) => {
             session.push_event(Event::Error(ErrorEvent::new(format!(
-                "{} provider state classification request {} failed: {error}",
+                "{} provider context retry request {} failed: {error}",
                 request.provider, request.request_id
             ))));
-            crate::verified_state_answer::VerifiedStateClassification::default()
+            PlainAgentChatOutcome::Finished
+        }
+    }
+}
+
+fn handle_plain_agent_decision<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+    assistant_text: String,
+    allow_context_retry: bool,
+) -> PlainAgentChatOutcome
+where
+    P: ControllerProvider,
+{
+    if looks_like_raw_tool_protocol(&assistant_text) {
+        session.record_reasoning_route("execute");
+        session.push_reasoning_model_decision(
+            "normal turn decision returned raw tool protocol; routed to execute",
+        );
+        return PlainAgentChatOutcome::Execute(AgentExecutionIntent::default());
+    }
+    match parse_normal_turn_decision(&assistant_text) {
+        Some(NormalTurnDecision::Execute { intent }) => {
+            let execution_intent = AgentExecutionIntent {
+                plan_execution: matches!(intent, Some(NormalTurnExecuteIntent::PlanExecution)),
+            };
+            session.record_reasoning_route("execute");
+            if execution_intent.plan_execution {
+                session.push_reasoning_model_decision(
+                    "normal turn decision selected execute intent plan_execution",
+                );
+            } else {
+                session.push_reasoning_model_decision("normal turn decision selected execute");
+            }
+            PlainAgentChatOutcome::Execute(execution_intent)
+        }
+        Some(NormalTurnDecision::State { answer_kind }) => {
+            session.record_reasoning_route("state");
+            session.push_reasoning_model_decision("normal turn decision selected state");
+            session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                verified_session_state_answer(session, answer_kind),
+                AssistantMessageSource::Controller,
+            )));
+            PlainAgentChatOutcome::Finished
+        }
+        Some(NormalTurnDecision::Chat { content }) => {
+            session.record_reasoning_route("chat");
+            session.push_reasoning_model_decision("normal turn decision selected chat");
+            push_plain_provider_message_if_visible(session, content);
+            PlainAgentChatOutcome::Finished
+        }
+        Some(NormalTurnDecision::AskGuidance { question }) => {
+            if allow_context_retry && has_verified_session_state(session) {
+                session.push_reasoning_model_decision(
+                    "normal turn decision requested guidance; retrying with verified context",
+                );
+                return retry_plain_agent_chat_with_verified_context(provider, session, input);
+            }
+            session.record_reasoning_route("ask_guidance");
+            session.push_reasoning_model_decision("normal turn decision selected ask_guidance");
+            push_plain_provider_message_if_visible(session, question);
+            PlainAgentChatOutcome::Finished
+        }
+        None => {
+            session.record_reasoning_route("chat");
+            session.push_reasoning_model_decision(
+                "normal turn decision did not return structured JSON; treated as chat",
+            );
+            push_plain_provider_message_if_visible(session, assistant_text);
+            PlainAgentChatOutcome::Finished
         }
     }
 }
@@ -4775,31 +4775,6 @@ mod tests {
     }
 
     #[test]
-    fn verified_state_classifier_parser_accepts_wrapped_json() {
-        assert_eq!(
-            parse_verified_state_classification_output(
-                "```json\n{\"answer_kind\":\"latest_folder\"}\n```"
-            )
-            .answer_kind,
-            Some(crate::verified_state_answer::VerifiedStateAnswerKind::LatestFolder)
-        );
-        assert_eq!(
-            parse_verified_state_classification_output("{\"answer_kind\":\"none\"}").answer_kind,
-            None
-        );
-        assert_eq!(
-            parse_verified_state_classification_output("{\"needs_verified_state\":true}")
-                .answer_kind,
-            Some(crate::verified_state_answer::VerifiedStateAnswerKind::Summary)
-        );
-        let classification = parse_verified_state_classification_output(
-            "{\"answer_kind\":\"none\",\"needs_runtime_context\":true}",
-        );
-        assert_eq!(classification.answer_kind, None);
-        assert!(classification.needs_runtime_context);
-    }
-
-    #[test]
     fn verified_plan_excerpt_truncates_unicode_at_char_boundary() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-unicode-plan",
@@ -5127,7 +5102,7 @@ mod tests {
         let provider = CapturingProvider::new()
             .with_plain_outputs(vec![
                 crate::event::ProviderOutput::new(
-                    "{\"answer_kind\":\"none\",\"needs_runtime_context\":true}",
+                    "{\"route\":\"ask_guidance\",\"question\":\"Which plan should I execute?\"}",
                 ),
                 crate::event::ProviderOutput::new(
                     "{\"route\":\"execute\",\"intent\":\"plan_execution\"}",
@@ -5234,12 +5209,11 @@ mod tests {
         assert!(requests[0].messages[0].content.contains("No tools yet"));
         assert!(requests[0].messages[0]
             .content
-            .contains("Return {\"route\":\"execute\"}"));
+            .contains("{\"route\":\"execute\"}"));
         assert!(requests[0].messages[0]
             .content
             .contains("Reply briefly for text-only turns"));
         assert!(requests[0].messages[0].content.len() <= 520);
-        assert!(!requests[0].messages[0].content.contains("Return only JSON"));
         assert!(!requests[0].messages[0].content.contains("Use `/tool"));
         assert!(session.events().iter().any(|event| matches!(
             event,
@@ -5257,17 +5231,15 @@ mod tests {
     }
 
     #[test]
-    fn permissive_agent_hello_after_verified_folder_does_not_inject_folder_memory() {
+    fn permissive_agent_hello_after_verified_folder_stays_one_plain_request() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-hello-no-folder-memory",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("remembered")).unwrap();
-        let provider = CapturingProvider::new().with_plain_outputs(vec![
-            crate::event::ProviderOutput::new("{\"needs_verified_state\":false}"),
-            crate::event::ProviderOutput::new("Hello."),
-        ]);
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new("Hello."));
         let mut session = Session::new("session", &root, &root);
         let folder_action = Action::proposed(
             "action-folder",
@@ -5290,15 +5262,17 @@ mod tests {
         run_permissive_agent_turn(&provider, &mut session, "hello");
 
         let requests = provider.requests();
-        assert_eq!(requests.len(), 2);
-        for request in &requests {
-            assert_eq!(request.mode, CapturedProviderRequestMode::Plain);
-            assert_eq!(request.tool_count, 0);
-            let joined = joined_request_messages(request);
-            assert!(!joined.contains("latest verified folder"));
-            assert!(!joined.contains("remembered"));
-            assert!(!joined.contains("Verified filesystem context"));
-        }
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[0].tool_count, 0);
+        assert_eq!(
+            requests[0].messages.last(),
+            Some(&ChatMessage::user("hello"))
+        );
+        let joined = joined_request_messages(&requests[0]);
+        assert!(!joined.contains("latest verified folder"));
+        assert!(!joined.contains("remembered"));
+        assert!(!joined.contains("Verified filesystem context"));
         assert!(session.latest_provider_prompt_memory_selection().is_none());
         assert!(session.events().iter().any(|event| matches!(
             event,
@@ -5311,7 +5285,7 @@ mod tests {
     }
 
     #[test]
-    fn permissive_agent_state_question_uses_model_classifier_then_verified_state() {
+    fn permissive_agent_state_question_uses_model_selected_state_route() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-state-question-model",
             std::process::id()
@@ -5319,9 +5293,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("remembered")).unwrap();
         std::fs::create_dir_all(root.join("latest-folder")).unwrap();
-        let provider = CapturingProvider::new().with_plain_output(
-            crate::event::ProviderOutput::new("{\"answer_kind\":\"latest_folder\"}"),
-        );
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"state\",\"answer_kind\":\"latest_folder\"}",
+            ));
         let mut session = Session::new("session", &root, &root);
         for (action_id, target_path) in [
             ("action-folder-1", "remembered"),
@@ -5357,12 +5332,10 @@ mod tests {
             requests[0].messages.last(),
             Some(&ChatMessage::user("what did you create?"))
         );
-        let classifier = joined_request_messages(&requests[0]);
-        assert!(classifier.contains("asking to inspect or report already verified session state"));
-        assert!(classifier
-            .contains("asking for a new action, artifact, plan, implementation, or execution"));
-        assert!(!classifier.contains("latest verified folder"));
-        assert!(!classifier.contains("remembered"));
+        let joined = joined_request_messages(&requests[0]);
+        assert!(joined.contains("{\"route\":\"state\""));
+        assert!(!joined.contains("latest verified folder"));
+        assert!(!joined.contains("remembered"));
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
@@ -5387,10 +5360,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("planned")).unwrap();
         let provider = CapturingProvider::new()
-            .with_plain_outputs(vec![
-                crate::event::ProviderOutput::new("{\"answer_kind\":\"none\"}"),
-                crate::event::ProviderOutput::new("{\"route\":\"execute\"}"),
-            ])
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
             .with_tool_output(
                 crate::event::ProviderOutput::new("Creating plan.").with_tool_calls(vec![
                     RawModelToolCall {
@@ -5437,9 +5407,8 @@ mod tests {
         )));
         let requests = provider.requests();
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
-        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
-        assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
-        assert!(requests[2].tool_count > 0);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert!(requests[1].tool_count > 0);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -5502,9 +5471,10 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let provider = CapturingProvider::new().with_plain_output(
-            crate::event::ProviderOutput::new("{\"answer_kind\":\"created_summary\"}"),
-        );
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"state\",\"answer_kind\":\"created_summary\"}",
+            ));
         let mut session = Session::new("session", &root, &root);
 
         for (action_id, request, result) in [
@@ -5614,10 +5584,7 @@ mod tests {
         )
         .unwrap();
         let provider = CapturingProvider::new()
-            .with_plain_outputs(vec![
-                crate::event::ProviderOutput::new("{\"needs_verified_state\":false}"),
-                crate::event::ProviderOutput::new("Ok."),
-            ])
+            .with_plain_output(crate::event::ProviderOutput::new("Ok."))
             .with_tool_output(
                 crate::event::ProviderOutput::new("Creating project files.").with_tool_calls(vec![
                     RawModelToolCall {
@@ -5654,7 +5621,7 @@ mod tests {
         run_permissive_agent_turn(&provider, &mut session, "ok");
 
         let requests = provider.requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 1);
         for request in &requests {
             assert_eq!(request.mode, CapturedProviderRequestMode::Plain);
             assert_eq!(request.tool_count, 0);

@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use serde_json::Value;
-
 use crate::{
     event::{FileActionVerification, VerifiedActionResult},
     session::{PendingActionSelection, Session, StructuredProjectPlanStatus},
@@ -17,39 +15,6 @@ pub(crate) enum VerifiedStateAnswerKind {
     Status,
     Memory,
     Summary,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct VerifiedStateClassification {
-    pub answer_kind: Option<VerifiedStateAnswerKind>,
-    pub needs_runtime_context: bool,
-}
-
-pub(crate) fn parse_verified_state_classification_output(
-    message: &str,
-) -> VerifiedStateClassification {
-    let Some(value) = parse_json_value(message) else {
-        return VerifiedStateClassification::default();
-    };
-    let needs_runtime_context = value
-        .get("needs_runtime_context")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if let Some(kind) = value.get("answer_kind").and_then(Value::as_str) {
-        return VerifiedStateClassification {
-            answer_kind: parse_verified_state_answer_kind(kind),
-            needs_runtime_context,
-        };
-    }
-
-    let answer_kind = match value.get("needs_verified_state").and_then(Value::as_bool) {
-        Some(true) => Some(VerifiedStateAnswerKind::Summary),
-        _ => None,
-    };
-    VerifiedStateClassification {
-        answer_kind,
-        needs_runtime_context,
-    }
 }
 
 pub(crate) fn verified_session_state_answer(
@@ -71,19 +36,7 @@ pub(crate) fn verified_session_state_answer(
     }
 }
 
-fn parse_json_value(message: &str) -> Option<Value> {
-    serde_json::from_str::<Value>(message.trim())
-        .ok()
-        .or_else(|| {
-            let start = message.find('{')?;
-            let end = message.rfind('}')?;
-            (start < end)
-                .then(|| serde_json::from_str::<Value>(&message[start..=end]).ok())
-                .flatten()
-        })
-}
-
-fn parse_verified_state_answer_kind(kind: &str) -> Option<VerifiedStateAnswerKind> {
+pub(crate) fn parse_verified_state_answer_kind(kind: &str) -> Option<VerifiedStateAnswerKind> {
     match kind {
         "none" => None,
         "latest_folder" => Some(VerifiedStateAnswerKind::LatestFolder),

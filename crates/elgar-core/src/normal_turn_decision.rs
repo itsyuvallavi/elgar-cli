@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use crate::verified_state_answer::{parse_verified_state_answer_kind, VerifiedStateAnswerKind};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NormalTurnDecision {
     Chat {
@@ -10,6 +12,9 @@ pub(crate) enum NormalTurnDecision {
     },
     AskGuidance {
         question: String,
+    },
+    State {
+        answer_kind: VerifiedStateAnswerKind,
     },
 }
 
@@ -36,6 +41,8 @@ pub(crate) fn parse_normal_turn_decision(message: &str) -> Option<NormalTurnDeci
                 question: question.to_string(),
             })
         }
+        "state" => parse_state_answer_kind(&value)
+            .map(|answer_kind| NormalTurnDecision::State { answer_kind }),
         _ => None,
     }
 }
@@ -45,6 +52,13 @@ fn parse_execute_intent(value: &Value) -> Option<NormalTurnExecuteIntent> {
         "plan_execution" => Some(NormalTurnExecuteIntent::PlanExecution),
         _ => None,
     }
+}
+
+fn parse_state_answer_kind(value: &Value) -> Option<VerifiedStateAnswerKind> {
+    value
+        .get("answer_kind")
+        .and_then(Value::as_str)
+        .and_then(parse_verified_state_answer_kind)
 }
 
 fn parse_json_value(message: &str) -> Option<Value> {
@@ -61,6 +75,8 @@ fn parse_json_value(message: &str) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    use crate::verified_state_answer::VerifiedStateAnswerKind;
+
     use super::{parse_normal_turn_decision, NormalTurnDecision, NormalTurnExecuteIntent};
 
     #[test]
@@ -100,6 +116,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_model_selected_verified_state_route() {
+        assert_eq!(
+            parse_normal_turn_decision("{\"route\":\"state\",\"answer_kind\":\"latest_folder\"}"),
+            Some(NormalTurnDecision::State {
+                answer_kind: VerifiedStateAnswerKind::LatestFolder
+            })
+        );
+    }
+
+    #[test]
     fn rejects_unknown_or_incomplete_decisions() {
         assert_eq!(parse_normal_turn_decision("{\"route\":\"unknown\"}"), None);
         assert_eq!(parse_normal_turn_decision("{\"route\":\"chat\"}"), None);
@@ -107,6 +133,7 @@ mod tests {
             parse_normal_turn_decision("{\"route\":\"ask_guidance\"}"),
             None
         );
+        assert_eq!(parse_normal_turn_decision("{\"route\":\"state\"}"), None);
         assert_eq!(parse_normal_turn_decision("not json"), None);
     }
 }
