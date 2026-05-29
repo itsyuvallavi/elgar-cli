@@ -1412,10 +1412,14 @@ fn guard_plan_creation_tool_outputs(
             ResolvedAgentToolOutput::Action(action)
                 if !plan_roots.is_empty() && !plan_created_this_turn =>
             {
-                ResolvedAgentToolOutput::Skipped {
-                    tool_call_id: action.tool_call_id,
-                    message: "Skipped extra implementation tool calls in this plan-creation turn. Ask to execute the verified plan when you want to apply it.".to_string(),
-                    visible: !allow_implementation_after_plan_creation,
+                if allow_implementation_after_plan_creation {
+                    ResolvedAgentToolOutput::Action(action)
+                } else {
+                    ResolvedAgentToolOutput::Skipped {
+                        tool_call_id: action.tool_call_id,
+                        message: "Skipped extra implementation tool calls in this plan-creation turn. Ask to execute the verified plan when you want to apply it.".to_string(),
+                        visible: true,
+                    }
                 }
             }
             ResolvedAgentToolOutput::Action(action) if allow_implementation_after_plan_creation => {
@@ -6923,7 +6927,8 @@ mod tests {
                 "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
             ))
             .with_tool_outputs(vec![
-                crate::event::ProviderOutput::new("Creating plan.").with_tool_calls(vec![
+                crate::event::ProviderOutput::new("Creating plan, files, and verifying.")
+                    .with_tool_calls(vec![
                     RawModelToolCall {
                         id: "verify-plan".to_string(),
                         name: RawModelToolName::Known(ModelToolName::CreateFile),
@@ -6933,9 +6938,6 @@ mod tests {
                         }),
                         assistant_summary: Some("create plan".to_string()),
                     },
-                ]),
-                crate::event::ProviderOutput::new("Creating files and verifying.").with_tool_calls(
-                    vec![
                         RawModelToolCall {
                             id: "verify-files".to_string(),
                             name: RawModelToolName::Known(ModelToolName::CreateFiles),
@@ -6972,8 +6974,7 @@ mod tests {
                             }),
                             assistant_summary: Some("compile Python files".to_string()),
                         },
-                    ],
-                ),
+                    ]),
             ]);
         let mut session = Session::new("session", &root, &root);
 
