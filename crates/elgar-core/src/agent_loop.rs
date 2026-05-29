@@ -420,6 +420,8 @@ where
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
         let plan_execution_batch =
             resolved_outputs_touch_structured_plan(session, &resolved_outputs);
+        let plan_execution_batch_completes_missing_paths = plan_execution_batch
+            && resolved_outputs_complete_missing_plan_paths(session, &resolved_outputs);
         if plan_execution_batch {
             session.record_reasoning_route("plan_execution");
             session.push_reasoning_runtime_check("plan execution paths detected");
@@ -440,6 +442,7 @@ where
             session,
             resolved_outputs,
             plan_execution_in_progress,
+            plan_execution_batch_completes_missing_paths,
         );
 
         if let Err(message) = preflight_verified_plan_tool_outputs(session, &resolved_outputs) {
@@ -1728,6 +1731,7 @@ fn guard_plan_execution_tool_outputs(
     session: &Session,
     outputs: Vec<ResolvedAgentToolOutput>,
     plan_execution_in_progress: bool,
+    allow_shell_commands: bool,
 ) -> Vec<ResolvedAgentToolOutput> {
     if !plan_execution_in_progress {
         return outputs;
@@ -1763,6 +1767,12 @@ fn guard_plan_execution_tool_outputs(
                     visible: false,
                 }
             }
+            ResolvedAgentToolOutput::Action(action)
+                if allow_shell_commands
+                    && matches!(action.request, ActionRequest::ShellCommand(_)) =>
+            {
+                ResolvedAgentToolOutput::Action(action)
+            }
             ResolvedAgentToolOutput::Action(action) => {
                 if let Some(message) =
                     nonconstructive_plan_execution_skip_message(session, plan, &action.request)
@@ -1780,6 +1790,70 @@ fn guard_plan_execution_tool_outputs(
             other => other,
         })
         .collect()
+}
+
+fn resolved_outputs_complete_missing_plan_paths(
+    session: &Session,
+    outputs: &[ResolvedAgentToolOutput],
+) -> bool {
+    let Some(plan) = session.project_memory().latest_structured_plan() else {
+        return false;
+    };
+
+    let create_files = outputs
+        .iter()
+        .filter_map(|output| match output {
+            ResolvedAgentToolOutput::Action(action) => match &action.request {
+                ActionRequest::CreateFile(file) => {
+                    Some(absolute_session_path(session, &file.target_path))
+                }
+                ActionRequest::OverwriteFile(file) => {
+                    Some(absolute_session_path(session, &file.target_path))
+                }
+                ActionRequest::CreateDirectory(_)
+                | ActionRequest::PatchFile(_)
+                | ActionRequest::DeleteFile(_)
+                | ActionRequest::MoveFile(_)
+                | ActionRequest::ShellCommand(_) => None,
+            },
+            ResolvedAgentToolOutput::Guidance(_) | ResolvedAgentToolOutput::Skipped { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let create_directories = outputs
+        .iter()
+        .filter_map(|output| match output {
+            ResolvedAgentToolOutput::Action(action) => match &action.request {
+                ActionRequest::CreateDirectory(directory) => {
+                    Some(absolute_session_path(session, &directory.target_path))
+                }
+                ActionRequest::CreateFile(_)
+                | ActionRequest::OverwriteFile(_)
+                | ActionRequest::PatchFile(_)
+                | ActionRequest::DeleteFile(_)
+                | ActionRequest::MoveFile(_)
+                | ActionRequest::ShellCommand(_) => None,
+            },
+            ResolvedAgentToolOutput::Guidance(_) | ResolvedAgentToolOutput::Skipped { .. } => None,
+        })
+        .collect::<Vec<_>>();
+
+    let files_satisfied = plan.expected_files.iter().all(|expected| {
+        expected.is_file()
+            || create_files
+                .iter()
+                .any(|created| normalize_path(created) == *expected)
+    });
+    let directories_satisfied = plan.expected_directories.iter().all(|expected| {
+        expected.is_dir()
+            || create_directories
+                .iter()
+                .any(|created| normalize_path(created) == *expected)
+            || create_files
+                .iter()
+                .any(|created| path_is_within(created, expected))
+    });
+
+    files_satisfied && directories_satisfied
 }
 
 fn is_unexpected_plan_execution_directory(
@@ -6822,6 +6896,97 @@ mod tests {
             plan.runtime_status(),
             crate::session::StructuredProjectPlanStatus::Completed
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_creation_execution_can_run_shell_verification_after_files() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-shell-verify",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let project = root.join("GreeterCLI");
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating plan.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "verify-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "GreeterCLI/plan.md",
+                            "contents": "# Greeter Plan\n\n```text\nREADME.md\nrequirements.txt\nsrc/main.py\ntests/test_main.py\n```\n\n## Verification\n- Run `python3 -m py_compile src/main.py tests/test_main.py`.\n\n## Acceptance Criteria\n- The greeter files exist and compile.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Creating files and verifying.").with_tool_calls(
+                    vec![
+                        RawModelToolCall {
+                            id: "verify-files".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                            arguments: json!({
+                                "directories": ["GreeterCLI/src", "GreeterCLI/tests"],
+                                "files": [
+                                    {
+                                        "target_path": "GreeterCLI/README.md",
+                                        "contents": "# Greeter CLI\n"
+                                    },
+                                    {
+                                        "target_path": "GreeterCLI/requirements.txt",
+                                        "contents": ""
+                                    },
+                                    {
+                                        "target_path": "GreeterCLI/src/main.py",
+                                        "contents": "def greeting(name='World'):\n    return f'Hello, {name}!'\n\nif __name__ == '__main__':\n    print(greeting())\n"
+                                    },
+                                    {
+                                        "target_path": "GreeterCLI/tests/test_main.py",
+                                        "contents": "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))\nfrom main import greeting\n\ndef test_greeting():\n    assert greeting('Alice') == 'Hello, Alice!'\n"
+                                    }
+                                ]
+                            }),
+                            assistant_summary: Some("create files".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "verify-shell".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                            arguments: json!({
+                                "command": "python3 -m py_compile src/main.py tests/test_main.py",
+                                "cwd": project.display().to_string(),
+                                "expected_effect": "Python files compile"
+                            }),
+                            assistant_summary: Some("compile Python files".to_string()),
+                        },
+                    ],
+                ),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a greeter project, execute it, and run verification",
+        );
+
+        assert!(project.join("plan.md").is_file());
+        assert!(project.join("src/main.py").is_file());
+        assert!(project.join("tests/test_main.py").is_file());
+        assert!(session.actions().iter().any(|record| {
+            matches!(
+                record.verified_result.as_ref(),
+                Some(VerifiedActionResult::Shell(shell)) if shell.exit_code == Some(0)
+            )
+        }));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| !trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Skipped shell command during verified plan execution"))));
 
         let _ = std::fs::remove_dir_all(&root);
     }
