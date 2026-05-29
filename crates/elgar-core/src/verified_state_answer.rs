@@ -19,17 +19,36 @@ pub(crate) enum VerifiedStateAnswerKind {
     Summary,
 }
 
-pub(crate) fn parse_verified_state_classifier_output(
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct VerifiedStateClassification {
+    pub answer_kind: Option<VerifiedStateAnswerKind>,
+    pub needs_runtime_context: bool,
+}
+
+pub(crate) fn parse_verified_state_classification_output(
     message: &str,
-) -> Option<VerifiedStateAnswerKind> {
-    let value = parse_json_value(message)?;
+) -> VerifiedStateClassification {
+    let Some(value) = parse_json_value(message) else {
+        return VerifiedStateClassification::default();
+    };
+    let needs_runtime_context = value
+        .get("needs_runtime_context")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if let Some(kind) = value.get("answer_kind").and_then(Value::as_str) {
-        return parse_verified_state_answer_kind(kind);
+        return VerifiedStateClassification {
+            answer_kind: parse_verified_state_answer_kind(kind),
+            needs_runtime_context,
+        };
     }
 
-    match value.get("needs_verified_state").and_then(Value::as_bool) {
+    let answer_kind = match value.get("needs_verified_state").and_then(Value::as_bool) {
         Some(true) => Some(VerifiedStateAnswerKind::Summary),
         _ => None,
+    };
+    VerifiedStateClassification {
+        answer_kind,
+        needs_runtime_context,
     }
 }
 

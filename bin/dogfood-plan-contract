@@ -26,7 +26,7 @@ cat >"$input_file" <<EOF
 /permissions full_access
 create only a project plan for a tiny Python CLI app inside a new folder named $project_dir. Do not implement it yet.
 /plan
-execute the plan
+please execute the plan you just created
 /plan
 execute the plan
 /reasoning

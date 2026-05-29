@@ -45,8 +45,7 @@ use crate::{
     },
     shell::ShellExecutor,
     verified_state_answer::{
-        parse_verified_state_classifier_output, verified_session_state_answer,
-        VerifiedStateAnswerKind,
+        parse_verified_state_classification_output, verified_session_state_answer,
     },
 };
 
@@ -75,10 +74,11 @@ const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
 );
 const AGENT_VERIFIED_STATE_CLASSIFIER_SYSTEM_PROMPT: &str = concat!(
     "Classify which verified runtime state answer, if any, the user needs from this current session. ",
-    "Return only JSON with this exact shape: {\"answer_kind\":\"none\"}. ",
+    "Return only JSON with this exact shape: {\"answer_kind\":\"none\",\"needs_runtime_context\":false}. ",
     "Allowed answer_kind values are: none, latest_folder, latest_file, created_summary, pending, plan, status, memory, summary. ",
     "Choose a state answer only when the user is asking to inspect or report already verified session state. ",
     "Choose none when the user is asking for a new action, artifact, plan, implementation, or execution, even if the request mentions an existing folder or plan. ",
+    "Set needs_runtime_context true when the user is asking to act on prior verified work and the route decision needs that verified state. ",
     "Choose none when the answer does not require verified session state."
 );
 const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
@@ -582,14 +582,17 @@ fn run_plain_agent_chat<P>(
 where
     P: ControllerProvider,
 {
+    let mut needs_runtime_context = false;
     if has_verified_session_state(session) {
-        if let Some(answer_kind) = classify_verified_state_answer_kind(provider, session, input) {
+        let classification = classify_verified_state_turn(provider, session, input);
+        if let Some(answer_kind) = classification.answer_kind {
             session.push_event(Event::AssistantMessage(AssistantMessage::new(
                 verified_session_state_answer(session, answer_kind),
                 AssistantMessageSource::Controller,
             )));
             return PlainAgentChatOutcome::Finished;
         }
+        needs_runtime_context = classification.needs_runtime_context;
     }
 
     let request = provider.request_metadata();
@@ -597,10 +600,15 @@ where
         ProviderStarted::new(request.provider.clone(), request.request_id.clone())
             .with_request_details(request.model.clone(), "plain_chat", 0),
     ));
-    let messages = vec![
-        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
-        ChatMessage::user(input),
-    ];
+    let mut messages = vec![ChatMessage::system(
+        AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT,
+    )];
+    if needs_runtime_context {
+        if let Some(context) = agent_verified_memory_context(session).prompt_context {
+            messages.push(ChatMessage::system(context));
+        }
+    }
+    messages.push(ChatMessage::user(input));
 
     match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
         Ok(output) => {
@@ -666,11 +674,11 @@ where
     }
 }
 
-fn classify_verified_state_answer_kind<P>(
+fn classify_verified_state_turn<P>(
     provider: &P,
     session: &mut Session,
     input: &str,
-) -> Option<VerifiedStateAnswerKind>
+) -> crate::verified_state_answer::VerifiedStateClassification
 where
     P: ControllerProvider,
 {
@@ -686,7 +694,7 @@ where
 
     match provider.chat_messages_with_metadata(messages, &request) {
         Ok(output) => {
-            let decision = parse_verified_state_classifier_output(&output.text);
+            let decision = parse_verified_state_classification_output(&output.text);
             push_provider_finished(session, request.provider, request.request_id, output);
             decision
         }
@@ -695,7 +703,7 @@ where
                 "{} provider state classification request {} failed: {error}",
                 request.provider, request.request_id
             ))));
-            None
+            crate::verified_state_answer::VerifiedStateClassification::default()
         }
     }
 }
@@ -1977,7 +1985,7 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
     } else {
         let mut context = vec![
             "Verified filesystem context for this session:".to_string(),
-            "Use these verified paths only when the explicit tool request refers to prior work."
+            "Use these verified paths only when the current user turn refers to prior work."
                 .to_string(),
             "Displayed paths are relative to the current working directory when possible."
                 .to_string(),
@@ -2116,6 +2124,7 @@ mod tests {
     use crate::{
         model_runtime::{ModelToolName, RawModelToolName},
         provider::{ChatToolDefinition, ProviderError, ProviderRequestMetadata},
+        verified_state_answer::VerifiedStateAnswerKind,
     };
 
     #[derive(Debug, Clone)]
@@ -4768,19 +4777,26 @@ mod tests {
     #[test]
     fn verified_state_classifier_parser_accepts_wrapped_json() {
         assert_eq!(
-            parse_verified_state_classifier_output(
+            parse_verified_state_classification_output(
                 "```json\n{\"answer_kind\":\"latest_folder\"}\n```"
-            ),
-            Some(VerifiedStateAnswerKind::LatestFolder)
+            )
+            .answer_kind,
+            Some(crate::verified_state_answer::VerifiedStateAnswerKind::LatestFolder)
         );
         assert_eq!(
-            parse_verified_state_classifier_output("{\"answer_kind\":\"none\"}"),
+            parse_verified_state_classification_output("{\"answer_kind\":\"none\"}").answer_kind,
             None
         );
         assert_eq!(
-            parse_verified_state_classifier_output("{\"needs_verified_state\":true}"),
-            Some(VerifiedStateAnswerKind::Summary)
+            parse_verified_state_classification_output("{\"needs_verified_state\":true}")
+                .answer_kind,
+            Some(crate::verified_state_answer::VerifiedStateAnswerKind::Summary)
         );
+        let classification = parse_verified_state_classification_output(
+            "{\"answer_kind\":\"none\",\"needs_runtime_context\":true}",
+        );
+        assert_eq!(classification.answer_kind, None);
+        assert!(classification.needs_runtime_context);
     }
 
     #[test]
@@ -5089,6 +5105,110 @@ mod tests {
             .runtime_checks
             .iter()
             .any(|line| line.contains("new verified plan created during plan execution turn")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn followup_route_can_bind_latest_verified_plan_with_model_requested_context() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-followup-context",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("CalculatorUI");
+        std::fs::create_dir_all(&project).unwrap();
+        let plan_path = project.join("plan.md");
+        std::fs::write(
+            &plan_path,
+            "# Calculator Plan\n\n```text\nREADME.md\ncalculator.py\nui.py\n```\n\n## Verification\n- `calculator.py`, `ui.py`, and `README.md` exist.\n\n## Acceptance Criteria\n- Running `python ui.py` launches the calculator UI.\n",
+        )
+        .unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new(
+                    "{\"answer_kind\":\"none\",\"needs_runtime_context\":true}",
+                ),
+                crate::event::ProviderOutput::new(
+                    "{\"route\":\"execute\",\"intent\":\"plan_execution\"}",
+                ),
+            ])
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating missing files.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "followup-readme".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "README.md",
+                            "contents": "# Calculator UI\n"
+                        }),
+                        assistant_summary: Some("create README".to_string()),
+                    },
+                    RawModelToolCall {
+                        id: "followup-calc".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "calculator.py",
+                            "contents": "class Calculator:\n    pass\n"
+                        }),
+                        assistant_summary: Some("create calculator".to_string()),
+                    },
+                    RawModelToolCall {
+                        id: "followup-ui".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "ui.py",
+                            "contents": "from calculator import Calculator\n"
+                        }),
+                        assistant_summary: Some("create ui".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: plan_path.clone(),
+            project_root: project.clone(),
+            source_action_id: "action-plan".to_string(),
+        });
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Verified,
+            expected_directories: Vec::new(),
+            expected_files: vec![
+                project.join("README.md"),
+                project.join("calculator.py"),
+                project.join("ui.py"),
+            ],
+        });
+
+        run_permissive_agent_turn(&provider, &mut session, "the plan you just created");
+
+        assert!(project.join("README.md").is_file());
+        assert!(project.join("calculator.py").is_file());
+        assert!(project.join("ui.py").is_file());
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert!(!joined_request_messages(&requests[0]).contains("latest verified plan"));
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
+        assert!(joined_request_messages(&requests[1])
+            .contains("latest verified plan: CalculatorUI/plan.md"));
+        assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
+        assert!(requests[2]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("missing expected files")));
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("plan should remain recorded");
+        assert_eq!(
+            plan.runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

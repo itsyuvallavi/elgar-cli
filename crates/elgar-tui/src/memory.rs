@@ -1,6 +1,6 @@
 use elgar_core::{
     action::{ActionKind, ActionLifecycleState},
-    event::{FileActionVerification, VerifiedActionResult},
+    event::{Event, FileActionVerification, ProviderMetrics, VerifiedActionResult},
     plan_contract::{
         PlanContract, PlanContractDraftIssue, PlanContractDraftIssueKind, PlanContractStatus,
     },
@@ -93,6 +93,15 @@ pub fn render_session_tokens(session: &Session) -> String {
     } else {
         lines.push("last turn: unknown".to_string());
     }
+    let request_summaries = latest_turn_provider_request_summaries(session);
+    if !request_summaries.is_empty() {
+        lines.push("last turn requests:".to_string());
+        lines.extend(
+            request_summaries
+                .into_iter()
+                .map(|summary| format!("- {}", render_provider_request_summary(summary))),
+        );
+    }
     lines.push(format!(
         "session total: {} input + {} output = {} total",
         format_tokens(totals.input_tokens),
@@ -115,6 +124,89 @@ pub fn render_session_tokens(session: &Session) -> String {
     ));
     lines.push(format!("window source: {}", source_label(snapshot.source)));
     lines.join("\n")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderRequestSummary {
+    request_id: String,
+    mode: String,
+    tool_count: Option<usize>,
+    metrics: Option<ProviderMetrics>,
+    emitted_tool_calls: Option<bool>,
+}
+
+fn latest_turn_provider_request_summaries(session: &Session) -> Vec<ProviderRequestSummary> {
+    let events = session.events();
+    let start = events
+        .iter()
+        .rposition(|event| matches!(event, Event::UserMessage(_)))
+        .unwrap_or(0);
+    let mut summaries = Vec::new();
+
+    for event in &events[start..] {
+        match event {
+            Event::ProviderStarted(started) => {
+                summaries.push(ProviderRequestSummary {
+                    request_id: started.request_id.clone(),
+                    mode: started
+                        .request_mode
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    tool_count: started.tool_count,
+                    metrics: None,
+                    emitted_tool_calls: None,
+                });
+            }
+            Event::ProviderFinished(finished) => {
+                if let Some(summary) = summaries
+                    .iter_mut()
+                    .rev()
+                    .find(|summary| summary.request_id == finished.request_id)
+                {
+                    summary.metrics = finished.output.metrics.clone();
+                    summary.emitted_tool_calls = Some(!finished.output.tool_calls.is_empty());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    summaries
+}
+
+fn render_provider_request_summary(summary: ProviderRequestSummary) -> String {
+    let mut parts = vec![format!("{} {}", summary.mode, summary.request_id)];
+    if let Some(metrics) = summary.metrics {
+        if let Some(usage) = metrics.usage {
+            parts.push(format!(
+                "{} input + {} output = {} total",
+                render_optional_tokens(usage.prompt_tokens),
+                render_optional_tokens(usage.completion_tokens),
+                render_optional_tokens(usage.total_tokens.or_else(|| {
+                    usage
+                        .prompt_tokens
+                        .unwrap_or_default()
+                        .checked_add(usage.completion_tokens.unwrap_or_default())
+                }))
+            ));
+        } else {
+            parts.push("tokens unknown".to_string());
+        }
+        if let Some(duration) = metrics.total_duration_millis {
+            parts.push(format!("{duration} ms"));
+        }
+        parts.push(format!("messages {}", metrics.message_count));
+        parts.push(format!("bytes {}", metrics.serialized_request_bytes));
+    } else {
+        parts.push("metrics unknown".to_string());
+    }
+    if let Some(tool_count) = summary.tool_count {
+        parts.push(format!("tools {tool_count}"));
+    }
+    if let Some(emitted) = summary.emitted_tool_calls {
+        parts.push(format!("tool calls {}", if emitted { "yes" } else { "no" }));
+    }
+    parts.join(" · ")
 }
 
 pub fn render_session_state_snapshot(session: &Session) -> String {
@@ -743,6 +835,8 @@ mod tests {
 
         assert!(rendered.contains("current context: 42.0k / 128.0k (32%) [provider]"));
         assert!(rendered.contains("last turn: 40.0k input + 2.0k output = 42.0k total [provider]"));
+        assert!(rendered.contains("last turn requests:"));
+        assert!(rendered.contains("- plain request-usage · 40.0k input + 2.0k output = 42.0k total · messages 2 · bytes 64 · tools 0 · tool calls no"));
         assert!(rendered.contains("session total: 40.0k input + 2.0k output = 42.0k total"));
         assert!(rendered.contains("local context: ~"));
 
