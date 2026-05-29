@@ -81,6 +81,13 @@ const AGENT_ROUTE_JSON_REPAIR_PROMPT: &str = concat!(
     "Return exactly one compact JSON object for the original user request using the routing schema. ",
     "Do not answer in prose and do not draft artifacts."
 );
+const AGENT_AFTER_PLAN_CREATION_DECISION_PROMPT: &str = concat!(
+    "A verified plan artifact was just created and has missing expected implementation paths. ",
+    "Return exactly one compact JSON object. ",
+    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=the original request also requires implementing the new plan now. ",
+    "{\"route\":\"chat\",\"content\":\"done\"}=the original request only required creating the plan artifact. ",
+    "Do not draft artifacts in this response."
+);
 const AGENT_PLAIN_FALLBACK_SYSTEM_PROMPT: &str = concat!(
     "The previous tool-enabled provider request returned no usable response. ",
     "Answer normally in prose. Do not claim filesystem or shell changes unless they were already reported by verified tool results."
@@ -99,6 +106,7 @@ enum PlainAgentChatOutcome {
 struct AgentExecutionIntent {
     plan_execution: bool,
     plan_creation_execution: bool,
+    after_plan_creation_decision: bool,
 }
 
 pub fn run_permissive_agent_turn<P>(provider: &P, session: &mut Session, input: &str) -> TurnResult
@@ -252,6 +260,7 @@ where
     let mut plan_created_this_turn = false;
     let mut plan_execution_in_progress = false;
     let mut plan_creation_repair_in_progress = false;
+    let mut allow_implementation_after_plan_creation = intent.plan_creation_execution;
     let mut visible_skipped_tool_notice_shown = false;
 
     for _round in 0..MAX_AGENT_TOOL_ROUNDS {
@@ -388,7 +397,7 @@ where
             resolved_outputs,
             plan_created_this_turn,
             plan_creation_repair_in_progress,
-            intent.plan_creation_execution,
+            allow_implementation_after_plan_creation,
         );
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
         let plan_execution_batch =
@@ -502,6 +511,7 @@ where
                             latest_plan_contract_needs_repair(session);
                         if intent.plan_creation_execution && !plan_creation_repair_in_progress {
                             plan_execution_in_progress = true;
+                            allow_implementation_after_plan_creation = true;
                             session.push_reasoning_runtime_check(
                                 "new verified plan created during explicit plan creation execution turn",
                             );
@@ -542,6 +552,20 @@ where
             && !plan_creation_repair_in_progress
             && !plan_execution_in_progress
         {
+            if intent.after_plan_creation_decision
+                && plan_creation_followup_requires_execution(provider, session, input)
+            {
+                plan_execution_in_progress = true;
+                allow_implementation_after_plan_creation = true;
+                session.push_reasoning_model_decision(
+                    "post-plan decision selected plan_creation_execution",
+                );
+                session.mark_latest_structured_project_plan_executing();
+                if let Some(message) = missing_expected_plan_paths_message(session) {
+                    messages.push(ChatMessage::system(message));
+                    continue;
+                }
+            }
             session.push_reasoning_runtime_check(
                 "plan creation completed; skipped final provider synthesis",
             );
@@ -733,6 +757,51 @@ where
     }
 }
 
+fn plan_creation_followup_requires_execution<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+) -> bool
+where
+    P: ControllerProvider,
+{
+    let request = provider.request_metadata();
+    session.push_event(Event::ProviderStarted(
+        ProviderStarted::new(request.provider.clone(), request.request_id.clone())
+            .with_request_details(request.model.clone(), "plain_plan_followup", 0),
+    ));
+
+    let mut messages = vec![
+        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
+        ChatMessage::system(AGENT_AFTER_PLAN_CREATION_DECISION_PROMPT),
+    ];
+    if let Some(context) = agent_verified_memory_context(session).prompt_context {
+        messages.push(ChatMessage::system(context));
+    }
+    messages.push(ChatMessage::user(input));
+
+    match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
+        Ok(output) => {
+            let assistant_text = output.text.clone();
+            push_provider_finished(session, request.provider, request.request_id, output);
+            matches!(
+                parse_normal_turn_decision(&assistant_text),
+                Some(NormalTurnDecision::Execute {
+                    intent: Some(NormalTurnExecuteIntent::PlanCreationAndExecution)
+                        | Some(NormalTurnExecuteIntent::PlanExecution)
+                })
+            )
+        }
+        Err(error) => {
+            session.push_event(Event::Error(ErrorEvent::new(format!(
+                "{} provider post-plan decision request {} failed: {error}",
+                request.provider, request.request_id
+            ))));
+            false
+        }
+    }
+}
+
 fn handle_plain_agent_decision<P>(
     provider: &P,
     session: &mut Session,
@@ -759,6 +828,7 @@ where
                     intent,
                     Some(NormalTurnExecuteIntent::PlanCreationAndExecution)
                 ),
+                after_plan_creation_decision: intent.is_none(),
             };
             session.record_reasoning_route("execute");
             if execution_intent.plan_execution {
@@ -1773,6 +1843,10 @@ fn missing_expected_plan_paths_message(session: &Session) -> Option<String> {
         );
     }
     lines.push("Use create_directory for missing expected directories and create_file for missing expected files under the verified plan root. Do not ask whether to create expected paths.".to_string());
+    lines.push(
+        "When multiple expected paths are missing, call the needed file and directory tools in one assistant response when possible."
+            .to_string(),
+    );
     Some(lines.join("\n"))
 }
 
@@ -5576,6 +5650,7 @@ mod tests {
                     "# Project Plan\n\n```text\nRepairPlan/\nREADME.md\n```\n\n## Verification\n- Check files.\n\n## Acceptance Criteria\n- Files exist.\n",
                 ),
                 crate::event::ProviderOutput::new("{\"route\":\"execute\"}"),
+                crate::event::ProviderOutput::new("{\"route\":\"chat\",\"content\":\"done\"}"),
             ])
             .with_tool_output(
                 crate::event::ProviderOutput::new("Creating only the plan.").with_tool_calls(vec![
@@ -5600,7 +5675,7 @@ mod tests {
 
         assert!(root.join("RepairPlan/PLAN.md").is_file());
         let requests = provider.requests();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 4);
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
         assert_eq!(requests[0].tool_count, 0);
         assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
@@ -5613,6 +5688,9 @@ mod tests {
         );
         assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
         assert!(requests[2].tool_count > 0);
+        assert_eq!(requests[3].mode, CapturedProviderRequestMode::Plain);
+        assert!(joined_request_messages(&requests[3])
+            .contains("A verified plan artifact was just created"));
         assert!(!session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
@@ -6058,6 +6136,98 @@ mod tests {
             .any(|line| line.contains("execute intent plan_creation_execution")));
         assert!(trace.runtime_checks.iter().any(|line| line
             .contains("new verified plan created during explicit plan creation execution turn")));
+        let requests = provider.requests();
+        assert!(requests
+            .iter()
+            .filter(|request| request.mode == CapturedProviderRequestMode::Tool)
+            .skip(1)
+            .any(|request| joined_request_messages(request)
+                .contains("call the needed file and directory tools in one assistant response")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn post_plan_decision_can_continue_same_prompt_execution_without_initial_intent() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-post-plan-exec-decision",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new("{\"route\":\"execute\"}"),
+                crate::event::ProviderOutput::new(
+                    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+                ),
+            ])
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating plan.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "post-plan-decision-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "CalculatorUI/plan.md",
+                            "contents": "# Calculator Plan\n\n```text\nREADME.md\ncalculator.py\nui.py\n```\n\n## Verification\n- `calculator.py`, `ui.py`, and `README.md` exist.\n\n## Acceptance Criteria\n- Running `python ui.py` launches the calculator UI.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Creating missing files.").with_tool_calls(
+                    vec![
+                        RawModelToolCall {
+                            id: "post-plan-decision-readme".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/README.md",
+                                "contents": "# Calculator UI\n"
+                            }),
+                            assistant_summary: Some("create README".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "post-plan-decision-calc".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/calculator.py",
+                                "contents": "class Calculator:\n    pass\n"
+                            }),
+                            assistant_summary: Some("create calculator".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "post-plan-decision-ui".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/ui.py",
+                                "contents": "from calculator import Calculator\n"
+                            }),
+                            assistant_summary: Some("create ui".to_string()),
+                        },
+                    ],
+                ),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a plan for the calculator UI and execute it",
+        );
+
+        assert!(root.join("CalculatorUI/plan.md").is_file());
+        assert!(root.join("CalculatorUI/README.md").is_file());
+        assert!(root.join("CalculatorUI/calculator.py").is_file());
+        assert!(root.join("CalculatorUI/ui.py").is_file());
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains("post-plan decision selected"))));
+        let requests = provider.requests();
+        assert!(requests
+            .iter()
+            .any(|request| request.mode == CapturedProviderRequestMode::Plain
+                && joined_request_messages(request)
+                    .contains("A verified plan artifact was just created")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

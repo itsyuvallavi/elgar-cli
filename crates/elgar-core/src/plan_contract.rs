@@ -606,6 +606,9 @@ fn referenced_scope_paths(text: &str, project_root: &Path) -> Vec<PathBuf> {
         if !looks_like_plan_path_reference(&token) {
             continue;
         }
+        if is_home_relative_reference(&token) {
+            continue;
+        }
         if is_glob_like_reference(&token) {
             continue;
         }
@@ -628,6 +631,10 @@ fn referenced_scope_paths(text: &str, project_root: &Path) -> Vec<PathBuf> {
 
 fn is_glob_like_reference(token: &str) -> bool {
     token.contains('*') || token.contains('?') || token.contains('[') || token.contains(']')
+}
+
+fn is_home_relative_reference(token: &str) -> bool {
+    token == "~" || token.starts_with("~/") || token.starts_with("~\\")
 }
 
 fn clean_reference_token(token: &str) -> Option<String> {
@@ -1854,6 +1861,53 @@ mod tests {
         assert!(!review.issues.iter().any(|issue| {
             issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
                 && issue.path.as_ref() == Some(&project.join("notes.json"))
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_ignores_home_relative_runtime_data_file_references() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-home-runtime-reference-{}",
+            std::process::id()
+        ));
+        let project = root.join("home-runtime-plan-test");
+        let plan_path = project.join("plan.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n## Verification\n- Notes are persisted in `~/.tiny_notes.json`.\n\n## Acceptance Criteria\n- `README.md` exists.\n",
+        )
+        .unwrap();
+        let contract = PlanContract {
+            id: "contract-home-runtime-reference".to_string(),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            source_action_id: Some("action-plan".to_string()),
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: vec![project.join("src")],
+                allowed_files: vec![project.join("README.md"), project.join("src/main.py")],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec!["Notes are persisted in `~/.tiny_notes.json`.".to_string()],
+                verification_checks: Vec::new(),
+                acceptance_criteria: vec!["`README.md` exists.".to_string()],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+
+        let review = contract.review_draft();
+
+        assert!(review.is_approvable());
+        assert!(!review.issues.iter().any(|issue| {
+            issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
+                && issue
+                    .path
+                    .as_ref()
+                    .is_some_and(|path| path.display().to_string().contains(".tiny_notes.json"))
         }));
 
         let _ = fs::remove_dir_all(root);
