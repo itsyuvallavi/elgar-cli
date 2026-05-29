@@ -21,6 +21,7 @@ pub(crate) enum NormalTurnDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NormalTurnExecuteIntent {
     PlanExecution,
+    PlanCreationAndExecution,
 }
 
 pub(crate) fn parse_normal_turn_decision(message: &str) -> Option<NormalTurnDecision> {
@@ -50,6 +51,7 @@ pub(crate) fn parse_normal_turn_decision(message: &str) -> Option<NormalTurnDeci
 fn parse_execute_intent(value: &Value) -> Option<NormalTurnExecuteIntent> {
     match value.get("intent").and_then(Value::as_str)?.trim() {
         "plan_execution" => Some(NormalTurnExecuteIntent::PlanExecution),
+        "plan_creation_execution" => Some(NormalTurnExecuteIntent::PlanCreationAndExecution),
         _ => None,
     }
 }
@@ -89,6 +91,14 @@ mod tests {
             parse_normal_turn_decision("{\"route\":\"execute\",\"intent\":\"plan_execution\"}"),
             Some(NormalTurnDecision::Execute {
                 intent: Some(NormalTurnExecuteIntent::PlanExecution)
+            })
+        );
+        assert_eq!(
+            parse_normal_turn_decision(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}"
+            ),
+            Some(NormalTurnDecision::Execute {
+                intent: Some(NormalTurnExecuteIntent::PlanCreationAndExecution)
             })
         );
     }

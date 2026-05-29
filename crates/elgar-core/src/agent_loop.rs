@@ -66,12 +66,14 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "You are Elgar. ",
     "Return one compact JSON object; no prose. ",
-    "Route by required capability; do not draft artifacts here. ",
-    "Use {\"route\":\"execute\"} when the request needs a persistent local change or verified filesystem, shell, artifact, plan, or project result. ",
-    "Use {\"route\":\"chat\",\"content\":\"...\"} only for text answers with no local side effect. ",
-    "Use {\"route\":\"execute\",\"intent\":\"plan_execution\"} only to apply implementation files now; plan artifact work is execute without intent. ",
-    "Use {\"route\":\"state\",\"answer_kind\":\"...\"} for verified-state inspection. ",
-    "Use {\"route\":\"ask_guidance\",\"question\":\"...\"} if a required detail is missing. ",
+    "Route by capability; do not draft artifacts here. ",
+    "{\"route\":\"execute\"}=local file/shell/artifact/plan work. ",
+    "{\"route\":\"chat\",\"content\":\"...\"}=text only. ",
+    "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=apply an existing verified plan. ",
+    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=both create/update a plan and implement files now. ",
+    "For plan-only work, use execute without that intent. ",
+    "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified-state inspection. ",
+    "{\"route\":\"ask_guidance\",\"question\":\"...\"}=missing required detail. ",
     "Runtime supplies verified context after routing."
 );
 const AGENT_ROUTE_JSON_REPAIR_PROMPT: &str = concat!(
@@ -96,6 +98,7 @@ enum PlainAgentChatOutcome {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AgentExecutionIntent {
     plan_execution: bool,
+    plan_creation_execution: bool,
 }
 
 pub fn run_permissive_agent_turn<P>(provider: &P, session: &mut Session, input: &str) -> TurnResult
@@ -385,6 +388,7 @@ where
             resolved_outputs,
             plan_created_this_turn,
             plan_creation_repair_in_progress,
+            intent.plan_creation_execution,
         );
         let resolved_outputs = guard_redundant_directory_tool_outputs(session, resolved_outputs);
         let plan_execution_batch =
@@ -496,6 +500,13 @@ where
                         plan_created_this_turn = true;
                         plan_creation_repair_in_progress =
                             latest_plan_contract_needs_repair(session);
+                        if intent.plan_creation_execution && !plan_creation_repair_in_progress {
+                            plan_execution_in_progress = true;
+                            session.push_reasoning_runtime_check(
+                                "new verified plan created during explicit plan creation execution turn",
+                            );
+                            session.mark_latest_structured_project_plan_executing();
+                        }
                         if plan_creation_repair_in_progress {
                             messages
                                 .push(ChatMessage::system(plan_creation_repair_message(session)));
@@ -744,11 +755,19 @@ where
         Some(NormalTurnDecision::Execute { intent }) => {
             let execution_intent = AgentExecutionIntent {
                 plan_execution: matches!(intent, Some(NormalTurnExecuteIntent::PlanExecution)),
+                plan_creation_execution: matches!(
+                    intent,
+                    Some(NormalTurnExecuteIntent::PlanCreationAndExecution)
+                ),
             };
             session.record_reasoning_route("execute");
             if execution_intent.plan_execution {
                 session.push_reasoning_model_decision(
                     "normal turn decision selected execute intent plan_execution",
+                );
+            } else if execution_intent.plan_creation_execution {
+                session.push_reasoning_model_decision(
+                    "normal turn decision selected execute intent plan_creation_execution",
                 );
             } else {
                 session.push_reasoning_model_decision("normal turn decision selected execute");
@@ -826,6 +845,7 @@ fn looks_like_misrouted_artifact_chat(content: &str) -> bool {
     let path_count = local_path_like_token_count(trimmed);
     ((trimmed.starts_with('{') || trimmed.starts_with('[')) && path_count >= 2)
         || (trimmed.len() > 1000 && path_count >= 3)
+        || (path_count >= 3 && numbered_artifact_line_count(trimmed) >= 4)
 }
 
 fn looks_like_misrouted_artifact_chat_after_retry(content: &str) -> bool {
@@ -833,6 +853,7 @@ fn looks_like_misrouted_artifact_chat_after_retry(content: &str) -> bool {
     let path_count = local_path_like_token_count(trimmed);
     ((trimmed.starts_with('{') || trimmed.starts_with('[')) && path_count >= 2)
         || (trimmed.len() > 500 && path_count >= 3)
+        || (path_count >= 3 && numbered_artifact_line_count(trimmed) >= 4)
 }
 
 fn local_path_like_token_count(content: &str) -> usize {
@@ -892,6 +913,21 @@ fn local_path_like_token_count(content: &str) -> usize {
         }
     }
     paths.len()
+}
+
+fn numbered_artifact_line_count(content: &str) -> usize {
+    content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            let digit_count = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
+            digit_count > 0
+                && trimmed[digit_count..]
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| matches!(ch, '.' | ')' | ':' | '-'))
+        })
+        .count()
 }
 
 fn has_verified_session_state(session: &Session) -> bool {
@@ -978,6 +1014,7 @@ fn guard_plan_creation_tool_outputs(
     outputs: Vec<ResolvedAgentToolOutput>,
     plan_created_this_turn: bool,
     plan_creation_repair_in_progress: bool,
+    allow_implementation_after_plan_creation: bool,
 ) -> Vec<ResolvedAgentToolOutput> {
     if plan_creation_repair_in_progress {
         return outputs
@@ -1024,13 +1061,19 @@ fn guard_plan_creation_tool_outputs(
         .map(|output| match output {
             ResolvedAgentToolOutput::Action(action)
                 if (plan_created_this_turn || plan_creation_repair_in_progress)
-            =>
+                    && !allow_implementation_after_plan_creation =>
             {
                 ResolvedAgentToolOutput::Skipped {
                     tool_call_id: action.tool_call_id,
                     message: "Skipped implementation tool calls after creating the verified plan. Ask to execute the plan when you want to apply it.".to_string(),
                     visible: true,
                 }
+            }
+            ResolvedAgentToolOutput::Action(action)
+                if (plan_created_this_turn || plan_creation_repair_in_progress)
+            =>
+            {
+                ResolvedAgentToolOutput::Action(action)
             }
             ResolvedAgentToolOutput::Action(action)
                 if plan_creation_root_for_action(session, &action.request).is_some() =>
@@ -1057,8 +1100,11 @@ fn guard_plan_creation_tool_outputs(
                 ResolvedAgentToolOutput::Skipped {
                     tool_call_id: action.tool_call_id,
                     message: "Skipped extra implementation tool calls in this plan-creation turn. Ask to execute the verified plan when you want to apply it.".to_string(),
-                    visible: true,
+                    visible: !allow_implementation_after_plan_creation,
                 }
+            }
+            ResolvedAgentToolOutput::Action(action) if allow_implementation_after_plan_creation => {
+                ResolvedAgentToolOutput::Action(action)
             }
             ResolvedAgentToolOutput::Action(action) => ResolvedAgentToolOutput::Skipped {
                 tool_call_id: action.tool_call_id,
@@ -5736,6 +5782,27 @@ mod tests {
 "#;
 
         assert!(local_path_like_token_count(artifact_markdown) >= 3);
+        assert!(numbered_artifact_line_count(artifact_markdown) >= 4);
+        assert!(looks_like_misrouted_artifact_chat(artifact_markdown));
+        assert!(looks_like_misrouted_artifact_chat_after_retry(
+            artifact_markdown
+        ));
+    }
+
+    #[test]
+    fn short_numbered_plan_chat_counts_as_artifact_shape() {
+        let artifact_markdown = r#"Plan:
+1. Create folder playground/same-prompt-plan-execute-1.
+2. Create README.md explaining project.
+3. Create calculator.py with functions.
+4. Create ui.py for a small CLI.
+5. Add python -m unittest verification.
+6. Create test_calculator.py to verify functions.
+"#;
+
+        assert!(local_path_like_token_count(artifact_markdown) >= 3);
+        assert!(numbered_artifact_line_count(artifact_markdown) >= 4);
+        assert!(looks_like_misrouted_artifact_chat(artifact_markdown));
         assert!(looks_like_misrouted_artifact_chat_after_retry(
             artifact_markdown
         ));
@@ -5907,6 +5974,95 @@ mod tests {
     }
 
     #[test]
+    fn explicit_plan_creation_execution_intent_can_create_plan_then_files_same_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-create-execute-intent",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating plan first.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "plan-create-execute-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "CalculatorUI/plan.md",
+                            "contents": "# Calculator Plan\n\n```text\nREADME.md\ncalculator.py\nui.py\n```\n\n## Verification\n- `calculator.py`, `ui.py`, and `README.md` exist.\n\n## Acceptance Criteria\n- Running `python ui.py` launches the calculator UI.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Creating files from plan.").with_tool_calls(
+                    vec![
+                        RawModelToolCall {
+                            id: "plan-create-execute-readme".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/README.md",
+                                "contents": "# Calculator UI\n"
+                            }),
+                            assistant_summary: Some("create README".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "plan-create-execute-calc".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/calculator.py",
+                                "contents": "class Calculator:\n    pass\n"
+                            }),
+                            assistant_summary: Some("create calculator".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "plan-create-execute-ui".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "CalculatorUI/ui.py",
+                                "contents": "from calculator import Calculator\n"
+                            }),
+                            assistant_summary: Some("create ui".to_string()),
+                        },
+                    ],
+                ),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a plan for the calculator UI and execute it",
+        );
+
+        assert!(root.join("CalculatorUI/plan.md").is_file());
+        assert!(root.join("CalculatorUI/README.md").is_file());
+        assert!(root.join("CalculatorUI/calculator.py").is_file());
+        assert!(root.join("CalculatorUI/ui.py").is_file());
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("plan should be recorded");
+        assert_eq!(
+            plan.status,
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
+        let trace = session
+            .latest_reasoning_trace()
+            .expect("reasoning trace should exist");
+        assert!(trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains("execute intent plan_creation_execution")));
+        assert!(trace.runtime_checks.iter().any(|line| line
+            .contains("new verified plan created during explicit plan creation execution turn")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn followup_route_can_bind_latest_verified_plan_with_model_requested_context() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plan-followup-context",
@@ -6052,7 +6208,7 @@ mod tests {
             .contains("{\"route\":\"execute\"}"));
         assert!(requests[0].messages[0]
             .content
-            .contains("persistent local change"));
+            .contains("local file/shell/artifact/plan work"));
         assert!(requests[0].messages[0]
             .content
             .contains("Return one compact JSON object"));

@@ -130,6 +130,7 @@ fn is_route_json_request(messages: &[ChatMessage]) -> bool {
             && (content.contains("default to {\"route\":\"chat\"")
                 || content.contains("use chat")
                 || content.contains("use {\"route\":\"chat\"")
+                || content.contains("{\"route\":\"chat\"")
                 || content.contains("routing schema"))
     })
 }

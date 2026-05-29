@@ -402,6 +402,7 @@ fn review_metadata_from_source_plan(path: &Path) -> (Vec<String>, Vec<String>) {
 fn extract_markdown_section_items(contents: &str, heading: &str) -> Vec<String> {
     let mut in_section = false;
     let mut items = Vec::new();
+    let mut prose_items = Vec::new();
 
     for line in contents.lines() {
         if let Some(current_heading) = markdown_heading_text(line) {
@@ -417,10 +418,18 @@ fn extract_markdown_section_items(contents: &str, heading: &str) -> Vec<String> 
             if !items.iter().any(|existing| existing == &item) {
                 items.push(item);
             }
+        } else if let Some(item) = markdown_section_prose_item_text(line) {
+            if !prose_items.iter().any(|existing| existing == &item) {
+                prose_items.push(item);
+            }
         }
     }
 
-    items
+    if items.is_empty() {
+        prose_items
+    } else {
+        items
+    }
 }
 
 fn markdown_heading_text(line: &str) -> Option<String> {
@@ -479,6 +488,20 @@ fn markdown_list_item_text(line: &str) -> Option<String> {
 fn numbered_markdown_list_item(trimmed: &str) -> Option<&str> {
     let (prefix, suffix) = trimmed.split_once(". ")?;
     (!prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit())).then_some(suffix)
+}
+
+fn markdown_section_prose_item_text(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with("```")
+        || trimmed
+            .chars()
+            .all(|ch| matches!(ch, '-' | ':' | '|' | ' '))
+    {
+        return None;
+    }
+
+    Some(trimmed.trim_matches('|').trim().to_string()).filter(|item| !item.is_empty())
 }
 
 fn has_malformed_scope_path_segment(path: &Path) -> bool {
@@ -995,6 +1018,47 @@ mod tests {
         assert_eq!(
             contract.scope.acceptance_criteria,
             vec!["The Vite app starts successfully."]
+        );
+        assert!(contract.review_draft().is_approvable());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_contract_accepts_non_list_verification_section_text() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-prose-verification-{}",
+            std::process::id()
+        ));
+        let project = root.join("calculator-plan-test");
+        let plan_path = project.join("PLAN.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n```text\nREADME.md\ncalculator.py\nui.py\nverify.sh\n```\n\n## Verification\nRun `bash verify.sh`. It checks add, subtract, multiply, and divide.\n\n## Acceptance Criteria\n- `calculator.py` implements arithmetic helpers.\n- `verify.sh` exits with status 0.\n",
+        )
+        .unwrap();
+        let plan = StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![],
+            expected_files: vec![
+                project.join("README.md"),
+                project.join("calculator.py"),
+                project.join("ui.py"),
+                project.join("verify.sh"),
+            ],
+        };
+
+        let contract = PlanContract::draft_from_structured_plan("contract-1", &plan);
+
+        assert_eq!(
+            contract.scope.verification_steps,
+            vec!["Run `bash verify.sh`. It checks add, subtract, multiply, and divide."]
         );
         assert!(contract.review_draft().is_approvable());
 
