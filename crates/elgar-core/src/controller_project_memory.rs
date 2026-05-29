@@ -41,7 +41,12 @@ pub(crate) fn record_verified_project_memory(
             record_verified_plan_memory(session, &action_id, path);
         }
         ActionRequest::ShellCommand(shell_command) => {
+            let shell_cwd = normalize_path(&shell_command.cwd);
             for path in verified_shell_expected_directories(shell_command) {
+                let path = normalize_path(path);
+                if shell_expected_directory_is_current_or_ancestor(&path, &shell_cwd) {
+                    continue;
+                }
                 session.record_verified_folder_reference(VerifiedFolderReference {
                     path,
                     source_action_id: action_id.clone(),
@@ -522,6 +527,26 @@ fn resolve_session_path(base: &Path, target_path: impl AsRef<Path>) -> PathBuf {
     }
 }
 
+fn shell_expected_directory_is_current_or_ancestor(path: &Path, cwd: &Path) -> bool {
+    path == cwd || cwd.starts_with(path)
+}
+
+fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.as_ref().components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
 pub(crate) fn is_plan_path_or_contents(path: &Path, contents: &str) -> bool {
     is_plan_path(path) || contents_looks_like_plan(contents)
 }
@@ -549,8 +574,10 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use crate::{
-        action::{Action, ActionRequest, CreateDirectoryAction, CreateFileAction},
-        event::{FileActionVerification, VerifiedActionResult},
+        action::{
+            Action, ActionRequest, CreateDirectoryAction, CreateFileAction, ShellCommandAction,
+        },
+        event::{FileActionVerification, ShellActionVerification, VerifiedActionResult},
         session::Session,
     };
 
@@ -640,6 +667,81 @@ mod tests {
         assert_eq!(
             plan.project_root,
             PathBuf::from("/repo/playground/WeatherApp")
+        );
+    }
+
+    #[test]
+    fn shell_expected_directory_memory_skips_current_and_parent_directories() {
+        let root = PathBuf::from("/repo");
+        let cwd = root.join("playground/workspace");
+        let mut session = Session::new("session", &root, &cwd);
+        let mut shell = ShellCommandAction::new("find . -maxdepth 2", cwd.clone());
+        shell.expected_directory = Some(cwd.join(".."));
+        let action = Action::proposed(
+            "action-shell",
+            ActionRequest::ShellCommand(shell),
+            "run find",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::Shell(ShellActionVerification {
+            command: "find . -maxdepth 2".to_string(),
+            cwd: cwd.display().to_string(),
+            stdout: ".".to_string(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            exit_code: Some(0),
+            elapsed_millis: 1,
+            timed_out: false,
+            verified_effect: Some(format!(
+                "verified directory exists: {}",
+                cwd.join("..").display()
+            )),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        assert!(session.project_memory().latest_verified_folder().is_none());
+    }
+
+    #[test]
+    fn shell_expected_directory_memory_keeps_child_directory() {
+        let root = PathBuf::from("/repo");
+        let cwd = root.join("playground/workspace");
+        let expected = cwd.join("reports");
+        let mut session = Session::new("session", &root, &cwd);
+        let mut shell = ShellCommandAction::new("mkdir reports", cwd.clone());
+        shell.expected_directory = Some(expected.clone());
+        let action = Action::proposed(
+            "action-shell",
+            ActionRequest::ShellCommand(shell),
+            "run mkdir",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::Shell(ShellActionVerification {
+            command: "mkdir reports".to_string(),
+            cwd: cwd.display().to_string(),
+            stdout: String::new(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            exit_code: Some(0),
+            elapsed_millis: 1,
+            timed_out: false,
+            verified_effect: Some(format!("verified directory exists: {}", expected.display())),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        assert_eq!(
+            session
+                .project_memory()
+                .latest_verified_folder()
+                .expect("child expected directory should be remembered")
+                .path,
+            expected
         );
     }
 

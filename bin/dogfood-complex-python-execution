@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+project_dir="complex-python-$stamp"
+input_file="$playground/.dogfood-complex-python-execution-$stamp.in"
+output_file="$playground/.dogfood-complex-python-execution-$stamp.out"
+final_plan_file="$playground/.dogfood-complex-python-execution-$stamp.final-plan"
+final_tokens_file="$playground/.dogfood-complex-python-execution-$stamp.final-tokens"
+timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-900}"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+Create a complete small Python text tools project inside a new folder named $project_dir. First create a project plan, then execute it. The project should include README.md, pyproject.toml, src/text_tools/__init__.py, src/text_tools/cli.py, tests/test_cli.py, and sample.txt. Keep dependencies standard-library only. The CLI should count lines and words in a text file. Include verification and acceptance criteria, and include a simple shell verification command.
+/plan
+/memory
+execute the plan you just created
+/reasoning
+/plan
+continue executing the verified plan and create any missing expected files.
+/reasoning
+/plan
+Create USAGE.md inside $project_dir containing the exact text PYTHONPATH=src python -m text_tools.cli sample.txt.
+run python -m compileall src inside that project
+run PYTHONPATH=src python -m text_tools.cli sample.txt inside that project
+/tokens
+/reasoning
+/exit
+EOF
+
+echo "==> running live complex-python-execution dogfood"
+set +e
+(
+  cd "$playground"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" elgar tui <"$input_file"
+  else
+    elgar tui <"$input_file"
+  fi
+) | tee "$output_file"
+run_status=${PIPESTATUS[0]}
+set -e
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+[[ "$run_status" -eq 0 ]] || fail "elgar tui exited nonzero or timed out after ${timeout_seconds}s"
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+grep -Eiq "provide the details of the plan|which file contains the plan|haven.?t.*created a plan" "$output_file" \
+  && fail "plan execution did not bind to verified memory"
+
+project_path="$playground/$project_dir"
+[[ -d "$project_path" ]] || fail "missing project directory"
+find "$project_path" -maxdepth 1 \( -iname '*plan*.md' -o -iname '*plan*.txt' \) -type f | grep -q . \
+  || fail "missing plan file"
+[[ -f "$project_path/README.md" ]] || fail "missing README.md"
+[[ -f "$project_path/pyproject.toml" ]] || fail "missing pyproject.toml"
+[[ -f "$project_path/src/text_tools/__init__.py" ]] || fail "missing package __init__.py"
+[[ -f "$project_path/src/text_tools/cli.py" ]] || fail "missing CLI module"
+[[ -f "$project_path/tests/test_cli.py" ]] || fail "missing tests/test_cli.py"
+[[ -f "$project_path/sample.txt" ]] || fail "missing sample.txt"
+[[ -f "$project_path/USAGE.md" ]] || fail "missing post-plan USAGE.md"
+
+grep -q "PYTHONPATH=src python -m text_tools.cli sample.txt" "$project_path/USAGE.md" \
+  || fail "USAGE.md did not include the src-layout command"
+grep -Eq "def main|if __name__ == .__main__." "$project_path/src/text_tools/cli.py" \
+  || fail "CLI module does not look executable"
+grep -q "Shell command finished: exit 0" "$output_file" || fail "one or more shell commands failed"
+grep -Eq "line|word|Line|Word|words|lines" "$output_file" || fail "CLI shell output did not report counts"
+
+awk '
+  $0 == "Plan Preview" { capture = 1; block = $0 "\n"; next }
+  capture && $0 == "" { latest = block; capture = 0; next }
+  capture { block = block $0 "\n" }
+  END {
+    if (capture) {
+      latest = block
+    }
+    printf "%s", latest
+  }
+' "$output_file" >"$final_plan_file"
+
+grep -q "status: completed" "$final_plan_file" || fail "final plan preview did not complete"
+grep -q "blocking issues: none" "$final_plan_file" || fail "final plan contract has blockers"
+grep -q -- "- ok playground/$project_dir/src/text_tools/cli.py" "$final_plan_file" \
+  || fail "final plan preview missing CLI module"
+grep -q -- "- missing playground/$project_dir/" "$final_plan_file" \
+  && fail "final plan preview still has missing expected paths"
+
+awk '
+  $0 == "Tokens" { capture = 1; block = $0 "\n"; next }
+  capture && $0 == "Reasoning" { capture = 0; latest = block; next }
+  capture { block = block $0 "\n" }
+  END {
+    if (capture) {
+      latest = block
+    }
+    printf "%s", latest
+  }
+' "$output_file" >"$final_tokens_file"
+
+grep -q '^Tokens$' "$final_tokens_file" || fail "tokens output missing"
+grep -q "last turn requests:" "$final_tokens_file" || fail "tokens missing request breakdown"
+grep -q "tool_enabled" "$final_tokens_file" || fail "tokens did not show tool-enabled request"
+grep -q '^Reasoning$' "$output_file" || fail "reasoning output missing"
+grep -q "route: plan_execution" "$output_file" || fail "reasoning missing plan_execution route"
+grep -q "requested shell_command" "$output_file" || fail "reasoning missing shell command"
+
+echo "==> dogfood passed"
+echo "project: $project_path"
+echo "transcript: $output_file"

@@ -41,7 +41,7 @@ use crate::{
     router::Route,
     session::{
         ActionRecord, PendingActionSelection, ProviderPromptMemorySelectedFact,
-        ProviderPromptMemorySelection, Session, VerifiedPlanReference,
+        ProviderPromptMemorySelection, Session, VerifiedFolderReference, VerifiedPlanReference,
     },
     shell::ShellExecutor,
     verified_state_answer::verified_session_state_answer,
@@ -56,6 +56,7 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "If the user asks for a plan and says to share it before implementation, create or update a plan file and summarize it; do not implement project files until asked. ",
     "If the user asks to create only a plan file with a future file tree, create only that plan file; do not ask whether to create the listed future files. ",
     "Plan files must include a concrete file tree, a Verification section, and an Acceptance Criteria section before implementation. ",
+    "Verified plans guide runtime validation but do not make completed files immutable; if the user requests an edit under a verified plan root, use the appropriate file tool and let runtime validation, policy, and executors decide. ",
     "If the user asks what the plan is, summarize the existing plan; do not implement it. ",
     "If a verified plan already exists and the user gives a short choice follow-up, answer from that plan instead of recreating the same file. ",
     "When creating a framework project, infer the necessary starter files from the requested stack and create the complete runnable scaffold before the final answer. ",
@@ -63,13 +64,13 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
 );
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "You are Elgar. No tools yet. ",
-    "Return exactly one compact JSON object for every input; no prose outside JSON. ",
-    "Use {\"route\":\"chat\",\"content\":\"...\"} only when no filesystem, shell, artifact, plan, or project work is requested. ",
-    "Use {\"route\":\"execute\"} for filesystem/shell/artifact/plan/project work; ",
-    "{\"route\":\"execute\",\"intent\":\"plan_execution\"} for plan execution; ",
-    "{\"route\":\"state\",\"answer_kind\":\"...\"} for verified-state inspection; ",
-    "{\"route\":\"ask_guidance\",\"question\":\"...\"} if a required detail is missing. ",
-    "Do not draft artifacts in this no-tool routing step. Runtime supplies verified context after routing. Do not claim completed work."
+    "Return one compact JSON object; no prose. ",
+    "Use chat only when no filesystem, shell, artifact, plan, or project work is requested: {\"route\":\"chat\",\"content\":\"...\"}. ",
+    "Use {\"route\":\"execute\"} for filesystem/shell/artifact/plan/project work. ",
+    "Use {\"route\":\"execute\",\"intent\":\"plan_execution\"} only when applying a plan now; plan-only creation/update is execute. ",
+    "Use {\"route\":\"state\",\"answer_kind\":\"...\"} for verified-state inspection. ",
+    "Use {\"route\":\"ask_guidance\",\"question\":\"...\"} if a required detail is missing. ",
+    "Do not draft artifacts here. Runtime supplies verified context after routing."
 );
 const AGENT_ROUTE_JSON_REPAIR_PROMPT: &str = concat!(
     "The previous no-tool routing response was not valid route JSON. ",
@@ -343,10 +344,11 @@ where
         record_validated_tool_output_trace(session, &outputs);
 
         let path_resolution = AgentPathResolution::new(None, None, &session.project_root);
-        let resolved_outputs = anchor_verified_plan_tool_outputs(
+        let resolved_outputs = anchor_verified_folder_tool_outputs(
             session,
             resolve_agent_tool_outputs(outputs, &path_resolution),
         );
+        let resolved_outputs = anchor_verified_plan_tool_outputs(session, resolved_outputs);
         let resolved_outputs = guard_plan_creation_tool_outputs(
             session,
             resolved_outputs,
@@ -1087,6 +1089,107 @@ fn guard_redundant_directory_tool_outputs(
             other => other,
         })
         .collect()
+}
+
+fn anchor_verified_folder_tool_outputs(
+    session: &Session,
+    outputs: Vec<ResolvedAgentToolOutput>,
+) -> Vec<ResolvedAgentToolOutput> {
+    outputs
+        .into_iter()
+        .map(|output| match output {
+            ResolvedAgentToolOutput::Action(mut action) => {
+                action.request = anchor_verified_folder_action_request(session, action.request);
+                action.target_label = action.request.approval_target();
+                ResolvedAgentToolOutput::Action(action)
+            }
+            other => other,
+        })
+        .collect()
+}
+
+fn anchor_verified_folder_action_request(
+    session: &Session,
+    request: ActionRequest,
+) -> ActionRequest {
+    if session.project_memory().latest_structured_plan().is_some() {
+        return request;
+    }
+    if plan_creation_root_for_action(session, &request).is_some() {
+        return request;
+    }
+
+    match request {
+        ActionRequest::CreateFile(mut action) => {
+            action.target_path = anchor_verified_folder_create_path(session, &action.target_path);
+            ActionRequest::CreateFile(action)
+        }
+        ActionRequest::PatchFile(mut action) => {
+            action.target_path = anchor_verified_folder_existing_path(session, &action.target_path);
+            ActionRequest::PatchFile(action)
+        }
+        ActionRequest::OverwriteFile(mut action) => {
+            action.target_path = anchor_verified_folder_existing_path(session, &action.target_path);
+            ActionRequest::OverwriteFile(action)
+        }
+        ActionRequest::DeleteFile(mut action) => {
+            action.target_path = anchor_verified_folder_existing_path(session, &action.target_path);
+            ActionRequest::DeleteFile(action)
+        }
+        ActionRequest::MoveFile(mut action) => {
+            let anchored_source =
+                anchor_verified_folder_existing_path(session, &action.source_path);
+            let source_was_anchored = anchored_source != action.source_path;
+            action.source_path = anchored_source;
+            if source_was_anchored {
+                action.target_path =
+                    anchor_path_under_verified_folder(session, &action.target_path)
+                        .unwrap_or(action.target_path);
+            } else {
+                action.target_path =
+                    anchor_verified_folder_create_path(session, &action.target_path);
+            }
+            ActionRequest::MoveFile(action)
+        }
+        ActionRequest::CreateDirectory(_) | ActionRequest::ShellCommand(_) => request,
+    }
+}
+
+fn anchor_verified_folder_existing_path(session: &Session, path: &Path) -> PathBuf {
+    if path.is_absolute() || absolute_session_path(session, path).exists() {
+        return path.to_path_buf();
+    }
+
+    anchor_path_under_verified_folder(session, path)
+        .filter(|candidate| absolute_session_path(session, candidate).exists())
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+fn anchor_verified_folder_create_path(session: &Session, path: &Path) -> PathBuf {
+    if path.is_absolute() || absolute_session_path(session, path).exists() {
+        return path.to_path_buf();
+    }
+
+    anchor_path_under_verified_folder(session, path)
+        .filter(|candidate| {
+            absolute_session_path(session, candidate)
+                .parent()
+                .is_some_and(Path::exists)
+        })
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+fn anchor_path_under_verified_folder(session: &Session, path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        return None;
+    }
+    let folder = latest_verified_folder_for_prompt(session)?;
+    let current_target = absolute_session_path(session, path);
+    if path_is_within(&current_target, &folder.path) {
+        return None;
+    }
+    let anchored_target = normalize_path(folder.path.join(path));
+    Some(cwd_relative_path(session, &anchored_target))
 }
 
 fn resolved_outputs_touch_structured_plan(
@@ -1947,7 +2050,7 @@ fn friendly_tool_validation_error(
 fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryContext {
     let mut selected = Vec::new();
     let mut lines = Vec::new();
-    if let Some(folder) = session.project_memory().latest_verified_folder() {
+    if let Some(folder) = latest_verified_folder_for_prompt(session) {
         lines.push(format!(
             "- latest verified folder: {}",
             display_agent_context_path(session, &folder.path)
@@ -2013,6 +2116,20 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
         }
         if missing_directories.is_empty() && missing_files.is_empty() {
             lines.push("- latest structured plan expected paths are complete".to_string());
+            if !plan.expected_files.is_empty() {
+                lines.push(format!(
+                    "- completed structured plan expected files:\n{}",
+                    plan.expected_files
+                        .iter()
+                        .take(12)
+                        .map(|path| format!("  - {}", display_agent_context_path(session, path)))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+            lines.push(
+                "- completed structured plan files are still editable when the user requests changes; do not refuse edits solely because a path is part of a completed plan; runtime validation and policy decide whether the tool call is allowed".to_string(),
+            );
         }
         selected.push(ProviderPromptMemorySelectedFact::new(
             "structured_plan",
@@ -2045,6 +2162,20 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
     };
 
     AgentVerifiedMemoryContext { prompt_context }
+}
+
+fn latest_verified_folder_for_prompt(session: &Session) -> Option<&VerifiedFolderReference> {
+    let folders = &session.project_memory().verified_folders;
+    let latest = folders.last()?;
+
+    folders
+        .iter()
+        .rev()
+        .skip(1)
+        .find(|candidate| {
+            latest.path != candidate.path && path_is_within(&latest.path, &candidate.path)
+        })
+        .or(Some(latest))
 }
 
 fn agent_recent_conversation_context(session: &Session, end_index: usize) -> Option<String> {
@@ -2277,6 +2408,7 @@ mod tests {
                 },
             ]),
             crate::event::ProviderOutput::new("Done."),
+            crate::event::ProviderOutput::new("Done."),
         ]);
         let mut session = Session::new("session", &root, &root);
 
@@ -2342,6 +2474,7 @@ mod tests {
                     assistant_summary: None,
                 },
             ]),
+            crate::event::ProviderOutput::new("Done."),
             crate::event::ProviderOutput::new("Done."),
         ]);
         let mut session = Session::new("session", &root, &root);
@@ -4625,6 +4758,161 @@ mod tests {
     }
 
     #[test]
+    fn verified_folder_prompt_context_prefers_workspace_ancestor_over_child_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-folder-context-ancestor",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let project = cwd.join("workspace");
+        let child = project.join("notes");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&child).unwrap();
+        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
+            "I found the workspace.",
+        )]);
+        let mut session = Session::new("session", &root, &cwd);
+        session.record_verified_folder_reference(crate::session::VerifiedFolderReference {
+            path: project.clone(),
+            source_action_id: "action-project".to_string(),
+        });
+        session.record_verified_folder_reference(crate::session::VerifiedFolderReference {
+            path: child,
+            source_action_id: "action-child".to_string(),
+        });
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "continue in that workspace",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let messages = provider.messages.lock().unwrap();
+        let verified_context = messages[0]
+            .iter()
+            .find(|message| message.content.contains("Verified filesystem context"))
+            .expect("tool turn should include verified memory context");
+        assert!(verified_context
+            .content
+            .contains("- latest verified folder: workspace"));
+        assert!(!verified_context
+            .content
+            .contains("- latest verified folder: workspace/notes"));
+        let selection = session
+            .latest_provider_prompt_memory_selection()
+            .expect("selection should be recorded");
+        assert_eq!(selection.selected[0].path, project);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn completed_structured_plan_prompt_context_keeps_files_editable() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-completed-plan-editable-context",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let project = cwd.join("workspace");
+        let plan_path = project.join("plan.md");
+        let readme_path = project.join("README.md");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(&plan_path, "# Plan\n").unwrap();
+        std::fs::write(&readme_path, "old\n").unwrap();
+        let provider =
+            SequenceProvider::new(vec![crate::event::ProviderOutput::new("I can update it.")]);
+        let mut session = Session::new("session", &root, &cwd);
+        session.record_verified_plan_reference(crate::session::VerifiedPlanReference {
+            path: plan_path.clone(),
+            project_root: project.clone(),
+            source_action_id: "action-plan".to_string(),
+        });
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project,
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Completed,
+            expected_directories: Vec::new(),
+            expected_files: vec![readme_path],
+        });
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "overwrite README.md in that project",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let messages = provider.messages.lock().unwrap();
+        let verified_context = messages[0]
+            .iter()
+            .find(|message| message.content.contains("Verified filesystem context"))
+            .expect("tool turn should include verified memory context");
+        assert!(verified_context
+            .content
+            .contains("completed structured plan files are still editable"));
+        assert!(verified_context.content.contains("workspace/README.md"));
+        assert!(verified_context
+            .content
+            .contains("runtime validation and policy decide"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_folder_context_anchors_relative_existing_file_actions_under_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-folder-action-anchor",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let project = cwd.join("workspace");
+        let notes = project.join("notes");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(notes.join("archive.txt"), "archive\n").unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Moving archive.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "move-relative-under-workspace".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::MoveFile),
+                    arguments: json!({
+                        "source_path": "notes/archive.txt",
+                        "target_path": "notes/archived.txt"
+                    }),
+                    assistant_summary: Some("move archive".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        session.record_verified_folder_reference(crate::session::VerifiedFolderReference {
+            path: project.clone(),
+            source_action_id: "action-project".to_string(),
+        });
+        session.record_verified_folder_reference(crate::session::VerifiedFolderReference {
+            path: notes,
+            source_action_id: "action-notes".to_string(),
+        });
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "move notes/archive.txt to notes/archived.txt",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(!project.join("notes/archive.txt").exists());
+        assert!(project.join("notes/archived.txt").is_file());
+        assert!(!cwd.join("notes/archived.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn verified_plan_preflight_blocks_duplicated_cwd_prefix_target() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plan-preflight-duplicate-prefix",
@@ -5335,7 +5623,7 @@ mod tests {
             .contains("{\"route\":\"execute\"}"));
         assert!(requests[0].messages[0]
             .content
-            .contains("Return exactly one compact JSON object"));
+            .contains("Return one compact JSON object"));
         assert!(requests[0].messages[0].content.len() <= 700);
         assert!(!requests[0].messages[0].content.contains("Use `/tool"));
         assert!(session.events().iter().any(|event| matches!(
@@ -5821,6 +6109,7 @@ mod tests {
         let system_prompt = &tool_request.messages[0].content;
         assert!(system_prompt.contains("infer the necessary starter files"));
         assert!(system_prompt.contains("complete runnable scaffold"));
+        assert!(system_prompt.contains("do not make completed files immutable"));
         assert!(!system_prompt.contains("next-env.d.ts"));
         assert!(!system_prompt.contains("tailwind.config"));
 

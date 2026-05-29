@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+first_dir="latest-plan-first-$stamp"
+second_dir="latest-plan-second-$stamp"
+input_file="$playground/.dogfood-latest-plan-selection-$stamp.in"
+output_file="$playground/.dogfood-latest-plan-selection-$stamp.out"
+final_plan_file="$playground/.dogfood-latest-plan-selection-$stamp.final-plan"
+timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-700}"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+create only a project plan for a tiny Python CLI notes app inside a new folder named $first_dir. Do not implement it yet. The plan must include README.md, src/main.py, and requirements.txt, plus verification and acceptance criteria.
+/plan
+/memory
+create only a project plan for a tiny Python CLI todo app inside a new folder named $second_dir. Do not implement it yet. The plan must include README.md, src/main.py, and requirements.txt, plus verification and acceptance criteria.
+/plan
+/memory
+execute the latest plan only
+/plan
+/memory
+/reasoning
+/exit
+EOF
+
+echo "==> running live latest-plan-selection dogfood"
+set +e
+(
+  cd "$playground"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" elgar tui <"$input_file"
+  else
+    elgar tui <"$input_file"
+  fi
+) | tee "$output_file"
+run_status=${PIPESTATUS[0]}
+set -e
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+[[ "$run_status" -eq 0 ]] || fail "elgar tui exited nonzero or timed out after ${timeout_seconds}s"
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+grep -q "raw tool protocol as text" "$output_file" \
+  && fail "model returned raw tool protocol instead of executable tool calls"
+grep -Eiq "which plan|provide the details of the plan|haven.?t.*created a plan" "$output_file" \
+  && fail "latest plan follow-up did not bind to verified memory"
+
+second_plan_block="$(
+  awk -v start="> create only a project plan for a tiny Python CLI todo app inside a new folder named $second_dir. Do not implement it yet. The plan must include README.md, src/main.py, and requirements.txt, plus verification and acceptance criteria." '
+    !seen && $0 == start { capture = 1; seen = 1; next }
+    capture && $0 == "> execute the latest plan only" { exit }
+    capture { print }
+  ' "$output_file"
+)"
+printf '%s\n' "$second_plan_block" | grep -q "Wrote .*/README.md" \
+  && fail "second plan-only turn created README.md before execution"
+printf '%s\n' "$second_plan_block" | grep -q "Wrote .*/requirements.txt" \
+  && fail "second plan-only turn created requirements.txt before execution"
+printf '%s\n' "$second_plan_block" | grep -q "Wrote .*/src/main.py" \
+  && fail "second plan-only turn created src/main.py before execution"
+
+first_path="$playground/$first_dir"
+second_path="$playground/$second_dir"
+[[ -d "$first_path" ]] || fail "missing first project directory"
+[[ -d "$second_path" ]] || fail "missing second project directory"
+find "$first_path" -maxdepth 1 -iname '*plan*.md' -type f | grep -q . \
+  || fail "missing first plan file"
+find "$second_path" -maxdepth 1 -iname '*plan*.md' -type f | grep -q . \
+  || fail "missing second plan file"
+
+[[ ! -f "$first_path/README.md" ]] || fail "executed the older first plan"
+[[ ! -f "$first_path/src/main.py" ]] || fail "executed the older first plan src/main.py"
+[[ -f "$second_path/README.md" ]] || fail "latest plan README.md missing"
+[[ -f "$second_path/src/main.py" ]] || fail "latest plan src/main.py missing"
+[[ -f "$second_path/requirements.txt" ]] || fail "latest plan requirements.txt missing"
+
+awk '
+  $0 == "Plan Preview" { capture = 1; block = $0 "\n"; next }
+  capture && $0 == "" { latest = block; capture = 0; next }
+  capture { block = block $0 "\n" }
+  END {
+    if (capture) {
+      latest = block
+    }
+    printf "%s", latest
+  }
+' "$output_file" >"$final_plan_file"
+
+grep -q "status: completed" "$final_plan_file" || fail "final latest plan preview did not complete"
+grep -q "playground/$second_dir" "$final_plan_file" || fail "final plan preview is not for latest project"
+grep -q -- "- ok playground/$second_dir/README.md" "$final_plan_file" \
+  || fail "final preview missing latest README.md"
+grep -q -- "- ok playground/$second_dir/src/main.py" "$final_plan_file" \
+  || fail "final preview missing latest src/main.py"
+grep -q -- "- ok playground/$second_dir/requirements.txt" "$final_plan_file" \
+  || fail "final preview missing latest requirements.txt"
+grep -q '^Memory$' "$output_file" || fail "memory output missing"
+grep -q "structured plans" "$output_file" || fail "structured plan memory missing"
+grep -q "completed verified-plan" "$output_file" || fail "latest structured plan was not completed"
+grep -q '^Reasoning$' "$output_file" || fail "reasoning output missing"
+grep -q "route: plan_execution" "$output_file" || fail "reasoning did not record plan_execution"
+
+echo "==> dogfood passed"
+echo "latest project: $second_path"
+echo "transcript: $output_file"

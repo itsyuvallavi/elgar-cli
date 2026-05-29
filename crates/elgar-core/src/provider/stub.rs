@@ -125,10 +125,9 @@ fn visible_user_prompt(prompt: &str) -> &str {
 fn is_route_json_request(messages: &[ChatMessage]) -> bool {
     messages.iter().any(|message| {
         matches!(message.role, ChatRole::System)
-            && message
-                .content
-                .contains("Return exactly one compact JSON object")
-            && (message.content.contains("Use {\"route\":\"chat\"")
+            && message.content.contains("compact JSON object")
+            && (message.content.contains("Use chat")
+                || message.content.contains("Use {\"route\":\"chat\"")
                 || message.content.contains("routing schema"))
     })
 }
@@ -188,9 +187,7 @@ mod tests {
         let output = ProviderStub::default()
             .chat_messages_with_metadata(
                 vec![
-                    ChatMessage::system(
-                        "Return exactly one compact JSON object using the routing schema.",
-                    ),
+                    ChatMessage::system("Return one compact JSON object using the routing schema."),
                     ChatMessage::user("hello"),
                 ],
                 &ProviderRequestMetadata::new("stub-provider", None, "request-1"),

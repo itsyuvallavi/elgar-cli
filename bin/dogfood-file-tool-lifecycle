@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+project_dir="file-lifecycle-$stamp"
+input_file="$playground/.dogfood-file-tool-lifecycle-$stamp.in"
+output_file="$playground/.dogfood-file-tool-lifecycle-$stamp.out"
+timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-700}"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+create a small notes workspace folder named $project_dir inside the current playground folder.
+create README.md inside $project_dir with a short notes workspace title.
+create notes/draft.txt inside $project_dir containing the sentence this is a draft note.
+create notes/archive.txt inside $project_dir containing archived note.
+create tmp/delete-me.txt inside $project_dir containing temporary data.
+patch notes/draft.txt in that workspace by replacing the word draft with polished.
+overwrite README.md in that workspace with a concise title and one sentence that mentions polished notes.
+move notes/archive.txt to notes/archived.txt.
+delete tmp/delete-me.txt.
+run find in that workspace to list files up to depth 3.
+/memory
+/reasoning
+/exit
+EOF
+
+echo "==> running live file-tool-lifecycle dogfood"
+set +e
+(
+  cd "$playground"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" elgar tui <"$input_file"
+  else
+    elgar tui <"$input_file"
+  fi
+) | tee "$output_file"
+run_status=${PIPESTATUS[0]}
+set -e
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+[[ "$run_status" -eq 0 ]] || fail "elgar tui exited nonzero or timed out after ${timeout_seconds}s"
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+
+project_path="$playground/$project_dir"
+[[ -d "$project_path" ]] || fail "missing project directory"
+[[ -f "$project_path/README.md" ]] || fail "missing README.md"
+[[ -f "$project_path/notes/draft.txt" ]] || fail "missing notes/draft.txt"
+[[ -f "$project_path/notes/archived.txt" ]] || fail "missing moved notes/archived.txt"
+[[ ! -f "$project_path/notes/archive.txt" ]] || fail "old archive path still exists"
+[[ ! -f "$project_path/tmp/delete-me.txt" ]] || fail "deleted file still exists"
+
+grep -qi "polished" "$project_path/README.md" || fail "README overwrite did not mention polished"
+grep -qi "polished" "$project_path/notes/draft.txt" || fail "draft patch did not apply"
+grep -q "Shell command finished: exit 0" "$output_file" || fail "find shell command did not execute"
+grep -q "notes/draft.txt" "$output_file" || fail "find output missing notes/draft.txt"
+grep -q "notes/archived.txt" "$output_file" || fail "find output missing notes/archived.txt"
+grep -q "stdout:.*tmp/delete-me.txt" "$output_file" && fail "verified find output still lists deleted file"
+
+grep -q '^Memory$' "$output_file" || fail "memory output missing"
+grep -q '^Reasoning$' "$output_file" || fail "reasoning output missing"
+grep -q "requested shell_command" "$output_file" || fail "reasoning missing shell_command"
+grep -q "Wrote .*/README.md" "$output_file" || fail "create_file verified output missing"
+grep -q "Updated .*/notes/draft.txt" "$output_file" || fail "patch_file verified output missing"
+grep -q "Overwrote .*/README.md" "$output_file" || fail "overwrite_file verified output missing"
+grep -q "Moved .*/notes/archive.txt to .*/notes/archived.txt" "$output_file" || fail "move_file verified output missing"
+grep -q "Deleted .*/tmp/delete-me.txt" "$output_file" || fail "delete_file verified output missing"
+
+echo "==> dogfood passed"
+echo "project: $project_path"
+echo "transcript: $output_file"

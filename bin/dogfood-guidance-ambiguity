@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+alpha_dir="guidance-alpha-$stamp"
+beta_dir="guidance-beta-$stamp"
+input_file="$playground/.dogfood-guidance-ambiguity-$stamp.in"
+output_file="$playground/.dogfood-guidance-ambiguity-$stamp.out"
+timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-700}"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+create two empty candidate project folders named $alpha_dir and $beta_dir.
+create a README.md in one of those candidate folders, but I have not chosen which one yet.
+/reasoning
+Use $beta_dir. Include the exact text Selected beta workspace.
+/memory
+/reasoning
+run ls in $beta_dir
+/exit
+EOF
+
+echo "==> running live guidance-ambiguity dogfood"
+set +e
+(
+  cd "$playground"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" elgar tui <"$input_file"
+  else
+    elgar tui <"$input_file"
+  fi
+) | tee "$output_file"
+run_status=${PIPESTATUS[0]}
+set -e
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+[[ "$run_status" -eq 0 ]] || fail "elgar tui exited nonzero or timed out after ${timeout_seconds}s"
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+
+[[ -d "$playground/$alpha_dir" ]] || fail "missing alpha folder"
+[[ -d "$playground/$beta_dir" ]] || fail "missing beta folder"
+[[ ! -f "$playground/$alpha_dir/README.md" ]] || fail "ambiguous write targeted alpha before clarification"
+[[ -f "$playground/$beta_dir/README.md" ]] || fail "clarified beta README.md missing"
+grep -q "Selected beta workspace" "$playground/$beta_dir/README.md" \
+  || fail "clarified README content missing"
+
+grep -q "requested guidance:" "$output_file" || fail "model did not ask guidance for unresolved ambiguity"
+grep -q "guidance requested:" "$output_file" || fail "runtime did not record guidance request"
+grep -q '^Memory$' "$output_file" || fail "memory output missing"
+grep -q '^Reasoning$' "$output_file" || fail "reasoning output missing"
+grep -q "requested create_file" "$output_file" || fail "reasoning missing clarified create_file"
+grep -q "Shell command finished: exit 0" "$output_file" || fail "ls shell command did not execute"
+grep -q "README.md" "$output_file" || fail "ls output did not include README.md"
+
+echo "==> dogfood passed"
+echo "selected project: $playground/$beta_dir"
+echo "transcript: $output_file"

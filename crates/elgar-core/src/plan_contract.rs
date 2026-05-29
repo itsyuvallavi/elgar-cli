@@ -218,11 +218,17 @@ impl PlanContract {
                         continue;
                     }
                     if !scope_contains_referenced_path(&scope_paths, &path, &self.project_root) {
-                        issues.push(PlanContractDraftIssue {
-                            severity: PlanContractDraftIssueSeverity::Blocking,
-                            kind: PlanContractDraftIssueKind::ReferencedPathMissingFromScope,
-                            path: Some(path),
-                        });
+                        if referenced_path_is_in_executable_scope_area(
+                            &self.scope.allowed_directories,
+                            &path,
+                            &self.project_root,
+                        ) {
+                            issues.push(PlanContractDraftIssue {
+                                severity: PlanContractDraftIssueSeverity::Blocking,
+                                kind: PlanContractDraftIssueKind::ReferencedPathMissingFromScope,
+                                path: Some(path),
+                            });
+                        }
                     }
                 }
                 PlanVerificationCheckKind::PythonModule { module } => {
@@ -298,6 +304,20 @@ fn scope_contains_referenced_path(
     scope_paths
         .iter()
         .any(|scope_path| scope_path.file_name() == Some(file_name))
+}
+
+fn referenced_path_is_in_executable_scope_area(
+    allowed_directories: &[PathBuf],
+    path: &Path,
+    project_root: &Path,
+) -> bool {
+    if path.parent() == Some(project_root) {
+        return true;
+    }
+
+    allowed_directories
+        .iter()
+        .any(|directory| path.starts_with(directory))
 }
 
 fn is_extensionless_reference_satisfied_by_scoped_file(
@@ -1499,6 +1519,50 @@ mod tests {
             issue.kind == PlanContractDraftIssueKind::ReferencedPathMissingFromScope
                 && issue.path.as_ref() == Some(&project.join("src/tasktracker/cli.py"))
         }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn draft_review_does_not_block_runtime_output_file_in_verification() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-plan-contract-review-runtime-output-verification-{}",
+            std::process::id()
+        ));
+        let project = root.join("runtime-output-plan-test");
+        let plan_path = project.join("PLAN.md");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            &plan_path,
+            "# Project Plan\n\n## Verification\n- `python -m src.main add \"Test\"` creates `notes/Test.txt` with content.\n- `python -m src.main --help` displays help.\n\n## Acceptance Criteria\n- `README.md` explains usage.\n",
+        )
+        .unwrap();
+        let contract = PlanContract {
+            id: "contract-runtime-output-verification".to_string(),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            source_action_id: Some("action-plan".to_string()),
+            status: PlanContractStatus::Draft,
+            scope: PlanContractScope {
+                allowed_directories: vec![project.join("src")],
+                allowed_files: vec![project.join("README.md"), project.join("src/main.py")],
+                allowed_command_classes: Vec::new(),
+                verification_steps: vec![
+                    "`python -m src.main add \"Test\"` creates `notes/Test.txt` with content."
+                        .to_string(),
+                    "`python -m src.main --help` displays help.".to_string(),
+                ],
+                verification_checks: Vec::new(),
+                acceptance_criteria: vec!["`README.md` explains usage.".to_string()],
+                revision_reason: None,
+            },
+            approval: None,
+        };
+
+        let review = contract.review_draft();
+
+        assert!(review.is_approvable());
 
         let _ = fs::remove_dir_all(root);
     }

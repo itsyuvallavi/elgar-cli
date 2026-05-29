@@ -41,11 +41,11 @@ pub(crate) fn verified_action_success_message(
         }
         ActionRequest::ShellCommand(shell_command) => {
             let directories = verified_shell_expected_directories(shell_command);
-            if directories.len() == 1 {
-                return format!("Created {}.", user_display_path(&directories[0]));
-            }
-            if !directories.is_empty() {
-                return format!("Created {}.", display_user_path_list(&directories));
+            if !directories.is_empty()
+                || shell_command.expected_file.is_some()
+                || !shell_command.expected_files.is_empty()
+            {
+                return "Executed approved shell command and verified expected paths.".to_string();
             }
             "Executed approved shell command and recorded the verified result.".to_string()
         }
@@ -169,14 +169,6 @@ fn verified_file_action_success_message(result: &VerifiedActionResult) -> String
             "Applied approved action and recorded the verified result.".to_string()
         }
     }
-}
-
-fn display_user_path_list(paths: &[PathBuf]) -> String {
-    paths
-        .iter()
-        .map(|path| user_display_path(path))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn user_display_path(path: &Path) -> String {
