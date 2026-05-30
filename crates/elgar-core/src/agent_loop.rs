@@ -1,13 +1,13 @@
 use std::{
     collections::HashSet,
-    fs,
+    env, fs,
     path::{Component, Path, PathBuf},
 };
 
 use serde_json::Value;
 
 use crate::{
-    action::{Action, ActionRequest, CreateFileAction, OverwriteFileAction},
+    action::{Action, ActionLifecycleState, ActionRequest, CreateFileAction, OverwriteFileAction},
     context::ContextBundle,
     controller::TurnResult,
     controller_project_memory::{is_plan_path_or_contents, record_verified_project_memory},
@@ -45,12 +45,15 @@ use crate::{
         VerifiedFolderReference, VerifiedPlanReference,
     },
     shell::ShellExecutor,
-    verified_state_answer::verified_session_state_answer,
+    verified_state_answer::{
+        parse_verified_state_answer_kind, verified_session_state_answer, VerifiedStateAnswerKind,
+    },
 };
 
 const AGENT_SYSTEM_PROMPT: &str = concat!(
     "You are Elgar, a permissive terminal-native coding agent. ",
     "Use tools to do the user's requested filesystem and shell work directly. ",
+    "Use shell_command for command execution or local file inspection; do not satisfy those requests by rewriting files. ",
     "Do not ask for approval. Do not give instructions instead of acting when a tool can do it. ",
     "Ask one concise clarification question only when the target or intent is truly ambiguous. ",
     "If the user asks you to choose, choose a reasonable option and continue the prior request. ",
@@ -65,32 +68,47 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "After tools run, answer naturally and briefly with what happened."
 );
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
-    "You are Elgar. ",
-    "Return one compact JSON object; no prose. ",
-    "Route by capability; do not draft artifacts here. ",
-    "{\"route\":\"execute\"}=local file/shell/artifact/plan work. ",
-    "{\"route\":\"chat\",\"content\":\"...\"}=text only. ",
-    "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=apply an existing verified plan. ",
-    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=the request requires both a plan artifact and implementation/execution in this turn. ",
-    "For plan-only work, use execute without that intent. ",
-    "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified-state inspection. ",
-    "{\"route\":\"ask_guidance\",\"question\":\"...\"}=missing required detail. ",
-    "Runtime supplies verified context after routing."
+    "You are Elgar. Classify only. ",
+    "Return compact JSON; no prose. ",
+    "{\"route\":\"execute\",\"intent\":\"shell_execution\"}=run/inspect shell command; not file content. ",
+    "{\"route\":\"execute\"}=local file/artifact/plan work. ",
+    "{\"route\":\"chat\",\"content\":\"...\"}=text only, not runtime state. ",
+    "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=apply verified plan. ",
+    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=both a plan artifact and implementation/execution this turn. ",
+    "Plan-only: execute, no intent. ",
+    "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified state/outcome/reason for prior changes, creations, blocks/skips/failures. ",
+    "{\"route\":\"ask_guidance\",\"question\":\"...\"}=missing required detail."
+);
+const AGENT_STATE_KIND_CLASSIFIER_PROMPT: &str = concat!(
+    "The user asked about verified runtime state. ",
+    "Return exactly one compact JSON object {\"answer_kind\":\"...\"}; no prose. ",
+    "Valid answer kinds: latest_folder, latest_file, created_summary, recent_changes, last_block, plan, plan_details, pending, status, memory, summary. ",
+    "plan_details=the plan file contents; plan=the latest plan reference and status; ",
+    "recent_changes=what was just done in the most recent action; last_block=why the latest runtime action was blocked/skipped/failed; created_summary=everything created so far; ",
+    "latest_folder/latest_file=the most recent created folder/file; ",
+    "pending=actions awaiting approval; status=applied counts and latest paths; memory=remembered folders/plans; summary=a short combined overview."
 );
 const AGENT_ROUTE_JSON_REPAIR_PROMPT: &str = concat!(
     "The previous no-tool routing response was not valid route JSON. ",
     "Return exactly one compact JSON object for the original user request using the routing schema. ",
     "Do not answer in prose and do not draft artifacts."
 );
-const AGENT_AFTER_PLAN_CREATION_DECISION_PROMPT: &str = concat!(
-    "A verified plan artifact was just created and has missing expected implementation paths. ",
-    "Return exactly one compact JSON object. ",
-    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=the original request also requires implementing the new plan now. ",
-    "{\"route\":\"chat\",\"content\":\"done\"}=the original request only required creating the plan artifact. ",
-    "Do not draft artifacts in this response."
+const AGENT_ROUTE_LOCAL_WORK_CHAT_REPAIR_PROMPT: &str = concat!(
+    "The previous routing response chose chat for a request containing local filesystem or shell syntax. ",
+    "Return exactly one compact JSON object for the original user request using the routing schema. ",
+    "Choose execute when tools are needed to create, edit, inspect, or run local artifacts. ",
+    "Choose chat only when the user is asking for text-only explanation. ",
+    "Do not claim local work was completed in prose."
+);
+const AGENT_ROUTE_RUNTIME_BLOCK_CHAT_REPAIR_PROMPT: &str = concat!(
+    "A recent runtime block/skip/failure is available as verified state. ",
+    "Return exactly one compact JSON object for the original user request using the routing schema. ",
+    "Choose state with answer_kind last_block when the user is asking about the prior runtime outcome or reason. ",
+    "Choose chat only for text that is unrelated to verified runtime state."
 );
 
 const MAX_AGENT_TOOL_ROUNDS: usize = 16;
+const REPEATED_IDENTICAL_SKIP_BREAKER_LIMIT: usize = 2;
 const TOOL_COMMAND_PREFIX: &str = "/tool";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +121,7 @@ enum PlainAgentChatOutcome {
 struct AgentExecutionIntent {
     plan_execution: bool,
     plan_creation_execution: bool,
+    shell_execution: bool,
     after_plan_creation_decision: bool,
     explicit_tool_command: bool,
 }
@@ -227,6 +246,7 @@ where
         messages.push(ChatMessage::system(context));
     }
     if intent.plan_execution
+        && !input_contains_local_work_syntax(input)
         && session
             .project_memory()
             .latest_structured_plan()
@@ -261,12 +281,16 @@ where
     let mut handled_tool_call_ids = HashSet::new();
     let mut plan_created_this_turn = false;
     let mut plan_execution_in_progress = false;
+    let mut plan_execution_requested_after_plan_creation = false;
     let mut plan_creation_repair_in_progress = false;
     let mut allow_implementation_after_plan_creation = intent.plan_creation_execution;
     let mut visible_skipped_tool_notice_shown = false;
     let mut no_tool_response_repair_attempted = false;
     let mut verified_actions_this_tool_turn = 0usize;
     let mut tool_call_rounds_this_tool_turn = 0usize;
+    let mut previous_all_skipped_signature: Option<AllSkippedToolResultSignature> = None;
+    let mut repeated_all_skipped_count = 0usize;
+    let mut validation_repair_in_progress = false;
     let allow_no_tool_response_repair = !intent.explicit_tool_command;
 
     for _round in 0..MAX_AGENT_TOOL_ROUNDS {
@@ -298,6 +322,33 @@ where
                             "plan execution completed after empty tool response; skipped plain fallback",
                         );
                         break;
+                    }
+
+                    if plan_execution_requested_after_plan_creation {
+                        if let Some(message) = missing_expected_plan_paths_message(session) {
+                            session.push_reasoning_runtime_check(
+                                "empty tool response during plan execution; continued from verified missing paths",
+                            );
+                            messages.push(ChatMessage::system(message));
+                            continue;
+                        }
+                        session.push_reasoning_runtime_check(
+                            "plan execution completed after empty tool response; skipped plain fallback",
+                        );
+                        break;
+                    }
+
+                    if allow_no_tool_response_repair
+                        && verified_actions_this_tool_turn == 0
+                        && tool_call_rounds_this_tool_turn == 0
+                        && !no_tool_response_repair_attempted
+                    {
+                        no_tool_response_repair_attempted = true;
+                        session.push_reasoning_runtime_check(
+                            "empty tool response on execute route; requested tool repair",
+                        );
+                        messages.push(ChatMessage::system(no_tool_action_repair_message()));
+                        continue;
                     }
 
                     session.push_reasoning_runtime_check(
@@ -356,7 +407,12 @@ where
                 )));
                 break;
             }
-            push_provider_message_after_tool_turn_if_visible(session, start_index, assistant_text);
+            push_provider_message_after_tool_turn_if_visible(
+                session,
+                start_index,
+                assistant_text,
+                validation_repair_in_progress,
+            );
             break;
         }
 
@@ -364,7 +420,12 @@ where
 
         tool_calls.retain(|tool_call| handled_tool_call_ids.insert(tool_call.id.clone()));
         if tool_calls.is_empty() {
-            push_provider_message_after_tool_turn_if_visible(session, start_index, assistant_text);
+            push_provider_message_after_tool_turn_if_visible(
+                session,
+                start_index,
+                assistant_text,
+                false,
+            );
             break;
         }
 
@@ -377,6 +438,7 @@ where
             Ok(outputs) => outputs,
             Err(error) => match tool_validation_recovery(&error) {
                 ToolValidationRecovery::RepairModel(message) => {
+                    validation_repair_in_progress = true;
                     for tool_call in tool_calls {
                         handled_tool_call_ids.remove(&tool_call.id);
                         messages.push(ChatMessage::tool(tool_call.id, message.clone()));
@@ -392,6 +454,7 @@ where
                 }
             },
         };
+        validation_repair_in_progress = false;
         record_validated_tool_output_trace(session, &outputs);
 
         let path_resolution = AgentPathResolution::new(None, None, &session.project_root);
@@ -405,6 +468,8 @@ where
             resolved_outputs,
             prompt_project_root.as_deref(),
         );
+        let resolved_outputs =
+            guard_shell_execution_tool_outputs(session, resolved_outputs, intent.shell_execution);
         let resolved_outputs =
             anchor_bare_plan_artifacts_to_batch_project_root(session, resolved_outputs);
         let resolved_outputs = guard_plan_creation_tool_outputs(
@@ -421,6 +486,7 @@ where
         let plan_execution_batch_completes_missing_paths = plan_execution_batch
             && resolved_outputs_complete_missing_plan_paths(session, &resolved_outputs);
         if plan_execution_batch {
+            plan_execution_requested_after_plan_creation = false;
             session.record_reasoning_route("plan_execution");
             session.push_reasoning_runtime_check("plan execution paths detected");
             if latest_plan_contract_needs_repair(session) {
@@ -436,21 +502,52 @@ where
         }
         let starts_plan_execution = plan_execution_batch && !plan_execution_in_progress;
         plan_execution_in_progress |= plan_execution_batch;
+        if should_preflight_verified_plan_tool_outputs(
+            session,
+            &resolved_outputs,
+            plan_execution_batch,
+            intent.plan_execution,
+        ) {
+            if let Err(message) = preflight_verified_plan_tool_outputs(session, &resolved_outputs) {
+                session.push_reasoning_runtime_check(format!("preflight blocked: {message}"));
+                session.record_runtime_block(message.clone());
+                session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                    message,
+                    AssistantMessageSource::Controller,
+                )));
+                break;
+            }
+        }
         let resolved_outputs = guard_plan_execution_tool_outputs(
             session,
             resolved_outputs,
             plan_execution_in_progress,
             plan_execution_batch_completes_missing_paths,
         );
-
-        if let Err(message) = preflight_verified_plan_tool_outputs(session, &resolved_outputs) {
-            session.push_reasoning_runtime_check(format!("preflight blocked: {message}"));
-            session.push_event(Event::AssistantMessage(AssistantMessage::new(
-                message,
-                AssistantMessageSource::Controller,
-            )));
-            break;
+        if let Some(signature) = all_skipped_tool_result_signature(&resolved_outputs) {
+            if previous_all_skipped_signature.as_ref() == Some(&signature) {
+                repeated_all_skipped_count += 1;
+            } else {
+                previous_all_skipped_signature = Some(signature.clone());
+                repeated_all_skipped_count = 1;
+            }
+            if repeated_all_skipped_count >= REPEATED_IDENTICAL_SKIP_BREAKER_LIMIT {
+                let message = repeated_identical_skip_breaker_message(&signature);
+                session.push_reasoning_runtime_check(format!(
+                    "repeated identical all-skipped tool result; stopped after {repeated_all_skipped_count} iterations"
+                ));
+                session.record_runtime_block(message.clone());
+                session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                    message,
+                    AssistantMessageSource::Controller,
+                )));
+                break;
+            }
+        } else {
+            previous_all_skipped_signature = None;
+            repeated_all_skipped_count = 0;
         }
+
         if starts_plan_execution {
             session.push_reasoning_runtime_check("latest structured plan marked executing");
             session.mark_latest_structured_project_plan_executing();
@@ -502,6 +599,7 @@ where
                     tool_results_need_provider_followup = true;
                     session.push_reasoning_runtime_check(format!("skipped: {message}"));
                     if visible && !visible_skipped_tool_notice_shown {
+                        session.record_runtime_block(message.clone());
                         session.push_event(Event::AssistantMessage(AssistantMessage::new(
                             message.clone(),
                             AssistantMessageSource::Controller,
@@ -539,6 +637,13 @@ where
                     if session
                         .actions()
                         .last()
+                        .is_some_and(|record| record.action.state == ActionLifecycleState::Failed)
+                    {
+                        session.record_runtime_block(result.clone());
+                    }
+                    if session
+                        .actions()
+                        .last()
                         .and_then(|record| record.verified_result.as_ref())
                         .is_some()
                     {
@@ -555,12 +660,11 @@ where
                         plan_creation_repair_in_progress =
                             latest_plan_contract_needs_repair(session);
                         if intent.plan_creation_execution && !plan_creation_repair_in_progress {
-                            plan_execution_in_progress = true;
+                            plan_execution_requested_after_plan_creation = true;
                             allow_implementation_after_plan_creation = true;
                             session.push_reasoning_runtime_check(
-                                "new verified plan created during explicit plan creation execution turn",
+                                "new verified plan created during explicit plan creation execution turn; execution waits for implementation tool calls",
                             );
-                            session.mark_latest_structured_project_plan_executing();
                         }
                         if plan_creation_repair_in_progress {
                             messages
@@ -618,16 +722,9 @@ where
             && !plan_creation_repair_in_progress
             && !plan_execution_in_progress
         {
-            if intent.after_plan_creation_decision
-                && plan_creation_followup_requires_execution(provider, session, input)
-            {
-                plan_execution_in_progress = true;
-                allow_implementation_after_plan_creation = true;
-                session.push_reasoning_model_decision(
-                    "post-plan decision selected plan_creation_execution",
-                );
-                session.mark_latest_structured_project_plan_executing();
+            if intent.plan_creation_execution && allow_implementation_after_plan_creation {
                 if let Some(message) = missing_expected_plan_paths_message(session) {
+                    plan_execution_requested_after_plan_creation = true;
                     messages.push(ChatMessage::system(message));
                     continue;
                 }
@@ -816,16 +913,39 @@ fn retry_plain_agent_chat_for_route_json<P>(
 where
     P: ControllerProvider,
 {
+    retry_plain_agent_chat_for_route_json_with_repair(
+        provider,
+        session,
+        input,
+        AGENT_ROUTE_JSON_REPAIR_PROMPT,
+        false,
+    )
+}
+
+fn retry_plain_agent_chat_for_route_json_with_repair<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+    repair_prompt: &str,
+    include_verified_context: bool,
+) -> PlainAgentChatOutcome
+where
+    P: ControllerProvider,
+{
     let request = provider.request_metadata();
     session.push_event(Event::ProviderStarted(
         ProviderStarted::new(request.provider.clone(), request.request_id.clone())
             .with_request_details(request.model.clone(), "plain_route_retry", 0),
     ));
-    let messages = vec![
-        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
-        ChatMessage::system(AGENT_ROUTE_JSON_REPAIR_PROMPT),
-        ChatMessage::user(input),
-    ];
+    let mut messages = vec![ChatMessage::system(
+        AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT,
+    )];
+    if include_verified_context {
+        if let Some(context) = agent_verified_memory_context(session).prompt_context {
+            messages.push(ChatMessage::system(context));
+        }
+    }
+    messages.extend([ChatMessage::system(repair_prompt), ChatMessage::user(input)]);
 
     match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
         Ok(output) => {
@@ -843,49 +963,71 @@ where
     }
 }
 
-fn plan_creation_followup_requires_execution<P>(
+/// Secondary classification call: only used when the lean route prompt chose
+/// `state` without pinning a valid `answer_kind`. Keeps the always-sent route
+/// prompt cheap while still resolving the precise verified-state view reliably.
+fn classify_verified_state_answer_kind<P>(
     provider: &P,
     session: &mut Session,
     input: &str,
-) -> bool
+) -> Option<VerifiedStateAnswerKind>
 where
     P: ControllerProvider,
 {
     let request = provider.request_metadata();
     session.push_event(Event::ProviderStarted(
         ProviderStarted::new(request.provider.clone(), request.request_id.clone())
-            .with_request_details(request.model.clone(), "plain_plan_followup", 0),
+            .with_request_details(request.model.clone(), "plain_state_classifier", 0),
     ));
-
-    let mut messages = vec![
-        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
-        ChatMessage::system(AGENT_AFTER_PLAN_CREATION_DECISION_PROMPT),
+    let messages = vec![
+        ChatMessage::system(AGENT_STATE_KIND_CLASSIFIER_PROMPT),
+        ChatMessage::user(input),
     ];
-    if let Some(context) = agent_verified_memory_context(session).prompt_context {
-        messages.push(ChatMessage::system(context));
-    }
-    messages.push(ChatMessage::user(input));
 
     match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
         Ok(output) => {
-            let assistant_text = output.text.clone();
+            let text = output.text.clone();
             push_provider_finished(session, request.provider, request.request_id, output);
-            matches!(
-                parse_normal_turn_decision(&assistant_text),
-                Some(NormalTurnDecision::Execute {
-                    intent: Some(NormalTurnExecuteIntent::PlanCreationAndExecution)
-                        | Some(NormalTurnExecuteIntent::PlanExecution)
-                })
-            )
+            let kind = parse_state_answer_kind_from_text(&text);
+            if kind.is_some() {
+                session.push_reasoning_model_decision(
+                    "state kind classifier resolved the verified-state view",
+                );
+            } else {
+                session.push_reasoning_runtime_check(
+                    "state kind classifier returned no valid answer kind",
+                );
+            }
+            kind
         }
         Err(error) => {
             session.push_event(Event::Error(ErrorEvent::new(format!(
-                "{} provider post-plan decision request {} failed: {error}",
+                "{} provider state classifier request {} failed: {error}",
                 request.provider, request.request_id
             ))));
-            false
+            None
         }
     }
+}
+
+fn parse_state_answer_kind_from_text(text: &str) -> Option<VerifiedStateAnswerKind> {
+    let trimmed = text.trim();
+    let json_value = serde_json::from_str::<Value>(trimmed).ok().or_else(|| {
+        let start = trimmed.find('{')?;
+        let end = trimmed.rfind('}')?;
+        (start < end)
+            .then(|| serde_json::from_str::<Value>(&trimmed[start..=end]).ok())
+            .flatten()
+    });
+    if let Some(kind) = json_value
+        .as_ref()
+        .and_then(|value| value.get("answer_kind"))
+        .and_then(Value::as_str)
+        .and_then(parse_verified_state_answer_kind)
+    {
+        return Some(kind);
+    }
+    parse_verified_state_answer_kind(trimmed)
 }
 
 fn handle_plain_agent_decision<P>(
@@ -914,6 +1056,8 @@ where
                     intent,
                     Some(NormalTurnExecuteIntent::PlanCreationAndExecution)
                 ),
+                shell_execution: matches!(intent, Some(NormalTurnExecuteIntent::ShellExecution))
+                    || (intent.is_none() && input_contains_executable_command_shape(input)),
                 after_plan_creation_decision: intent.is_none(),
                 explicit_tool_command: false,
             };
@@ -926,6 +1070,10 @@ where
                 session.push_reasoning_model_decision(
                     "normal turn decision selected execute intent plan_creation_execution",
                 );
+            } else if execution_intent.shell_execution {
+                session.push_reasoning_model_decision(
+                    "normal turn decision selected execute intent shell_execution",
+                );
             } else {
                 session.push_reasoning_model_decision("normal turn decision selected execute");
             }
@@ -934,6 +1082,18 @@ where
         Some(NormalTurnDecision::State { answer_kind }) => {
             session.record_reasoning_route("state");
             session.push_reasoning_model_decision("normal turn decision selected state");
+            let answer_kind = answer_kind
+                .or_else(|| classify_verified_state_answer_kind(provider, session, input));
+            let Some(answer_kind) = answer_kind else {
+                session.push_reasoning_runtime_check(
+                    "state route without a resolved answer kind; asked for guidance",
+                );
+                push_plain_provider_message_if_visible(
+                    session,
+                    "Which verified detail do you want: the latest plan, what was just done, created files, pending actions, or status?".to_string(),
+                );
+                return PlainAgentChatOutcome::Finished;
+            };
             session.push_event(Event::AssistantMessage(AssistantMessage::new(
                 verified_session_state_answer(session, answer_kind),
                 AssistantMessageSource::Controller,
@@ -941,6 +1101,48 @@ where
             PlainAgentChatOutcome::Finished
         }
         Some(NormalTurnDecision::Chat { content }) => {
+            if allow_route_retry && session.latest_runtime_block_if_recent().is_some() {
+                session.push_reasoning_model_decision(
+                    "normal turn decision returned chat with a recorded runtime block; retrying route JSON",
+                );
+                return retry_plain_agent_chat_for_route_json_with_repair(
+                    provider,
+                    session,
+                    input,
+                    AGENT_ROUTE_RUNTIME_BLOCK_CHAT_REPAIR_PROMPT,
+                    true,
+                );
+            }
+            if !allow_route_retry && session.latest_runtime_block_if_recent().is_some() {
+                session.record_reasoning_route("state");
+                session.push_reasoning_model_decision(
+                    "runtime block route repair still returned chat; surfaced verified last_block",
+                );
+                session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                    verified_session_state_answer(session, VerifiedStateAnswerKind::LastBlock),
+                    AssistantMessageSource::Controller,
+                )));
+                return PlainAgentChatOutcome::Finished;
+            }
+            if allow_route_retry && looks_like_local_work_chat_misroute(input, &content) {
+                session.push_reasoning_model_decision(
+                    "normal turn decision returned chat for local work-shaped input; retrying route JSON",
+                );
+                return retry_plain_agent_chat_for_route_json_with_repair(
+                    provider,
+                    session,
+                    input,
+                    AGENT_ROUTE_LOCAL_WORK_CHAT_REPAIR_PROMPT,
+                    has_verified_session_state(session),
+                );
+            }
+            if !allow_route_retry && looks_like_local_work_chat_misroute(input, &content) {
+                session.record_reasoning_route("execute");
+                session.push_reasoning_model_decision(
+                    "normal turn decision returned chat for local work-shaped input after retry; routed to execute",
+                );
+                return PlainAgentChatOutcome::Execute(AgentExecutionIntent::default());
+            }
             if looks_like_misrouted_artifact_chat(&content) {
                 if !allow_route_retry {
                     session.record_reasoning_route("execute");
@@ -1020,6 +1222,94 @@ fn looks_like_misrouted_artifact_chat_after_retry(content: &str) -> bool {
         || (path_count >= 3 && numbered_artifact_line_count(trimmed) >= 4)
 }
 
+fn looks_like_local_work_chat_misroute(input: &str, content: &str) -> bool {
+    !content.trim().is_empty()
+        && !looks_like_raw_tool_protocol(content)
+        && !content_echoes_original_input(input, content)
+        && input_contains_local_work_syntax(input)
+}
+
+fn content_echoes_original_input(input: &str, content: &str) -> bool {
+    let input = input.trim();
+    !input.is_empty() && content.contains(input)
+}
+
+fn input_contains_local_work_syntax(input: &str) -> bool {
+    local_path_like_token_count(input) > 0 || shell_syntax_token_count(input) > 0
+}
+
+fn input_contains_executable_command_shape(input: &str) -> bool {
+    local_path_like_token_count(input) > 0
+        && input
+            .lines()
+            .flat_map(command_shape_segments)
+            .any(segment_starts_with_executable_command_shape)
+}
+
+fn command_shape_segments(line: &str) -> Vec<&str> {
+    line.split([';', '|'])
+        .flat_map(|segment| segment.split("&&"))
+        .collect()
+}
+
+fn segment_starts_with_executable_command_shape(segment: &str) -> bool {
+    for token in segment.split_whitespace() {
+        if is_command_shape_env_assignment(token) {
+            continue;
+        }
+        let Some(token) = clean_command_shape_token(token) else {
+            return false;
+        };
+        return executable_token_exists_on_path(token);
+    }
+    false
+}
+
+fn is_command_shape_env_assignment(token: &str) -> bool {
+    let token = token.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+        )
+    });
+    let Some((name, value)) = token.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && !value.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+}
+
+fn clean_command_shape_token(token: &str) -> Option<&str> {
+    let token = token.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+        )
+    });
+    if token.is_empty()
+        || token.contains('/')
+        || token.contains('=')
+        || token.starts_with('-')
+        || token.contains('.')
+        || !token
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return None;
+    }
+    Some(token)
+}
+
+fn executable_token_exists_on_path(token: &str) -> bool {
+    let Some(path_var) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&path_var).any(|dir| dir.join(token).is_file())
+}
+
 fn local_path_like_token_count(content: &str) -> usize {
     let mut paths = Vec::<String>::new();
     for line in content.lines() {
@@ -1079,6 +1369,43 @@ fn local_path_like_token_count(content: &str) -> usize {
     paths.len()
 }
 
+fn shell_syntax_token_count(content: &str) -> usize {
+    content
+        .split_whitespace()
+        .filter(|token| {
+            let token = token.trim_matches(|ch: char| {
+                matches!(
+                    ch,
+                    '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';'
+                )
+            });
+            is_shell_option_token(token) || is_env_assignment_token(token)
+        })
+        .count()
+}
+
+fn is_shell_option_token(token: &str) -> bool {
+    let Some(rest) = token.strip_prefix('-') else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
+fn is_env_assignment_token(token: &str) -> bool {
+    let Some((name, value)) = token.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && !value.is_empty()
+        && !name.starts_with(|ch: char| ch.is_ascii_digit())
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+}
+
 fn explicit_project_root_from_input(session: &Session, input: &str) -> Option<PathBuf> {
     input
         .split_whitespace()
@@ -1095,6 +1422,7 @@ fn explicit_project_root_token(session: &Session, token: &str) -> Option<PathBuf
     if token.is_empty()
         || token.contains('*')
         || token.contains('?')
+        || token.contains(':')
         || !(token.contains('/') || token.starts_with('/'))
     {
         return None;
@@ -1150,6 +1478,7 @@ fn has_verified_session_state(session: &Session) -> bool {
         || session.project_memory().latest_verified_folder().is_some()
         || session.project_memory().latest_verified_plan().is_some()
         || session.project_memory().latest_structured_plan().is_some()
+        || session.latest_plan_contract().is_some()
 }
 
 fn agent_local_runtime_context(session: &mut Session) -> Option<String> {
@@ -1298,6 +1627,56 @@ fn anchor_prompt_project_root_path(
         return path.to_path_buf();
     }
     cwd_relative_path(session, &normalize_path(prompt_project_root.join(path)))
+}
+
+fn guard_shell_execution_tool_outputs(
+    session: &Session,
+    outputs: Vec<ResolvedAgentToolOutput>,
+    shell_execution: bool,
+) -> Vec<ResolvedAgentToolOutput> {
+    if !shell_execution {
+        return outputs;
+    }
+
+    outputs
+        .into_iter()
+        .map(|output| match output {
+            ResolvedAgentToolOutput::Action(action)
+                if matches!(action.request, ActionRequest::ShellCommand(_)) =>
+            {
+                ResolvedAgentToolOutput::Action(action)
+            }
+            ResolvedAgentToolOutput::Action(action)
+                if shell_execution_new_create_target_allowed(session, &action.request) =>
+            {
+                ResolvedAgentToolOutput::Action(action)
+            }
+            ResolvedAgentToolOutput::Action(action) => ResolvedAgentToolOutput::Skipped {
+                tool_call_id: action.tool_call_id,
+                message: "Skipped non-shell tool call because this execute intent requires shell_command or a new create target.".to_string(),
+                visible: false,
+            },
+            other => other,
+        })
+        .collect()
+}
+
+fn shell_execution_new_create_target_allowed(session: &Session, request: &ActionRequest) -> bool {
+    match request {
+        ActionRequest::CreateFile(action) => {
+            !resolved_target_path_for_existing_check(session, &action.target_path).exists()
+        }
+        ActionRequest::OverwriteFile(action) => {
+            !resolved_target_path_for_existing_check(session, &action.target_path).exists()
+        }
+        ActionRequest::CreateDirectory(action) => {
+            !resolved_target_path_for_existing_check(session, &action.target_path).exists()
+        }
+        ActionRequest::PatchFile(_)
+        | ActionRequest::DeleteFile(_)
+        | ActionRequest::MoveFile(_)
+        | ActionRequest::ShellCommand(_) => false,
+    }
 }
 
 fn anchor_bare_plan_artifacts_to_batch_project_root(
@@ -1539,6 +1918,15 @@ fn guard_plan_creation_tool_outputs(
         .collect::<Vec<_>>();
     if plan_roots.is_empty() && !plan_created_this_turn && !plan_creation_repair_in_progress {
         if allow_implementation_after_plan_creation {
+            if resolved_outputs_touch_structured_plan(session, &outputs) {
+                return outputs;
+            }
+            if plain_create_batch_can_run_as_execute(session, &outputs) {
+                return outputs;
+            }
+            if has_verified_session_state(session) && resolved_outputs_are_shell_only(&outputs) {
+                return outputs;
+            }
             return outputs
                 .into_iter()
                 .map(|output| match output {
@@ -1624,6 +2012,105 @@ fn guard_plan_creation_tool_outputs(
             other => other,
         })
         .collect()
+}
+
+fn plain_create_batch_can_run_as_execute(
+    session: &Session,
+    outputs: &[ResolvedAgentToolOutput],
+) -> bool {
+    if has_existing_plan_contract_or_reference(session)
+        && !latest_structured_plan_is_completed(session)
+    {
+        return false;
+    }
+
+    let mut saw_action = false;
+    for output in outputs {
+        match output {
+            ResolvedAgentToolOutput::Action(action)
+                if matches!(
+                    action.request,
+                    ActionRequest::CreateFile(_)
+                        | ActionRequest::CreateDirectory(_)
+                        | ActionRequest::OverwriteFile(_)
+                ) =>
+            {
+                saw_action = true;
+            }
+            ResolvedAgentToolOutput::Action(_)
+            | ResolvedAgentToolOutput::Guidance(_)
+            | ResolvedAgentToolOutput::Skipped { .. } => return false,
+        }
+    }
+
+    saw_action
+}
+
+fn latest_structured_plan_is_completed(session: &Session) -> bool {
+    session
+        .project_memory()
+        .latest_structured_plan()
+        .is_some_and(|plan| plan.runtime_status() == StructuredProjectPlanStatus::Completed)
+}
+
+fn has_existing_plan_contract_or_reference(session: &Session) -> bool {
+    session.latest_plan_contract().is_some()
+        || session.project_memory().latest_verified_plan().is_some()
+        || session.project_memory().latest_structured_plan().is_some()
+}
+
+fn resolved_outputs_are_shell_only(outputs: &[ResolvedAgentToolOutput]) -> bool {
+    let mut saw_action = false;
+    for output in outputs {
+        match output {
+            ResolvedAgentToolOutput::Action(action)
+                if matches!(action.request, ActionRequest::ShellCommand(_)) =>
+            {
+                saw_action = true;
+            }
+            ResolvedAgentToolOutput::Action(_)
+            | ResolvedAgentToolOutput::Guidance(_)
+            | ResolvedAgentToolOutput::Skipped { .. } => return false,
+        }
+    }
+    saw_action
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AllSkippedToolResultSignature {
+    messages: Vec<String>,
+}
+
+fn all_skipped_tool_result_signature(
+    outputs: &[ResolvedAgentToolOutput],
+) -> Option<AllSkippedToolResultSignature> {
+    if outputs.is_empty() {
+        return None;
+    }
+
+    let mut messages = Vec::with_capacity(outputs.len());
+    for output in outputs {
+        let ResolvedAgentToolOutput::Skipped { message, .. } = output else {
+            return None;
+        };
+        messages.push(message.clone());
+    }
+
+    Some(AllSkippedToolResultSignature { messages })
+}
+
+fn repeated_identical_skip_breaker_message(signature: &AllSkippedToolResultSignature) -> String {
+    let mut messages = Vec::<&str>::new();
+    for message in &signature.messages {
+        if !messages.iter().any(|seen| *seen == message.as_str()) {
+            messages.push(message);
+        }
+    }
+
+    format!(
+        "Stopped because the model repeated the same blocked tool result without any verified action. Last block: {}",
+        messages.join(" ")
+    )
 }
 
 fn prioritize_plan_creation_tool_outputs(
@@ -1716,7 +2203,7 @@ fn plan_creation_first_message() -> String {
 }
 
 fn no_tool_action_repair_message() -> String {
-    "This route requires tool actions. Use the available tools to make the requested filesystem or shell changes, or ask concise guidance if a required target is missing.".to_string()
+    "This route requires tool actions. Use create_file/create_directory/overwrite_file for filesystem changes, shell_command for command execution, or ask concise guidance if a required target is missing.".to_string()
 }
 
 fn plan_creation_repair_message(session: &Session) -> String {
@@ -2372,6 +2859,26 @@ fn preflight_verified_plan_tool_outputs(
     Ok(())
 }
 
+fn should_preflight_verified_plan_tool_outputs(
+    session: &Session,
+    outputs: &[ResolvedAgentToolOutput],
+    plan_execution_batch: bool,
+    plan_execution_intent: bool,
+) -> bool {
+    if plan_execution_batch || plan_execution_intent {
+        return true;
+    }
+
+    session.project_memory().latest_verified_plan().is_some()
+        && session.project_memory().latest_structured_plan().is_none()
+        && outputs.iter().any(|output| {
+            matches!(
+                output,
+                ResolvedAgentToolOutput::Action(_) | ResolvedAgentToolOutput::Guidance(_)
+            )
+        })
+}
+
 fn plan_preflight_paths<'a>(session: &Session, request: &'a ActionRequest) -> Vec<&'a Path> {
     if plan_creation_root_for_action(session, request).is_some() {
         return Vec::new();
@@ -2809,6 +3316,7 @@ fn record_agent_action_success(
     result: VerifiedActionResult,
 ) -> String {
     let message = verified_action_success_message(session, action, &result);
+    session.clear_runtime_block();
     let record = session
         .action_mut(index)
         .expect("agent action index must reference an action record");
@@ -2861,12 +3369,28 @@ fn push_provider_message_after_tool_turn_if_visible(
     session: &mut Session,
     turn_start_index: usize,
     message: impl Into<String>,
+    allow_unverified_provider_message: bool,
 ) {
     if turn_has_verified_action_applied(session, turn_start_index) {
+        debug_assert!(session
+            .actions_in_latest_action_turn()
+            .iter()
+            .any(|record| record.verified_result.is_some()));
         return;
     }
 
-    push_provider_message_if_visible(session, message);
+    let message = message.into();
+    if allow_unverified_provider_message {
+        push_provider_message_if_visible(session, message);
+        return;
+    }
+
+    if provider_visible_text_from_text_only_output(message).is_some() {
+        session.push_event(Event::AssistantMessage(AssistantMessage::new(
+            "No verified filesystem change occurred this turn, so no completion claim was recorded.",
+            AssistantMessageSource::Controller,
+        )));
+    }
 }
 
 fn turn_has_verified_action_applied(session: &Session, turn_start_index: usize) -> bool {
@@ -3275,6 +3799,34 @@ mod tests {
             .contains("create the plan file first, then implement the planned files"));
         assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT
             .contains("both a plan artifact and implementation/execution"));
+    }
+
+    #[test]
+    fn explicit_project_root_rejects_url_and_scheme_tokens() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-root-token-guard",
+            std::process::id()
+        ));
+        let session = Session::new("session", &root, &root);
+
+        for token in [
+            "https://nextjs.org/docs/messages/module-not-found",
+            "http://example.com/path",
+            "file:///tmp/thing",
+            "scheme:opaque/value",
+        ] {
+            assert_eq!(
+                explicit_project_root_token(&session, token),
+                None,
+                "scheme/url token must not become a project root: {token}"
+            );
+        }
+
+        // A normal relative project path under the root is still accepted.
+        assert_eq!(
+            explicit_project_root_token(&session, "my-project/api"),
+            Some(normalize_path(&root.join("my-project/api")))
+        );
     }
 
     #[test]
@@ -6463,6 +7015,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("Demo")).unwrap();
         let provider = CapturingProvider::new()
             .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
             .with_tool_output(
@@ -6511,6 +7064,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("Demo")).unwrap();
         let provider = CapturingProvider::new()
             .with_plain_outputs(vec![
                 crate::event::ProviderOutput::new(
@@ -6533,6 +7087,10 @@ mod tests {
                 ]),
             );
         let mut session = Session::new("session", &root, &root);
+        session.record_verified_folder_reference(VerifiedFolderReference {
+            path: root.join("Demo"),
+            source_action_id: "action-folder".to_string(),
+        });
 
         run_permissive_agent_turn(
             &provider,
@@ -6542,7 +7100,7 @@ mod tests {
 
         assert!(root.join("RepairPlan/PLAN.md").is_file());
         let requests = provider.requests();
-        assert_eq!(requests.len(), 4);
+        assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
         assert_eq!(requests[0].tool_count, 0);
         assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
@@ -6555,9 +7113,6 @@ mod tests {
         );
         assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
         assert!(requests[2].tool_count > 0);
-        assert_eq!(requests[3].mode, CapturedProviderRequestMode::Plain);
-        assert!(joined_request_messages(&requests[3])
-            .contains("A verified plan artifact was just created"));
         assert!(!session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
@@ -6613,6 +7168,10 @@ mod tests {
                 ]),
             );
         let mut session = Session::new("session", &root, &root);
+        session.record_verified_folder_reference(VerifiedFolderReference {
+            path: root.join("Demo"),
+            source_action_id: "action-folder".to_string(),
+        });
 
         run_permissive_agent_turn(
             &provider,
@@ -6634,6 +7193,135 @@ mod tests {
             .model_decisions
             .iter()
             .any(|line| line.contains("artifact-like chat")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_file_work_chat_route_retries_before_rendering_fake_claim() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-local-file-chat-repair",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("Demo")).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new(
+                    r#"{"route":"chat","content":"Created USAGE.md with the specified content."}"#,
+                ),
+                crate::event::ProviderOutput::new(
+                    r#"{"route":"chat","content":"Created USAGE.md in the project root."}"#,
+                ),
+            ])
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating USAGE.md.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "usage-file".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "Demo/USAGE.md",
+                            "contents": "PYTHONPATH=src python -m demo.cli sample.txt\n"
+                        }),
+                        assistant_summary: Some("create usage file".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_folder_reference(VerifiedFolderReference {
+            path: root.join("Demo"),
+            source_action_id: "action-folder".to_string(),
+        });
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "Create USAGE.md inside Demo containing exact text PYTHONPATH=src python -m demo.cli sample.txt.",
+        );
+
+        assert!(root.join("Demo/USAGE.md").is_file());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.contains("Created USAGE.md")
+        )));
+        let requests = provider.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.mode == CapturedProviderRequestMode::Plain)
+                .count(),
+            2
+        );
+        assert!(joined_request_messages(&requests[1]).contains("local filesystem or shell syntax"));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains("local work-shaped input"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_work_chat_route_retries_before_rendering_fake_claim() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-shell-chat-repair",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("Demo")).unwrap();
+        let expected_file = root.join("compile.out");
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new(
+                    r#"{"route":"chat","content":"Compiled all Python files successfully."}"#,
+                ),
+                crate::event::ProviderOutput::new(
+                    r#"{"route":"chat","content":"I executed the compile command successfully."}"#,
+                ),
+            ])
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Running compile command.").with_tool_calls(
+                    vec![RawModelToolCall {
+                        id: "compile-shell".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                        arguments: json!({
+                            "command": "printf ok > compile.out",
+                            "cwd": root.display().to_string(),
+                            "expected_file": expected_file.display().to_string()
+                        }),
+                        assistant_summary: Some("run verification command".to_string()),
+                    }],
+                ),
+            );
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_folder_reference(VerifiedFolderReference {
+            path: root.join("Demo"),
+            source_action_id: "action-folder".to_string(),
+        });
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "run python -m compileall src inside that project",
+        );
+
+        assert_eq!(std::fs::read_to_string(&expected_file).unwrap(), "ok");
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.contains("Compiled all Python")
+        )));
+        assert!(session.actions().iter().any(|record| {
+            matches!(
+                record.verified_result.as_ref(),
+                Some(VerifiedActionResult::Shell(shell)) if shell.exit_code == Some(0)
+            )
+        }));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -7348,11 +8036,12 @@ Acceptance Criteria:
             .with_tool_outputs(vec![
                 crate::event::ProviderOutput::new("Implementing without a plan.")
                     .with_tool_calls(vec![RawModelToolCall {
-                        id: "plan-required-early-readme".to_string(),
-                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        id: "plan-required-early-shell".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::ShellCommand),
                         arguments: json!({
-                            "target_path": "GreeterCLI/README.md",
-                            "contents": "# Greeter CLI\n"
+                            "command": "printf '# Greeter CLI\\n' > README.md",
+                            "cwd": "GreeterCLI",
+                            "expected_file": "README.md"
                         }),
                         assistant_summary: Some("create README too early".to_string()),
                     }]),
@@ -7406,6 +8095,698 @@ Acceptance Criteria:
             .runtime_checks
             .iter()
             .any(|line| line.contains("Create the project plan file first")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_creation_execution_plain_create_without_plan_is_applied() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-adhoc-create-plan-intent",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating notes.txt.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "adhoc-create-notes".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "notes.txt",
+                            "contents": "hello world\n"
+                        }),
+                        assistant_summary: Some("create notes".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a file notes.txt with the text hello world",
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "hello world\n"
+        );
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ActionApplied(applied)
+                if matches!(&applied.result, VerifiedActionResult::FileWritten { path }
+                    if path.ends_with("notes.txt"))
+                    || matches!(&applied.result, VerifiedActionResult::File(
+                        crate::event::FileActionVerification::FileCreated { path }
+                    ) if path.ends_with("notes.txt"))
+        )));
+        assert!(!session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Create the project plan file first"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_creation_execution_plain_create_after_completed_plan_is_applied() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-post-plan-create",
+            std::process::id()
+        ));
+        let project = root.join("Demo");
+        let plan_path = project.join("plan.md");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(&plan_path, "# Demo Plan\n").unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating usage.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "post-plan-usage".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "Demo/USAGE.md",
+                            "contents": "PYTHONPATH=src python -m text_tools.cli sample.txt.\n"
+                        }),
+                        assistant_summary: Some("create usage".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Completed,
+            expected_directories: vec![project.clone()],
+            expected_files: Vec::new(),
+        });
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "Create USAGE.md inside Demo containing a command line.",
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(project.join("USAGE.md")).unwrap(),
+            "PYTHONPATH=src python -m text_tools.cli sample.txt.\n"
+        );
+        assert!(!session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Create the project plan file first"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_creation_only_does_not_mark_plan_executing() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-only-not-executing",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating the plan.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "plan-only-file".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "myapp/plan.md",
+                            "contents": "# Tiny Script Plan\n\n```text\nscript.py\n```\n\n## Verification\n- Run `python script.py`.\n\n## Acceptance Criteria\n- `script.py` prints hi.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("No further tool actions."),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a plan in ./myapp for a tiny script that prints hi",
+        );
+
+        assert!(root.join("myapp/plan.md").is_file());
+        assert!(!root.join("myapp/script.py").exists());
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("plan should be recorded");
+        assert_eq!(
+            plan.runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Verified
+        );
+        assert_ne!(
+            plan.status,
+            crate::session::StructuredProjectPlanStatus::Executing
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_plan_preflight_allows_unrelated_non_execution_create() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-preflight-unrelated",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let plan_provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating the plan.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "unrelated-plan-file".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "myapp/plan.md",
+                            "contents": "# Tiny Script Plan\n\n```text\nscript.py\n```\n\n## Verification\n- Run `python script.py`.\n\n## Acceptance Criteria\n- `script.py` prints hi.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("No further tool actions."),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+        run_permissive_agent_turn(
+            &plan_provider,
+            &mut session,
+            "create a plan in ./myapp for a tiny script that prints hi",
+        );
+
+        let create_provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating unrelated file.").with_tool_calls(
+                    vec![RawModelToolCall {
+                        id: "unrelated-create".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "other/x.txt",
+                            "contents": "outside plan\n"
+                        }),
+                        assistant_summary: Some("create unrelated file".to_string()),
+                    }],
+                ),
+            );
+
+        run_permissive_agent_turn(
+            &create_provider,
+            &mut session,
+            "create file other/x.txt outside the plan",
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("other/x.txt")).unwrap(),
+            "outside plan\n"
+        );
+        assert_eq!(
+            session
+                .project_memory()
+                .latest_structured_plan()
+                .expect("plan should remain recorded")
+                .runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Verified
+        );
+        assert!(!session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("verified plan is rooted"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_last_block_reports_latest_preflight_block() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-last-block-state",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("myapp");
+        std::fs::create_dir_all(&project).unwrap();
+        let plan_path = project.join("plan.md");
+        std::fs::write(
+            &plan_path,
+            "# Tiny Script Plan\n\n```text\nscript.py\n```\n\n## Verification\n- Run `python script.py`.\n\n## Acceptance Criteria\n- `script.py` prints hi.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: plan_path.clone(),
+            project_root: project.clone(),
+            source_action_id: "action-plan".to_string(),
+        });
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Verified,
+            expected_directories: Vec::new(),
+            expected_files: vec![project.join("script.py")],
+        });
+        let blocked_provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating plan file and unrelated file.")
+                    .with_tool_calls(vec![
+                        RawModelToolCall {
+                            id: "blocked-plan-file".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "myapp/script.py",
+                                "contents": "print('hi')\n"
+                            }),
+                            assistant_summary: Some("create expected script".to_string()),
+                        },
+                        RawModelToolCall {
+                            id: "blocked-outside-file".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "other/x.txt",
+                                "contents": "outside plan\n"
+                            }),
+                            assistant_summary: Some("create outside file".to_string()),
+                        },
+                    ]),
+            );
+
+        run_permissive_agent_turn(
+            &blocked_provider,
+            &mut session,
+            "execute the verified plan and create other/x.txt too",
+        );
+
+        assert!(!project.join("script.py").exists());
+        assert!(!root.join("other/x.txt").exists());
+        let block = session
+            .latest_runtime_block()
+            .expect("preflight block should be recorded")
+            .message
+            .clone();
+        assert!(block.contains("verified plan is rooted"));
+        assert!(block.contains("other/x.txt"));
+
+        let state_provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"state\",\"answer_kind\":\"last_block\"}",
+            ));
+
+        run_permissive_agent_turn(
+            &state_provider,
+            &mut session,
+            "why was the previous request blocked?",
+        );
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content == block
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn chat_route_after_runtime_block_retries_state_routing() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-block-chat-retry",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new().with_plain_outputs(vec![
+            crate::event::ProviderOutput::new(
+                "{\"route\":\"chat\",\"content\":\"I need more details.\"}",
+            ),
+            crate::event::ProviderOutput::new(
+                "{\"route\":\"chat\",\"content\":\"Still not sure.\"}",
+            ),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+        session.record_runtime_block(
+            "The verified plan is rooted at myapp, but the tool call targets other/x.txt outside that project. No filesystem action was applied.",
+        );
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "explain the latest runtime outcome",
+        );
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
+        assert!(joined_request_messages(&requests[1]).contains("runtime block/skip/failure"));
+        assert!(session
+            .latest_reasoning_trace()
+            .is_some_and(|trace| trace.route.as_deref() == Some("state")));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("verified plan is rooted at myapp")
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_runtime_block_does_not_hijack_later_chat() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-stale-block-chat",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new().with_plain_output(
+            crate::event::ProviderOutput::new("{\"route\":\"chat\",\"content\":\"Hello!\"}"),
+        );
+        let mut session = Session::new("session", &root, &root);
+        session.record_runtime_block("Old block message.");
+        session.start_reasoning_trace("intervening turn one");
+        session.start_reasoning_trace("intervening turn two");
+
+        run_permissive_agent_turn(&provider, &mut session, "hello");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(session
+            .latest_reasoning_trace()
+            .is_some_and(|trace| trace.route.as_deref() == Some("chat")));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content == "Hello!"
+        )));
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content == "Old block message."
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_action_clears_prior_runtime_block() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-clear-block-on-action",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let action_provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating file.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "clear-block-create".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "ok.txt",
+                            "contents": "ok\n"
+                        }),
+                        assistant_summary: Some("create ok file".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+        session.record_runtime_block("Previous block message.");
+
+        run_permissive_agent_turn(&action_provider, &mut session, "create ok.txt");
+
+        assert!(root.join("ok.txt").is_file());
+        assert!(session.latest_runtime_block().is_none());
+
+        let chat_provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"chat\",\"content\":\"Hello after action.\"}",
+            ));
+
+        run_permissive_agent_turn(&chat_provider, &mut session, "hello");
+
+        assert_eq!(chat_provider.requests().len(), 1);
+        assert!(session
+            .latest_reasoning_trace()
+            .is_some_and(|trace| trace.route.as_deref() == Some("chat")));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content == "Hello after action."
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repeated_identical_all_skipped_tool_results_stop_the_loop() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-repeated-skip-breaker",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Demo")).unwrap();
+        std::fs::write(
+            root.join("Demo/plan.md"),
+            "# Demo Plan\n\n```text\nREADME.md\n```\n\n## Verification\n- README.md exists.\n\n## Acceptance Criteria\n- Expected files exist.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("Demo/plan.md"),
+                contents: "# Demo Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "Demo/plan.md".to_string(),
+            }),
+        );
+        let repeated_create = |id: &str| RawModelToolCall {
+            id: id.to_string(),
+            name: RawModelToolName::Known(ModelToolName::CreateFile),
+            arguments: json!({
+                "target_path": "notes.txt",
+                "contents": "hello world\n"
+            }),
+            assistant_summary: Some("create notes".to_string()),
+        };
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Trying the create.")
+                    .with_tool_calls(vec![repeated_create("repeat-skip-1")]),
+                crate::event::ProviderOutput::new("Trying the create again.")
+                    .with_tool_calls(vec![repeated_create("repeat-skip-2")]),
+                crate::event::ProviderOutput::new("Created notes.txt."),
+            ]);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a file notes.txt with the text hello world",
+        );
+
+        assert!(!root.join("notes.txt").exists());
+        assert!(provider.requests().len() <= REPEATED_IDENTICAL_SKIP_BREAKER_LIMIT + 1);
+        assert_eq!(
+            session
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Event::AssistantMessage(message)
+                        if message.source == AssistantMessageSource::Controller
+                            && message.content.contains("repeated the same blocked tool result")
+                ))
+                .count(),
+            1
+        );
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.contains("Created notes.txt")
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn execute_prose_without_verified_action_is_not_reported_as_success() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-false-success-guard",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Demo")).unwrap();
+        std::fs::write(
+            root.join("Demo/plan.md"),
+            "# Demo Plan\n\n```text\nREADME.md\n```\n\n## Verification\n- README.md exists.\n\n## Acceptance Criteria\n- Expected files exist.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("Demo/plan.md"),
+                contents: "# Demo Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "Demo/plan.md".to_string(),
+            }),
+        );
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Trying the create.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "false-success-skipped".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "notes.txt",
+                            "contents": "hello world\n"
+                        }),
+                        assistant_summary: Some("create notes".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Created notes.txt with hello world."),
+            ]);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a file notes.txt with the text hello world",
+        );
+
+        assert!(!root.join("notes.txt").exists());
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.contains("Created notes.txt")
+        )));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("No verified filesystem change occurred")
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn executable_command_shape_skips_existing_file_tools_and_accepts_shell_command() {
+        assert!(input_contains_executable_command_shape("cat notes.txt"));
+        assert!(input_contains_executable_command_shape(
+            "PYTHONPATH=src python -m text_tools.cli sample.txt"
+        ));
+        assert!(!input_contains_executable_command_shape(
+            "Create USAGE.md containing PYTHONPATH=src python -m text_tools.cli sample.txt."
+        ));
+
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-shell-intent-guard",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("notes.txt"), "hello world\n").unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Rewriting notes.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "shell-intent-wrong-file".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "notes.txt",
+                            "contents": "changed\n"
+                        }),
+                        assistant_summary: Some("rewrite notes".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Running cat.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "shell-intent-cat".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                        arguments: json!({
+                            "command": "cat notes.txt",
+                            "cwd": ".",
+                            "expected_effect": "hello world"
+                        }),
+                        assistant_summary: Some("cat notes".to_string()),
+                    },
+                ]),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "cat notes.txt");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "hello world\n"
+        );
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ActionApplied(applied)
+                if matches!(&applied.result, VerifiedActionResult::Shell(shell)
+                    if shell.exit_code == Some(0)
+                        && shell.stdout.contains("hello world"))
+        )));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("requires shell_command"))));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -7504,9 +8885,10 @@ Acceptance Criteria:
 
         assert!(!root.join("GreeterCLI").exists());
         let requests = provider.requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
         assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
         assert!(!session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
@@ -7522,7 +8904,66 @@ Acceptance Criteria:
         assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
             .runtime_checks
             .iter()
-            .any(|line| line.contains("empty tool response on execute route"))));
+            .any(
+                |line| line.contains("empty tool response on execute route; requested tool repair")
+            )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_creation_empty_tool_response_retries_and_creates_plan() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-empty-tool-retry",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProviderWithToolErrors::new(
+            vec![crate::event::ProviderOutput::new("{\"route\":\"execute\"}")],
+            vec![
+                CapturedToolStep::EmptyResponse,
+                CapturedToolStep::Output(
+                    crate::event::ProviderOutput::new("Creating the plan file.").with_tool_calls(
+                        vec![RawModelToolCall {
+                            id: "empty-retry-plan".to_string(),
+                            name: RawModelToolName::Known(ModelToolName::CreateFile),
+                            arguments: json!({
+                                "target_path": "playground/RetryPlan/plan.md",
+                                "contents": "# Retry Plan\n\n```text\nREADME.md\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Check expected files.\n\n## Acceptance Criteria\n- Expected files exist.\n"
+                            }),
+                            assistant_summary: Some("create plan".to_string()),
+                        }],
+                    ),
+                ),
+            ],
+        );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create only a project plan inside playground/RetryPlan",
+        );
+
+        assert!(root.join("playground/RetryPlan/plan.md").is_file());
+        let requests = provider.requests();
+        assert!(requests.len() >= 3);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
+        assert!(requests
+            .iter()
+            .filter(|request| request.mode == CapturedProviderRequestMode::Tool)
+            .nth(1)
+            .is_some_and(|request| joined_request_messages(request)
+                .contains("This route requires tool actions")));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(
+                |line| line.contains("empty tool response on execute route; requested tool repair")
+            )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -7914,9 +9355,67 @@ Acceptance Criteria:
     }
 
     #[test]
-    fn post_plan_decision_can_continue_same_prompt_execution_without_initial_intent() {
+    fn plan_creation_with_skipped_files_waits_for_followup_without_post_decision() {
         let root = std::env::temp_dir().join(format!(
-            "elgar-agent-loop-{}-post-plan-exec-decision",
+            "elgar-agent-loop-{}-skipped-files-no-post-decision",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating plan.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "post-plan-decision-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "CalculatorUI/plan.md",
+                            "contents": "# Calculator Plan\n\n```text\nREADME.md\ncalculator.py\nui.py\n```\n\n## Verification\n- `calculator.py`, `ui.py`, and `README.md` exist.\n\n## Acceptance Criteria\n- Running `python ui.py` launches the calculator UI.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                    RawModelToolCall {
+                        id: "post-plan-decision-readme-too-early".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "CalculatorUI/README.md",
+                            "contents": "# Calculator UI\n"
+                        }),
+                        assistant_summary: Some("create README too early".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a plan for the calculator UI and execute it",
+        );
+
+        assert!(root.join("CalculatorUI/plan.md").is_file());
+        assert!(!root.join("CalculatorUI/README.md").exists());
+        assert!(!root.join("CalculatorUI/calculator.py").exists());
+        assert!(!root.join("CalculatorUI/ui.py").exists());
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(
+                |line| line.contains("plan creation completed; skipped final provider synthesis")
+            )));
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_only_route_does_not_run_post_plan_execution_decision_without_skipped_files() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-only-no-post-decision",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -7928,72 +9427,41 @@ Acceptance Criteria:
                     "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
                 ),
             ])
-            .with_tool_outputs(vec![
-                crate::event::ProviderOutput::new("Creating plan.").with_tool_calls(vec![
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating plan only.").with_tool_calls(vec![
                     RawModelToolCall {
-                        id: "post-plan-decision-plan".to_string(),
+                        id: "plan-only-route-plan".to_string(),
                         name: RawModelToolName::Known(ModelToolName::CreateFile),
                         arguments: json!({
-                            "target_path": "CalculatorUI/plan.md",
-                            "contents": "# Calculator Plan\n\n```text\nREADME.md\ncalculator.py\nui.py\n```\n\n## Verification\n- `calculator.py`, `ui.py`, and `README.md` exist.\n\n## Acceptance Criteria\n- Running `python ui.py` launches the calculator UI.\n"
+                            "target_path": "TodoPlan/PLAN.md",
+                            "contents": "# Todo Plan\n\n```text\nREADME.md\nsrc/main.py\nrequirements.txt\n```\n\n## Verification\n- Expected files exist after execution.\n\n## Acceptance Criteria\n- The project matches the listed file tree.\n"
                         }),
                         assistant_summary: Some("create plan".to_string()),
                     },
                 ]),
-                crate::event::ProviderOutput::new("Creating missing files.").with_tool_calls(
-                    vec![
-                        RawModelToolCall {
-                            id: "post-plan-decision-readme".to_string(),
-                            name: RawModelToolName::Known(ModelToolName::CreateFile),
-                            arguments: json!({
-                                "target_path": "CalculatorUI/README.md",
-                                "contents": "# Calculator UI\n"
-                            }),
-                            assistant_summary: Some("create README".to_string()),
-                        },
-                        RawModelToolCall {
-                            id: "post-plan-decision-calc".to_string(),
-                            name: RawModelToolName::Known(ModelToolName::CreateFile),
-                            arguments: json!({
-                                "target_path": "CalculatorUI/calculator.py",
-                                "contents": "class Calculator:\n    pass\n"
-                            }),
-                            assistant_summary: Some("create calculator".to_string()),
-                        },
-                        RawModelToolCall {
-                            id: "post-plan-decision-ui".to_string(),
-                            name: RawModelToolName::Known(ModelToolName::CreateFile),
-                            arguments: json!({
-                                "target_path": "CalculatorUI/ui.py",
-                                "contents": "from calculator import Calculator\n"
-                            }),
-                            assistant_summary: Some("create ui".to_string()),
-                        },
-                    ],
-                ),
-            ]);
+            );
         let mut session = Session::new("session", &root, &root);
 
         run_permissive_agent_turn(
             &provider,
             &mut session,
-            "create a plan for the calculator UI and execute it",
+            "create only a project plan inside TodoPlan",
         );
 
-        assert!(root.join("CalculatorUI/plan.md").is_file());
-        assert!(root.join("CalculatorUI/README.md").is_file());
-        assert!(root.join("CalculatorUI/calculator.py").is_file());
-        assert!(root.join("CalculatorUI/ui.py").is_file());
-        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
-            .model_decisions
-            .iter()
-            .any(|line| line.contains("post-plan decision selected"))));
+        assert!(root.join("TodoPlan/PLAN.md").is_file());
+        assert!(!root.join("TodoPlan/README.md").exists());
+        assert!(!root.join("TodoPlan/src/main.py").exists());
+        assert!(!root.join("TodoPlan/requirements.txt").exists());
         let requests = provider.requests();
-        assert!(requests
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
             .iter()
-            .any(|request| request.mode == CapturedProviderRequestMode::Plain
-                && joined_request_messages(request)
-                    .contains("A verified plan artifact was just created")));
+            .any(
+                |line| line.contains("plan creation completed; skipped final provider synthesis")
+            )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -8121,6 +9589,100 @@ Acceptance Criteria:
     }
 
     #[test]
+    fn existing_verified_plan_execution_is_not_blocked_by_plan_creation_intent() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-existing-plan-creation-intent",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("TodoPlan");
+        std::fs::create_dir_all(&project).unwrap();
+        let plan_path = project.join("plan.md");
+        std::fs::write(
+            &plan_path,
+            "# Todo Plan\n\n```text\nTodoPlan/\n├── README.md\n├── src/main.py\n└── requirements.txt\n```\n\n## Verification\n- Expected files exist.\n\n## Acceptance Criteria\n- The project matches the plan.\n",
+        )
+        .unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating missing files.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "existing-plan-readme".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "README.md",
+                            "contents": "# Todo Plan\n"
+                        }),
+                        assistant_summary: Some("create README".to_string()),
+                    },
+                    RawModelToolCall {
+                        id: "existing-plan-main".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "src/main.py",
+                            "contents": "def main():\n    print('todo')\n\nif __name__ == '__main__':\n    main()\n"
+                        }),
+                        assistant_summary: Some("create main".to_string()),
+                    },
+                    RawModelToolCall {
+                        id: "existing-plan-reqs".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "requirements.txt",
+                            "contents": ""
+                        }),
+                        assistant_summary: Some("create requirements".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: plan_path.clone(),
+            project_root: project.clone(),
+            source_action_id: "action-plan".to_string(),
+        });
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Verified,
+            expected_directories: Vec::new(),
+            expected_files: vec![
+                project.join("README.md"),
+                project.join("src/main.py"),
+                project.join("requirements.txt"),
+            ],
+        });
+
+        run_permissive_agent_turn(&provider, &mut session, "please execute the plan");
+
+        assert!(project.join("README.md").is_file());
+        assert!(project.join("src/main.py").is_file());
+        assert!(project.join("requirements.txt").is_file());
+        let trace = session
+            .latest_reasoning_trace()
+            .expect("reasoning trace should exist");
+        assert!(!trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Create the project plan file first")));
+        assert_eq!(
+            session
+                .project_memory()
+                .latest_structured_plan()
+                .expect("plan should remain recorded")
+                .runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn normal_text_model_plain_answer_renders_without_tools() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-normal-chat-decision",
@@ -8144,10 +9706,10 @@ Acceptance Criteria:
             .contains("{\"route\":\"execute\"}"));
         assert!(requests[0].messages[0]
             .content
-            .contains("local file/shell/artifact/plan work"));
+            .contains("local file/artifact/plan work"));
         assert!(requests[0].messages[0]
             .content
-            .contains("Return one compact JSON object"));
+            .contains("Return compact JSON"));
         assert!(requests[0].messages[0].content.len() <= 700);
         assert!(!requests[0].messages[0].content.contains("Use `/tool"));
         assert!(session.events().iter().any(|event| matches!(
@@ -8316,6 +9878,98 @@ Acceptance Criteria:
             event,
             Event::ProviderStarted(started)
                 if started.request_mode.as_deref() == Some("tool_enabled")
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn model_selected_state_route_can_report_recent_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-state-recent-changes",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"state\",\"answer_kind\":\"recent_changes\"}",
+            ));
+        let mut session = Session::new("session", &root, &root);
+        session.start_reasoning_trace("create a file");
+        let action = Action::proposed_create_file("action-file", "latest.txt", "hi\n", "create")
+            .approve()
+            .mark_applied();
+        let result =
+            VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "latest.txt".to_string(),
+            });
+        let mut record = ActionRecord::new(action.clone());
+        record.verified_result = Some(result.clone());
+        session.push_action(record);
+        record_verified_project_memory(&mut session, &action, &result);
+
+        run_permissive_agent_turn(&provider, &mut session, "what changed in the last action?");
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("created latest.txt")
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_route_without_kind_uses_secondary_classifier_call() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-state-kind-classifier",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // Plain route picks `state` with no kind; the secondary classifier then
+        // resolves the precise view.
+        let provider = CapturingProvider::new().with_plain_outputs(vec![
+            crate::event::ProviderOutput::new("{\"route\":\"state\"}"),
+            crate::event::ProviderOutput::new("{\"answer_kind\":\"recent_changes\"}"),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        // One prior action-producing turn so recent_changes has content.
+        session.start_reasoning_trace("create the config");
+        let action = Action::proposed_create_file("a1", "next.config.js", "", "create")
+            .approve()
+            .mark_applied();
+        let mut record = ActionRecord::new(action);
+        record.verified_result = Some(VerifiedActionResult::File(
+            crate::event::FileActionVerification::FileCreated {
+                path: "next.config.js".to_string(),
+            },
+        ));
+        session.push_action(record);
+
+        run_permissive_agent_turn(&provider, &mut session, "what did you just do?");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
+        // The answer-kind menu is only sent on the secondary classifier call,
+        // never on the always-sent route prompt.
+        assert!(!joined_request_messages(&requests[0]).contains("Valid answer kinds"));
+        assert!(joined_request_messages(&requests[1]).contains("Valid answer kinds"));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ProviderStarted(started)
+                if started.request_mode.as_deref() == Some("plain_state_classifier")
+        )));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("next.config.js")
         )));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -8550,6 +10204,80 @@ Acceptance Criteria:
             .runtime_checks
             .iter()
             .any(|line| line.contains("already complete; skipped tool loop")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn completed_plan_execution_intent_does_not_skip_local_shell_work() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-completed-plan-shell-work",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("DonePlanShell");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        let plan_path = project.join("plan.md");
+        std::fs::write(
+            &plan_path,
+            "# Done Plan\n\n```text\nREADME.md\nsrc/main.py\n```\n\n## Verification\n- Files exist.\n\n## Acceptance Criteria\n- Expected paths are present.\n",
+        )
+        .unwrap();
+        std::fs::write(project.join("README.md"), "# Done\n").unwrap();
+        std::fs::write(project.join("src/main.py"), "def main():\n    pass\n").unwrap();
+        let expected_file = project.join("shell.out");
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Running requested command.").with_tool_calls(
+                    vec![RawModelToolCall {
+                        id: "completed-plan-shell".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                        arguments: json!({
+                            "command": "printf ok > shell.out",
+                            "cwd": project.display().to_string(),
+                            "expected_file": expected_file.display().to_string()
+                        }),
+                        assistant_summary: Some("run shell command".to_string()),
+                    }],
+                ),
+            );
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            project_root: project.clone(),
+            path: plan_path.clone(),
+            source_action_id: "action-plan".to_string(),
+        });
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project,
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![root.join("DonePlanShell/src")],
+            expected_files: vec![
+                root.join("DonePlanShell/README.md"),
+                root.join("DonePlanShell/src/main.py"),
+            ],
+        });
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "run PYTHONPATH=src python -m done.cli sample.txt inside that project",
+        );
+
+        assert_eq!(std::fs::read_to_string(expected_file).unwrap(), "ok");
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| !trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("already complete; skipped tool loop"))));
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -126,7 +126,7 @@ fn is_route_json_request(messages: &[ChatMessage]) -> bool {
     messages.iter().any(|message| {
         let content = message.content.to_ascii_lowercase();
         matches!(message.role, ChatRole::System)
-            && content.contains("compact json object")
+            && (content.contains("compact json object") || content.contains("compact json"))
             && (content.contains("default to {\"route\":\"chat\"")
                 || content.contains("use chat")
                 || content.contains("use {\"route\":\"chat\"")

@@ -510,6 +510,20 @@ fn terminal_loop_verified_plan_preflight_blocks_wrong_project_root() {
             Ok(ProviderOutput::new("unused"))
         }
 
+        fn chat_messages_with_metadata(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+        ) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new(
+                serde_json::json!({
+                    "route": "execute",
+                    "intent": "plan_execution"
+                })
+                .to_string(),
+            ))
+        }
+
         fn chat_messages_with_tools_with_metadata(
             &self,
             _messages: Vec<elgar_core::provider::ChatMessage>,
@@ -560,7 +574,7 @@ fn terminal_loop_verified_plan_preflight_blocks_wrong_project_root() {
     let action_count_after_plan = session.actions().len();
 
     assert!(!handle_submitted_terminal_input_for_loop(
-        "/tool continue from the verified plan",
+        "continue from the verified plan",
         &controller,
         &mut session,
         &mut shell,

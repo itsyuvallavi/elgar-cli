@@ -40,6 +40,15 @@ pub struct Session {
     latest_turn_token_usage: Option<LastTurnTokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     latest_reasoning_trace: Option<ReasoningTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latest_runtime_block: Option<RuntimeBlockRecord>,
+    /// Monotonic counter incremented at the start of each turn.
+    ///
+    /// Actions are stamped with the turn that produced them so verified-state
+    /// answers can report the most recent action-producing turn instead of the
+    /// cumulative session inventory.
+    #[serde(default)]
+    current_turn_index: u64,
 }
 
 pub const PROJECT_MEMORY_LIMIT: usize = 8;
@@ -66,6 +75,8 @@ impl Session {
             session_token_totals: SessionTokenTotals::default(),
             latest_turn_token_usage: None,
             latest_reasoning_trace: None,
+            latest_runtime_block: None,
+            current_turn_index: 0,
         }
     }
 
@@ -77,6 +88,28 @@ impl Session {
     /// Controller-owned action records for read-only UI and renderer consumers.
     pub fn actions(&self) -> &[ActionRecord] {
         &self.actions
+    }
+
+    /// Action records belonging to the most recent turn that produced a
+    /// verified action.
+    ///
+    /// Used to answer "what did you just do/create" without leaking earlier
+    /// turns' cumulative inventory into a single-turn answer. Questions asked in
+    /// their own (action-free) turn still resolve to the last turn that acted.
+    pub fn actions_in_latest_action_turn(&self) -> Vec<&ActionRecord> {
+        let Some(latest_turn) = self
+            .actions
+            .iter()
+            .filter(|record| record.verified_result.is_some())
+            .map(|record| record.turn_index)
+            .max()
+        else {
+            return Vec::new();
+        };
+        self.actions
+            .iter()
+            .filter(|record| record.turn_index == latest_turn)
+            .collect()
     }
 
     /// Select the one action still waiting on user approval/rejection.
@@ -162,11 +195,22 @@ impl Session {
         self.latest_reasoning_trace.as_ref()
     }
 
+    pub fn latest_runtime_block(&self) -> Option<&RuntimeBlockRecord> {
+        self.latest_runtime_block.as_ref()
+    }
+
+    pub(crate) fn latest_runtime_block_if_recent(&self) -> Option<&RuntimeBlockRecord> {
+        self.latest_runtime_block
+            .as_ref()
+            .filter(|block| block.turn_index.saturating_add(1) >= self.current_turn_index)
+    }
+
     pub(crate) fn push_event(&mut self, event: Event) {
         self.events.push(event);
     }
 
-    pub(crate) fn push_action(&mut self, action: ActionRecord) {
+    pub(crate) fn push_action(&mut self, mut action: ActionRecord) {
+        action.turn_index = self.current_turn_index;
         self.actions.push(action);
     }
 
@@ -197,6 +241,7 @@ impl Session {
 
     pub(crate) fn start_reasoning_trace(&mut self, user_input: impl Into<String>) {
         self.latest_reasoning_trace = Some(ReasoningTrace::new(user_input));
+        self.current_turn_index = self.current_turn_index.saturating_add(1);
     }
 
     pub(crate) fn record_reasoning_route(&mut self, route: impl Into<String>) {
@@ -221,6 +266,17 @@ impl Session {
         if let Some(trace) = self.latest_reasoning_trace.as_mut() {
             trace.push_runtime_check(line);
         }
+    }
+
+    pub(crate) fn record_runtime_block(&mut self, message: impl Into<String>) {
+        self.latest_runtime_block = Some(RuntimeBlockRecord {
+            turn_index: self.current_turn_index,
+            message: message.into(),
+        });
+    }
+
+    pub(crate) fn clear_runtime_block(&mut self) {
+        self.latest_runtime_block = None;
     }
 
     pub(crate) fn record_verified_folder_reference(&mut self, reference: VerifiedFolderReference) {
@@ -290,6 +346,9 @@ pub struct ActionRecord {
     pub failure_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_decision: Option<PolicyDecision>,
+    /// Turn that produced this action, stamped on `push_action`.
+    #[serde(default)]
+    pub turn_index: u64,
 }
 
 impl ActionRecord {
@@ -299,6 +358,7 @@ impl ActionRecord {
             verified_result: None,
             failure_reason: None,
             policy_decision: None,
+            turn_index: 0,
         }
     }
 }
@@ -320,6 +380,13 @@ pub struct ReasoningTrace {
     pub model_decisions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_checks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeBlockRecord {
+    #[serde(default)]
+    pub turn_index: u64,
+    pub message: String,
 }
 
 impl ReasoningTrace {

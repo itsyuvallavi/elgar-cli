@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+plan_dir="scope-myapp-$stamp"
+unrelated_dir="scope-unrelated-$stamp"
+blocked_dir="scope-blocked-$stamp"
+input_file="$playground/.dogfood-plan-scope-$stamp.in"
+output_file="$playground/.dogfood-plan-scope-$stamp.out"
+after_why_file="$playground/.dogfood-plan-scope-$stamp.after-why"
+timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-900}"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+create a plan file in ./$plan_dir for a tiny script that prints hi. The plan scope should list exactly one expected file named script.py and should not include the folder name inside the file tree.
+/plan
+create exactly one unrelated file at $unrelated_dir/x.txt with the text outside plan. This is not part of the verified plan.
+/plan
+execute the verified plan by creating both $plan_dir/script.py and $blocked_dir/x.txt in one tool response
+why didnt you execute the previous request?
+/exit
+EOF
+
+echo "==> running live plan-scope unrelated-create dogfood"
+set +e
+(
+  cd "$playground"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" elgar tui <"$input_file"
+  else
+    elgar tui <"$input_file"
+  fi
+) | tee "$output_file"
+run_status=${PIPESTATUS[0]}
+set -e
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+[[ "$run_status" -eq 0 ]] || fail "elgar tui exited nonzero or timed out after ${timeout_seconds}s"
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+
+plan_path="$(find "$playground/$plan_dir" -maxdepth 1 \( -iname '*plan*.md' -o -iname '*plan*.txt' \) -type f | head -n 1 || true)"
+[[ -n "$plan_path" ]] || fail "missing created plan file"
+[[ -f "$playground/$unrelated_dir/x.txt" ]] || fail "missing unrelated ad-hoc file"
+grep -q "outside plan" "$playground/$unrelated_dir/x.txt" || fail "unrelated file content did not round-trip"
+
+grep -q "status: executing" "$output_file" && fail "plan preview showed executing after plan creation"
+grep -q "verified plan is rooted" "$output_file" || fail "intentional plan-scope block did not surface"
+[[ ! -e "$playground/$blocked_dir/x.txt" ]] || fail "blocked outside-plan file was written"
+
+awk -v marker="> why didnt you execute the previous request?" '
+  $0 == marker { capture = 1 }
+  capture { print }
+' "$output_file" >"$after_why_file"
+
+grep -q "verified plan is rooted" "$after_why_file" \
+  || fail "state answer after why-query did not surface the recorded block reason"
+
+echo "==> dogfood passed"
+echo "plan: $plan_path"
+echo "unrelated file: $playground/$unrelated_dir/x.txt"
+echo "transcript: $output_file"

@@ -382,14 +382,19 @@ fn inline_path_from_line(line: &str) -> Option<(PathBuf, PlanPathKind)> {
         return None;
     }
 
-    let token = strip_markdown_list_marker(trimmed);
-    let token = token
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(|ch: char| matches!(ch, ',' | ';' | ':' | ')'));
+    let line = strip_markdown_list_marker(trimmed);
+    let (token, suffix) = line
+        .split_once(char::is_whitespace)
+        .map(|(token, suffix)| (token, Some(suffix.trim_start())))
+        .unwrap_or((line, None));
+    let token = token.trim_end_matches(|ch: char| matches!(ch, ',' | ';' | ':' | ')'));
+    let path = clean_plan_path_token(token)?;
 
-    clean_plan_path_token(token)
+    if suffix.is_some_and(|suffix| !suffix.starts_with('|')) {
+        return None;
+    }
+
+    Some(path)
 }
 
 fn clean_plan_path_token(token: &str) -> Option<(PathBuf, PlanPathKind)> {
@@ -410,6 +415,7 @@ fn clean_plan_path_token_with_inference(
         || token.contains("://")
         || token.contains("...")
         || token.contains('=')
+        || token.contains(':')
         || token.starts_with('$')
         || token.starts_with('~')
     {
@@ -1377,6 +1383,107 @@ mod tests {
                 "dependency line was extracted as a path: {dependency}"
             );
         }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ignores_inline_prose_path_subjects_after_file_tree() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-inline-prose-path-subjects-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("TodoPlan")).unwrap();
+        fs::write(
+            root.join("TodoPlan/PLAN.md"),
+            "# Project Plan: Tiny Python CLI Todo App\n\n## File Tree\n```\nTodoPlan/\n├── README.md\n├── src/\n│   └── main.py\n└── requirements.txt\n```\n\n## README.md\nThe `README.md` will provide setup instructions.\n\n## src/main.py\n`main.py` will implement a minimal CLI todo application.\n\n## requirements.txt\nDependencies:\n- `click` (for CLI handling)\n\n## Verification\n- `python -m src.main --help` should display help.\n\n## Acceptance Criteria\n- The application must be runnable with `python -m src.main`.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("TodoPlan/PLAN.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("TodoPlan/PLAN.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified plan should create structured state");
+        let project = root.join("TodoPlan");
+        assert!(structured
+            .expected_files
+            .contains(&project.join("README.md")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("src/main.py")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("requirements.txt")));
+        assert!(!structured.expected_files.contains(&project.join("main.py")));
+        assert!(!structured.expected_files.contains(&project.join("click")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ignores_todo_tree_label_and_keeps_child_paths_under_root() {
+        let root =
+            std::env::temp_dir().join(format!("elgar-todo-tree-label-plan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("TodoPlan")).unwrap();
+        fs::write(
+            root.join("TodoPlan/plan.md"),
+            "# Project Plan\n\n## Directory Structure\n```\nTodoPlan/\n├── plan.md\n└── TODO: implementation files will be added here:\n    ├── README.md\n    ├── src/main.py\n    └── requirements.txt\n```\n\n## Verification\n- Check expected files.\n\n## Acceptance Criteria\n- Expected files exist.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("TodoPlan/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("TodoPlan/plan.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified plan should create structured state");
+        let project = root.join("TodoPlan");
+        assert!(structured
+            .expected_files
+            .contains(&project.join("README.md")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("src/main.py")));
+        assert!(structured
+            .expected_files
+            .contains(&project.join("requirements.txt")));
+        assert!(!structured
+            .expected_directories
+            .iter()
+            .chain(structured.expected_files.iter())
+            .any(|path| path.to_string_lossy().contains("TODO:")));
 
         let _ = fs::remove_dir_all(&root);
     }

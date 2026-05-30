@@ -146,6 +146,7 @@ fn handle_approve_action(session: &mut Session) {
                 Ok(result) => {
                     let message =
                         verified_action_success_message(session, &approved_for_execution, &result);
+                    session.clear_runtime_block();
                     let record = session
                         .action_mut(index)
                         .expect("approved action index must reference an action record");
@@ -223,6 +224,7 @@ fn apply_approved_file_action_at_index(
     match Filesystem::apply_file_action(approved, allowed_root) {
         Ok(result) => {
             let message = verified_action_success_message(session, approved, &result);
+            session.clear_runtime_block();
             let record = session
                 .action_mut(index)
                 .expect("approved action index must reference an action record");

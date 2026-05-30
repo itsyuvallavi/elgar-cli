@@ -10,8 +10,11 @@ pub(crate) enum VerifiedStateAnswerKind {
     LatestFolder,
     LatestFile,
     CreatedSummary,
+    RecentChanges,
+    LastBlock,
     Pending,
     Plan,
+    PlanDetails,
     Status,
     Memory,
     Summary,
@@ -28,8 +31,11 @@ pub(crate) fn verified_session_state_answer(
             .or_else(|| latest_verified_file_path(session))
             .unwrap_or_else(|| "No verified file change recorded.".to_string()),
         VerifiedStateAnswerKind::CreatedSummary => verified_created_summary(session),
+        VerifiedStateAnswerKind::RecentChanges => verified_recent_changes_answer(session),
+        VerifiedStateAnswerKind::LastBlock => verified_last_block_answer(session),
         VerifiedStateAnswerKind::Pending => verified_pending_answer(session),
         VerifiedStateAnswerKind::Plan => verified_plan_answer(session),
+        VerifiedStateAnswerKind::PlanDetails => verified_plan_details_answer(session),
         VerifiedStateAnswerKind::Status => verified_status_answer(session),
         VerifiedStateAnswerKind::Memory => verified_memory_answer(session),
         VerifiedStateAnswerKind::Summary => verified_summary_answer(session),
@@ -42,13 +48,23 @@ pub(crate) fn parse_verified_state_answer_kind(kind: &str) -> Option<VerifiedSta
         "latest_folder" => Some(VerifiedStateAnswerKind::LatestFolder),
         "latest_file" => Some(VerifiedStateAnswerKind::LatestFile),
         "created_summary" => Some(VerifiedStateAnswerKind::CreatedSummary),
+        "recent_changes" => Some(VerifiedStateAnswerKind::RecentChanges),
+        "last_block" | "last_outcome" => Some(VerifiedStateAnswerKind::LastBlock),
         "pending" => Some(VerifiedStateAnswerKind::Pending),
         "plan" => Some(VerifiedStateAnswerKind::Plan),
+        "plan_details" => Some(VerifiedStateAnswerKind::PlanDetails),
         "status" => Some(VerifiedStateAnswerKind::Status),
         "memory" => Some(VerifiedStateAnswerKind::Memory),
         "summary" => Some(VerifiedStateAnswerKind::Summary),
         _ => None,
     }
+}
+
+fn verified_last_block_answer(session: &Session) -> String {
+    session
+        .latest_runtime_block()
+        .map(|block| block.message.clone())
+        .unwrap_or_else(|| "No runtime block recorded.".to_string())
 }
 
 fn verified_summary_answer(session: &Session) -> String {
@@ -100,6 +116,60 @@ fn verified_created_summary(session: &Session) -> String {
     }
 }
 
+fn verified_recent_changes_answer(session: &Session) -> String {
+    let entries = session
+        .actions_in_latest_action_turn()
+        .into_iter()
+        .filter_map(|record| record.verified_result.as_ref())
+        .filter_map(|result| recent_change_entry(session, result))
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        "No verified changes recorded in the latest action.".to_string()
+    } else {
+        entries.join("\n")
+    }
+}
+
+fn recent_change_entry(session: &Session, result: &VerifiedActionResult) -> Option<String> {
+    match result {
+        VerifiedActionResult::FileWritten { path } => Some(format!(
+            "wrote {}",
+            display_agent_context_path(session, Path::new(path))
+        )),
+        VerifiedActionResult::File(file) => match file {
+            FileActionVerification::FileCreated { path } => Some(format!(
+                "created {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+            FileActionVerification::DirectoryCreated { path } => Some(format!(
+                "created directory {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+            FileActionVerification::FilePatched { path } => Some(format!(
+                "patched {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+            FileActionVerification::FileOverwritten { path } => Some(format!(
+                "overwrote {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+            FileActionVerification::FileDeleted { path } => Some(format!(
+                "deleted {}",
+                display_agent_context_path(session, Path::new(path))
+            )),
+            FileActionVerification::FileMoved { target_path, .. } => Some(format!(
+                "moved to {}",
+                display_agent_context_path(session, Path::new(target_path))
+            )),
+        },
+        VerifiedActionResult::Shell(shell) => shell
+            .verified_effect
+            .as_ref()
+            .map(|effect| format!("ran command: {effect}"))
+            .or_else(|| Some("ran command".to_string())),
+    }
+}
+
 fn verified_pending_answer(session: &Session) -> String {
     match session.pending_action_selection() {
         PendingActionSelection::None => "No pending action.".to_string(),
@@ -136,6 +206,35 @@ fn verified_plan_answer(session: &Session) -> String {
     }
 
     "No verified plan recorded.".to_string()
+}
+
+fn verified_plan_details_answer(session: &Session) -> String {
+    let Some((plan_path, project_root)) = session
+        .project_memory()
+        .latest_structured_plan()
+        .map(|plan| (&plan.source_plan_path, &plan.project_root))
+        .or_else(|| {
+            session
+                .project_memory()
+                .latest_verified_plan()
+                .map(|plan| (&plan.path, &plan.project_root))
+        })
+    else {
+        return "No verified plan recorded.".to_string();
+    };
+
+    let header = format!(
+        "plan: {}\nroot: {}",
+        display_agent_context_path(session, plan_path),
+        display_agent_context_path(session, project_root)
+    );
+
+    match std::fs::read_to_string(plan_path) {
+        Ok(contents) if !contents.trim().is_empty() => {
+            format!("{header}\n\n{}", contents.trim())
+        }
+        _ => header,
+    }
 }
 
 fn verified_status_answer(session: &Session) -> String {
@@ -297,5 +396,87 @@ fn display_agent_context_path(session: &Session, path: &Path) -> String {
         ".".to_string()
     } else {
         display_path.display().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{action::Action, event::FileActionVerification, session::ActionRecord};
+
+    fn applied_create(session: &mut Session, id: &str, path: &str) {
+        let mut record = ActionRecord::new(
+            Action::proposed_create_file(id, path, "", "create")
+                .approve()
+                .mark_applied(),
+        );
+        record.verified_result = Some(VerifiedActionResult::File(
+            FileActionVerification::FileCreated {
+                path: path.to_string(),
+            },
+        ));
+        session.push_action(record);
+    }
+
+    #[test]
+    fn recent_changes_reports_only_the_latest_action_turn() {
+        let root = std::env::temp_dir();
+        let mut session = Session::new("session", &root, &root);
+
+        // Turn 1: scaffold several files.
+        session.start_reasoning_trace("scaffold the app");
+        applied_create(&mut session, "a1", "app/page.tsx");
+        applied_create(&mut session, "a2", "app/layout.tsx");
+
+        // Turn 2: one targeted fix.
+        session.start_reasoning_trace("fix the config");
+        applied_create(&mut session, "b1", "next.config.js");
+
+        // Turn 3: the question is asked in its own action-free turn.
+        session.start_reasoning_trace("what did you just do?");
+
+        let recent =
+            verified_session_state_answer(&session, VerifiedStateAnswerKind::RecentChanges);
+        assert!(recent.contains("next.config.js"), "got: {recent}");
+        assert!(!recent.contains("page.tsx"), "got: {recent}");
+        assert!(!recent.contains("layout.tsx"), "got: {recent}");
+
+        // created_summary still reflects the whole session inventory.
+        let inventory =
+            verified_session_state_answer(&session, VerifiedStateAnswerKind::CreatedSummary);
+        assert!(inventory.contains("page.tsx"), "got: {inventory}");
+        assert!(inventory.contains("next.config.js"), "got: {inventory}");
+    }
+
+    #[test]
+    fn recent_changes_reports_nothing_without_verified_actions() {
+        let root = std::env::temp_dir();
+        let mut session = Session::new("session", &root, &root);
+        session.start_reasoning_trace("hello");
+
+        assert_eq!(
+            verified_session_state_answer(&session, VerifiedStateAnswerKind::RecentChanges),
+            "No verified changes recorded in the latest action."
+        );
+    }
+
+    #[test]
+    fn parses_recent_changes_answer_kind() {
+        assert_eq!(
+            parse_verified_state_answer_kind("recent_changes"),
+            Some(VerifiedStateAnswerKind::RecentChanges)
+        );
+    }
+
+    #[test]
+    fn parses_last_block_answer_kind() {
+        assert_eq!(
+            parse_verified_state_answer_kind("last_block"),
+            Some(VerifiedStateAnswerKind::LastBlock)
+        );
+        assert_eq!(
+            parse_verified_state_answer_kind("last_outcome"),
+            Some(VerifiedStateAnswerKind::LastBlock)
+        );
     }
 }

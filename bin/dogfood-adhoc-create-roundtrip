@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+work_dir="$playground/adhoc-create-roundtrip-$stamp"
+input_file="$playground/.dogfood-adhoc-create-roundtrip-$stamp.in"
+output_file="$playground/.dogfood-adhoc-create-roundtrip-$stamp.out"
+create_tokens_file="$playground/.dogfood-adhoc-create-roundtrip-$stamp.create-tokens"
+timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-240}"
+max_create_requests="${ELGAR_ADHOC_CREATE_MAX_REQUESTS:-4}"
+
+mkdir -p "$work_dir"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+create a file notes.txt with the text hello world
+/tokens
+run cat notes.txt
+/tokens
+/exit
+EOF
+
+echo "==> running live adhoc-create-roundtrip dogfood"
+set +e
+(
+  cd "$work_dir"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" elgar tui <"$input_file"
+  else
+    elgar tui <"$input_file"
+  fi
+) | tee "$output_file"
+run_status=${PIPESTATUS[0]}
+set -e
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+[[ "$run_status" -eq 0 ]] || fail "elgar tui exited nonzero or timed out after ${timeout_seconds}s"
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval; expected full_access auto-apply"
+
+[[ -f "$work_dir/notes.txt" ]] || fail "notes.txt missing on disk"
+[[ "$(tr -d '\r' <"$work_dir/notes.txt")" == "hello world" ]] || fail "notes.txt content did not match"
+grep -q "hello world" "$output_file" || fail "cat notes.txt output did not round-trip"
+grep -q "Shell command finished: exit 0" "$output_file" || fail "cat notes.txt command did not finish successfully"
+
+awk '
+  $0 == "> create a file notes.txt with the text hello world" { seen_create = 1; next }
+  seen_create && $0 == "Tokens" { capture = 1; block = $0 "\n"; next }
+  capture && $0 == "Conversation" { printf "%s", block; capture = 0; exit }
+  capture && $0 ~ /^> / { printf "%s", block; capture = 0; exit }
+  capture { block = block $0 "\n" }
+  END {
+    if (capture) {
+      printf "%s", block
+    }
+  }
+' "$output_file" >"$create_tokens_file"
+
+grep -q '^Tokens$' "$create_tokens_file" || fail "tokens output after create turn missing"
+grep -q "last turn requests:" "$create_tokens_file" || fail "create tokens missing request breakdown"
+grep -q "tool_enabled" "$create_tokens_file" || fail "create turn did not use tool-enabled request"
+
+create_request_count="$(grep -c '^- ' "$create_tokens_file" || true)"
+[[ "$create_request_count" -gt 0 ]] || fail "could not count create turn provider requests"
+if [[ "$create_request_count" -gt "$max_create_requests" ]]; then
+  fail "create turn used ${create_request_count} provider requests; max allowed is ${max_create_requests}"
+fi
+
+echo "==> dogfood passed"
+echo "work dir: $work_dir"
+echo "transcript: $output_file"

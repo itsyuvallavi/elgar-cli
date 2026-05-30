@@ -9,7 +9,8 @@ work.
 
 - `AGENTS.md` is the active agent entry point.
 - `AGENT_ROSTER.md` defines stable implementation and review roles.
-- `ORCHESTRATOR_SITUATION_2026-05-25.md` summarizes the current transition.
+- `ORCHESTRATOR_SITUATION_2026-05-29.md` summarizes the current checkpoint.
+- `ORCHESTRATOR_SITUATION_2026-05-25.md` is older transition background.
 - `GOOGLE_DRIVE_PLANNING_SOURCES.md` points to planning docs that may still be
   useful as background.
 

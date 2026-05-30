@@ -14,7 +14,7 @@ pub(crate) enum NormalTurnDecision {
         question: String,
     },
     State {
-        answer_kind: VerifiedStateAnswerKind,
+        answer_kind: Option<VerifiedStateAnswerKind>,
     },
 }
 
@@ -22,6 +22,7 @@ pub(crate) enum NormalTurnDecision {
 pub(crate) enum NormalTurnExecuteIntent {
     PlanExecution,
     PlanCreationAndExecution,
+    ShellExecution,
 }
 
 pub(crate) fn parse_normal_turn_decision(message: &str) -> Option<NormalTurnDecision> {
@@ -42,8 +43,9 @@ pub(crate) fn parse_normal_turn_decision(message: &str) -> Option<NormalTurnDeci
                 question: question.to_string(),
             })
         }
-        "state" => parse_state_answer_kind(&value)
-            .map(|answer_kind| NormalTurnDecision::State { answer_kind }),
+        "state" => Some(NormalTurnDecision::State {
+            answer_kind: parse_state_answer_kind(&value),
+        }),
         _ => None,
     }
 }
@@ -52,6 +54,7 @@ fn parse_execute_intent(value: &Value) -> Option<NormalTurnExecuteIntent> {
     match value.get("intent").and_then(Value::as_str)?.trim() {
         "plan_execution" => Some(NormalTurnExecuteIntent::PlanExecution),
         "plan_creation_execution" => Some(NormalTurnExecuteIntent::PlanCreationAndExecution),
+        "shell_execution" => Some(NormalTurnExecuteIntent::ShellExecution),
         _ => None,
     }
 }
@@ -101,6 +104,12 @@ mod tests {
                 intent: Some(NormalTurnExecuteIntent::PlanCreationAndExecution)
             })
         );
+        assert_eq!(
+            parse_normal_turn_decision("{\"route\":\"execute\",\"intent\":\"shell_execution\"}"),
+            Some(NormalTurnDecision::Execute {
+                intent: Some(NormalTurnExecuteIntent::ShellExecution)
+            })
+        );
     }
 
     #[test]
@@ -130,8 +139,38 @@ mod tests {
         assert_eq!(
             parse_normal_turn_decision("{\"route\":\"state\",\"answer_kind\":\"latest_folder\"}"),
             Some(NormalTurnDecision::State {
-                answer_kind: VerifiedStateAnswerKind::LatestFolder
+                answer_kind: Some(VerifiedStateAnswerKind::LatestFolder)
             })
+        );
+        assert_eq!(
+            parse_normal_turn_decision("{\"route\":\"state\",\"answer_kind\":\"plan_details\"}"),
+            Some(NormalTurnDecision::State {
+                answer_kind: Some(VerifiedStateAnswerKind::PlanDetails)
+            })
+        );
+        assert_eq!(
+            parse_normal_turn_decision("{\"route\":\"state\",\"answer_kind\":\"recent_changes\"}"),
+            Some(NormalTurnDecision::State {
+                answer_kind: Some(VerifiedStateAnswerKind::RecentChanges)
+            })
+        );
+        assert_eq!(
+            parse_normal_turn_decision("{\"route\":\"state\",\"answer_kind\":\"last_block\"}"),
+            Some(NormalTurnDecision::State {
+                answer_kind: Some(VerifiedStateAnswerKind::LastBlock)
+            })
+        );
+    }
+
+    #[test]
+    fn state_route_without_kind_is_valid_and_defers_kind_to_runtime() {
+        assert_eq!(
+            parse_normal_turn_decision("{\"route\":\"state\"}"),
+            Some(NormalTurnDecision::State { answer_kind: None })
+        );
+        assert_eq!(
+            parse_normal_turn_decision("{\"route\":\"state\",\"answer_kind\":\"not_a_kind\"}"),
+            Some(NormalTurnDecision::State { answer_kind: None })
         );
     }
 
@@ -143,7 +182,6 @@ mod tests {
             parse_normal_turn_decision("{\"route\":\"ask_guidance\"}"),
             None
         );
-        assert_eq!(parse_normal_turn_decision("{\"route\":\"state\"}"), None);
         assert_eq!(parse_normal_turn_decision("not json"), None);
     }
 }
