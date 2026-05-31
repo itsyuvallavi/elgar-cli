@@ -577,6 +577,18 @@ where
             plan_execution_in_progress,
             plan_execution_batch_completes_missing_paths,
         );
+        let plan_execution_round_used_create_files = plan_execution_in_progress
+            && tool_calls
+                .iter()
+                .any(|tool_call| tool_call.name.raw_label() == "create_files");
+        let plan_execution_action_outputs_this_round = if plan_execution_in_progress {
+            resolved_outputs
+                .iter()
+                .filter(|output| matches!(output, ResolvedAgentToolOutput::Action(_)))
+                .count()
+        } else {
+            0
+        };
         if let Some(signature) = all_skipped_tool_result_signature(&resolved_outputs) {
             if previous_all_skipped_signature.as_ref() == Some(&signature) {
                 repeated_all_skipped_count += 1;
@@ -625,6 +637,7 @@ where
             }
         }
 
+        let verified_actions_before_outputs = verified_actions_this_tool_turn;
         let mut tool_results_need_provider_followup = false;
         for output in resolved_outputs {
             match output {
@@ -731,6 +744,8 @@ where
                 }
             }
         }
+        let verified_actions_this_round =
+            verified_actions_this_tool_turn.saturating_sub(verified_actions_before_outputs);
 
         if plan_execution_in_progress {
             if let Some(before) = plan_missing_before_tool_results {
@@ -751,6 +766,21 @@ where
                 }
             }
             if let Some(message) = plan_execution_repair_message_or_mark_complete(session) {
+                if verified_actions_this_round > 0
+                    && (plan_execution_round_used_create_files
+                        || plan_execution_action_outputs_this_round > 1)
+                {
+                    let message = plan_execution_incomplete_after_partial_batch_message(message);
+                    session.push_reasoning_runtime_check(
+                        "plan execution made partial batch progress; stopped provider loop",
+                    );
+                    session.record_runtime_block(message.clone());
+                    session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                        message,
+                        AssistantMessageSource::Controller,
+                    )));
+                    break;
+                }
                 messages.push(ChatMessage::system(message));
                 continue;
             }
@@ -3148,6 +3178,12 @@ fn plan_execution_no_progress_message(session: &Session) -> Option<String> {
             "{message}\nStopped because the last tool response did not create any remaining expected plan paths."
         )
     })
+}
+
+fn plan_execution_incomplete_after_partial_batch_message(message: String) -> String {
+    format!(
+        "{message}\nStopped after creating verified plan paths because this batch did not complete the verified plan. No further model repair request was sent."
+    )
 }
 
 fn plan_execution_repair_message_or_mark_complete(session: &mut Session) -> Option<String> {
@@ -10079,15 +10115,6 @@ Acceptance Criteria:
                             }),
                             assistant_summary: Some("create README".to_string()),
                         },
-                        RawModelToolCall {
-                            id: "no-progress-main".to_string(),
-                            name: RawModelToolName::Known(ModelToolName::CreateFile),
-                            arguments: json!({
-                                "target_path": "GreeterCLI/src/main.py",
-                                "contents": "def main():\n    print('hello')\n\nif __name__ == '__main__':\n    main()\n"
-                            }),
-                            assistant_summary: Some("create main".to_string()),
-                        },
                     ]),
                 crate::event::ProviderOutput::new("Trying wrong paths and verification.")
                     .with_tool_calls(vec![
@@ -10141,7 +10168,7 @@ Acceptance Criteria:
 
         assert!(root.join("GreeterCLI/plan.md").is_file());
         assert!(root.join("GreeterCLI/README.md").is_file());
-        assert!(root.join("GreeterCLI/src/main.py").is_file());
+        assert!(!root.join("GreeterCLI/src/main.py").exists());
         assert!(!root.join("GreeterCLI/tests/test_main.py").exists());
         assert!(!root.join("GreeterCLI/requirements.txt").exists());
         assert!(!root.join("Greeter/tests/test_main.py").exists());
@@ -10167,6 +10194,108 @@ Acceptance Criteria:
             .is_some_and(|trace| trace.runtime_checks.iter().any(
                 |line| line.contains("plan execution made no progress; stopped provider loop")
             )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_execution_stops_after_partial_create_files_batch() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-partial-batch",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Journal")).unwrap();
+        std::fs::write(
+            root.join("Journal/plan.md"),
+            "# Journal Plan\n\n```text\nREADME.md\nrequirements.txt\nsrc/main.py\ntests/test_main.py\n```\n\n## Verification\n- Expected files exist.\n\n## Acceptance Criteria\n- The project scaffold is complete.\n",
+        )
+        .unwrap();
+        let provider = CapturingProvider::new().with_tool_outputs(vec![
+            crate::event::ProviderOutput::new("Creating most files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "partial-batch".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                    arguments: json!({
+                        "directories": ["Journal/src", "Journal/tests"],
+                        "files": [
+                            {
+                                "target_path": "Journal/README.md",
+                                "contents": "# Journal\n"
+                            },
+                            {
+                                "target_path": "Journal/requirements.txt",
+                                "contents": ""
+                            },
+                            {
+                                "target_path": "Journal/src/main.py",
+                                "contents": "print('journal')\n"
+                            }
+                        ]
+                    }),
+                    assistant_summary: Some("create most expected files".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("This repair request should not be reached.")
+                .with_tool_calls(vec![RawModelToolCall {
+                    id: "partial-late-test".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "Journal/tests/test_main.py",
+                        "contents": "def test_late():\n    assert True\n"
+                    }),
+                    assistant_summary: Some("late test".to_string()),
+                }]),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("Journal/plan.md"),
+                contents: "# Journal Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "Journal/plan.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        assert!(root.join("Journal/README.md").is_file());
+        assert!(root.join("Journal/requirements.txt").is_file());
+        assert!(root.join("Journal/src/main.py").is_file());
+        assert!(!root.join("Journal/tests/test_main.py").exists());
+        assert_eq!(
+            provider
+                .requests()
+                .iter()
+                .filter(|request| request.mode == CapturedProviderRequestMode::Tool)
+                .count(),
+            1,
+            "partial create_files batch should not trigger an open-ended repair request"
+        );
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("No further model repair request was sent")
+                    && message.content.contains("Journal/tests/test_main.py")
+        )));
+        assert!(session
+            .latest_runtime_block()
+            .is_some_and(|block| block.message.contains("Journal/tests/test_main.py")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

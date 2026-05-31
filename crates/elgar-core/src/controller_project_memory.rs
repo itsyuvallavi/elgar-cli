@@ -418,6 +418,10 @@ fn clean_plan_path_token_with_inference(
     token: &str,
     infer_directory: bool,
 ) -> Option<(PathBuf, PlanPathKind)> {
+    if is_runtime_generated_plan_artifact(token) {
+        return None;
+    }
+
     let token = strip_inline_plan_comment(strip_markdown_list_marker(token))
         .trim()
         .trim_matches('`')
@@ -446,6 +450,22 @@ fn clean_plan_path_token_with_inference(
     };
 
     Some((PathBuf::from(token.trim_end_matches('/')), kind))
+}
+
+fn is_runtime_generated_plan_artifact(token: &str) -> bool {
+    let Some(annotation) = token
+        .split_once(" #")
+        .map(|(_, annotation)| annotation)
+        .or_else(|| token.split_once(" (").map(|(_, annotation)| annotation))
+    else {
+        return false;
+    };
+
+    let annotation = annotation.trim().trim_end_matches(')').to_ascii_lowercase();
+    let generated = annotation.contains("generated") || annotation.contains("created");
+    let runtime = annotation.contains("runtime") || annotation.contains("run time");
+
+    generated && runtime
 }
 
 fn strip_inline_plan_comment(token: &str) -> &str {
@@ -995,6 +1015,59 @@ mod tests {
         assert!(!structured
             .expected_files
             .contains(&root.join("tui-state-test/main.py")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn excludes_runtime_generated_tree_artifacts_from_expected_files() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-runtime-generated-structured-plan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("ReadingJournal")).unwrap();
+        fs::write(
+            root.join("ReadingJournal/plan.md"),
+            "# Project Plan\n\n## File Tree\n```text\nReadingJournal/\n├── README.md\n├── requirements.txt\n├── journal.db             # SQLite database (generated at runtime)\n├── src/\n│   └── main.py\n└── tests/\n    └── test_main.py\n```\n\n## Verification\n- Run tests.\n\n## Acceptance Criteria\n- Runtime creates the database on first use.\n",
+        )
+        .unwrap();
+        let mut session = Session::new("session", &root, &root);
+        let action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("ReadingJournal/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        let result = VerifiedActionResult::File(FileActionVerification::FileCreated {
+            path: root.join("ReadingJournal/plan.md").display().to_string(),
+        });
+
+        record_verified_project_memory(&mut session, &action, &result);
+
+        let structured = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("verified plan should create structured plan state");
+        assert!(structured
+            .expected_files
+            .contains(&root.join("ReadingJournal/README.md")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("ReadingJournal/src/main.py")));
+        assert!(structured
+            .expected_files
+            .contains(&root.join("ReadingJournal/tests/test_main.py")));
+        assert!(
+            !structured
+                .expected_files
+                .contains(&root.join("ReadingJournal/journal.db")),
+            "runtime-generated database should not be a required implementation file"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
