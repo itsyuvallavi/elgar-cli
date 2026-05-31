@@ -7,7 +7,7 @@ use crate::{
     action::{Action, ActionLifecycleState},
     context::ContextAccounting,
     event::{ActionKind, Event, FileActionVerification, ProviderMetrics, VerifiedActionResult},
-    local_trace,
+    local_session_log, local_trace,
     plan_contract::PlanContract,
     policy::PolicyDecision,
     token_accounting::{ContextWindowSnapshot, LastTurnTokenUsage, SessionTokenTotals},
@@ -272,6 +272,13 @@ impl Session {
                 "input_lines": user_input.lines().count().max(1),
             }),
         );
+        self.session_log_event(
+            "user_message",
+            json!({
+                "content_chars": user_input.chars().count(),
+                "content_lines": user_input.lines().count().max(1),
+            }),
+        );
     }
 
     pub(crate) fn record_reasoning_route(&mut self, route: impl Into<String>) {
@@ -366,10 +373,22 @@ impl Session {
         let Some(trace_id) = self.current_trace_id.as_deref() else {
             return;
         };
+        let kind = kind.into();
         let _ = local_trace::append_trace_event(
             &self.project_root,
             &self.id,
             trace_id,
+            self.current_turn_index,
+            kind.clone(),
+            metadata.clone(),
+        );
+        self.session_log_event(kind, metadata);
+    }
+
+    pub(crate) fn session_log_event(&self, kind: impl Into<String>, metadata: Value) {
+        let _ = local_session_log::append_session_event(
+            &self.project_root,
+            &self.id,
             self.current_turn_index,
             kind,
             metadata,
@@ -460,7 +479,15 @@ impl Session {
                     "category": "provider_or_runtime_error",
                 }),
             ),
-            Event::UserMessage(_) | Event::AssistantMessage(_) => {}
+            Event::UserMessage(_) => {}
+            Event::AssistantMessage(message) => self.session_log_event(
+                "assistant_message",
+                json!({
+                    "source": format!("{:?}", message.source),
+                    "content_chars": message.content.chars().count(),
+                    "content_lines": message.content.lines().count().max(1),
+                }),
+            ),
         }
     }
 

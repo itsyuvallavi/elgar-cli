@@ -7715,6 +7715,15 @@ mod tests {
             .collect()
     }
 
+    fn session_log_events(root: &Path, session_id: &str) -> Vec<serde_json::Value> {
+        let path = crate::local_session_log::session_log_file_path(root, session_id);
+        let contents = std::fs::read_to_string(path).expect("session log file should exist");
+        contents
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("session log line should be valid json"))
+            .collect()
+    }
+
     fn trace_kinds(events: &[serde_json::Value]) -> Vec<String> {
         events
             .iter()
@@ -7964,6 +7973,97 @@ mod tests {
         );
         let serialized = serde_json::to_string(&events).unwrap();
         assert!(!serialized.contains("secret-state-prompt"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plain_chat_writes_redacted_append_only_session_log() {
+        std::env::set_var("ELGAR_SESSION_LOG", "on");
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plain-session-log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"chat\",\"content\":\"Plain answer secret-assistant-log-content.\"}",
+            ));
+        let mut session = Session::new("session-log-plain", &root, &root);
+
+        let result = run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "hello secret-user-session-log-content",
+        );
+
+        assert_eq!(result.route, Route::AskModel);
+        let events = session_log_events(&root, "session-log-plain");
+        let kinds = trace_kinds(&events);
+        assert!(kinds.contains(&"turn_start".to_string()));
+        assert!(kinds.contains(&"user_message".to_string()));
+        assert!(kinds.contains(&"provider_request_start".to_string()));
+        assert!(kinds.contains(&"provider_request_finish".to_string()));
+        assert!(kinds.contains(&"route_decision".to_string()));
+        assert!(kinds.contains(&"assistant_message".to_string()));
+        assert!(kinds.contains(&"turn_finish".to_string()));
+        assert!(!kinds.contains(&"memory_selected".to_string()));
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(!serialized.contains("secret-user-session-log-content"));
+        assert!(!serialized.contains("secret-assistant-log-content"));
+        assert!(events.iter().all(|event| {
+            event.get("session_id").and_then(serde_json::Value::as_str) == Some("session-log-plain")
+                && event.get("turn_index").and_then(serde_json::Value::as_u64) == Some(1)
+        }));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_action_turn_writes_session_log_without_file_contents() {
+        std::env::set_var("ELGAR_SESSION_LOG", "on");
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-tool-session-log",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating file.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "call-1".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "notes.txt",
+                            "contents": "secret-session-log-file-contents",
+                        }),
+                        assistant_summary: None,
+                    },
+                ]),
+            );
+        let mut session = Session::new("session-log-tool", &root, &root);
+
+        let result = run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a file with secret-session-log-file-contents",
+        );
+
+        assert_eq!(result.route, Route::AskModel);
+        assert!(root.join("notes.txt").is_file());
+        let events = session_log_events(&root, "session-log-tool");
+        let kinds = trace_kinds(&events);
+        assert!(kinds.contains(&"tool_call_validated".to_string()));
+        assert!(kinds.contains(&"policy_decision".to_string()));
+        assert!(kinds.contains(&"action_approved".to_string()));
+        assert!(kinds.contains(&"action_applied".to_string()));
+        assert!(kinds.contains(&"turn_finish".to_string()));
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(!serialized.contains("secret-session-log-file-contents"));
+        assert!(serialized.contains("notes.txt"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

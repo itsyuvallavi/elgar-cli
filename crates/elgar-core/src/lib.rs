@@ -10,6 +10,7 @@ mod controller_reporting;
 mod controller_shell_verify;
 pub mod event;
 pub mod fs;
+mod local_session_log;
 mod local_trace;
 pub mod model_runtime;
 mod normal_turn_decision;
