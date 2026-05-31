@@ -47,6 +47,7 @@ use crate::{
         ProviderPromptMemorySelection, Session, StructuredProjectPlanStatus,
         VerifiedFolderReference, VerifiedPlanReference,
     },
+    session_log_memory::{latest_durable_verified_artifacts, DurableVerifiedArtifactFact},
     shell::ShellExecutor,
     verified_artifact_memory::{
         earliest_verified_artifacts, latest_action_turn_artifacts, latest_verified_artifacts,
@@ -4061,6 +4062,7 @@ const VERIFIED_ARTIFACT_LATEST_TURN_LIMIT: usize = 4;
 const VERIFIED_ARTIFACT_LATEST_LIMIT: usize = 6;
 const VERIFIED_ARTIFACT_EARLIEST_LIMIT: usize = 3;
 const VERIFIED_ARTIFACT_FOLDER_LIMIT: usize = 4;
+const DURABLE_VERIFIED_ARTIFACT_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct VerifiedArtifactPromptKey {
@@ -4100,6 +4102,7 @@ fn append_verified_artifact_memory_context(
         && earliest.artifacts.is_empty()
         && under_latest_folder.is_none()
     {
+        append_durable_verified_artifact_memory_context(session, lines, selected, &HashSet::new());
         return;
     }
 
@@ -4142,6 +4145,7 @@ fn append_verified_artifact_memory_context(
             &mut emitted,
         );
     }
+    append_durable_verified_artifact_memory_context(session, lines, selected, &emitted);
 }
 
 fn append_artifact_group(
@@ -4189,6 +4193,75 @@ fn append_artifact_group(
 fn verified_artifact_context_line(session: &Session, artifact: &VerifiedArtifactFact) -> String {
     let mut line = format!(
         "{} turn {} {} {}",
+        artifact.action_id,
+        artifact.turn_index,
+        artifact.operation,
+        display_agent_context_path(session, &artifact.path)
+    );
+    if let Some(source_path) = artifact.source_path.as_ref() {
+        line.push_str(&format!(
+            " from {}",
+            display_agent_context_path(session, source_path)
+        ));
+    }
+    if let Some(project_root) = artifact.project_root.as_ref() {
+        line.push_str(&format!(
+            " under {}",
+            display_agent_context_path(session, project_root)
+        ));
+    }
+    line
+}
+
+fn append_durable_verified_artifact_memory_context(
+    session: &Session,
+    lines: &mut Vec<String>,
+    selected: &mut Vec<ProviderPromptMemorySelectedFact>,
+    in_memory_artifacts: &HashSet<VerifiedArtifactPromptKey>,
+) {
+    let durable = latest_durable_verified_artifacts(session, DURABLE_VERIFIED_ARTIFACT_LIMIT);
+    let artifacts = durable
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            !in_memory_artifacts.contains(&VerifiedArtifactPromptKey {
+                action_id: artifact.action_id.clone(),
+                path: artifact.path.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if artifacts.is_empty() {
+        return;
+    }
+
+    lines.push("- durable verified artifacts from local session logs:".to_string());
+    for artifact in artifacts {
+        lines.push(format!(
+            "  - {}",
+            durable_verified_artifact_context_line(session, artifact)
+        ));
+        selected.push(ProviderPromptMemorySelectedFact::new(
+            "durable_verified_artifact",
+            artifact.path.clone(),
+            artifact.project_root.clone(),
+            format!("{}:{}", artifact.session_id, artifact.action_id),
+        ));
+    }
+    if durable.omitted_count > 0 {
+        lines.push(format!(
+            "  - omitted {} older durable verified artifact(s) due to prompt cap",
+            durable.omitted_count
+        ));
+    }
+}
+
+fn durable_verified_artifact_context_line(
+    session: &Session,
+    artifact: &DurableVerifiedArtifactFact,
+) -> String {
+    let mut line = format!(
+        "{}:{} turn {} {} {}",
+        artifact.session_id,
         artifact.action_id,
         artifact.turn_index,
         artifact.operation,
@@ -7113,6 +7186,93 @@ mod tests {
     }
 
     #[test]
+    fn durable_session_log_memory_injects_prior_artifacts_into_tool_turns() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-durable-artifact-context-tool",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_prior_session_log(
+            &root,
+            "prior-session",
+            &[
+                r#"{"session_id":"prior-session","turn_index":1,"kind":"action_applied","timestamp_unix_ms":1,"metadata":{"action_id":"action-prior","action_kind":"CreateFile","operation":"file_written","path":"prior/README.md"}}"#,
+                r#"{"session_id":"prior-session","turn_index":1,"kind":"action_applied","timestamp_unix_ms":2,"metadata":{"action_id":"action-shell","action_kind":"ShellCommand","operation":"shell_command","command_chars":7}}"#,
+                "not json",
+            ],
+        );
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("I can use durable verified artifacts."),
+            crate::event::ProviderOutput::new("No tool action needed."),
+        ]);
+        let mut session = Session::new("current-session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "continue the project from the previous session",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let messages = provider.messages.lock().unwrap();
+        let verified_context = messages[0]
+            .iter()
+            .find(|message| message.content.contains("Verified filesystem context"))
+            .expect("tool turn should include verified memory context");
+        assert!(verified_context
+            .content
+            .contains("- durable verified artifacts from local session logs:"));
+        assert!(verified_context
+            .content
+            .contains("prior-session:action-prior turn 1 file_written prior/README.md"));
+        assert!(!verified_context.content.contains("action-shell"));
+
+        let selection = session
+            .latest_provider_prompt_memory_selection()
+            .expect("durable artifact prompt selection should be recorded");
+        assert!(selection.selected.iter().any(|fact| {
+            fact.kind == "durable_verified_artifact"
+                && fact.path.ends_with("prior/README.md")
+                && fact.source_action_id == "prior-session:action-prior"
+        }));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn durable_session_log_memory_stays_out_of_plain_chat() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-durable-artifact-plain-clean",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_prior_session_log(
+            &root,
+            "prior-session",
+            &[
+                r#"{"session_id":"prior-session","turn_index":1,"kind":"action_applied","timestamp_unix_ms":1,"metadata":{"action_id":"action-prior","action_kind":"CreateFile","operation":"file_written","path":"prior/README.md"}}"#,
+            ],
+        );
+        let provider = CapturingProvider::new();
+        let mut session = Session::new("current-session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "hello");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[0].tool_count, 0);
+        let joined = joined_request_messages(&requests[0]);
+        assert!(!joined.contains("durable verified artifacts"));
+        assert!(!joined.contains("prior/README.md"));
+        assert!(session.latest_provider_prompt_memory_selection().is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn verified_artifact_memory_prompt_caps_and_reports_omitted_count() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-artifact-context-cap",
@@ -7704,6 +7864,12 @@ mod tests {
             },
         ));
         session.push_action(record);
+    }
+
+    fn write_prior_session_log(root: &Path, session_id: &str, lines: &[&str]) {
+        let path = crate::local_session_log::session_log_file_path(root, session_id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, lines.join("\n")).unwrap();
     }
 
     fn trace_events(root: &Path, session_id: &str) -> Vec<serde_json::Value> {

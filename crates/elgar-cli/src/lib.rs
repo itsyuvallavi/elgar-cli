@@ -1,4 +1,8 @@
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use elgar_core::{agent_runtime::AgentRuntime, renderer::render_session, session::Session};
 
@@ -9,6 +13,8 @@ mod provider_smoke;
 mod tui_loop;
 
 pub const PERF_BASELINE_COMMAND: &str = "perf-baseline";
+
+static SESSION_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub use paths::*;
 pub use provider_config::*;
@@ -24,7 +30,8 @@ pub fn render_cli_turn(
     cwd: impl AsRef<Path>,
 ) -> String {
     let runtime = AgentRuntime::default();
-    let mut session = Session::new("cli-smoke-session", project_root.as_ref(), cwd.as_ref());
+    let session_id = runtime_session_id("cli-smoke");
+    let mut session = Session::new(&session_id, project_root.as_ref(), cwd.as_ref());
 
     runtime.refresh_context_accounting(&mut session, None);
     runtime.turn(&mut session, input, default_permission_policy_mode());
@@ -45,11 +52,21 @@ pub fn render_cli_turn_from_runtime_config(
     let policy_mode = runtime_permission_policy_mode(project_root_ref)?;
     let context_window_tokens = runtime_provider.config.configured_context_window_tokens();
     let runtime = AgentRuntime::with_lm_studio_provider(runtime_provider.config);
-    let mut session = Session::new("cli-runtime-session", project_root_ref, cwd_ref);
+    let session_id = runtime_session_id("cli-runtime");
+    let mut session = Session::new(&session_id, project_root_ref, cwd_ref);
 
     runtime.refresh_context_accounting(&mut session, context_window_tokens);
     runtime.turn(&mut session, input, policy_mode);
     Ok(render_session(&session))
+}
+
+pub(crate) fn runtime_session_id(prefix: &str) -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let counter = SESSION_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{millis}-{counter}", std::process::id())
 }
 
 #[cfg(test)]
@@ -138,6 +155,16 @@ mod tests {
         assert!(!should_launch_terminal_tui_by_default(false, true));
         assert!(!should_launch_terminal_tui_by_default(true, false));
         assert!(!should_launch_terminal_tui_by_default(false, false));
+    }
+
+    #[test]
+    fn runtime_session_ids_are_unique_per_runtime() {
+        let first = super::runtime_session_id("cli-tui");
+        let second = super::runtime_session_id("cli-tui");
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("cli-tui-"));
+        assert!(second.starts_with("cli-tui-"));
     }
 
     #[test]

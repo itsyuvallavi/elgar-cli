@@ -10,7 +10,7 @@ use elgar_core::{
 
 use crate::{
     default_permission_policy_mode, load_runtime_provider, runtime_permission_policy_mode,
-    RuntimePaths, RuntimeProviderConfigError,
+    runtime_session_id, RuntimePaths, RuntimeProviderConfigError,
 };
 
 pub const TUI_COMMAND: &str = "tui";
@@ -207,7 +207,8 @@ where
 {
     let action_gate = ActionGate::default();
     let runtime = AgentRuntime::default();
-    let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
+    let session_id = runtime_session_id("cli-tui-script");
+    let mut session = Session::new(&session_id, project_root.as_ref(), cwd.as_ref());
     let mut shell = elgar_tui::TuiShell::with_policy_mode(policy_mode);
     let mut rendered_turns = Vec::new();
 
@@ -350,7 +351,8 @@ where
     P: ControllerProvider + Clone,
 {
     let action_gate = ActionGate::new(runtime.provider.clone());
-    let mut session = Session::new("cli-tui-session", project_root.as_ref(), cwd.as_ref());
+    let session_id = runtime_session_id("cli-tui");
+    let mut session = Session::new(&session_id, project_root.as_ref(), cwd.as_ref());
     runtime.refresh_context_accounting(&mut session, context_window_tokens);
     let mut shell = elgar_tui::TuiShell::with_policy_mode(policy_mode);
 

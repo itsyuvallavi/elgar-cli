@@ -56,9 +56,14 @@ pub(crate) fn session_log_file_path(project_root: &Path, session_id: &str) -> Pa
     if let Some(dir) = env::var_os(SESSION_LOG_DIR_ENV).filter(|value| !value.is_empty()) {
         return PathBuf::from(dir).join(format!("{}.jsonl", safe_session_component(session_id)));
     }
-    project_root
-        .join(SESSION_LOG_RELATIVE_DIR)
-        .join(format!("{}.jsonl", safe_session_component(session_id)))
+    session_log_dir_path(project_root).join(format!("{}.jsonl", safe_session_component(session_id)))
+}
+
+pub(crate) fn session_log_dir_path(project_root: &Path) -> PathBuf {
+    if let Some(dir) = env::var_os(SESSION_LOG_DIR_ENV).filter(|value| !value.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    project_root.join(SESSION_LOG_RELATIVE_DIR)
 }
 
 fn session_log_disabled() -> bool {

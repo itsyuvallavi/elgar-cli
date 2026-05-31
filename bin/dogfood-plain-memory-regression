@@ -55,9 +55,9 @@ find "$playground/$project_dir" -maxdepth 1 -iname '*plan*.md' -type f | grep -q
   || fail "missing plan markdown file"
 
 grep -q '^Plan Preview$' "$output_file" || fail "plan preview missing"
-grep -q "blocking issues: none" "$output_file" || fail "plan contract still has blocking issues"
+grep -q "blocking: none" "$output_file" || fail "plan contract still has blocking issues"
 grep -q "verification:" "$output_file" || fail "verification section was not recognized"
-grep -q "acceptance criteria:" "$output_file" || fail "acceptance criteria section was not recognized"
+grep -q "acceptance:" "$output_file" || fail "acceptance section was not recognized"
 grep -q '^Memory$' "$output_file" || fail "memory output missing"
 grep -q "structured plans" "$output_file" || fail "structured plan memory missing"
 grep -q "$project_dir" "$output_file" || fail "transcript did not mention project directory"

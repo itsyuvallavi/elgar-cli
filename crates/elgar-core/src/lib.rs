@@ -24,6 +24,7 @@ pub use provider_visible::provider_visible_text_from_text_only_output;
 pub mod renderer;
 pub mod router;
 pub mod session;
+mod session_log_memory;
 pub mod shell;
 #[cfg(test)]
 mod test_env;

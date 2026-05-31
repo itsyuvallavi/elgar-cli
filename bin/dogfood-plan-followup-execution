@@ -77,45 +77,68 @@ find "$project_path" -maxdepth 1 -iname '*plan*.md' -type f | grep -q . \
 [[ -f "$project_path/requirements.txt" ]] || fail "missing requirements.txt"
 
 awk '
-  $0 == "Plan Preview" { capture = 1; block = $0 "\n"; next }
-  capture && $0 == "" { printf "%s", block; exit }
+  function finish_block() {
+    if (capture) {
+      blocks[++count] = block
+      capture = 0
+      block = ""
+    }
+  }
+  $0 == "Plan Preview" { finish_block(); capture = 1; block = $0 "\n"; next }
+  capture && ($0 == "Memory" || $0 == "Tokens" || $0 == "Reasoning" || $0 == "Conversation" || $0 == "Pending Action" || $0 == "Observability") {
+    finish_block()
+    next
+  }
   capture { block = block $0 "\n" }
   END {
-    if (capture) {
-      printf "%s", block
+    finish_block()
+    if (count > 0) {
+      printf "%s", blocks[1]
     }
   }
 ' "$output_file" >"$first_plan_file"
 
 grep -q "status: verified" "$first_plan_file" || fail "initial plan preview did not remain verified before execution"
-grep -q -- "- missing playground/$project_dir/README.md" "$first_plan_file" \
+grep -q -- "\\[missing\\] README.md" "$first_plan_file" \
   || fail "plan-only turn created README.md before the execute follow-up"
-grep -q -- "- missing playground/$project_dir/src/main.py" "$first_plan_file" \
+grep -q -- "\\[missing\\] src/" "$first_plan_file" \
+  || fail "plan-only turn created src directory before the execute follow-up"
+grep -q -- "\\[missing\\] main.py" "$first_plan_file" \
   || fail "plan-only turn created src/main.py before the execute follow-up"
-grep -q -- "- missing playground/$project_dir/requirements.txt" "$first_plan_file" \
+grep -q -- "\\[missing\\] requirements.txt" "$first_plan_file" \
   || fail "plan-only turn created requirements.txt before the execute follow-up"
 
 awk '
-  $0 == "Plan Preview" { capture = 1; block = $0 "\n"; next }
-  capture && $0 == "" { latest = block; capture = 0; next }
-  capture { block = block $0 "\n" }
-  END {
+  function finish_block() {
     if (capture) {
       latest = block
+      capture = 0
+      block = ""
     }
+  }
+  $0 == "Plan Preview" { finish_block(); capture = 1; block = $0 "\n"; next }
+  capture && ($0 == "Memory" || $0 == "Tokens" || $0 == "Reasoning" || $0 == "Conversation" || $0 == "Pending Action" || $0 == "Observability") {
+    finish_block()
+    next
+  }
+  capture { block = block $0 "\n" }
+  END {
+    finish_block()
     printf "%s", latest
   }
 ' "$output_file" >"$final_plan_file"
 
 grep -q "status: completed" "$final_plan_file" || fail "final plan preview did not complete"
-grep -q "blocking issues: none" "$final_plan_file" || fail "final plan contract still has blocking issues"
-grep -q -- "- ok playground/$project_dir/README.md" "$final_plan_file" \
+grep -q "blocking: none" "$final_plan_file" || fail "final plan contract still has blocking issues"
+grep -q -- "\\[ok\\] README.md" "$final_plan_file" \
   || fail "final plan preview did not show README.md present"
-grep -q -- "- ok playground/$project_dir/src/main.py" "$final_plan_file" \
+grep -q -- "\\[ok\\] src/" "$final_plan_file" \
+  || fail "final plan preview did not show src directory present"
+grep -q -- "\\[ok\\] main.py" "$final_plan_file" \
   || fail "final plan preview did not show src/main.py present"
-grep -Eq -- "- (ok|empty) playground/$project_dir/requirements.txt" "$final_plan_file" \
+grep -Eq -- "\\[(ok|empty)\\] requirements.txt" "$final_plan_file" \
   || fail "final plan preview did not show requirements.txt present"
-grep -q -- "- missing playground/$project_dir/" "$final_plan_file" \
+grep -q -- "\\[missing\\]" "$final_plan_file" \
   && fail "final plan preview still has missing expected paths"
 
 grep -q '^Memory$' "$output_file" || fail "memory output missing"
