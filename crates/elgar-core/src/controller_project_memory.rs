@@ -7,7 +7,10 @@ use crate::{
     action::{Action, ActionRequest, FileActionVerification},
     controller_reporting::verified_shell_expected_directories,
     event::VerifiedActionResult,
-    session::{Session, StructuredProjectPlan, VerifiedFolderReference, VerifiedPlanReference},
+    session::{
+        Session, StructuredProjectPlan, StructuredProjectPlanStatus, VerifiedFolderReference,
+        VerifiedPlanReference,
+    },
 };
 
 pub(crate) fn record_verified_project_memory(
@@ -26,19 +29,29 @@ pub(crate) fn record_verified_project_memory(
                 source_action_id: action_id,
             });
         }
-        ActionRequest::CreateFile(create_file)
-            if is_plan_path_or_contents(&create_file.target_path, &create_file.contents) =>
-        {
+        ActionRequest::CreateFile(create_file) => {
             let path = verified_file_write_path(session, result)
                 .unwrap_or_else(|| resolve_session_path(&session.cwd, &create_file.target_path));
-            record_verified_plan_memory(session, &action_id, path);
+            if should_record_file_write_as_verified_plan(
+                session,
+                &create_file.target_path,
+                &create_file.contents,
+                &path,
+            ) {
+                record_verified_plan_memory(session, &action_id, path);
+            }
         }
-        ActionRequest::OverwriteFile(overwrite_file)
-            if is_plan_path_or_contents(&overwrite_file.target_path, &overwrite_file.contents) =>
-        {
+        ActionRequest::OverwriteFile(overwrite_file) => {
             let path = verified_file_write_path(session, result)
                 .unwrap_or_else(|| resolve_session_path(&session.cwd, &overwrite_file.target_path));
-            record_verified_plan_memory(session, &action_id, path);
+            if should_record_file_write_as_verified_plan(
+                session,
+                &overwrite_file.target_path,
+                &overwrite_file.contents,
+                &path,
+            ) {
+                record_verified_plan_memory(session, &action_id, path);
+            }
         }
         ActionRequest::ShellCommand(shell_command) => {
             let shell_cwd = normalize_path(&shell_command.cwd);
@@ -608,6 +621,36 @@ fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
 
 pub(crate) fn is_plan_path_or_contents(path: &Path, contents: &str) -> bool {
     is_plan_path(path) || contents_looks_like_plan(contents)
+}
+
+fn should_record_file_write_as_verified_plan(
+    session: &Session,
+    requested_path: &Path,
+    contents: &str,
+    verified_path: &Path,
+) -> bool {
+    if is_plan_path(requested_path) || is_plan_path(verified_path) {
+        return true;
+    }
+
+    contents_looks_like_plan(contents)
+        && !is_active_plan_expected_implementation_file(session, verified_path)
+}
+
+fn is_active_plan_expected_implementation_file(session: &Session, path: &Path) -> bool {
+    let Some(plan) = session.project_memory().latest_structured_plan() else {
+        return false;
+    };
+    if plan.runtime_status() != StructuredProjectPlanStatus::Executing {
+        return false;
+    }
+
+    let path = normalize_path(path);
+    path != normalize_path(&plan.source_plan_path)
+        && plan
+            .expected_files
+            .iter()
+            .any(|expected| normalize_path(expected) == path)
 }
 
 fn is_plan_path(path: &Path) -> bool {

@@ -80,10 +80,10 @@ const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "{\"route\":\"execute\",\"intent\":\"shell_execution\"}=run/inspect shell command; not file content. ",
     "{\"route\":\"execute\"}=local file/artifact/plan work. ",
     "{\"route\":\"chat\",\"content\":\"...\"}=text only, not runtime state. ",
-    "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=apply verified plan. ",
+    "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=execute verified plan. ",
     "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=both a plan artifact and implementation/execution this turn. ",
     "Plan-only: execute, no intent. ",
-    "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified state/outcome/reason for prior changes, creations, blocks/skips/failures. ",
+    "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified state: plan readback/status, changes, creations, blocks/skips/failures. ",
     "{\"route\":\"ask_guidance\",\"question\":\"...\"}=missing required detail."
 );
 const AGENT_STATE_KIND_CLASSIFIER_PROMPT: &str = concat!(
@@ -2042,6 +2042,13 @@ fn guard_plan_creation_tool_outputs(
                 skipped => skipped,
             })
             .collect();
+    }
+
+    if has_existing_plan_contract_or_reference(session)
+        && !latest_structured_plan_is_completed(session)
+        && resolved_outputs_touch_structured_plan(session, &outputs)
+    {
+        return outputs;
     }
 
     let plan_roots = outputs
@@ -8421,6 +8428,137 @@ Acceptance Criteria:
                 .expect("plan should remain recorded")
                 .runtime_status(),
             crate::session::StructuredProjectPlanStatus::Completed
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_execution_create_files_batch_does_not_reclassify_readme_as_new_plan() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-exec-readme-planish",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(cwd.join("GemmaReadingTracker1")).unwrap();
+        std::fs::write(
+            cwd.join("GemmaReadingTracker1/plan.md"),
+            "# Project Plan\n\n```text\nREADME.md\nrequirements.txt\nmain.py\ntracker/__init__.py\ntracker/models.py\ntracker/storage.py\ntracker/cli.py\ntests/__init__.py\ntests/test_models.py\ntests/test_storage.py\n```\n\n## Verification\n- Run pytest.\n\n## Acceptance Criteria\n- Expected files exist.\n",
+        )
+        .unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating project files.").with_tool_calls(
+                    vec![RawModelToolCall {
+                        id: "reading-files".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                        arguments: json!({
+                            "directories": [
+                                "GemmaReadingTracker1/tracker",
+                                "GemmaReadingTracker1/tests"
+                            ],
+                            "files": [
+                                {
+                                    "target_path": "GemmaReadingTracker1/README.md",
+                                    "contents": "# Project Plan\n\nThis README describes the reading tracker project plan and usage.\n"
+                                },
+                                {
+                                    "target_path": "GemmaReadingTracker1/requirements.txt",
+                                    "contents": "pytest\n"
+                                },
+                                {
+                                    "target_path": "GemmaReadingTracker1/main.py",
+                                    "contents": "from tracker.cli import main\n\nif __name__ == '__main__':\n    main()\n"
+                                },
+                                {
+                                    "target_path": "GemmaReadingTracker1/tracker/__init__.py",
+                                    "contents": ""
+                                },
+                                {
+                                    "target_path": "GemmaReadingTracker1/tracker/models.py",
+                                    "contents": "class Book:\n    pass\n"
+                                },
+                                {
+                                    "target_path": "GemmaReadingTracker1/tracker/storage.py",
+                                    "contents": "def load_books():\n    return []\n"
+                                },
+                                {
+                                    "target_path": "GemmaReadingTracker1/tracker/cli.py",
+                                    "contents": "def main():\n    print('reading tracker')\n"
+                                },
+                                {
+                                    "target_path": "GemmaReadingTracker1/tests/__init__.py",
+                                    "contents": ""
+                                },
+                                {
+                                    "target_path": "GemmaReadingTracker1/tests/test_models.py",
+                                    "contents": "def test_model_smoke():\n    assert True\n"
+                                },
+                                {
+                                    "target_path": "GemmaReadingTracker1/tests/test_storage.py",
+                                    "contents": "def test_storage_smoke():\n    assert True\n"
+                                }
+                            ]
+                        }),
+                        assistant_summary: Some("create reading tracker files".to_string()),
+                    }],
+                ),
+            );
+        let mut session = Session::new("session", &root, &cwd);
+        let plan_action = Action::proposed(
+            "action-plan",
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from("GemmaReadingTracker1/plan.md"),
+                contents: "# Project Plan\n".to_string(),
+            }),
+            "create plan",
+        )
+        .approve()
+        .mark_applied();
+        record_verified_project_memory(
+            &mut session,
+            &plan_action,
+            &VerifiedActionResult::File(crate::event::FileActionVerification::FileCreated {
+                path: "GemmaReadingTracker1/plan.md".to_string(),
+            }),
+        );
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "execute the verified plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        for path in [
+            "GemmaReadingTracker1/README.md",
+            "GemmaReadingTracker1/requirements.txt",
+            "GemmaReadingTracker1/main.py",
+            "GemmaReadingTracker1/tracker/__init__.py",
+            "GemmaReadingTracker1/tracker/models.py",
+            "GemmaReadingTracker1/tracker/storage.py",
+            "GemmaReadingTracker1/tracker/cli.py",
+            "GemmaReadingTracker1/tests/__init__.py",
+            "GemmaReadingTracker1/tests/test_models.py",
+            "GemmaReadingTracker1/tests/test_storage.py",
+        ] {
+            assert!(cwd.join(path).is_file(), "missing {path}");
+        }
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("plan should remain recorded");
+        assert_eq!(
+            plan.source_plan_path,
+            cwd.join("GemmaReadingTracker1/plan.md")
+        );
+        assert_eq!(
+            plan.runtime_status(),
+            StructuredProjectPlanStatus::Completed
         );
 
         let _ = std::fs::remove_dir_all(&root);
