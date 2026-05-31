@@ -1,9 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use elgar_core::{
-    agent_runtime::AgentRuntime, context::ContextAccounting, event::ProviderMetrics,
-    policy::PermissionPolicyMode, provider::ControllerProvider, session::Session,
-    token_accounting::ContextWindowSnapshot,
+    agent_runtime::AgentRuntime,
+    context::ContextAccounting,
+    event::ProviderMetrics,
+    policy::PermissionPolicyMode,
+    provider::ControllerProvider,
+    session::Session,
+    token_accounting::{ContextWindowSnapshot, ContextWindowSource},
 };
 
 use crate::theme;
@@ -84,15 +88,22 @@ impl TerminalShellContext {
 
     pub(super) fn footer_body_for_width(&self, width: usize) -> String {
         let left = footer_location_label(&self.project_root, &self.cwd);
-        let right = self
+        let model = self
             .model
             .as_deref()
             .or(self.provider.as_deref())
             .unwrap_or("");
+        let window = footer_context_window_label(self.context_window_snapshot.as_ref());
+        let right = match (window.as_deref(), model.is_empty()) {
+            (Some(window), false) => format!("{window} · {model}"),
+            (Some(window), true) => window.to_string(),
+            (None, false) => model.to_string(),
+            (None, true) => String::new(),
+        };
         if right.is_empty() {
             left
         } else {
-            align_footer_line(&left, right, width)
+            align_footer_line(&left, &right, width)
         }
     }
 
@@ -102,6 +113,32 @@ impl TerminalShellContext {
 
     pub(super) fn footer_style(&self) -> ratatui::style::Style {
         theme::context_normal()
+    }
+}
+
+fn footer_context_window_label(snapshot: Option<&ContextWindowSnapshot>) -> Option<String> {
+    let snapshot = snapshot?;
+    let window = snapshot.context_window_tokens?;
+    let current = match snapshot.source {
+        ContextWindowSource::Provider => snapshot
+            .current_tokens
+            .map(format_compact_tokens)
+            .unwrap_or_else(|| "?".to_string()),
+        ContextWindowSource::Estimate | ContextWindowSource::Unknown => "?".to_string(),
+    };
+    Some(format!("{current}/{}", format_compact_tokens(window)))
+}
+
+fn format_compact_tokens(tokens: u64) -> String {
+    if tokens >= 1_000 {
+        let value = tokens as f64 / 1_000.0;
+        if tokens % 1_000 == 0 {
+            format!("{}k", tokens / 1_000)
+        } else {
+            format!("{value:.1}k")
+        }
+    } else {
+        tokens.to_string()
     }
 }
 

@@ -108,6 +108,14 @@ impl ConversationPane {
         self.push_line(message.into(), ConversationLineStyle::Plain);
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.lines.clear();
+        self.line_styles.clear();
+        self.scrollback.follow_latest();
+        self.loading_pulse.reset();
+        self.create_batch = None;
+    }
+
     #[cfg(test)]
     pub(crate) fn scroll_offset(&self, viewport_height: u16) -> u16 {
         self.scroll_offset_for_lines(self.render_line_count(), viewport_height)

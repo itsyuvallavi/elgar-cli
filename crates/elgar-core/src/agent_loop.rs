@@ -53,7 +53,9 @@ use crate::{
         verified_artifacts_under_folder, CappedVerifiedArtifacts, VerifiedArtifactFact,
     },
     verified_state_answer::{
-        parse_verified_state_answer_kind, verified_session_state_answer, VerifiedStateAnswerKind,
+        parse_verified_state_answer_kind, resolve_state_answer_kind,
+        resolved_state_answer_trace_metadata, verified_session_state_answer,
+        VerifiedStateAnswerKind,
     },
 };
 
@@ -83,13 +85,13 @@ const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=execute verified plan. ",
     "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=same prompt asks to create a plan then execute/implement it. ",
     "Plan-only: execute, no intent. ",
-    "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified state: plan/status, first/latest/all created files, blocks/failures. ",
+    "{\"route\":\"state\",\"answer_kind\":\"...\"}=questions about verified plan/status/created files, not commands. ",
     "{\"route\":\"ask_guidance\",\"question\":\"...\"}=missing required detail."
 );
 const AGENT_STATE_KIND_CLASSIFIER_PROMPT: &str = concat!(
     "The user asked about verified runtime state. ",
     "Return exactly one compact JSON object {\"answer_kind\":\"...\"}; no prose. ",
-    "Valid answer kinds: latest_folder, latest_file, project_files, first_created, created_summary, recent_changes, last_block, plan, plan_details, pending, status, memory, summary. ",
+    "Valid answer kinds: latest_folder, latest_file, project_files, first_created, created_summary, recent_changes, last_block, plan, plan_details, plan_status, pending, status, memory, summary. ",
     "plan_details=plan expected dirs/files and contents; plan=latest plan status and expected paths; project_files=files under latest/referenced project; first_created=earliest verified artifact; ",
     "recent_changes=what was just done in the most recent action; last_block=why the latest runtime action was blocked/skipped/failed; created_summary=everything created so far; ",
     "latest_folder/latest_file=the most recent created folder/file; ",
@@ -112,6 +114,19 @@ const AGENT_ROUTE_RUNTIME_BLOCK_CHAT_REPAIR_PROMPT: &str = concat!(
     "Return exactly one compact JSON object for the original user request using the routing schema. ",
     "Choose state with answer_kind last_block when the user is asking about the prior runtime outcome or reason. ",
     "Choose chat only for text that is unrelated to verified runtime state."
+);
+const AGENT_ROUTE_STATE_WITH_PLAN_REPAIR_PROMPT: &str = concat!(
+    "The previous route chose state while an incomplete verified plan is available. ",
+    "Return route JSON for the original user request. ",
+    "If the request commands applying the current verified plan, choose {\"route\":\"execute\",\"intent\":\"plan_execution\"}. ",
+    "If it only asks about what happened or plan status, choose state with answer_kind plan_status/status/plan. ",
+    "No prose."
+);
+const AGENT_POST_PLAN_CREATION_DECISION_PROMPT: &str = concat!(
+    "A verified plan was just created. Reclassify the original request only. ",
+    "If it requires implementing/executing the plan now, return {\"route\":\"execute\",\"intent\":\"plan_execution\"}. ",
+    "If it was plan-only or asks to review/share first, return {\"route\":\"state\",\"answer_kind\":\"plan\"}. ",
+    "No prose."
 );
 
 const MAX_AGENT_TOOL_ROUNDS: usize = 16;
@@ -806,6 +821,17 @@ where
                     continue;
                 }
             }
+            if intent.after_plan_creation_decision
+                && !visible_skipped_tool_notice_shown
+                && post_plan_creation_decision_requests_execution(provider, session, input)
+            {
+                if let Some(message) = missing_expected_plan_paths_message(session) {
+                    plan_execution_requested_after_plan_creation = true;
+                    allow_implementation_after_plan_creation = true;
+                    messages.push(ChatMessage::system(message));
+                    continue;
+                }
+            }
             session.push_reasoning_runtime_check(
                 "plan creation completed; skipped final provider synthesis",
             );
@@ -1081,6 +1107,105 @@ where
     }
 }
 
+fn post_plan_creation_decision_requests_execution<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+) -> bool
+where
+    P: ControllerProvider,
+{
+    let Some(context) = agent_verified_memory_context(session).prompt_context else {
+        return false;
+    };
+    let request = provider.request_metadata();
+    session.push_event(Event::ProviderStarted(
+        ProviderStarted::new(request.provider.clone(), request.request_id.clone())
+            .with_request_details(request.model.clone(), "plain_post_plan_classifier", 0),
+    ));
+    let messages = vec![
+        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
+        ChatMessage::system(context),
+        ChatMessage::system(AGENT_POST_PLAN_CREATION_DECISION_PROMPT),
+        ChatMessage::user(input),
+    ];
+
+    let output = match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
+        Ok(output) => output,
+        Err(error) => {
+            session.push_event(Event::Error(ErrorEvent::new(format!(
+                "{} provider post-plan classifier request {} failed: {error}",
+                request.provider, request.request_id
+            ))));
+            return false;
+        }
+    };
+
+    let assistant_text = output.text.clone();
+    push_provider_finished(session, request.provider, request.request_id, output);
+    match parse_normal_turn_decision(&assistant_text) {
+        Some(NormalTurnDecision::Execute {
+            intent:
+                Some(
+                    NormalTurnExecuteIntent::PlanExecution
+                    | NormalTurnExecuteIntent::PlanCreationAndExecution,
+                ),
+        }) => {
+            session.push_reasoning_model_decision("post-plan classifier selected plan execution");
+            true
+        }
+        Some(NormalTurnDecision::Execute { intent: None }) => {
+            session.push_reasoning_model_decision(
+                "post-plan classifier selected generic execute; kept plan-only boundary",
+            );
+            false
+        }
+        Some(NormalTurnDecision::Execute {
+            intent: Some(NormalTurnExecuteIntent::ShellExecution),
+        }) => {
+            session.push_reasoning_model_decision(
+                "post-plan classifier selected shell execution; kept plan-only boundary",
+            );
+            false
+        }
+        Some(NormalTurnDecision::State { answer_kind }) => {
+            session.push_reasoning_model_decision(format!(
+                "post-plan classifier kept plan-only state{}",
+                answer_kind
+                    .map(|kind| format!(" ({})", kind.as_str()))
+                    .unwrap_or_default()
+            ));
+            false
+        }
+        Some(NormalTurnDecision::Chat { .. }) | Some(NormalTurnDecision::AskGuidance { .. }) => {
+            session.push_reasoning_model_decision("post-plan classifier did not request execution");
+            false
+        }
+        None => {
+            session
+                .push_reasoning_runtime_check("post-plan classifier returned no valid route JSON");
+            false
+        }
+    }
+}
+
+fn retry_plain_agent_state_with_verified_plan_context<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+) -> PlainAgentChatOutcome
+where
+    P: ControllerProvider,
+{
+    retry_plain_agent_chat_for_route_json_with_repair(
+        provider,
+        session,
+        input,
+        AGENT_ROUTE_STATE_WITH_PLAN_REPAIR_PROMPT,
+        true,
+    )
+}
+
 /// Secondary classification call: only used when the lean route prompt chose
 /// `state` without pinning a valid `answer_kind`. Keeps the always-sent route
 /// prompt cheap while still resolving the precise verified-state view reliably.
@@ -1212,10 +1337,18 @@ where
                 );
                 return PlainAgentChatOutcome::Finished;
             };
-            session.push_event(Event::AssistantMessage(AssistantMessage::new(
-                verified_session_state_answer(session, answer_kind),
-                AssistantMessageSource::Controller,
-            )));
+            if allow_route_retry
+                && state_answer_kind_can_mask_plan_execution_followup(answer_kind)
+                && latest_structured_plan_has_missing_paths(session)
+            {
+                session.push_reasoning_model_decision(
+                    "state route selected generic status with an incomplete verified plan; retrying route JSON",
+                );
+                return retry_plain_agent_state_with_verified_plan_context(
+                    provider, session, input,
+                );
+            }
+            push_verified_state_answer(session, answer_kind);
             PlainAgentChatOutcome::Finished
         }
         Some(NormalTurnDecision::Chat { content }) => {
@@ -1236,10 +1369,7 @@ where
                 session.push_reasoning_model_decision(
                     "runtime block route repair still returned chat; surfaced verified last_block",
                 );
-                session.push_event(Event::AssistantMessage(AssistantMessage::new(
-                    verified_session_state_answer(session, VerifiedStateAnswerKind::LastBlock),
-                    AssistantMessageSource::Controller,
-                )));
+                push_verified_state_answer(session, VerifiedStateAnswerKind::LastBlock);
                 return PlainAgentChatOutcome::Finished;
             }
             if allow_route_retry && looks_like_local_work_chat_misroute(input, &content) {
@@ -1322,6 +1452,46 @@ where
             PlainAgentChatOutcome::Finished
         }
     }
+}
+
+fn push_verified_state_answer(session: &mut Session, answer_kind: VerifiedStateAnswerKind) {
+    let input = session
+        .latest_reasoning_trace()
+        .map(|trace| trace.user_input.clone())
+        .unwrap_or_default();
+    let resolution = resolve_state_answer_kind(session, &input, answer_kind);
+    if let Some(reason) = resolution.fallback_reason {
+        session.push_reasoning_runtime_check(format!(
+            "state answer kind resolved from {} to {}: {reason}",
+            resolution.requested_kind.as_str(),
+            resolution.resolved_kind.as_str()
+        ));
+    }
+    session.trace_event(
+        "state_answer",
+        resolved_state_answer_trace_metadata(session, resolution),
+    );
+    session.push_event(Event::AssistantMessage(AssistantMessage::new(
+        verified_session_state_answer(session, resolution.resolved_kind),
+        AssistantMessageSource::Controller,
+    )));
+}
+
+fn state_answer_kind_can_mask_plan_execution_followup(kind: VerifiedStateAnswerKind) -> bool {
+    matches!(
+        kind,
+        VerifiedStateAnswerKind::Pending
+            | VerifiedStateAnswerKind::Status
+            | VerifiedStateAnswerKind::Summary
+            | VerifiedStateAnswerKind::PlanStatus
+    )
+}
+
+fn latest_structured_plan_has_missing_paths(session: &Session) -> bool {
+    session
+        .project_memory()
+        .latest_structured_plan()
+        .is_some_and(|plan| plan.runtime_status() != StructuredProjectPlanStatus::Completed)
 }
 
 fn looks_like_misrouted_artifact_chat(content: &str) -> bool {
@@ -1734,7 +1904,7 @@ fn anchor_prompt_project_root_path(
     }
     let current_target = absolute_session_path(session, path);
     if path_is_within(&current_target, prompt_project_root) {
-        return path.to_path_buf();
+        return cwd_relative_path(session, &current_target);
     }
     if is_plan_path_or_contents(path, "") {
         if let Some(rebased_target) =
@@ -2994,11 +3164,16 @@ fn anchor_verified_plan_path(session: &Session, path: &Path) -> PathBuf {
     }
 
     let current_target = absolute_session_path(session, path);
+    if let Some(plan) = session.project_memory().latest_verified_plan() {
+        if path_is_within(&current_target, &plan.project_root) {
+            return cwd_relative_path(session, &current_target);
+        }
+    }
     let Some(plan) = session.project_memory().latest_structured_plan() else {
         return path.to_path_buf();
     };
     if path_is_within(&current_target, &plan.project_root) {
-        return path.to_path_buf();
+        return cwd_relative_path(session, &current_target);
     }
 
     if let Some(rebased_target) = rebase_sibling_project_path(session, path, &plan.project_root) {
@@ -3127,9 +3302,35 @@ fn plan_guard_paths(request: &ActionRequest) -> Vec<&Path> {
 fn absolute_session_path(session: &Session, path: &Path) -> PathBuf {
     normalize_path(if path.is_absolute() {
         path.to_path_buf()
+    } else if let Some(path) = project_root_relative_path_from_cwd_prefixed_relative(session, path)
+    {
+        path
     } else {
         session.cwd.join(path)
     })
+}
+
+fn project_root_relative_path_from_cwd_prefixed_relative(
+    session: &Session,
+    path: &Path,
+) -> Option<PathBuf> {
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+    {
+        return None;
+    }
+
+    let cwd_relative = session.cwd.strip_prefix(&session.project_root).ok()?;
+    if cwd_relative.as_os_str().is_empty() || !path.starts_with(cwd_relative) {
+        return None;
+    }
+
+    Some(session.project_root.join(path))
 }
 
 fn path_is_within(path: &Path, root: &Path) -> bool {
@@ -7072,7 +7273,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_plan_preflight_blocks_duplicated_cwd_prefix_target() {
+    fn verified_plan_preflight_allows_deduplicated_cwd_prefix_target() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plan-preflight-duplicate-prefix",
             std::process::id()
@@ -7080,18 +7281,20 @@ mod tests {
         let cwd = root.join("playground");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(cwd.join("demo")).unwrap();
-        let provider = SequenceProvider::new(vec![crate::event::ProviderOutput::new(
-            "Creating missing files.",
-        )
-        .with_tool_calls(vec![RawModelToolCall {
-            id: "duplicate-prefix-1".to_string(),
-            name: RawModelToolName::Known(ModelToolName::CreateFile),
-            arguments: json!({
-                "target_path": "playground/demo/index.tsx",
-                "contents": "export default function Home() {}\n"
-            }),
-            assistant_summary: None,
-        }])]);
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("Creating missing files.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "duplicate-prefix-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "playground/demo/index.tsx",
+                        "contents": "export default function Home() {}\n"
+                    }),
+                    assistant_summary: None,
+                },
+            ]),
+            crate::event::ProviderOutput::new("Done."),
+        ]);
         let mut session = Session::new("session", &root, &cwd);
         session.record_verified_plan_reference(VerifiedPlanReference {
             path: cwd.join("demo/project-plan.md"),
@@ -7106,16 +7309,9 @@ mod tests {
             PermissionPolicyMode::FullAccess,
         );
 
+        assert!(cwd.join("demo/index.tsx").is_file());
         assert!(!cwd.join("playground/demo/index.tsx").exists());
-        assert!(session.actions().is_empty());
-        assert!(session.events().iter().any(|event| matches!(
-            event,
-            Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
-                    && message.content.contains("verified plan is rooted at demo")
-                    && message.content.contains("targets playground/demo/index.tsx")
-                    && message.content.contains("outside that project")
-        )));
+        assert_eq!(session.actions().len(), 1);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -7703,6 +7899,282 @@ mod tests {
     }
 
     #[test]
+    fn state_answer_writes_trace_metadata_without_prompt_text() {
+        std::env::set_var("ELGAR_TRACE", "on");
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-state-answer-trace",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("TracePlan");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("plan.md"), "# Trace Plan\n").unwrap();
+        std::fs::write(project.join("README.md"), "# Trace\n").unwrap();
+        std::fs::write(project.join("src/main.py"), "print('trace')\n").unwrap();
+        let provider = CapturingProvider::new().with_plain_output(
+            crate::event::ProviderOutput::new("{\"route\":\"state\",\"answer_kind\":\"status\"}"),
+        );
+        let mut session = Session::new("trace-session-state", &root, &root);
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: project.join("plan.md"),
+            project_root: project,
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![root.join("TracePlan/src")],
+            expected_files: vec![
+                root.join("TracePlan/README.md"),
+                root.join("TracePlan/src/main.py"),
+            ],
+        });
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "did you execute the trace plan secret-state-prompt",
+        );
+
+        let events = trace_events(&root, "trace-session-state");
+        let state_answer = events
+            .iter()
+            .find(|event| {
+                event.get("kind").and_then(serde_json::Value::as_str) == Some("state_answer")
+            })
+            .expect("state answer trace should be written");
+        let metadata = state_answer
+            .get("metadata")
+            .expect("state answer should include metadata");
+        assert_eq!(
+            metadata
+                .get("state_answer_kind")
+                .and_then(serde_json::Value::as_str),
+            Some("status")
+        );
+        assert_eq!(
+            metadata
+                .get("plan_count")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            metadata
+                .get("answer_scope")
+                .and_then(serde_json::Value::as_str),
+            Some("session_status")
+        );
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(!serialized.contains("secret-state-prompt"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_answer_resolves_empty_latest_folder_to_project_files() {
+        std::env::set_var("ELGAR_TRACE", "on");
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-state-answer-resolver-project-files",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("PostNewSmoke1");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(project.join("tests")).unwrap();
+        std::fs::write(project.join("PLAN.md"), "# Plan\n").unwrap();
+        std::fs::write(project.join("README.md"), "# Notes\n").unwrap();
+        std::fs::write(project.join("requirements.txt"), "").unwrap();
+        std::fs::write(project.join("src/main.py"), "print('hi')\n").unwrap();
+        std::fs::write(
+            project.join("tests/test_main.py"),
+            "def test_main(): pass\n",
+        )
+        .unwrap();
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"state\",\"answer_kind\":\"latest_folder\"}",
+            ));
+        let mut session = Session::new("trace-session-resolver-project", &root, &root);
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: project.join("PLAN.md"),
+            project_root: project,
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Completed,
+            expected_directories: vec![
+                root.join("PostNewSmoke1/src"),
+                root.join("PostNewSmoke1/tests"),
+            ],
+            expected_files: vec![
+                root.join("PostNewSmoke1/README.md"),
+                root.join("PostNewSmoke1/requirements.txt"),
+                root.join("PostNewSmoke1/src/main.py"),
+                root.join("PostNewSmoke1/tests/test_main.py"),
+            ],
+        });
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "What files did you create in playground/PostNewSmoke1?",
+        );
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content.contains("project: PostNewSmoke1")
+                    && message.content.contains("files: 4/4 present")
+                    && message.content.contains("PostNewSmoke1/src/main.py")
+        )));
+        assert!(!session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.content.contains("No verified folder creation recorded")
+        )));
+
+        let events = trace_events(&root, "trace-session-resolver-project");
+        let state_answer = events
+            .iter()
+            .find(|event| {
+                event.get("kind").and_then(serde_json::Value::as_str) == Some("state_answer")
+            })
+            .expect("state answer trace should be written");
+        let metadata = state_answer
+            .get("metadata")
+            .expect("state answer should include metadata");
+        assert_eq!(
+            metadata
+                .get("requested_state_answer_kind")
+                .and_then(serde_json::Value::as_str),
+            Some("latest_folder")
+        );
+        assert_eq!(
+            metadata
+                .get("resolved_state_answer_kind")
+                .and_then(serde_json::Value::as_str),
+            Some("project_files")
+        );
+        assert_eq!(
+            metadata
+                .get("state_answer_fallback_reason")
+                .and_then(serde_json::Value::as_str),
+            Some("requested_latest_folder_with_referenced_project_files")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_answer_keeps_empty_latest_folder_without_better_state() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-state-answer-empty-latest-folder",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"state\",\"answer_kind\":\"latest_folder\"}",
+            ));
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "what is the latest folder?");
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content == "No verified folder creation recorded."
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_answer_latest_folder_reports_latest_project_root_without_file_fallback() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-state-answer-latest-project-folder",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("StateResolverSmoke4");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(project.join("tests")).unwrap();
+        std::fs::write(project.join("PLAN.md"), "# Plan\n").unwrap();
+        std::fs::write(project.join("README.md"), "# Notes\n").unwrap();
+        std::fs::write(project.join("requirements.txt"), "").unwrap();
+        std::fs::write(project.join("src/main.py"), "print('hi')\n").unwrap();
+        std::fs::write(
+            project.join("tests/test_main.py"),
+            "def test_main(): pass\n",
+        )
+        .unwrap();
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"state\",\"answer_kind\":\"latest_folder\"}",
+            ));
+        let mut session = Session::new("session", &root, &root);
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: project.join("PLAN.md"),
+            project_root: project,
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Completed,
+            expected_directories: vec![
+                root.join("StateResolverSmoke4/src"),
+                root.join("StateResolverSmoke4/tests"),
+            ],
+            expected_files: vec![
+                root.join("StateResolverSmoke4/README.md"),
+                root.join("StateResolverSmoke4/requirements.txt"),
+                root.join("StateResolverSmoke4/src/main.py"),
+                root.join("StateResolverSmoke4/tests/test_main.py"),
+            ],
+        });
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "What is the latest folder you created?",
+        );
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content == "StateResolverSmoke4"
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_answer_resolves_empty_kind_to_created_summary_for_artifacts_without_project() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-state-answer-resolver-created-summary",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"state\",\"answer_kind\":\"latest_folder\"}",
+            ));
+        let mut session = Session::new("session", &root, &root);
+        push_verified_file_record(&mut session, "action-file", "standalone.txt");
+
+        run_permissive_agent_turn(&provider, &mut session, "what did you create?");
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Controller
+                    && message.content == "file standalone.txt"
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn normal_text_model_execute_decision_enters_tool_loop_without_slash_command() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-normal-execute-decision",
@@ -7795,7 +8267,7 @@ mod tests {
 
         assert!(root.join("RepairPlan/PLAN.md").is_file());
         let requests = provider.requests();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 4);
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
         assert_eq!(requests[0].tool_count, 0);
         assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
@@ -7808,6 +8280,8 @@ mod tests {
         );
         assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
         assert!(requests[2].tool_count > 0);
+        assert_eq!(requests[3].mode, CapturedProviderRequestMode::Plain);
+        assert!(joined_request_messages(&requests[3]).contains("A verified plan was just created"));
         assert!(!session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
@@ -8567,6 +9041,92 @@ Acceptance Criteria:
     }
 
     #[test]
+    fn generic_execute_plan_creation_can_post_decide_to_execute_same_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-post-plan-execute",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new("{\"route\":\"execute\"}"),
+                crate::event::ProviderOutput::new(
+                    "{\"route\":\"execute\",\"intent\":\"plan_execution\"}",
+                ),
+            ])
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating plan.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "post-decision-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "PostDecision/PLAN.md",
+                            "contents": "# Post Decision Plan\n\n```text\nREADME.md\nsrc/main.py\n```\n\n## Verification\n- Expected files exist.\n\n## Acceptance Criteria\n- The project matches the plan.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Creating files.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "post-decision-files".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                        arguments: json!({
+                            "directories": ["PostDecision/src"],
+                            "files": [
+                                {
+                                    "target_path": "PostDecision/README.md",
+                                    "contents": "# Post Decision\n"
+                                },
+                                {
+                                    "target_path": "PostDecision/src/main.py",
+                                    "contents": "print('ok')\n"
+                                }
+                            ]
+                        }),
+                        assistant_summary: Some("create files".to_string()),
+                    },
+                ]),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a project plan, then execute it",
+        );
+
+        for path in [
+            "PostDecision/PLAN.md",
+            "PostDecision/README.md",
+            "PostDecision/src/main.py",
+        ] {
+            assert!(root.join(path).is_file(), "missing {path}");
+        }
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert_eq!(requests[2].mode, CapturedProviderRequestMode::Plain);
+        assert!(joined_request_messages(&requests[2]).contains("A verified plan was just created"));
+        assert_eq!(requests[3].mode, CapturedProviderRequestMode::Tool);
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains("post-plan classifier selected plan execution"))));
+        assert_eq!(
+            session
+                .project_memory()
+                .latest_structured_plan()
+                .expect("plan should be recorded")
+                .runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn plan_execution_create_files_batch_does_not_reclassify_readme_as_new_plan() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plan-exec-readme-planish",
@@ -8843,6 +9403,51 @@ Acceptance Criteria:
             .latest_structured_plan()
             .expect("plan should be recorded");
         assert_eq!(plan.project_root, root.join("playground/GreeterPromptRoot"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explicit_prompt_project_root_deduplicates_cwd_relative_prefix() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-prompt-root-dedupe-cwd",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&cwd).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating a plan at the requested root.")
+                    .with_tool_calls(vec![RawModelToolCall {
+                        id: "dedupe-root-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "playground/CoreSolidNotes1/PLAN.md",
+                            "contents": "# Notes Plan\n\n```text\nREADME.md\nrequirements.txt\nsrc/main.py\ntests/test_main.py\n```\n\n## Verification\n- Do not run shell commands.\n\n## Acceptance Criteria\n- Expected files exist.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    }]),
+            );
+        let mut session = Session::new("session", &root, &cwd);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "Create only a project plan. The project root must be exactly playground/CoreSolidNotes1.",
+        );
+
+        assert!(cwd.join("CoreSolidNotes1/PLAN.md").is_file());
+        assert!(!cwd.join("playground/CoreSolidNotes1/PLAN.md").exists());
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("plan should be recorded without duplicated cwd prefix");
+        assert_eq!(plan.project_root, cwd.join("CoreSolidNotes1"));
+        assert_eq!(plan.source_plan_path, cwd.join("CoreSolidNotes1/PLAN.md"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -10632,7 +11237,7 @@ Acceptance Criteria:
     }
 
     #[test]
-    fn plan_only_route_does_not_run_post_plan_execution_decision_without_skipped_files() {
+    fn plan_only_route_post_plan_decision_can_keep_plan_only_boundary() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plan-only-no-post-decision",
             std::process::id()
@@ -10642,9 +11247,7 @@ Acceptance Criteria:
         let provider = CapturingProvider::new()
             .with_plain_outputs(vec![
                 crate::event::ProviderOutput::new("{\"route\":\"execute\"}"),
-                crate::event::ProviderOutput::new(
-                    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
-                ),
+                crate::event::ProviderOutput::new("{\"route\":\"state\",\"answer_kind\":\"plan\"}"),
             ])
             .with_tool_output(
                 crate::event::ProviderOutput::new("Creating plan only.").with_tool_calls(vec![
@@ -10672,9 +11275,11 @@ Acceptance Criteria:
         assert!(!root.join("TodoPlan/src/main.py").exists());
         assert!(!root.join("TodoPlan/requirements.txt").exists());
         let requests = provider.requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
         assert_eq!(requests[1].mode, CapturedProviderRequestMode::Tool);
+        assert_eq!(requests[2].mode, CapturedProviderRequestMode::Plain);
+        assert!(joined_request_messages(&requests[2]).contains("A verified plan was just created"));
         assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
             .runtime_checks
             .iter()
@@ -10803,6 +11408,90 @@ Acceptance Criteria:
             .runtime_checks
             .iter()
             .any(|line| line.contains("skipped final provider synthesis")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generic_state_status_with_incomplete_plan_retries_and_can_execute() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-state-plan-retry",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("RetryPlan");
+        std::fs::create_dir_all(&project).unwrap();
+        let plan_path = project.join("plan.md");
+        std::fs::write(
+            &plan_path,
+            "# Retry Plan\n\n```text\nREADME.md\nsrc/main.py\n```\n\n## Verification\n- Expected files exist.\n\n## Acceptance Criteria\n- The project matches the plan.\n",
+        )
+        .unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_outputs(vec![
+                crate::event::ProviderOutput::new(
+                    "{\"route\":\"state\",\"answer_kind\":\"status\"}",
+                ),
+                crate::event::ProviderOutput::new(
+                    "{\"route\":\"execute\",\"intent\":\"plan_execution\"}",
+                ),
+            ])
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating missing files.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "state-retry-files".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                        arguments: json!({
+                            "directories": ["RetryPlan/src"],
+                            "files": [
+                                {
+                                    "target_path": "RetryPlan/README.md",
+                                    "contents": "# Retry Plan\n"
+                                },
+                                {
+                                    "target_path": "RetryPlan/src/main.py",
+                                    "contents": "print('retry')\n"
+                                }
+                            ]
+                        }),
+                        assistant_summary: Some("create files".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: plan_path.clone(),
+            project_root: project.clone(),
+            source_action_id: "action-plan".to_string(),
+        });
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![project.join("README.md"), project.join("src/main.py")],
+        });
+
+        run_permissive_agent_turn(&provider, &mut session, "execute the plan!");
+
+        assert!(project.join("README.md").is_file());
+        assert!(project.join("src/main.py").is_file());
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[1].mode, CapturedProviderRequestMode::Plain);
+        assert!(
+            joined_request_messages(&requests[1]).contains("incomplete verified plan is available")
+        );
+        assert_eq!(requests[2].mode, CapturedProviderRequestMode::Tool);
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .model_decisions
+            .iter()
+            .any(|line| line.contains(
+                "state route selected generic status with an incomplete verified plan"
+            ))));
 
         let _ = std::fs::remove_dir_all(&root);
     }

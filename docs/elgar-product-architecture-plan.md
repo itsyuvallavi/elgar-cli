@@ -2,6 +2,15 @@
 
 Date: 2026-05-25
 
+Status snapshot: 2026-05-31
+
+Legend:
+
+- Complete: implemented and verified enough to treat as current baseline.
+- Partial: implemented in the main path, but cleanup, edge cases, or coverage
+  remain.
+- Pending: intentionally not started or still design-only.
+
 ## Product Direction
 
 Elgar should become:
@@ -69,6 +78,17 @@ implementation order.
 
 ### Core Runtime
 
+Status: Partial.
+
+Current state:
+
+- AgentRuntime is the normal runtime path for CLI/TUI conversation work.
+- Plain chat, plan creation, plan execution, verified state answers, artifact
+  memory, and runtime-block reporting are substantially improved.
+- `agent_loop.rs` still owns too many responsibilities and remains the highest
+  risk file to split later.
+- Intent-scoped tool exposure and broader route/performance tuning remain open.
+
 Files/modules:
 
 - `crates/elgar-core/src/agent_runtime.rs`
@@ -90,11 +110,23 @@ Responsibilities:
 
 Near-term cleanup:
 
-- `AgentRuntime::turn` must use the selected `PermissionPolicyMode`.
-- `agent_loop` must stop hardcoding `FullAccess`.
-- Permission policy must decide create/edit/delete/move/shell behavior.
+- Keep reducing direct `agent_loop.rs` responsibility once regression coverage
+  is stronger.
+- Keep runtime/tool validation structural; do not add natural-language trigger
+  tables.
+- Finish intent-scoped tool exposure so shell-only turns cannot choose file
+  creation tools before validation.
 
 ### Executors
+
+Status: Partial.
+
+Current state:
+
+- Filesystem writes are applied through verified action results.
+- Plan execution verifies expected files/folders before reporting completion.
+- Shell commands exist but are deliberately not the current focus until file
+  planning/creation remains stable under live TUI dogfood.
 
 Files/modules:
 
@@ -113,6 +145,14 @@ Responsibilities:
 
 ### Action And Approval Layer
 
+Status: Partial.
+
+Current state:
+
+- Policy-approved filesystem actions are recorded and reported.
+- Explicit `/approve` and `/reject` remain local UI actions.
+- Review/pending flows still need continued transcript and grouping polish.
+
 Files/modules:
 
 - `crates/elgar-core/src/action.rs`
@@ -128,6 +168,16 @@ Responsibilities:
 
 ### Provider Layer
 
+Status: Partial.
+
+Current state:
+
+- LM Studio/OpenAI-compatible local provider flow works for current dogfood.
+- Provider request/token metadata feeds `/tokens`, footer display, and traces.
+- Context-window display now uses configured/provider-backed values instead of
+  pretending estimated local context is provider usage.
+- LM Studio-specific context discovery/config sync is deferred.
+
 Files/modules:
 
 - `crates/elgar-core/src/provider/`
@@ -142,6 +192,18 @@ Responsibilities:
   product behavior.
 
 ### Memory And Context
+
+Status: Partial.
+
+Current state:
+
+- Verified folders, plans, structured plans, and ordinary verified artifacts are
+  available to follow-up tool/state turns.
+- State answers can report created files, plan status, first/latest artifacts,
+  and project-scoped artifact lists more reliably.
+- Plain chat remains isolated from project memory.
+- Memory is still session-local; durable multi-session memory and compaction are
+  pending.
 
 Files/modules:
 
@@ -164,6 +226,17 @@ Near-term cleanup:
   stable, so names match ownership.
 
 ### TUI And CLI
+
+Status: Partial.
+
+Current state:
+
+- CLI and TUI run through the AgentRuntime path for normal chat.
+- TUI cursor movement, footer layout, working state, and plan display have been
+  improved.
+- CLI/TUI modules have been split into smaller files for most non-core code.
+- More transcript polish remains, especially model/tool progress summaries and
+  plan/action grouping.
 
 Files/modules:
 
@@ -193,6 +266,17 @@ Target UX:
 
 ### Tests And Harness
 
+Status: Partial.
+
+Current state:
+
+- Unit and integration coverage protect the core plain-chat boundary, verified
+  plan execution, artifact memory, trace redaction, footer display, and TUI
+  rendering helpers.
+- `./bin/check-local` is the current broad local safety command.
+- The golden/live regression harness is still the biggest missing protection
+  layer and should be prioritized before riskier runtime refactors.
+
 Files/modules:
 
 - `crates/elgar-core/src/*tests*`
@@ -215,6 +299,8 @@ Responsibilities:
 
 ### Step 1: Freeze The Target Contract
 
+Status: Complete.
+
 Linear:
 
 - `ELG-314`
@@ -230,6 +316,8 @@ Done when:
   migration decisions.
 
 ### Step 2: Harden AgentRuntime Policy
+
+Status: Complete.
 
 Linear:
 
@@ -261,6 +349,20 @@ Done when:
 
 ### Step 3: Make Normal Chat Path Unambiguous
 
+Status: Partial.
+
+Implemented:
+
+- Plain/simple chat sends a plain provider request without tools, tool choice,
+  folder anchoring, or verified project memory.
+- Verified state answers handle common follow-up status questions without
+  forcing tool-enabled turns.
+
+Remaining:
+
+- Continue quarantining legacy controller naming/surfaces.
+- Keep strengthening regression coverage around route repair and state answers.
+
 Linear:
 
 - Continue under `ELG-304`.
@@ -291,6 +393,22 @@ Done when:
 
 ### Step 4: Stabilize Tool Validation And Targeting
 
+Status: Partial.
+
+Implemented:
+
+- Verified plan scope and follow-up execution are much more reliable.
+- Plan execution can create all expected files/folders from the verified plan.
+- Off-plan paths are blocked during verified plan execution.
+
+Remaining:
+
+- Fix duplicate workspace-root wording/path display cases such as
+  `playground/playground/...`.
+- Add intent-scoped tool definitions before the provider call.
+- Keep shell-command verification out of the main file-planning reliability
+  path until file flows stay solid.
+
 Linear:
 
 - Builds on `ELG-313`.
@@ -318,6 +436,8 @@ Done when:
 
 ### Step 5: Add Golden Transcript Harness
 
+Status: Pending.
+
 Linear:
 
 - `ELG-311`
@@ -342,6 +462,19 @@ Done when:
 
 ### Step 6: Clean UI Reporting Boundaries
 
+Status: Partial.
+
+Implemented:
+
+- Plan previews render as compact status plus tree output.
+- TUI footer is quieter and places the model on the right.
+- Working/thinking display is simpler than the earlier busy footer.
+
+Remaining:
+
+- Batch more low-level tool/action output into one natural project summary.
+- Keep detailed event data available through debug/copy/trace views.
+
 Linear:
 
 - Continue `ELG-302` / `ELG-303` direction or create a focused child issue.
@@ -364,6 +497,18 @@ Done when:
 - The TUI feels like a natural coding agent instead of a raw action log.
 
 ### Step 7: Rename And Split Only Where It Reduces Confusion
+
+Status: Partial.
+
+Implemented:
+
+- `elgar-cli` has been split into focused modules.
+- `elgar-tui` panes and terminal code have been split into focused modules.
+
+Remaining:
+
+- Do the risky `elgar-core/src/agent_loop.rs` split only after the golden
+  regression wall is stronger.
 
 Linear:
 
@@ -391,6 +536,20 @@ Done when:
 
 ### Step 8: Update Planning Sources
 
+Status: Partial.
+
+Implemented:
+
+- Repo-local docs now identify `docs/elgar-product-architecture-plan.md` as the
+  current product/runtime contract.
+- Google Drive planning sources are indexed in
+  `zz_elgar_agent_docs/GOOGLE_DRIVE_PLANNING_SOURCES.md`.
+
+Remaining:
+
+- Update or annotate older Google Drive docs that still use controller-first
+  language after the current runtime stabilizes.
+
 Linear:
 
 - Add a documentation issue after the runtime is stable.
@@ -407,6 +566,8 @@ Done when:
   versus AgentRuntime-first normal chat.
 
 ### Step 9: Design Run Harness / Issue Runner
+
+Status: Pending.
 
 Linear:
 
@@ -435,20 +596,21 @@ Done when:
 
 ## Immediate Recommendation
 
-Do not start the Run Harness yet.
+Do not start MCP, Skills, durable multi-session memory, or the Run Harness yet.
 
 The next implementation issue should be:
 
 ```text
-ELG-315 Harden AgentRuntime permission policy enforcement
+ELG-311 Codex-style golden harness and live e2e coverage
 ```
 
 Reason:
 
-- Normal chat already moved toward AgentRuntime.
-- The current risk is that AgentRuntime still behaves like implicit full access
-  in parts of the loop.
-- Golden harness work should test the final policy contract, not the temporary
-  permissive behavior.
+- The core file-planning path is now stable enough to preserve.
+- Future changes need repeatable protection before touching riskier runtime
+  areas.
+- The remaining high-risk work is `agent_loop.rs`, intent-scoped tools, and
+  route/performance tuning.
 
-After that, run `ELG-311` as the regression wall.
+After that, continue `ELG-326` routing/performance work and only then split the
+core `agent_loop.rs` module under `ELG-329`.

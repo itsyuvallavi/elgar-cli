@@ -157,8 +157,7 @@ impl TuiShell {
     }
 
     pub fn clear_conversation(&mut self) {
-        self.conversation.lines.clear();
-        self.conversation.follow_latest();
+        self.conversation.clear();
     }
 
     pub fn apply_permission_command(&mut self, argument: Option<&str>) -> String {

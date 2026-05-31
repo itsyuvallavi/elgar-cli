@@ -31,7 +31,7 @@ use ratatui::{backend::TestBackend, Terminal};
 
 use crate::{
     input::{TerminalInput, TerminalInputAction},
-    panes::ConversationPane,
+    panes::{ConversationLineStyle, ConversationPane},
     turn_metrics::aggregate_provider_token_usage,
     TuiShell,
 };

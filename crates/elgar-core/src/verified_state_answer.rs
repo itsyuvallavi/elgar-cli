@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use serde_json::{json, Value};
+
 use crate::{
     event::{FileActionVerification, VerifiedActionResult},
     plan_tree::{render_expected_path_tree, ExpectedPathTreeEntry},
@@ -21,9 +23,111 @@ pub(crate) enum VerifiedStateAnswerKind {
     PlanDetails,
     ProjectFiles,
     FirstCreated,
+    PlanStatus,
     Status,
     Memory,
     Summary,
+}
+
+impl VerifiedStateAnswerKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            VerifiedStateAnswerKind::LatestFolder => "latest_folder",
+            VerifiedStateAnswerKind::LatestFile => "latest_file",
+            VerifiedStateAnswerKind::CreatedSummary => "created_summary",
+            VerifiedStateAnswerKind::RecentChanges => "recent_changes",
+            VerifiedStateAnswerKind::LastBlock => "last_block",
+            VerifiedStateAnswerKind::Pending => "pending",
+            VerifiedStateAnswerKind::Plan => "plan",
+            VerifiedStateAnswerKind::PlanDetails => "plan_details",
+            VerifiedStateAnswerKind::ProjectFiles => "project_files",
+            VerifiedStateAnswerKind::FirstCreated => "first_created",
+            VerifiedStateAnswerKind::PlanStatus => "plan_status",
+            VerifiedStateAnswerKind::Status => "status",
+            VerifiedStateAnswerKind::Memory => "memory",
+            VerifiedStateAnswerKind::Summary => "summary",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResolvedStateAnswerKind {
+    pub(crate) requested_kind: VerifiedStateAnswerKind,
+    pub(crate) resolved_kind: VerifiedStateAnswerKind,
+    pub(crate) fallback_reason: Option<&'static str>,
+}
+
+impl ResolvedStateAnswerKind {
+    fn unchanged(kind: VerifiedStateAnswerKind) -> Self {
+        Self {
+            requested_kind: kind,
+            resolved_kind: kind,
+            fallback_reason: None,
+        }
+    }
+
+    fn changed(
+        requested_kind: VerifiedStateAnswerKind,
+        resolved_kind: VerifiedStateAnswerKind,
+        fallback_reason: &'static str,
+    ) -> Self {
+        Self {
+            requested_kind,
+            resolved_kind,
+            fallback_reason: Some(fallback_reason),
+        }
+    }
+}
+
+pub(crate) fn resolve_state_answer_kind(
+    session: &Session,
+    input: &str,
+    requested_kind: VerifiedStateAnswerKind,
+) -> ResolvedStateAnswerKind {
+    if requested_kind == VerifiedStateAnswerKind::LatestFolder {
+        if let Some(plan) = referenced_structured_plan(session, input) {
+            if plan.expected_files_present_count() > 0 {
+                return ResolvedStateAnswerKind::changed(
+                    requested_kind,
+                    VerifiedStateAnswerKind::ProjectFiles,
+                    "requested_latest_folder_with_referenced_project_files",
+                );
+            }
+        }
+    }
+
+    if state_answer_kind_has_data(session, requested_kind) {
+        return ResolvedStateAnswerKind::unchanged(requested_kind);
+    }
+
+    if let Some(plan) = referenced_structured_plan(session, input)
+        .or_else(|| session.project_memory().latest_structured_plan())
+    {
+        if plan.expected_files_present_count() > 0 {
+            return ResolvedStateAnswerKind::changed(
+                requested_kind,
+                VerifiedStateAnswerKind::ProjectFiles,
+                "requested_empty_kind_with_project_files",
+            );
+        }
+        if plan.runtime_status() == StructuredProjectPlanStatus::Completed {
+            return ResolvedStateAnswerKind::changed(
+                requested_kind,
+                VerifiedStateAnswerKind::PlanStatus,
+                "requested_empty_kind_with_completed_plan",
+            );
+        }
+    }
+
+    if verified_artifact_count(session) > 0 {
+        return ResolvedStateAnswerKind::changed(
+            requested_kind,
+            VerifiedStateAnswerKind::CreatedSummary,
+            "requested_empty_kind_with_verified_artifacts",
+        );
+    }
+
+    ResolvedStateAnswerKind::unchanged(requested_kind)
 }
 
 pub(crate) fn verified_session_state_answer(
@@ -32,6 +136,7 @@ pub(crate) fn verified_session_state_answer(
 ) -> String {
     match kind {
         VerifiedStateAnswerKind::LatestFolder => latest_verified_created_directory_path(session)
+            .or_else(|| latest_verified_project_folder_path(session))
             .unwrap_or_else(|| "No verified folder creation recorded.".to_string()),
         VerifiedStateAnswerKind::LatestFile => latest_verified_created_file_path(session)
             .or_else(|| latest_verified_file_path(session))
@@ -44,10 +149,72 @@ pub(crate) fn verified_session_state_answer(
         VerifiedStateAnswerKind::PlanDetails => verified_plan_details_answer(session),
         VerifiedStateAnswerKind::ProjectFiles => verified_project_files_answer(session),
         VerifiedStateAnswerKind::FirstCreated => verified_first_created_answer(session),
+        VerifiedStateAnswerKind::PlanStatus => verified_plan_status_answer(session),
         VerifiedStateAnswerKind::Status => verified_status_answer(session),
         VerifiedStateAnswerKind::Memory => verified_memory_answer(session),
         VerifiedStateAnswerKind::Summary => verified_summary_answer(session),
     }
+}
+
+pub(crate) fn verified_state_answer_trace_metadata(
+    session: &Session,
+    kind: VerifiedStateAnswerKind,
+) -> Value {
+    let structured_plans = &session.project_memory().structured_plans;
+    let mut project_roots = Vec::new();
+    for plan in structured_plans {
+        let root = display_agent_context_path(session, &plan.project_root);
+        if !project_roots.iter().any(|seen| seen == &root) {
+            project_roots.push(root);
+        }
+    }
+    let selected_plan = structured_plans.last().map(|plan| {
+        json!({
+            "plan": display_agent_context_path(session, &plan.source_plan_path),
+            "root": display_agent_context_path(session, &plan.project_root),
+            "status": structured_plan_status_label(plan.runtime_status()),
+            "expected_files": plan.expected_files.len(),
+            "present_files": plan.expected_files_present_count(),
+            "expected_directories": plan.expected_directories.len(),
+            "present_directories": plan.expected_directories_present_count(),
+        })
+    });
+
+    json!({
+        "state_answer_kind": kind.as_str(),
+        "answer_scope": state_answer_scope(kind),
+        "plan_count": structured_plans.len(),
+        "known_project_count": project_roots.len(),
+        "selected_plan": selected_plan,
+    })
+}
+
+pub(crate) fn resolved_state_answer_trace_metadata(
+    session: &Session,
+    resolution: ResolvedStateAnswerKind,
+) -> Value {
+    let mut metadata = verified_state_answer_trace_metadata(session, resolution.resolved_kind);
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert(
+            "requested_state_answer_kind".to_string(),
+            json!(resolution.requested_kind.as_str()),
+        );
+        object.insert(
+            "resolved_state_answer_kind".to_string(),
+            json!(resolution.resolved_kind.as_str()),
+        );
+        object.insert(
+            "state_answer_fallback_reason".to_string(),
+            resolution
+                .fallback_reason
+                .map_or(Value::Null, |reason| json!(reason)),
+        );
+        object.insert(
+            "verified_artifact_count".to_string(),
+            json!(verified_artifact_count(session)),
+        );
+    }
+    metadata
 }
 
 pub(crate) fn parse_verified_state_answer_kind(kind: &str) -> Option<VerifiedStateAnswerKind> {
@@ -67,10 +234,120 @@ pub(crate) fn parse_verified_state_answer_kind(kind: &str) -> Option<VerifiedSta
         "first_created" | "earliest_created" | "first_file" => {
             Some(VerifiedStateAnswerKind::FirstCreated)
         }
+        "plan_status" | "plan_execution_status" | "plans" | "all_plans" => {
+            Some(VerifiedStateAnswerKind::PlanStatus)
+        }
         "status" => Some(VerifiedStateAnswerKind::Status),
         "memory" => Some(VerifiedStateAnswerKind::Memory),
         "summary" => Some(VerifiedStateAnswerKind::Summary),
         _ => None,
+    }
+}
+
+fn state_answer_kind_has_data(session: &Session, kind: VerifiedStateAnswerKind) -> bool {
+    match kind {
+        VerifiedStateAnswerKind::LatestFolder => {
+            latest_verified_created_directory_path(session).is_some()
+                || latest_verified_project_folder_path(session).is_some()
+                || session.project_memory().latest_verified_folder().is_some()
+        }
+        VerifiedStateAnswerKind::LatestFile => latest_verified_file_path(session).is_some(),
+        VerifiedStateAnswerKind::CreatedSummary => verified_artifact_count(session) > 0,
+        VerifiedStateAnswerKind::RecentChanges => session
+            .actions_in_latest_action_turn()
+            .iter()
+            .any(|record| record.verified_result.is_some()),
+        VerifiedStateAnswerKind::LastBlock => session.latest_runtime_block().is_some(),
+        VerifiedStateAnswerKind::Pending => !matches!(
+            session.pending_action_selection(),
+            PendingActionSelection::None
+        ),
+        VerifiedStateAnswerKind::Plan
+        | VerifiedStateAnswerKind::PlanDetails
+        | VerifiedStateAnswerKind::PlanStatus => {
+            session.project_memory().latest_structured_plan().is_some()
+                || session.project_memory().latest_verified_plan().is_some()
+        }
+        VerifiedStateAnswerKind::ProjectFiles => project_files_answer_has_data(session),
+        VerifiedStateAnswerKind::FirstCreated => verified_artifact_count(session) > 0,
+        VerifiedStateAnswerKind::Status | VerifiedStateAnswerKind::Summary => {
+            verified_artifact_count(session) > 0
+                || !matches!(
+                    session.pending_action_selection(),
+                    PendingActionSelection::None
+                )
+                || session.project_memory().latest_structured_plan().is_some()
+                || session.project_memory().latest_verified_folder().is_some()
+                || session.project_memory().latest_verified_plan().is_some()
+        }
+        VerifiedStateAnswerKind::Memory => {
+            session.project_memory().latest_verified_folder().is_some()
+                || session.project_memory().latest_verified_plan().is_some()
+        }
+    }
+}
+
+fn project_files_answer_has_data(session: &Session) -> bool {
+    if let Some(plan) = session.project_memory().latest_structured_plan() {
+        return plan.expected_files_present_count() > 0;
+    }
+
+    session
+        .project_memory()
+        .latest_verified_folder()
+        .is_some_and(|folder| {
+            !verified_artifacts_under_folder(session, &folder.path, 1)
+                .artifacts
+                .is_empty()
+        })
+}
+
+fn referenced_structured_plan<'a>(
+    session: &'a Session,
+    input: &str,
+) -> Option<&'a crate::session::StructuredProjectPlan> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+
+    session
+        .project_memory()
+        .structured_plans
+        .iter()
+        .rev()
+        .find(|plan| {
+            path_is_referenced_in_input(session, input, &plan.project_root)
+                || path_is_referenced_in_input(session, input, &plan.source_plan_path)
+        })
+}
+
+fn path_is_referenced_in_input(session: &Session, input: &str, path: &Path) -> bool {
+    let display = display_agent_context_path(session, path);
+    !display.is_empty() && display != "." && input.contains(&display)
+}
+
+fn verified_artifact_count(session: &Session) -> usize {
+    session
+        .actions()
+        .iter()
+        .filter(|record| record.verified_result.is_some())
+        .count()
+}
+
+fn state_answer_scope(kind: VerifiedStateAnswerKind) -> &'static str {
+    match kind {
+        VerifiedStateAnswerKind::LatestFolder | VerifiedStateAnswerKind::LatestFile => "latest",
+        VerifiedStateAnswerKind::CreatedSummary => "created_inventory",
+        VerifiedStateAnswerKind::RecentChanges => "latest_action_turn",
+        VerifiedStateAnswerKind::LastBlock => "runtime_block",
+        VerifiedStateAnswerKind::Pending => "pending_actions",
+        VerifiedStateAnswerKind::Plan | VerifiedStateAnswerKind::PlanDetails => "latest_plan",
+        VerifiedStateAnswerKind::ProjectFiles => "latest_project",
+        VerifiedStateAnswerKind::FirstCreated => "earliest_artifact",
+        VerifiedStateAnswerKind::PlanStatus => "all_plans",
+        VerifiedStateAnswerKind::Status | VerifiedStateAnswerKind::Summary => "session_status",
+        VerifiedStateAnswerKind::Memory => "verified_memory",
     }
 }
 
@@ -377,6 +654,17 @@ fn verified_first_created_answer(session: &Session) -> String {
     )
 }
 
+fn verified_plan_status_answer(session: &Session) -> String {
+    let lines = structured_plan_summary_lines(session);
+    if lines.is_empty() {
+        return "No verified plan recorded.".to_string();
+    }
+
+    let mut rendered = vec![format!("plans: {}", lines.len())];
+    rendered.extend(lines.into_iter().map(|line| format!("- {line}")));
+    rendered.join("\n")
+}
+
 fn verified_status_answer(session: &Session) -> String {
     let applied = session
         .actions()
@@ -393,7 +681,32 @@ fn verified_status_answer(session: &Session) -> String {
     if let Some(file) = latest_verified_file_path(session) {
         lines.push(format!("latest file: {file}"));
     }
+    let plan_lines = structured_plan_summary_lines(session);
+    if !plan_lines.is_empty() {
+        lines.push("plans:".to_string());
+        lines.extend(plan_lines.into_iter().map(|line| format!("- {line}")));
+    }
     lines.join("\n")
+}
+
+fn structured_plan_summary_lines(session: &Session) -> Vec<String> {
+    session
+        .project_memory()
+        .structured_plans
+        .iter()
+        .map(|plan| {
+            format!(
+                "{}: {} · dirs {}/{} · files {}/{} · plan {}",
+                display_agent_context_path(session, &plan.project_root),
+                structured_plan_status_label(plan.runtime_status()),
+                plan.expected_directories_present_count(),
+                plan.expected_directories.len(),
+                plan.expected_files_present_count(),
+                plan.expected_files.len(),
+                display_agent_context_path(session, &plan.source_plan_path)
+            )
+        })
+        .collect()
 }
 
 fn verified_pending_summary_value(session: &Session) -> String {
@@ -507,6 +820,20 @@ fn latest_verified_created_directory_path(session: &Session) -> Option<String> {
             _ => None,
         }
     })
+}
+
+fn latest_verified_project_folder_path(session: &Session) -> Option<String> {
+    session
+        .project_memory()
+        .latest_verified_folder()
+        .map(|folder| display_agent_context_path(session, &folder.path))
+        .or_else(|| {
+            session
+                .project_memory()
+                .latest_structured_plan()
+                .filter(|plan| plan.project_root.is_dir())
+                .map(|plan| display_agent_context_path(session, &plan.project_root))
+        })
 }
 
 fn latest_verified_created_file_path(session: &Session) -> Option<String> {
@@ -728,6 +1055,71 @@ mod tests {
     }
 
     #[test]
+    fn plan_status_reports_all_structured_plans() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-state-answer-{}-plan-status",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let first = root.join("First");
+        let second = root.join("Second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("plan.md"), "# First\n").unwrap();
+        std::fs::write(second.join("plan.md"), "# Second\n").unwrap();
+        std::fs::write(second.join("README.md"), "# Second\n").unwrap();
+
+        let mut session = Session::new("session", &root, &root);
+        session.record_structured_project_plan(structured_plan(
+            &first,
+            "action-first-plan",
+            &[],
+            &["README.md"],
+        ));
+        session.record_structured_project_plan(structured_plan(
+            &second,
+            "action-second-plan",
+            &[],
+            &["README.md"],
+        ));
+
+        let answer = verified_session_state_answer(&session, VerifiedStateAnswerKind::PlanStatus);
+
+        assert!(answer.contains("plans: 2"), "got: {answer}");
+        assert!(
+            answer.contains("- First: verified · dirs 0/0 · files 0/1 · plan First/plan.md"),
+            "got: {answer}"
+        );
+        assert!(
+            answer.contains("- Second: completed · dirs 0/0 · files 1/1 · plan Second/plan.md"),
+            "got: {answer}"
+        );
+
+        let metadata =
+            verified_state_answer_trace_metadata(&session, VerifiedStateAnswerKind::PlanStatus);
+        assert_eq!(
+            metadata
+                .get("state_answer_kind")
+                .and_then(serde_json::Value::as_str),
+            Some("plan_status")
+        );
+        assert_eq!(
+            metadata
+                .get("answer_scope")
+                .and_then(serde_json::Value::as_str),
+            Some("all_plans")
+        );
+        assert_eq!(
+            metadata
+                .get("plan_count")
+                .and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn recent_changes_reports_only_the_latest_action_turn() {
         let root = std::env::temp_dir();
         let mut session = Session::new("session", &root, &root);
@@ -802,6 +1194,14 @@ mod tests {
         assert_eq!(
             parse_verified_state_answer_kind("first_file"),
             Some(VerifiedStateAnswerKind::FirstCreated)
+        );
+        assert_eq!(
+            parse_verified_state_answer_kind("plan_status"),
+            Some(VerifiedStateAnswerKind::PlanStatus)
+        );
+        assert_eq!(
+            parse_verified_state_answer_kind("all_plans"),
+            Some(VerifiedStateAnswerKind::PlanStatus)
         );
     }
 }

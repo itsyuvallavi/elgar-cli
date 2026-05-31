@@ -272,6 +272,42 @@ fn terminal_clear_slash_commands_clear_only_local_conversation() {
 }
 
 #[test]
+fn terminal_new_clears_stale_conversation_styles() {
+    let controller = scripted_tool_controller(Vec::new());
+    let root = temp_root("terminal-new-style-reset");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut input = TerminalInput::default();
+
+    shell.conversation.push_local_message("old visible line");
+
+    let exited = submit_text("/new", &mut input, &controller, &mut session, &mut shell);
+    assert!(!exited);
+    assert!(shell.conversation.lines.is_empty());
+
+    let exited = submit_text(
+        "hello after new",
+        &mut input,
+        &controller,
+        &mut session,
+        &mut shell,
+    );
+
+    assert!(!exited);
+    let styled_lines = shell.conversation.render_lines_with_styles();
+    assert_eq!(
+        styled_lines.first(),
+        Some(&("> hello after new".to_string(), ConversationLineStyle::User))
+    );
+    assert!(styled_lines.iter().any(|(line, style)| {
+        line.contains("scripted provider response to: hello after new")
+            && *style == ConversationLineStyle::Model
+    }));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn terminal_provider_active_enter_preserves_non_cancel_draft() {
     let mut input = TerminalInput::default();
 
