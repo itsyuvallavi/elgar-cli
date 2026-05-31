@@ -76,7 +76,11 @@ pub fn is_tui_tokens_command(input: &str) -> bool {
 }
 
 pub fn tui_tool_command_argument(input: &str) -> Option<&str> {
-    input.trim().strip_prefix("/tool ").map(str::trim)
+    let trimmed = input.trim();
+    if trimmed == "/tool" {
+        return Some("");
+    }
+    trimmed.strip_prefix("/tool ").map(str::trim)
 }
 
 pub fn tui_permission_command_argument(input: &str) -> Option<Option<&str>> {
@@ -105,6 +109,45 @@ pub fn is_tui_cancel_command(input: &str) -> bool {
     input.trim() == "/cancel"
 }
 
+pub fn tui_unknown_command(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    if is_tui_exit_command(trimmed)
+        || is_tui_help_command(trimmed)
+        || is_tui_approval_command(trimmed)
+        || is_tui_rejection_command(trimmed)
+        || is_tui_copy_command(trimmed)
+        || is_tui_memory_command(trimmed)
+        || is_tui_state_snapshot_command(trimmed)
+        || is_tui_status_command(trimmed)
+        || is_tui_pending_command(trimmed)
+        || is_tui_created_command(trimmed)
+        || is_tui_plan_preview_command(trimmed)
+        || is_tui_reasoning_command(trimmed)
+        || is_tui_tokens_command(trimmed)
+        || is_tui_clear_command(trimmed)
+        || is_tui_cancel_command(trimmed)
+        || tui_tool_command_argument(trimmed).is_some()
+        || tui_permission_command_argument(trimmed).is_some()
+    {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+pub fn render_tui_unknown_command(command: &str) -> String {
+    format!(
+        "Unknown command: {command}\nUse /commands to see local commands. Plain text without / is sent to the model."
+    )
+}
+
+pub fn render_tui_tool_usage() -> &'static str {
+    "Usage: /tool <request>\nExample: /tool create file notes.txt"
+}
+
 fn submit_tui_input<P>(
     shell: &mut elgar_tui::TuiShell,
     runtime: &AgentRuntime<P>,
@@ -124,14 +167,20 @@ fn submit_tui_input<P>(
         let message = shell.apply_permission_command(argument);
         shell.push_local_message(message);
     } else if let Some(tool_request) = tui_tool_command_argument(input) {
-        shell.submit_agent_tool_input(runtime, session, tool_request);
+        if tool_request.is_empty() {
+            shell.push_local_message(render_tui_tool_usage());
+        } else {
+            shell.submit_agent_tool_input(runtime, session, tool_request);
+        }
+    } else if let Some(command) = tui_unknown_command(input) {
+        shell.push_local_message(render_tui_unknown_command(command));
     } else {
         shell.submit_agent_input(runtime, session, input);
     }
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/tool <request>        Run an explicit tool-enabled turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/state                 Show verified state snapshot\n/status                Show session status\n/tokens                Show token and context usage\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/reasoning             Show latest reasoning trace\n/trace                 Show latest reasoning trace\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
+    "Commands\nSession\n  /status              Show session status\n  /tokens              Show token and context usage\n  /memory              Show verified memory\n  /state               Show verified state snapshot\n  /plan                Preview latest structured plan\n  /plan preview        Preview latest structured plan\n  /created             Show verified creations\n  /pending             Show pending action\n  /reasoning           Show latest reasoning trace\n  /trace               Show latest reasoning trace\nActions\n  /tool <request>      Run an explicit tool-enabled turn\n  /approve             Apply the pending action\n  /reject              Reject the pending action\n  /cancel              Cancel the active provider turn\nPolicy\n  /permissions         Show permission mode\n  /permissions next    Cycle permission mode\n  /permissions <mode>  Set permission mode\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /copy                Copy the conversation\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
 }
 
 pub fn render_tui_script<I, S>(

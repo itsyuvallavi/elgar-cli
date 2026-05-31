@@ -20,7 +20,8 @@ use crate::{
     },
     terminal::commands::{
         clear_terminal_conversation, copy_conversation_to_terminal_clipboard,
-        parse_terminal_command, render_terminal_help, TerminalCommand,
+        parse_terminal_command, render_terminal_help, render_tool_usage, render_unknown_command,
+        TerminalCommand,
     },
     TuiShell,
 };
@@ -184,10 +185,7 @@ where
         }
         TerminalCommand::Exit => return true,
         TerminalCommand::Unknown(command) => {
-            shell.conversation.push_local_message(format!(
-                "Unknown command: {command}. Type /commands for commands."
-            ));
-            shell.conversation.follow_latest();
+            shell.push_local_message(render_unknown_command(command));
         }
         TerminalCommand::Text(text) => {
             handle_terminal_text_input(text, runtime, action_gate, session, shell);
@@ -217,6 +215,10 @@ pub(super) fn handle_terminal_tool_input<P>(
 ) where
     P: ControllerProvider,
 {
+    if text.trim().is_empty() {
+        shell.push_local_message(render_tool_usage());
+        return;
+    }
     shell.submit_agent_tool_input(runtime, session, text);
 }
 
@@ -274,6 +276,10 @@ where
             false
         }
         TerminalCommand::Tool(text) => {
+            if text.trim().is_empty() {
+                shell.push_local_message(render_tool_usage());
+                return false;
+            }
             let runtime = AgentRuntime::new(controller.provider.clone());
             shell
                 .conversation

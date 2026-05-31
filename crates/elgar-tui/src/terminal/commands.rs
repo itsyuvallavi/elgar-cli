@@ -75,7 +75,17 @@ pub(super) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
 }
 
 pub(super) fn render_terminal_help() -> &'static str {
-    "Commands\n/commands              Show commands\n/clear                 Clear the visible conversation\n/new                   Clear the visible conversation\n/cancel                Cancel the active provider turn\n/approve               Apply the pending action\n/reject                Reject the pending action\n/state                 Show verified state snapshot\n/status                Show session status\n/tokens                Show token and context usage\n/pending               Show pending action\n/created               Show verified creations\n/memory                Show verified memory\n/plan                  Preview latest structured plan\n/plan preview          Preview latest structured plan\n/reasoning             Show latest reasoning trace\n/trace                 Show latest reasoning trace\n/tool <request>        Run an explicit tool-enabled turn\n/permissions           Show permission mode\n/permissions next      Cycle permission mode\n/permissions <mode>    Set permission mode\n/copy                  Copy the conversation\n/exit                  Quit\n/quit                  Quit\n/q                     Quit\n/help                  Show commands"
+    "Commands\nSession\n  /status              Show session status\n  /tokens              Show token and context usage\n  /memory              Show verified memory\n  /state               Show verified state snapshot\n  /plan                Preview latest structured plan\n  /plan preview        Preview latest structured plan\n  /created             Show verified creations\n  /pending             Show pending action\n  /reasoning           Show latest reasoning trace\n  /trace               Show latest reasoning trace\nActions\n  /tool <request>      Run an explicit tool-enabled turn\n  /approve             Apply the pending action\n  /reject              Reject the pending action\n  /cancel              Cancel the active provider turn\nPolicy\n  /permissions         Show permission mode\n  /permissions next    Cycle permission mode\n  /permissions <mode>  Set permission mode\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /copy                Copy the conversation\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
+}
+
+pub(super) fn render_unknown_command(command: &str) -> String {
+    format!(
+        "Unknown command: {command}\nUse /commands to see local commands. Plain text without / is sent to the model."
+    )
+}
+
+pub(super) fn render_tool_usage() -> &'static str {
+    "Usage: /tool <request>\nExample: /tool create file notes.txt"
 }
 
 pub(super) fn clear_terminal_conversation(shell: &mut TuiShell) {
@@ -248,6 +258,11 @@ mod tests {
     fn help_lists_permissions_command() {
         let help = render_terminal_help();
 
+        assert!(help.starts_with("Commands\nSession"));
+        assert!(help.contains("\nActions\n"));
+        assert!(help.contains("\nPolicy\n"));
+        assert!(help.contains("\nView\n"));
+        assert!(help.contains("\nExit\n"));
         assert!(help.contains("/permissions"));
         assert!(help.contains("/permissions next"));
         assert!(help.contains("/permissions <mode>"));

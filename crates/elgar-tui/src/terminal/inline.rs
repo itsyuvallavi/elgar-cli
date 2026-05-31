@@ -26,7 +26,7 @@ use crate::{
         commands::{
             clear_terminal_conversation, clear_visible_terminal,
             copy_conversation_to_terminal_clipboard, parse_terminal_command, render_terminal_help,
-            TerminalCommand,
+            render_tool_usage, render_unknown_command, TerminalCommand,
         },
         context::{terminal_context, TerminalShellContext},
         keymap::{
@@ -176,14 +176,15 @@ where
             Ok((false, String::new()))
         }
         TerminalCommand::Tool(text) => {
+            if text.trim().is_empty() {
+                print_and_record_local(shell, render_tool_usage())?;
+                return Ok((false, String::new()));
+            }
             let preserved_input = run_inline_tool_turn(text, runtime, session, shell)?;
             Ok((false, preserved_input))
         }
         TerminalCommand::Unknown(command) => {
-            print_and_record_local(
-                shell,
-                format!("Unknown command: {command}. Type /commands for commands."),
-            )?;
+            print_and_record_local(shell, render_unknown_command(command))?;
             Ok((false, String::new()))
         }
         TerminalCommand::Approve | TerminalCommand::Reject => {

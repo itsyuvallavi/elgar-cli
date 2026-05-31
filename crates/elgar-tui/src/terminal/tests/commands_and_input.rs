@@ -108,7 +108,11 @@ fn terminal_commands_are_slash_only() {
     );
 
     let help = render_terminal_help();
-    assert!(help.starts_with("Commands\n/commands"));
+    assert!(help.starts_with("Commands\nSession"));
+    assert!(help.contains("\nActions\n"));
+    assert!(help.contains("\nPolicy\n"));
+    assert!(help.contains("\nView\n"));
+    assert!(help.contains("\nExit\n"));
     assert!(help.contains("/clear"));
     assert!(help.contains("/new"));
     assert!(help.contains("/approve"));
@@ -132,6 +136,60 @@ fn terminal_commands_are_slash_only() {
     assert!(!help.contains("/settings"));
     assert!(!help.contains("/bash"));
     assert!(!help.contains("/api"));
+}
+
+#[test]
+fn terminal_unknown_slash_command_is_local_guidance() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-unknown-command-local");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "/model",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_none());
+    let rendered = shell.render();
+    assert!(rendered.contains("Unknown command: /model"));
+    assert!(rendered.contains("Use /commands to see local commands."));
+    assert!(rendered.contains("Plain text without / is sent to the model."));
+    assert!(!rendered.contains("stub provider response"));
+    assert!(!rendered.contains("lm-studio"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn terminal_empty_tool_command_is_local_usage() {
+    let controller = Controller::default();
+    let root = temp_root("terminal-empty-tool-local");
+    let mut session = Session::new("session-1", root.clone(), root.clone());
+    let mut shell = TuiShell::new();
+    let mut pending_turn = None;
+
+    let exited = handle_submitted_terminal_input_for_loop(
+        "/tool",
+        &controller,
+        &mut session,
+        &mut shell,
+        &mut pending_turn,
+    );
+
+    assert!(!exited);
+    assert!(pending_turn.is_none());
+    let rendered = shell.render();
+    assert!(rendered.contains("Usage: /tool <request>"));
+    assert!(!rendered.contains("stub provider response"));
+    assert!(!rendered.contains("lm-studio"));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

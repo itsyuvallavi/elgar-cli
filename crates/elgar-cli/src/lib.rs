@@ -74,8 +74,8 @@ mod tests {
         provider_smoke_prompt, render_cli_turn_from_runtime_config, render_tui_help,
         render_tui_script, resolve_runtime_project_root, run_tui_loop, run_tui_loop_with_runtime,
         runtime_permission_policy_mode, should_launch_terminal_tui_by_default,
-        tui_permission_command_argument, tui_tool_command_argument, ProviderSmokeError,
-        RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
+        tui_permission_command_argument, tui_tool_command_argument, tui_unknown_command,
+        ProviderSmokeError, RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
         PROVIDER_SMOKE_DEFAULT_PROMPT, TUI_COMMAND, TUI_TERMINAL_COMMAND,
     };
 
@@ -427,7 +427,11 @@ mod tests {
         assert!(is_tui_help_command(" /commands "));
         assert!(!is_tui_help_command("help"));
         assert!(!is_tui_help_command("/model"));
-        assert!(help.starts_with("Commands\n/commands"));
+        assert!(help.starts_with("Commands\nSession"));
+        assert!(help.contains("\nActions\n"));
+        assert!(help.contains("\nPolicy\n"));
+        assert!(help.contains("\nView\n"));
+        assert!(help.contains("\nExit\n"));
         assert!(help.contains("/clear"));
         assert!(help.contains("/new"));
         assert!(help.contains("/cancel"));
@@ -483,6 +487,7 @@ mod tests {
 
     #[test]
     fn tui_tool_command_is_explicit() {
+        assert_eq!(tui_tool_command_argument("/tool"), Some(""));
         assert_eq!(
             tui_tool_command_argument("/tool create file hello.py"),
             Some("create file hello.py")
@@ -493,6 +498,17 @@ mod tests {
         );
         assert_eq!(tui_tool_command_argument("tool create file hello.py"), None);
         assert_eq!(tui_tool_command_argument("create file hello.py"), None);
+    }
+
+    #[test]
+    fn tui_unknown_slash_command_is_local() {
+        assert_eq!(tui_unknown_command("/model"), Some("/model"));
+        assert_eq!(tui_unknown_command(" /settings "), Some("/settings"));
+        assert_eq!(tui_unknown_command("/help"), None);
+        assert_eq!(tui_unknown_command("/tool"), None);
+        assert_eq!(tui_unknown_command("/tool create file hello.py"), None);
+        assert_eq!(tui_unknown_command("/permissions next"), None);
+        assert_eq!(tui_unknown_command("model"), None);
     }
 
     #[test]
@@ -624,7 +640,11 @@ mod tests {
     fn tui_script_help_is_local_and_does_not_call_controller_or_provider() {
         let rendered = render_tui_script(["/help", "/commands"], ".", ".");
 
-        assert!(rendered.contains("Commands\n/commands"));
+        assert!(rendered.contains("Commands\nSession"));
+        assert!(rendered.contains("Actions"));
+        assert!(rendered.contains("Policy"));
+        assert!(rendered.contains("View"));
+        assert!(rendered.contains("Exit"));
         assert!(rendered.contains("/approve"));
         assert!(rendered.contains("/reject"));
         assert!(rendered.contains("/state"));
@@ -641,6 +661,29 @@ mod tests {
         assert!(!rendered.contains("> /commands"));
         assert!(!rendered.contains("Input was not recognized"));
         assert!(!rendered.contains("stub-provider"));
+        assert!(!rendered.contains("lm-studio"));
+    }
+
+    #[test]
+    fn tui_script_unknown_slash_command_is_local_without_provider_call() {
+        let rendered = render_tui_script(["/model"], ".", ".");
+
+        assert!(rendered.contains("Unknown command: /model"));
+        assert!(rendered.contains("Use /commands to see local commands."));
+        assert!(rendered.contains("Plain text without / is sent to the model."));
+        assert!(!rendered.contains("> /model"));
+        assert!(!rendered.contains("stub provider response"));
+        assert!(!rendered.contains("lm-studio"));
+    }
+
+    #[test]
+    fn tui_script_empty_tool_command_is_local_usage_without_provider_call() {
+        let rendered = render_tui_script(["/tool"], ".", ".");
+
+        assert!(rendered.contains("Usage: /tool <request>"));
+        assert!(rendered.contains("Example: /tool create file notes.txt"));
+        assert!(!rendered.contains("> /tool"));
+        assert!(!rendered.contains("stub provider response"));
         assert!(!rendered.contains("lm-studio"));
     }
 
@@ -852,7 +895,7 @@ mod tests {
         run_tui_loop(&input[..], &mut output, ".", ".").unwrap();
 
         let rendered = String::from_utf8(output).unwrap();
-        assert!(rendered.contains("Commands\n/commands"));
+        assert!(rendered.contains("Commands\nSession"));
         assert!(rendered.contains("/commands"));
         assert!(rendered.contains("> what does the harness do?"));
         assert!(!rendered.contains("stub-request-1"));

@@ -293,7 +293,11 @@ fn tui_command_help_is_local_and_does_not_call_provider() {
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Commands\n/commands"));
+    assert!(stdout.contains("Commands\nSession"));
+    assert!(stdout.contains("Actions"));
+    assert!(stdout.contains("Policy"));
+    assert!(stdout.contains("View"));
+    assert!(stdout.contains("Exit"));
     assert!(stdout.contains("/clear"));
     assert!(stdout.contains("/new"));
     assert!(stdout.contains("/approve"));
