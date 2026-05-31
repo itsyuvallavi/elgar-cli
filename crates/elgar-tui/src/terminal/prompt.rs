@@ -414,13 +414,15 @@ fn prompt_input_lines_with_cursor(input: &str, cursor: usize, width: usize) -> V
     let first_width = width.saturating_sub(prefix.chars().count()).max(1);
     let continuation_width = width.saturating_sub(continuation.chars().count()).max(1);
     let input = input_with_visual_cursor(input, cursor);
-    let wrapped = non_empty_lines(wrap_words(&input, first_width));
+    let wrapped = non_empty_lines(wrap_preserving_spacing(&input, first_width));
     let mut lines = Vec::new();
     for (index, line) in wrapped.into_iter().enumerate() {
         if index == 0 {
             lines.push(format!("{prefix}{line}"));
         } else {
-            for continuation_line in non_empty_lines(wrap_words(&line, continuation_width)) {
+            for continuation_line in
+                non_empty_lines(wrap_preserving_spacing(&line, continuation_width))
+            {
                 lines.push(format!("{continuation}{continuation_line}"));
             }
         }

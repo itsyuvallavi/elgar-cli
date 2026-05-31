@@ -123,6 +123,26 @@ fn inline_prompt_frame_renders_cursor_at_edit_position() {
 }
 
 #[test]
+fn inline_prompt_frame_preserves_spaces_around_cursor() {
+    let context = TerminalShellContext::new("/repo", "/repo");
+
+    let (_top, input, _bottom, _footer) =
+        inline_prompt_frame_lines_with_cursor(&context, "hello!   x", "hello! ".len(), 80);
+
+    assert_eq!(input, vec!["▸ hello! ▌  x"]);
+}
+
+#[test]
+fn inline_prompt_frame_preserves_trailing_spaces_before_cursor() {
+    let context = TerminalShellContext::new("/repo", "/repo");
+
+    let (_top, input, _bottom, _footer) =
+        inline_prompt_frame_lines_with_cursor(&context, "hello!  ", "hello!  ".len(), 80);
+
+    assert_eq!(input, vec!["▸ hello!  ▌"]);
+}
+
+#[test]
 fn inline_prompt_frame_cursor_is_utf8_safe() {
     let context = TerminalShellContext::new("/repo", "/repo");
 
