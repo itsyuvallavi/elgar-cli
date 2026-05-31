@@ -81,7 +81,7 @@ const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "{\"route\":\"execute\"}=local file/artifact/plan work. ",
     "{\"route\":\"chat\",\"content\":\"...\"}=text only, not runtime state. ",
     "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=execute verified plan. ",
-    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=both a plan artifact and implementation/execution this turn. ",
+    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=same prompt asks to create a plan then execute/implement it. ",
     "Plan-only: execute, no intent. ",
     "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified state: plan/status, first/latest/all created files, blocks/failures. ",
     "{\"route\":\"ask_guidance\",\"question\":\"...\"}=missing required detail."
@@ -1736,6 +1736,13 @@ fn anchor_prompt_project_root_path(
     if path_is_within(&current_target, prompt_project_root) {
         return path.to_path_buf();
     }
+    if is_plan_path_or_contents(path, "") {
+        if let Some(rebased_target) =
+            rebase_sibling_project_path(session, path, prompt_project_root)
+        {
+            return cwd_relative_path(session, &rebased_target);
+        }
+    }
     if path.components().any(|component| {
         matches!(
             component,
@@ -1745,6 +1752,34 @@ fn anchor_prompt_project_root_path(
         return path.to_path_buf();
     }
     cwd_relative_path(session, &normalize_path(prompt_project_root.join(path)))
+}
+
+fn rebase_sibling_project_path(
+    session: &Session,
+    path: &Path,
+    project_root: &Path,
+) -> Option<PathBuf> {
+    if path.is_absolute() {
+        return None;
+    }
+
+    let project_parent = project_root.parent()?;
+    let current_target = absolute_session_path(session, path);
+    if !path_is_within(&current_target, project_parent)
+        || path_is_within(&current_target, project_root)
+    {
+        return None;
+    }
+
+    let relative_to_parent = current_target.strip_prefix(project_parent).ok()?;
+    let mut components = relative_to_parent.components();
+    components.next()?;
+    let remainder = components.as_path();
+    if remainder.as_os_str().is_empty() {
+        return None;
+    }
+
+    Some(normalize_path(project_root.join(remainder)))
 }
 
 fn guard_shell_execution_tool_outputs(
@@ -2966,6 +3001,14 @@ fn anchor_verified_plan_path(session: &Session, path: &Path) -> PathBuf {
         return path.to_path_buf();
     }
 
+    if let Some(rebased_target) = rebase_sibling_project_path(session, path, &plan.project_root) {
+        if structured_plan_expects_path(plan, &rebased_target)
+            || structured_plan_expects_child_under(plan, &rebased_target)
+        {
+            return cwd_relative_path(session, &rebased_target);
+        }
+    }
+
     let anchored_target = normalize_path(plan.project_root.join(path));
     if !structured_plan_expects_path(plan, &anchored_target)
         && !structured_plan_expects_child_under(plan, &anchored_target)
@@ -4113,7 +4156,7 @@ mod tests {
         assert!(AGENT_SYSTEM_PROMPT
             .contains("create the plan file first, then implement the planned files"));
         assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT
-            .contains("both a plan artifact and implementation/execution"));
+            .contains("same prompt asks to create a plan then execute/implement it"));
     }
 
     #[test]
@@ -8751,6 +8794,99 @@ Acceptance Criteria:
     }
 
     #[test]
+    fn explicit_prompt_project_root_rebases_sibling_project_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-prompt-root-rebase-sibling",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating plan under the wrong sibling root.")
+                    .with_tool_calls(vec![RawModelToolCall {
+                        id: "sibling-root-plan".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "playground/GemmaBookmarkManager5/PLAN.md",
+                            "contents": "# Bookmark Manager Plan\n\n```text\nREADME.md\nrequirements.txt\nsrc/main.py\ntests/test_main.py\n```\n\n## Verification\n- Expected files exist.\n\n## Acceptance Criteria\n- The bookmark manager files exist.\n"
+                        }),
+                        assistant_summary: Some("create plan".to_string()),
+                    }]),
+                crate::event::ProviderOutput::new("Creating files under the same wrong sibling root.")
+                    .with_tool_calls(vec![RawModelToolCall {
+                        id: "sibling-root-files".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                        arguments: json!({
+                            "directories": [
+                                "playground/GemmaBookmarkManager5/src",
+                                "playground/GemmaBookmarkManager5/tests"
+                            ],
+                            "files": [
+                                {
+                                    "target_path": "playground/GemmaBookmarkManager5/README.md",
+                                    "contents": "# Bookmark Manager\n"
+                                },
+                                {
+                                    "target_path": "playground/GemmaBookmarkManager5/requirements.txt",
+                                    "contents": ""
+                                },
+                                {
+                                    "target_path": "playground/GemmaBookmarkManager5/src/main.py",
+                                    "contents": "def main():\n    print('bookmarks')\n\nif __name__ == '__main__':\n    main()\n"
+                                },
+                                {
+                                    "target_path": "playground/GemmaBookmarkManager5/tests/test_main.py",
+                                    "contents": "def test_smoke():\n    assert True\n"
+                                }
+                            ]
+                        }),
+                        assistant_summary: Some("create files".to_string()),
+                    }]),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "Create a complete bookmark manager project. The project root must be exactly playground/GemmaBookmarkManagerSamePrompt5. First create a project plan, then execute it.",
+        );
+
+        for path in [
+            "playground/GemmaBookmarkManagerSamePrompt5/PLAN.md",
+            "playground/GemmaBookmarkManagerSamePrompt5/README.md",
+            "playground/GemmaBookmarkManagerSamePrompt5/requirements.txt",
+            "playground/GemmaBookmarkManagerSamePrompt5/src/main.py",
+            "playground/GemmaBookmarkManagerSamePrompt5/tests/test_main.py",
+        ] {
+            assert!(root.join(path).is_file(), "missing {path}");
+        }
+        assert!(!root
+            .join("playground/GemmaBookmarkManager5/PLAN.md")
+            .exists());
+        assert!(!root
+            .join("playground/GemmaBookmarkManagerSamePrompt5/playground/GemmaBookmarkManager5/PLAN.md")
+            .exists());
+        let plan = session
+            .project_memory()
+            .latest_structured_plan()
+            .expect("rebased plan should be recorded");
+        assert_eq!(
+            plan.project_root,
+            root.join("playground/GemmaBookmarkManagerSamePrompt5")
+        );
+        assert_eq!(
+            plan.runtime_status(),
+            crate::session::StructuredProjectPlanStatus::Completed
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn plan_creation_execution_requires_plan_before_implementation() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-plan-required-first",
@@ -10122,7 +10258,7 @@ Acceptance Criteria:
                             id: "no-progress-wrong-test".to_string(),
                             name: RawModelToolName::Known(ModelToolName::CreateFile),
                             arguments: json!({
-                                "target_path": "Greeter/tests/test_main.py",
+                                "target_path": "Greeter/wrong/test_main.py",
                                 "contents": "def test_smoke():\n    assert True\n"
                             }),
                             assistant_summary: Some("create wrong test".to_string()),
@@ -10131,7 +10267,7 @@ Acceptance Criteria:
                             id: "no-progress-wrong-requirements".to_string(),
                             name: RawModelToolName::Known(ModelToolName::CreateFile),
                             arguments: json!({
-                                "target_path": "Greeter/requirements.txt",
+                                "target_path": "Greeter/wrong/requirements.txt",
                                 "contents": ""
                             }),
                             assistant_summary: Some("create wrong requirements".to_string()),
@@ -10171,7 +10307,7 @@ Acceptance Criteria:
         assert!(!root.join("GreeterCLI/src/main.py").exists());
         assert!(!root.join("GreeterCLI/tests/test_main.py").exists());
         assert!(!root.join("GreeterCLI/requirements.txt").exists());
-        assert!(!root.join("Greeter/tests/test_main.py").exists());
+        assert!(!root.join("Greeter/wrong/test_main.py").exists());
         assert_eq!(
             provider
                 .requests()
