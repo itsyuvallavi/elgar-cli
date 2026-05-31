@@ -43,7 +43,10 @@ use keymap::{
 #[cfg(test)]
 use prompt::LiveProviderOutput;
 #[cfg(test)]
-use prompt::{active_working_frame_lines, inline_prompt_frame_lines};
+use prompt::{
+    active_working_frame_lines, active_working_frame_lines_with_cursor, inline_prompt_frame_lines,
+    inline_prompt_frame_lines_with_cursor,
+};
 #[cfg(test)]
 use provider_task::ProviderTurnUpdate;
 #[cfg(test)]

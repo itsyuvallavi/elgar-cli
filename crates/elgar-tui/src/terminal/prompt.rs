@@ -34,11 +34,11 @@ impl InlinePromptRenderer {
         Self { context, rows: 0 }
     }
 
-    pub(super) fn render(&mut self, input: &str) -> io::Result<()> {
+    pub(super) fn render_with_cursor(&mut self, input: &str, cursor: usize) -> io::Result<()> {
         self.clear()?;
         let width = terminal_width();
         let (top_lines, input_lines, bottom_lines, footer_lines) =
-            inline_prompt_frame_lines(&self.context, input, width);
+            inline_prompt_frame_lines_with_cursor(&self.context, input, cursor, width);
 
         for line in &top_lines {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
@@ -84,11 +84,12 @@ impl InlineWorkingRenderer {
         Self { context, rows: 0 }
     }
 
-    pub(super) fn render(
+    pub(super) fn render_with_cursor(
         &mut self,
         tick: usize,
         elapsed_secs: u64,
         input: &str,
+        cursor: usize,
         live_output: &LiveProviderOutput,
     ) -> io::Result<()> {
         self.clear()?;
@@ -101,11 +102,12 @@ impl InlineWorkingRenderer {
             input_lines,
             bottom_lines,
             footer_lines,
-        ) = active_working_frame_lines(
+        ) = active_working_frame_lines_with_cursor(
             &self.context,
             tick,
             elapsed_secs,
             input,
+            cursor,
             live_output,
             width,
         );
@@ -243,14 +245,24 @@ fn append_capped(target: &mut String, value: &str, max_bytes: usize) {
     target.drain(..keep_from);
 }
 
+#[cfg(test)]
 pub(super) fn inline_prompt_frame_lines(
     context: &TerminalShellContext,
     input: &str,
     width: usize,
 ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    inline_prompt_frame_lines_with_cursor(context, input, input.len(), width)
+}
+
+pub(super) fn inline_prompt_frame_lines_with_cursor(
+    context: &TerminalShellContext,
+    input: &str,
+    cursor: usize,
+    width: usize,
+) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
     (
         vec![String::new(), frame_separator_line(width)],
-        prompt_input_lines(input, width),
+        prompt_input_lines_with_cursor(input, cursor, width),
         vec![frame_separator_line(width)],
         context
             .footer_body_for_width(drawable_width(width))
@@ -270,11 +282,32 @@ type ActiveWorkingFrameLineGroups = (
     Vec<String>,
 );
 
+#[cfg(test)]
 pub(super) fn active_working_frame_lines(
     context: &TerminalShellContext,
     tick: usize,
     elapsed_secs: u64,
     input: &str,
+    live_output: &LiveProviderOutput,
+    width: usize,
+) -> ActiveWorkingFrameLineGroups {
+    active_working_frame_lines_with_cursor(
+        context,
+        tick,
+        elapsed_secs,
+        input,
+        input.len(),
+        live_output,
+        width,
+    )
+}
+
+pub(super) fn active_working_frame_lines_with_cursor(
+    context: &TerminalShellContext,
+    tick: usize,
+    elapsed_secs: u64,
+    input: &str,
+    cursor: usize,
     live_output: &LiveProviderOutput,
     width: usize,
 ) -> ActiveWorkingFrameLineGroups {
@@ -292,7 +325,7 @@ pub(super) fn active_working_frame_lines(
         Vec::new()
     };
     let (top_lines, input_lines, bottom_lines, footer_lines) =
-        inline_prompt_frame_lines(context, input, width);
+        inline_prompt_frame_lines_with_cursor(context, input, cursor, width);
     (
         progress_lines,
         reasoning_lines,
@@ -374,21 +407,14 @@ fn compact_streaming_text(text: &str) -> Option<String> {
     }
 }
 
-fn prompt_input_lines(input: &str, width: usize) -> Vec<String> {
+fn prompt_input_lines_with_cursor(input: &str, cursor: usize, width: usize) -> Vec<String> {
     let width = drawable_width(width);
     let prefix = "▸ ";
     let continuation = "  ";
-    let cursor = "▌";
-    let cursor_width = cursor.chars().count();
-    let first_width = width
-        .saturating_sub(prefix.chars().count())
-        .saturating_sub(cursor_width)
-        .max(1);
-    let continuation_width = width
-        .saturating_sub(continuation.chars().count())
-        .saturating_sub(cursor_width)
-        .max(1);
-    let wrapped = non_empty_lines(wrap_words(input, first_width));
+    let first_width = width.saturating_sub(prefix.chars().count()).max(1);
+    let continuation_width = width.saturating_sub(continuation.chars().count()).max(1);
+    let input = input_with_visual_cursor(input, cursor);
+    let wrapped = non_empty_lines(wrap_words(&input, first_width));
     let mut lines = Vec::new();
     for (index, line) in wrapped.into_iter().enumerate() {
         if index == 0 {
@@ -399,10 +425,24 @@ fn prompt_input_lines(input: &str, width: usize) -> Vec<String> {
             }
         }
     }
-    if let Some(last) = lines.last_mut() {
-        last.push_str(cursor);
-    }
     lines
+}
+
+fn input_with_visual_cursor(input: &str, cursor: usize) -> String {
+    let cursor = floor_char_boundary(input, cursor);
+    let mut rendered = String::with_capacity(input.len() + "▌".len());
+    rendered.push_str(&input[..cursor]);
+    rendered.push('▌');
+    rendered.push_str(&input[cursor..]);
+    rendered
+}
+
+fn floor_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
 }
 
 pub(super) fn frame_separator_line(width: usize) -> String {

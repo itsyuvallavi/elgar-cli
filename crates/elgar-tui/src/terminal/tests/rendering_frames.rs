@@ -113,6 +113,26 @@ fn inline_prompt_frame_shows_cursor_for_empty_input() {
 }
 
 #[test]
+fn inline_prompt_frame_renders_cursor_at_edit_position() {
+    let context = TerminalShellContext::new("/repo", "/repo");
+
+    let (_top, input, _bottom, _footer) =
+        inline_prompt_frame_lines_with_cursor(&context, "hello! 2", "hello! ".len(), 80);
+
+    assert_eq!(input, vec!["▸ hello! ▌2"]);
+}
+
+#[test]
+fn inline_prompt_frame_cursor_is_utf8_safe() {
+    let context = TerminalShellContext::new("/repo", "/repo");
+
+    let (_top, input, _bottom, _footer) =
+        inline_prompt_frame_lines_with_cursor(&context, "a🙂b", "a🙂".len(), 80);
+
+    assert_eq!(input, vec!["▸ a🙂▌b"]);
+}
+
+#[test]
 fn active_working_frame_shows_initial_progress_before_provider_chunks() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("model-a".to_string()));
@@ -124,6 +144,25 @@ fn active_working_frame_shows_initial_progress_before_provider_chunks() {
     assert_eq!(progress, vec!["", "Working with local model"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
+}
+
+#[test]
+fn active_working_frame_renders_cursor_at_edit_position() {
+    let context = TerminalShellContext::new("/repo", "/repo");
+    let live_output = LiveProviderOutput::default();
+
+    let (_progress, _reasoning, _response, _top, input, _bottom, _footer) =
+        active_working_frame_lines_with_cursor(
+            &context,
+            0,
+            0,
+            "/cancel please",
+            "/cancel ".len(),
+            &live_output,
+            80,
+        );
+
+    assert_eq!(input, vec!["▸ /cancel ▌please"]);
 }
 
 #[test]

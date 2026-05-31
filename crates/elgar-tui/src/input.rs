@@ -17,6 +17,10 @@ impl TerminalInput {
         &self.text
     }
 
+    pub(crate) fn cursor(&self) -> usize {
+        self.cursor
+    }
+
     pub(crate) fn drain(&mut self) -> String {
         self.cursor = 0;
         std::mem::take(&mut self.text)

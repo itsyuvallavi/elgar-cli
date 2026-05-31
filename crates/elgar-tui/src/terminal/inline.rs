@@ -84,11 +84,13 @@ pub(super) fn read_inline_prompt(
     let _guard = TerminalModeGuard::enter()?;
     let mut input = TerminalInput::from_text(initial_input);
     let mut renderer = InlinePromptRenderer::new(context.clone());
-    renderer.render(input.text())?;
+    renderer.render_with_cursor(input.text(), input.cursor())?;
 
     loop {
         match handle_terminal_input_event(event::read()?, &mut input) {
-            TerminalInputAction::Continue => renderer.render(input.text())?,
+            TerminalInputAction::Continue => {
+                renderer.render_with_cursor(input.text(), input.cursor())?
+            }
             TerminalInputAction::Submit => {
                 let submitted = input.drain().trim().to_string();
                 renderer.clear()?;
@@ -280,10 +282,11 @@ where
     live_output.suppress_reasoning_preview();
     live_output.suppress_response_preview();
     let mut tick = 0usize;
-    working.render(
+    working.render_with_cursor(
         tick,
         turn_started.elapsed().as_secs(),
         input.text(),
+        input.cursor(),
         &live_output,
     )?;
     tick = tick.wrapping_add(1);
@@ -304,10 +307,11 @@ where
             }
             Ok(None) => {
                 if last_render.elapsed() >= IDLE_RENDER_INTERVAL {
-                    working.render(
+                    working.render_with_cursor(
                         tick,
                         turn_started.elapsed().as_secs(),
                         input.text(),
+                        input.cursor(),
                         &live_output,
                     )?;
                     tick = tick.wrapping_add(1);
@@ -364,12 +368,22 @@ fn handle_active_provider_event(
     live_output: &LiveProviderOutput,
 ) -> io::Result<()> {
     match handle_active_provider_input_event(event::read()?, input) {
-        ActiveProviderKeyAction::Continue => {
-            working.render(tick, elapsed_secs, input.text(), live_output)
-        }
+        ActiveProviderKeyAction::Continue => working.render_with_cursor(
+            tick,
+            elapsed_secs,
+            input.text(),
+            input.cursor(),
+            live_output,
+        ),
         ActiveProviderKeyAction::Cancel => {
             task.cancel();
-            working.render(tick, elapsed_secs, input.text(), live_output)
+            working.render_with_cursor(
+                tick,
+                elapsed_secs,
+                input.text(),
+                input.cursor(),
+                live_output,
+            )
         }
         ActiveProviderKeyAction::Exit => {
             task.cancel();
