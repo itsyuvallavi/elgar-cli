@@ -83,14 +83,14 @@ const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=execute verified plan. ",
     "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=both a plan artifact and implementation/execution this turn. ",
     "Plan-only: execute, no intent. ",
-    "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified state: plan readback/status, changes, creations, blocks/skips/failures. ",
+    "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified state: plan/status, first/latest/all created files, blocks/failures. ",
     "{\"route\":\"ask_guidance\",\"question\":\"...\"}=missing required detail."
 );
 const AGENT_STATE_KIND_CLASSIFIER_PROMPT: &str = concat!(
     "The user asked about verified runtime state. ",
     "Return exactly one compact JSON object {\"answer_kind\":\"...\"}; no prose. ",
-    "Valid answer kinds: latest_folder, latest_file, created_summary, recent_changes, last_block, plan, plan_details, pending, status, memory, summary. ",
-    "plan_details=the plan file contents; plan=the latest plan reference and status; ",
+    "Valid answer kinds: latest_folder, latest_file, project_files, first_created, created_summary, recent_changes, last_block, plan, plan_details, pending, status, memory, summary. ",
+    "plan_details=plan expected dirs/files and contents; plan=latest plan status and expected paths; project_files=files under latest/referenced project; first_created=earliest verified artifact; ",
     "recent_changes=what was just done in the most recent action; last_block=why the latest runtime action was blocked/skipped/failed; created_summary=everything created so far; ",
     "latest_folder/latest_file=the most recent created folder/file; ",
     "pending=actions awaiting approval; status=applied counts and latest paths; memory=remembered folders/plans; summary=a short combined overview."
