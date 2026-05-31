@@ -254,6 +254,7 @@ impl ConversationPane {
 pub(crate) enum ConversationLineStyle {
     #[default]
     Plain,
+    Model,
     User,
     Loading,
     Thinking,

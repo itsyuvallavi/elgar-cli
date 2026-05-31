@@ -320,7 +320,7 @@ pub(super) fn active_working_frame_lines_with_cursor(
         .map(|text| with_leading_spacer(rendered_preview_lines(&text, drawable_width(width))))
         .unwrap_or_default();
     let progress_lines = if reasoning_lines.is_empty() && response_lines.is_empty() {
-        with_leading_spacer(vec![provider_progress_line(tick, elapsed_secs)])
+        with_leading_spacer(vec![provider_progress_line(context, tick, elapsed_secs)])
     } else {
         Vec::new()
     };
@@ -337,18 +337,28 @@ pub(super) fn active_working_frame_lines_with_cursor(
     )
 }
 
-fn provider_progress_line(tick: usize, elapsed_secs: u64) -> String {
+fn provider_progress_line(
+    context: &TerminalShellContext,
+    tick: usize,
+    elapsed_secs: u64,
+) -> String {
+    let subject = context
+        .model
+        .as_deref()
+        .or(context.provider.as_deref())
+        .unwrap_or("local model");
     let base = match tick % 4 {
-        0 => "Working with local model",
-        1 => "Working with local model.",
-        2 => "Working with local model..",
-        _ => "Working with local model...",
+        0 => format!("Working with {subject}"),
+        1 => format!("Working with {subject}."),
+        2 => format!("Working with {subject}.."),
+        _ => format!("Working with {subject}..."),
     };
-    if elapsed_secs == 0 {
-        base.to_string()
+    let progress = if elapsed_secs == 0 {
+        base
     } else {
         format!("{base} {elapsed_secs}s")
-    }
+    };
+    format!("{progress} · /cancel to stop")
 }
 
 fn with_leading_spacer(mut lines: Vec<String>) -> Vec<String> {

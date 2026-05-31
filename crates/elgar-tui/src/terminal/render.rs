@@ -58,6 +58,10 @@ pub(super) fn print_conversation_line(line: &str, style: ConversationLineStyle) 
             print_spacer()?;
             print_plain_block(line)
         }
+        ConversationLineStyle::Model => {
+            print_spacer()?;
+            print_model_block(line)
+        }
         ConversationLineStyle::Tool => {
             print_spacer()?;
             print_tool_block(line)
@@ -91,6 +95,11 @@ pub(super) fn print_plain_block(text: &str) -> io::Result<()> {
         )?;
     }
     io::stdout().flush()
+}
+
+pub(super) fn print_model_block(text: &str) -> io::Result<()> {
+    writeln!(io::stdout(), "{ANSI_MUTED}model{ANSI_RESET}")?;
+    print_plain_block(text)
 }
 
 pub(super) fn print_and_record_local(
@@ -220,7 +229,8 @@ pub(super) fn terminal_conversation_line_count(
     startup: &str,
     conversation: &ConversationPane,
 ) -> usize {
-    startup.lines().count() + 2 + conversation.render_lines_with_styles().len()
+    let lines = conversation.render_lines_with_styles();
+    startup.lines().count() + 2 + lines.len() + model_block_count(&lines)
 }
 
 pub(crate) fn style_terminal_conversation(
@@ -235,12 +245,19 @@ pub(crate) fn style_terminal_conversation(
     lines.push(Line::raw(String::new()));
     lines.push(Line::raw(String::new()));
 
-    lines.extend(conversation.render_lines_with_styles().into_iter().map(
-        |(line, style)| match style {
+    let mut previous_style = None;
+    for (line, style) in conversation.render_lines_with_styles() {
+        if style == ConversationLineStyle::Model
+            && previous_style != Some(ConversationLineStyle::Model)
+        {
+            lines.push(Line::styled("model", theme::muted()));
+        }
+        lines.push(match style {
             ConversationLineStyle::User => {
                 let visible = line.strip_prefix("> ").unwrap_or(&line);
                 Line::styled(pad_line(visible, width), theme::user_input_block())
             }
+            ConversationLineStyle::Model => Line::styled(line, theme::model_output()),
             ConversationLineStyle::Loading => Line::styled(line, theme::thinking()),
             ConversationLineStyle::Thinking => Line::styled(line, theme::thinking()),
             ConversationLineStyle::Metrics => Line::styled(line, theme::muted()),
@@ -248,10 +265,25 @@ pub(crate) fn style_terminal_conversation(
             ConversationLineStyle::Tool => {
                 Line::styled(pad_line(&line, width), theme::tool_output())
             }
-        },
-    ));
+        });
+        previous_style = Some(style);
+    }
 
     Text::from(lines)
+}
+
+fn model_block_count(lines: &[(String, ConversationLineStyle)]) -> usize {
+    let mut count = 0;
+    let mut previous_style = None;
+    for (_line, style) in lines {
+        if *style == ConversationLineStyle::Model
+            && previous_style != Some(ConversationLineStyle::Model)
+        {
+            count += 1;
+        }
+        previous_style = Some(*style);
+    }
+    count
 }
 
 pub(super) fn divider_block(title: &'static str) -> Block<'static> {

@@ -42,6 +42,31 @@ fn live_and_completed_provider_transcript_styles_match() {
 }
 
 #[test]
+fn completed_provider_response_gets_model_label() {
+    let mut conversation = ConversationPane::default();
+    conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+        "completed response",
+        AssistantMessageSource::Provider,
+    )));
+
+    let styled = style_terminal_conversation("startup", &conversation, 32);
+    let rendered = styled
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .first()
+                .map(|span| span.content.to_string())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(rendered
+        .windows(2)
+        .any(|window| window == ["model", "completed response"]));
+}
+
+#[test]
 fn terminal_markdown_code_blocks_print_with_compact_spacing() {
     let rendered = crate::markdown::render_assistant_markdown(
         "Use:\n\n```rust\n\nfn main() {}\n\n```\n\nDone.",
@@ -87,7 +112,10 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     let (progress, reasoning, response, top, input, bottom, footer) =
         active_working_frame_lines(&context, 1, 7, "/cancel", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model. 7s"]);
+    assert_eq!(
+        progress,
+        vec!["", "Working with model-a. 7s · /cancel to stop"]
+    );
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
     assert_eq!(top[0], "");
@@ -161,7 +189,7 @@ fn active_working_frame_shows_initial_progress_before_provider_chunks() {
     let (progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 0, "hello", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model"]);
+    assert_eq!(progress, vec!["", "Working with model-a · /cancel to stop"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
@@ -201,7 +229,10 @@ fn active_working_frame_uses_neutral_provider_progress_for_project_requests() {
             80,
         );
 
-    assert_eq!(progress, vec!["", "Working with local model. 1s"]);
+    assert_eq!(
+        progress,
+        vec!["", "Working with model-a. 1s · /cancel to stop"]
+    );
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
@@ -396,7 +427,10 @@ fn active_working_frame_can_suppress_provider_turn_response_preview() {
     let (progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "create files", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model 1s"]);
+    assert_eq!(
+        progress,
+        vec!["", "Working with model-a 1s · /cancel to stop"]
+    );
     assert!(response.is_empty());
 }
 
@@ -413,7 +447,10 @@ fn active_working_frame_can_suppress_provider_turn_reasoning_preview() {
     let (progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "create files", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with local model 1s"]);
+    assert_eq!(
+        progress,
+        vec!["", "Working with model-a 1s · /cancel to stop"]
+    );
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
@@ -446,7 +483,10 @@ fn active_working_frame_suppresses_provider_turn_tool_stream_with_neutral_progre
         .concat()
         .join("\n");
 
-    assert_eq!(progress, vec!["", "Working with local model 1s"]);
+    assert_eq!(
+        progress,
+        vec!["", "Working with model-a 1s · /cancel to stop"]
+    );
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
     assert!(!rendered.contains("to=functions"));

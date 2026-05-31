@@ -382,7 +382,7 @@ fn terminal_live_provider_dogfood_error_does_not_mutate_actions_or_files() {
     let rendered = shell.render();
 
     assert!(chunks.is_empty());
-    assert!(rendered.contains("Provider error from timeout-provider"));
+    assert!(rendered.contains("Provider error · timeout-provider"));
     assert!(rendered.contains("provider request timed out"));
     assert!(session.actions().is_empty());
     assert!(root_has_no_user_files(&root));

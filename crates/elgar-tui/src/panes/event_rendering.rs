@@ -23,12 +23,12 @@ pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLin
                 return None;
             }
 
-            let rendered = match message.source {
-                AssistantMessageSource::Controller | AssistantMessageSource::Provider => {
-                    render_assistant_output(&message.content)
-                }
+            let rendered = render_assistant_output(&message.content);
+            let style = match message.source {
+                AssistantMessageSource::Controller => ConversationLineStyle::Plain,
+                AssistantMessageSource::Provider => ConversationLineStyle::Model,
             };
-            Some((rendered, ConversationLineStyle::Plain))
+            Some((rendered, style))
         }
         Event::ProviderStarted(_) => {
             Some((render_thinking_progress(), ConversationLineStyle::Loading))
@@ -280,7 +280,7 @@ fn render_thinking_progress() -> String {
 fn render_error_line(message: &str) -> String {
     if let Some(provider_error) = parse_provider_error(message) {
         format!(
-            "Provider error from {}: {}",
+            "Provider error · {}\n{}",
             provider_error.provider, provider_error.detail
         )
     } else if let Some(tool_error) = render_model_tool_error(message) {

@@ -194,7 +194,7 @@ mod tests {
 
         assert_eq!(
             conversation.render_body(),
-            "Provider error from fake-provider: Provider provider error (404): model missing"
+            "Provider error · fake-provider\nProvider provider error (404): model missing"
         );
     }
 
