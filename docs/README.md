@@ -11,6 +11,8 @@ provider behavior, permission policy, and TUI direction.
 - `codex-style-agent-runtime-plan.md` is the current migration reference.
 - `local-checks.md` documents no-network verification commands.
 - `live-provider-smoke.md` documents optional LM Studio smoke commands.
+- `live-tui-file-planning-regression-checklist.md` documents manual live TUI
+  file-planning regression prompts and pass criteria.
 
 ## Operational References
 
