@@ -6,6 +6,7 @@ use crate::{
     event::{FileActionVerification, VerifiedActionResult},
     plan_tree::{render_expected_path_tree, ExpectedPathTreeEntry},
     session::{PendingActionSelection, Session, StructuredProjectPlanStatus},
+    session_log_memory::latest_durable_verified_artifacts,
     verified_artifact_memory::{earliest_verified_artifacts, verified_artifacts_under_folder},
 };
 
@@ -84,15 +85,20 @@ pub(crate) fn resolve_state_answer_kind(
     input: &str,
     requested_kind: VerifiedStateAnswerKind,
 ) -> ResolvedStateAnswerKind {
-    if requested_kind == VerifiedStateAnswerKind::LatestFolder {
-        if let Some(plan) = referenced_structured_plan(session, input) {
-            if plan.expected_files_present_count() > 0 {
-                return ResolvedStateAnswerKind::changed(
-                    requested_kind,
-                    VerifiedStateAnswerKind::ProjectFiles,
-                    "requested_latest_folder_with_referenced_project_files",
-                );
-            }
+    if let Some(plan) = referenced_structured_plan(session, input) {
+        if plan.expected_files_present_count() > 0
+            && referenced_project_files_should_override(requested_kind)
+        {
+            let fallback_reason = if requested_kind == VerifiedStateAnswerKind::LatestFolder {
+                "requested_latest_folder_with_referenced_project_files"
+            } else {
+                "requested_broad_kind_with_referenced_project_files"
+            };
+            return ResolvedStateAnswerKind::changed(
+                requested_kind,
+                VerifiedStateAnswerKind::ProjectFiles,
+                fallback_reason,
+            );
         }
     }
 
@@ -119,7 +125,7 @@ pub(crate) fn resolve_state_answer_kind(
         }
     }
 
-    if verified_artifact_count(session) > 0 {
+    if verified_artifact_count(session) > 0 || imported_verified_artifact_count(session) > 0 {
         return ResolvedStateAnswerKind::changed(
             requested_kind,
             VerifiedStateAnswerKind::CreatedSummary,
@@ -128,6 +134,15 @@ pub(crate) fn resolve_state_answer_kind(
     }
 
     ResolvedStateAnswerKind::unchanged(requested_kind)
+}
+
+fn referenced_project_files_should_override(kind: VerifiedStateAnswerKind) -> bool {
+    matches!(
+        kind,
+        VerifiedStateAnswerKind::LatestFolder
+            | VerifiedStateAnswerKind::LatestFile
+            | VerifiedStateAnswerKind::CreatedSummary
+    )
 }
 
 pub(crate) fn verified_session_state_answer(
@@ -213,6 +228,10 @@ pub(crate) fn resolved_state_answer_trace_metadata(
             "verified_artifact_count".to_string(),
             json!(verified_artifact_count(session)),
         );
+        object.insert(
+            "imported_verified_artifact_count".to_string(),
+            json!(imported_verified_artifact_count(session)),
+        );
     }
     metadata
 }
@@ -252,7 +271,9 @@ fn state_answer_kind_has_data(session: &Session, kind: VerifiedStateAnswerKind) 
                 || session.project_memory().latest_verified_folder().is_some()
         }
         VerifiedStateAnswerKind::LatestFile => latest_verified_file_path(session).is_some(),
-        VerifiedStateAnswerKind::CreatedSummary => verified_artifact_count(session) > 0,
+        VerifiedStateAnswerKind::CreatedSummary => {
+            verified_artifact_count(session) > 0 || imported_verified_artifact_count(session) > 0
+        }
         VerifiedStateAnswerKind::RecentChanges => session
             .actions_in_latest_action_turn()
             .iter()
@@ -272,6 +293,7 @@ fn state_answer_kind_has_data(session: &Session, kind: VerifiedStateAnswerKind) 
         VerifiedStateAnswerKind::FirstCreated => verified_artifact_count(session) > 0,
         VerifiedStateAnswerKind::Status | VerifiedStateAnswerKind::Summary => {
             verified_artifact_count(session) > 0
+                || imported_verified_artifact_count(session) > 0
                 || !matches!(
                     session.pending_action_selection(),
                     PendingActionSelection::None
@@ -380,6 +402,22 @@ fn verified_summary_answer(session: &Session) -> String {
     if let Some(file) = latest_file {
         lines.push(("latest file", file));
     }
+    if lines.is_empty() {
+        if let Some(imported) = latest_durable_verified_artifacts(session, 1)
+            .artifacts
+            .first()
+        {
+            lines.push((
+                "latest imported file",
+                format!(
+                    "{} (session {} action {})",
+                    display_agent_context_path(session, &imported.path),
+                    imported.session_id,
+                    imported.action_id
+                ),
+            ));
+        }
+    }
 
     match (lines.as_slice(), pending.as_ref()) {
         ([], None) => "No verified filesystem changes recorded.".to_string(),
@@ -400,10 +438,20 @@ fn verified_summary_answer(session: &Session) -> String {
 
 fn verified_created_summary(session: &Session) -> String {
     let entries = verified_created_entries(session);
-    if entries.is_empty() {
+    let imported = imported_created_entries(session);
+    if entries.is_empty() && imported.is_empty() {
         "No verified creations recorded.".to_string()
     } else {
-        entries.join("\n")
+        let mut lines = Vec::new();
+        if !entries.is_empty() {
+            lines.push("current session:".to_string());
+            lines.extend(entries.into_iter().map(|entry| format!("- {entry}")));
+        }
+        if !imported.is_empty() {
+            lines.push("imported session logs:".to_string());
+            lines.extend(imported.into_iter().map(|entry| format!("- {entry}")));
+        }
+        lines.join("\n")
     }
 }
 
@@ -810,6 +858,36 @@ fn verified_created_entries(session: &Session) -> Vec<String> {
         .collect()
 }
 
+fn imported_created_entries(session: &Session) -> Vec<String> {
+    let capped = latest_durable_verified_artifacts(session, STATE_ARTIFACT_LIMIT);
+    let mut entries = capped
+        .artifacts
+        .iter()
+        .map(|artifact| {
+            format!(
+                "{} {} (session {} action {})",
+                artifact.operation,
+                display_agent_context_path(session, &artifact.path),
+                artifact.session_id,
+                artifact.action_id
+            )
+        })
+        .collect::<Vec<_>>();
+    if capped.omitted_count > 0 {
+        entries.push(format!(
+            "{} older imported artifact(s) omitted",
+            capped.omitted_count
+        ));
+    }
+    entries
+}
+
+fn imported_verified_artifact_count(session: &Session) -> usize {
+    latest_durable_verified_artifacts(session, 1)
+        .artifacts
+        .len()
+}
+
 fn latest_verified_created_directory_path(session: &Session) -> Option<String> {
     session.actions().iter().rev().find_map(|record| {
         let result = record.verified_result.as_ref()?;
@@ -891,6 +969,7 @@ mod tests {
     use crate::{
         action::Action,
         event::FileActionVerification,
+        local_session_log,
         session::{ActionRecord, StructuredProjectPlan, VerifiedPlanReference},
     };
 
@@ -926,6 +1005,12 @@ mod tests {
                 .collect(),
             expected_files: expected_files.iter().map(|path| root.join(path)).collect(),
         }
+    }
+
+    fn write_session_log(root: &Path, session_id: &str, lines: &[&str]) {
+        let path = local_session_log::session_log_file_path(root, session_id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, lines.join("\n")).unwrap();
     }
 
     #[test]
@@ -1147,6 +1232,36 @@ mod tests {
             verified_session_state_answer(&session, VerifiedStateAnswerKind::CreatedSummary);
         assert!(inventory.contains("page.tsx"), "got: {inventory}");
         assert!(inventory.contains("next.config.js"), "got: {inventory}");
+    }
+
+    #[test]
+    fn created_summary_labels_imported_session_log_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-state-answer-{}-imported-created",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_session_log(
+            &root,
+            "prior-session",
+            &[
+                r#"{"session_id":"prior-session","turn_index":1,"kind":"action_applied","timestamp_unix_ms":1,"metadata":{"action_id":"action-prior","action_kind":"CreateFile","operation":"file_written","path":"PriorProject/README.md"}}"#,
+            ],
+        );
+        let session = Session::new("current-session", &root, &root);
+
+        let answer =
+            verified_session_state_answer(&session, VerifiedStateAnswerKind::CreatedSummary);
+
+        assert!(answer.contains("imported session logs:"), "got: {answer}");
+        assert!(answer.contains("PriorProject/README.md"), "got: {answer}");
+        assert!(
+            answer.contains("session prior-session action action-prior"),
+            "got: {answer}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

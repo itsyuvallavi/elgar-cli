@@ -26,6 +26,7 @@ pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLin
             let rendered = render_assistant_output(&message.content);
             let style = match message.source {
                 AssistantMessageSource::Controller => ConversationLineStyle::Plain,
+                AssistantMessageSource::VerifiedState => ConversationLineStyle::VerifiedState,
                 AssistantMessageSource::Provider => ConversationLineStyle::Model,
             };
             Some((rendered, style))

@@ -263,6 +263,7 @@ pub(crate) enum ConversationLineStyle {
     #[default]
     Plain,
     Model,
+    VerifiedState,
     User,
     Loading,
     Thinking,

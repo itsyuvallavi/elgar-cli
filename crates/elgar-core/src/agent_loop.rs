@@ -149,6 +149,12 @@ struct AgentExecutionIntent {
     explicit_tool_command: bool,
 }
 
+impl AgentExecutionIntent {
+    fn is_plan_work(self) -> bool {
+        self.plan_execution || self.plan_creation_execution
+    }
+}
+
 pub fn run_permissive_agent_turn<P>(provider: &P, session: &mut Session, input: &str) -> TurnResult
 where
     P: ControllerProvider,
@@ -259,7 +265,7 @@ where
     P: ControllerProvider,
 {
     session.push_reasoning_runtime_check(format!("policy: {policy_mode:?}"));
-    let agent_context = agent_verified_memory_context(session);
+    let agent_context = agent_verified_memory_context(session, !intent.is_plan_work());
     let mut messages = vec![ChatMessage::new(ChatRole::System, AGENT_SYSTEM_PROMPT)];
     if let Some(context) = agent_local_runtime_context(session) {
         messages.push(ChatMessage::system(context));
@@ -1017,7 +1023,7 @@ fn retry_plain_agent_chat_with_verified_context<P>(
 where
     P: ControllerProvider,
 {
-    let Some(context) = agent_verified_memory_context(session).prompt_context else {
+    let Some(context) = agent_verified_memory_context(session, true).prompt_context else {
         return PlainAgentChatOutcome::Finished;
     };
     let request = provider.request_metadata();
@@ -1086,7 +1092,7 @@ where
         AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT,
     )];
     if include_verified_context {
-        if let Some(context) = agent_verified_memory_context(session).prompt_context {
+        if let Some(context) = agent_verified_memory_context(session, true).prompt_context {
             messages.push(ChatMessage::system(context));
         }
     }
@@ -1116,7 +1122,7 @@ fn post_plan_creation_decision_requests_execution<P>(
 where
     P: ControllerProvider,
 {
-    let Some(context) = agent_verified_memory_context(session).prompt_context else {
+    let Some(context) = agent_verified_memory_context(session, false).prompt_context else {
         return false;
     };
     let request = provider.request_metadata();
@@ -1474,7 +1480,7 @@ fn push_verified_state_answer(session: &mut Session, answer_kind: VerifiedStateA
     );
     session.push_event(Event::AssistantMessage(AssistantMessage::new(
         verified_session_state_answer(session, resolution.resolved_kind),
-        AssistantMessageSource::Controller,
+        AssistantMessageSource::VerifiedState,
     )));
 }
 
@@ -3928,7 +3934,10 @@ fn friendly_tool_validation_error(
     }
 }
 
-fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryContext {
+fn agent_verified_memory_context(
+    session: &mut Session,
+    include_durable: bool,
+) -> AgentVerifiedMemoryContext {
     let mut selected = Vec::new();
     let mut lines = Vec::new();
     let latest_folder = latest_verified_folder_for_prompt(session).cloned();
@@ -4029,6 +4038,7 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
     append_verified_artifact_memory_context(
         session,
         latest_folder.as_ref().map(|folder| folder.path.as_path()),
+        include_durable,
         &mut lines,
         &mut selected,
     );
@@ -4082,6 +4092,7 @@ impl VerifiedArtifactPromptKey {
 fn append_verified_artifact_memory_context(
     session: &Session,
     latest_folder: Option<&Path>,
+    include_durable: bool,
     lines: &mut Vec<String>,
     selected: &mut Vec<ProviderPromptMemorySelectedFact>,
 ) {
@@ -4102,7 +4113,14 @@ fn append_verified_artifact_memory_context(
         && earliest.artifacts.is_empty()
         && under_latest_folder.is_none()
     {
-        append_durable_verified_artifact_memory_context(session, lines, selected, &HashSet::new());
+        if include_durable {
+            append_durable_verified_artifact_memory_context(
+                session,
+                lines,
+                selected,
+                &HashSet::new(),
+            );
+        }
         return;
     }
 
@@ -4145,7 +4163,9 @@ fn append_verified_artifact_memory_context(
             &mut emitted,
         );
     }
-    append_durable_verified_artifact_memory_context(session, lines, selected, &emitted);
+    if include_durable {
+        append_durable_verified_artifact_memory_context(session, lines, selected, &emitted);
+    }
 }
 
 fn append_artifact_group(
@@ -5427,7 +5447,7 @@ mod tests {
         assert!(!session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content.contains("outside that project")
         )));
         let latest = session
@@ -7241,6 +7261,49 @@ mod tests {
     }
 
     #[test]
+    fn durable_session_log_memory_stays_out_of_plan_work_tool_turns() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-durable-artifact-plan-clean",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_prior_session_log(
+            &root,
+            "prior-session",
+            &[
+                r#"{"session_id":"prior-session","turn_index":1,"kind":"action_applied","timestamp_unix_ms":1,"metadata":{"action_id":"action-prior","action_kind":"CreateFile","operation":"file_written","path":"prior/README.md"}}"#,
+            ],
+        );
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}",
+            ))
+            .with_tool_output(crate::event::ProviderOutput::new("No tool action needed."));
+        let mut session = Session::new("current-session", &root, &root);
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "Create a project plan, then execute it.",
+        );
+
+        let tool_request = only_tool_request(&provider);
+        let joined = joined_request_messages(&tool_request);
+        assert!(!joined.contains("durable verified artifacts"));
+        assert!(!joined.contains("prior/README.md"));
+        assert!(!session
+            .latest_provider_prompt_memory_selection()
+            .map(|selection| selection
+                .selected
+                .iter()
+                .any(|fact| fact.kind == "durable_verified_artifact"))
+            .unwrap_or(false));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn durable_session_log_memory_stays_out_of_plain_chat() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-durable-artifact-plain-clean",
@@ -8286,7 +8349,7 @@ mod tests {
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content.contains("project: PostNewSmoke1")
                     && message.content.contains("files: 4/4 present")
                     && message.content.contains("PostNewSmoke1/src/main.py")
@@ -8330,6 +8393,67 @@ mod tests {
     }
 
     #[test]
+    fn state_answer_resolves_broad_created_summary_to_referenced_project_files() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-state-answer-resolver-created-project",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("PostNewSmoke2");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(project.join("tests")).unwrap();
+        std::fs::write(project.join("PLAN.md"), "# Plan\n").unwrap();
+        std::fs::write(project.join("README.md"), "# Notes\n").unwrap();
+        std::fs::write(project.join("requirements.txt"), "").unwrap();
+        std::fs::write(project.join("src/main.py"), "print('hi')\n").unwrap();
+        std::fs::write(
+            project.join("tests/test_main.py"),
+            "def test_main(): pass\n",
+        )
+        .unwrap();
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"state\",\"answer_kind\":\"created_summary\"}",
+            ));
+        let mut session = Session::new("session", &root, &root);
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: project.join("PLAN.md"),
+            project_root: project,
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Completed,
+            expected_directories: vec![
+                root.join("PostNewSmoke2/src"),
+                root.join("PostNewSmoke2/tests"),
+            ],
+            expected_files: vec![
+                root.join("PostNewSmoke2/README.md"),
+                root.join("PostNewSmoke2/requirements.txt"),
+                root.join("PostNewSmoke2/src/main.py"),
+                root.join("PostNewSmoke2/tests/test_main.py"),
+            ],
+        });
+
+        run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "What files did you create in PostNewSmoke2?",
+        );
+
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::VerifiedState
+                    && message.content.contains("project: PostNewSmoke2")
+                    && message.content.contains("files: 4/4 present")
+                    && message.content.contains("PostNewSmoke2/tests/test_main.py")
+                    && !message.content.contains("current session:")
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn state_answer_keeps_empty_latest_folder_without_better_state() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-state-answer-empty-latest-folder",
@@ -8348,7 +8472,7 @@ mod tests {
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content == "No verified folder creation recorded."
         )));
 
@@ -8406,7 +8530,7 @@ mod tests {
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content == "StateResolverSmoke4"
         )));
 
@@ -8433,8 +8557,8 @@ mod tests {
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
-                    && message.content == "file standalone.txt"
+                if message.source == AssistantMessageSource::VerifiedState
+                    && message.content == "current session:\n- file standalone.txt"
         )));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -10215,7 +10339,7 @@ Acceptance Criteria:
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content == block
         )));
 
@@ -10260,7 +10384,7 @@ Acceptance Criteria:
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content.contains("verified plan is rooted at myapp")
         )));
 
@@ -10299,7 +10423,7 @@ Acceptance Criteria:
         assert!(!session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content == "Old block message."
         )));
 
@@ -12045,7 +12169,7 @@ Acceptance Criteria:
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content == "latest-folder"
         )));
         assert!(!session.events().iter().any(|event| matches!(
@@ -12088,7 +12212,7 @@ Acceptance Criteria:
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content.contains("created latest.txt")
         )));
 
@@ -12142,7 +12266,7 @@ Acceptance Criteria:
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
+                if message.source == AssistantMessageSource::VerifiedState
                     && message.content.contains("next.config.js")
         )));
 
@@ -12312,8 +12436,9 @@ Acceptance Criteria:
         assert!(session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
-                if message.source == AssistantMessageSource::Controller
-                    && message.content == "directory demo\nfile demo/requirements.txt"
+                if message.source == AssistantMessageSource::VerifiedState
+                    && message.content
+                        == "current session:\n- directory demo\n- file demo/requirements.txt"
         )));
         assert_eq!(provider.requests().len(), 1);
 

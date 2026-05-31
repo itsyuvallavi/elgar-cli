@@ -58,6 +58,10 @@ pub(super) fn print_conversation_line(line: &str, style: ConversationLineStyle) 
             print_spacer()?;
             print_plain_block(line)
         }
+        ConversationLineStyle::VerifiedState => {
+            print_spacer()?;
+            print_state_block(line)
+        }
         ConversationLineStyle::Model => {
             print_spacer()?;
             print_model_block(line)
@@ -99,6 +103,11 @@ pub(super) fn print_plain_block(text: &str) -> io::Result<()> {
 
 pub(super) fn print_model_block(text: &str) -> io::Result<()> {
     writeln!(io::stdout(), "{ANSI_MUTED}model{ANSI_RESET}")?;
+    print_plain_block(text)
+}
+
+pub(super) fn print_state_block(text: &str) -> io::Result<()> {
+    writeln!(io::stdout(), "{ANSI_MUTED}state{ANSI_RESET}")?;
     print_plain_block(text)
 }
 
@@ -252,12 +261,18 @@ pub(crate) fn style_terminal_conversation(
         {
             lines.push(Line::styled("model", theme::muted()));
         }
+        if style == ConversationLineStyle::VerifiedState
+            && previous_style != Some(ConversationLineStyle::VerifiedState)
+        {
+            lines.push(Line::styled("state", theme::muted()));
+        }
         lines.push(match style {
             ConversationLineStyle::User => {
                 let visible = line.strip_prefix("> ").unwrap_or(&line);
                 Line::styled(pad_line(visible, width), theme::user_input_block())
             }
             ConversationLineStyle::Model => Line::styled(line, theme::model_output()),
+            ConversationLineStyle::VerifiedState => Line::styled(line, theme::model_output()),
             ConversationLineStyle::Loading => Line::styled(line, theme::thinking()),
             ConversationLineStyle::Thinking => Line::styled(line, theme::thinking()),
             ConversationLineStyle::Metrics => Line::styled(line, theme::muted()),

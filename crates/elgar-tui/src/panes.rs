@@ -97,6 +97,30 @@ mod tests {
     }
 
     #[test]
+    fn conversation_marks_verified_state_answers_separately() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "project: Demo\nfiles: 1/1 present",
+            AssistantMessageSource::VerifiedState,
+        )));
+
+        assert_eq!(
+            conversation.render_lines_with_styles(),
+            vec![
+                (
+                    "project: Demo".to_string(),
+                    ConversationLineStyle::VerifiedState
+                ),
+                (
+                    "files: 1/1 present".to_string(),
+                    ConversationLineStyle::VerifiedState
+                )
+            ]
+        );
+    }
+
+    #[test]
     fn conversation_renders_shell_result_exit_code_and_output() {
         let mut conversation = ConversationPane::default();
 

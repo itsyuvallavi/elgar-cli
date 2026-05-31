@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::{local_session_log, session::Session};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DurableVerifiedArtifactFact {
+pub struct DurableVerifiedArtifactFact {
     pub session_id: String,
     pub action_id: String,
     pub turn_index: u64,
@@ -16,12 +16,12 @@ pub(crate) struct DurableVerifiedArtifactFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CappedDurableVerifiedArtifacts {
+pub struct CappedDurableVerifiedArtifacts {
     pub artifacts: Vec<DurableVerifiedArtifactFact>,
     pub omitted_count: usize,
 }
 
-pub(crate) fn latest_durable_verified_artifacts(
+pub fn latest_durable_verified_artifacts(
     session: &Session,
     limit: usize,
 ) -> CappedDurableVerifiedArtifacts {
@@ -34,7 +34,7 @@ pub(crate) fn latest_durable_verified_artifacts(
     )
 }
 
-pub(crate) fn durable_verified_artifacts(session: &Session) -> Vec<DurableVerifiedArtifactFact> {
+pub fn durable_verified_artifacts(session: &Session) -> Vec<DurableVerifiedArtifactFact> {
     let dir = local_session_log::session_log_dir_path(&session.project_root);
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();

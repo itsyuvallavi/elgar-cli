@@ -10,6 +10,7 @@ use elgar_core::{
         ProviderPromptMemorySelectedFact, ProviderPromptMemorySelection, Session,
         StructuredProjectPlan, StructuredProjectPlanStatus,
     },
+    session_log_memory::latest_durable_verified_artifacts,
     session_log_path,
     token_accounting::ContextWindowSource,
 };
@@ -17,6 +18,7 @@ use std::path::Path;
 
 pub fn render_session_memory(session: &Session) -> String {
     render_memory(
+        session,
         session.project_memory(),
         session.latest_provider_prompt_memory_selection(),
     )
@@ -386,7 +388,7 @@ pub fn render_session_state_snapshot(session: &Session) -> String {
     if created.is_empty() {
         lines.push("created: (none)".to_string());
     } else {
-        lines.push("created:".to_string());
+        lines.push("created: current session".to_string());
         for line in created {
             lines.push(format!("- {line}"));
         }
@@ -401,7 +403,7 @@ pub fn render_session_state_snapshot(session: &Session) -> String {
         return lines.join("\n");
     }
 
-    lines.push("memory:".to_string());
+    lines.push("memory: current session".to_string());
     if !memory.verified_folders.is_empty() {
         lines.push("verified folders:".to_string());
         for reference in memory.verified_folders.iter().rev() {
@@ -614,7 +616,7 @@ pub fn render_session_created_actions(session: &Session) -> String {
         return "Created\n(none)".to_string();
     }
 
-    format!("Created\n- {}", lines.join("\n- "))
+    format!("Created\nsource: current session\n- {}", lines.join("\n- "))
 }
 
 fn pending_action_summary_line(session: &Session) -> String {
@@ -729,15 +731,18 @@ fn source_label(source: ContextWindowSource) -> &'static str {
 }
 
 fn render_memory(
+    session: &Session,
     memory: &ProjectMemory,
     provider_selection: Option<&ProviderPromptMemorySelection>,
 ) -> String {
+    let imported = latest_durable_verified_artifacts(session, 8);
     let has_provider_selection = provider_selection
         .is_some_and(|selection| !selection.selected.is_empty() || !selection.omitted.is_empty());
     if memory.verified_folders.is_empty()
         && memory.verified_plans.is_empty()
         && memory.structured_plans.is_empty()
         && !has_provider_selection
+        && imported.artifacts.is_empty()
     {
         return "Memory\n(empty)".to_string();
     }
@@ -810,6 +815,25 @@ fn render_memory(
 
     if let Some(selection) = provider_selection {
         render_provider_prompt_memory_selection(selection, &mut lines);
+    }
+
+    if !imported.artifacts.is_empty() {
+        lines.push("imported session logs".to_string());
+        for artifact in &imported.artifacts {
+            lines.push(format!(
+                "- imported verified artifact {} {} (session {} action {})",
+                artifact.operation,
+                display_session_path(session, &artifact.path),
+                artifact.session_id,
+                artifact.action_id
+            ));
+        }
+        if imported.omitted_count > 0 {
+            lines.push(format!(
+                "- {} older imported artifact(s) omitted",
+                imported.omitted_count
+            ));
+        }
     }
 
     lines.join("\n")
@@ -1073,12 +1097,34 @@ mod tests {
             Vec::new(),
         );
 
-        let rendered = render_memory(&ProjectMemory::default(), Some(&selection));
+        let session = Session::new("current-session", &root, &root);
+        let rendered = render_memory(&session, &ProjectMemory::default(), Some(&selection));
 
         assert!(rendered.contains("selected for provider prompt"));
         assert!(rendered.contains("current-session verified artifact ok "));
         assert!(rendered.contains("imported verified artifact ok "));
         assert!(rendered.contains("prior-session:action-imported"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn memory_lists_imported_session_log_artifacts_without_prompt_selection() {
+        let root = temp_root("session-log-imported-memory");
+        let log_path = session_log_path(&root, "prior-session");
+        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        fs::write(
+            &log_path,
+            r#"{"session_id":"prior-session","turn_index":1,"kind":"action_applied","timestamp_unix_ms":1,"metadata":{"action_id":"action-prior","action_kind":"CreateFile","operation":"file_written","path":"PriorProject/README.md"}}"#,
+        )
+        .unwrap();
+        let session = Session::new("current-session", &root, &root);
+
+        let rendered = render_session_memory(&session);
+
+        assert!(rendered.contains("imported session logs"));
+        assert!(rendered.contains("imported verified artifact file_written PriorProject/README.md"));
+        assert!(rendered.contains("session prior-session action action-prior"));
 
         let _ = fs::remove_dir_all(root);
     }

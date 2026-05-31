@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+project_dir="trusted-plan-flow-$stamp"
+input_file="$playground/.dogfood-trusted-plan-flow-$stamp.in"
+output_file="$playground/.dogfood-trusted-plan-flow-$stamp.out"
+timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-300}"
+
+cat >"$input_file" <<EOF
+/permissions full_access
+Create only a project plan for a tiny Python notes CLI. The project root must be exactly $project_dir. Do not implement it yet. The plan must include README.md, requirements.txt, src/main.py, tests/test_main.py, verification, and acceptance criteria. Do not run shell commands.
+hello, quick interruption.
+Read the plan back to me with the expected files and folders, including which ones are present or missing.
+Please execute the plan you just created. Create all expected files and folders from the plan. Do not run shell commands.
+What files did you create in $project_dir?
+/exit
+EOF
+
+echo "==> running trusted plan/interruption/execute dogfood"
+set +e
+(
+  cd "$playground"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" elgar tui <"$input_file"
+  else
+    elgar tui <"$input_file"
+  fi
+) | tee "$output_file"
+run_status=${PIPESTATUS[0]}
+set -e
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+[[ "$run_status" -eq 0 ]] || fail "elgar tui exited nonzero or timed out after ${timeout_seconds}s"
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+grep -q "waiting for approval" "$output_file" && fail "script left a pending approval"
+
+project_path="$playground/$project_dir"
+[[ -f "$project_path/PLAN.md" || -f "$project_path/plan.md" ]] || fail "missing plan file"
+[[ -f "$project_path/README.md" ]] || fail "missing README.md"
+[[ -f "$project_path/requirements.txt" ]] || fail "missing requirements.txt"
+[[ -f "$project_path/src/main.py" ]] || fail "missing src/main.py"
+[[ -f "$project_path/tests/test_main.py" ]] || fail "missing tests/test_main.py"
+
+grep -q "status: verified" "$output_file" || fail "plan readback did not show verified plan"
+grep -q "files: 4/4 present" "$output_file" || fail "final project-files answer did not show all files"
+grep -q "$project_dir/README.md" "$output_file" || fail "created-files answer missing README.md"
+grep -q "$project_dir/src/main.py" "$output_file" || fail "created-files answer missing src/main.py"
+
+echo "==> dogfood passed"
+echo "project: $project_path"
+echo "transcript: $output_file"

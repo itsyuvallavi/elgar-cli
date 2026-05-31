@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+project_dir="session-reopen-memory-$stamp"
+first_input="$playground/.dogfood-session-reopen-memory-$stamp.first.in"
+second_input="$playground/.dogfood-session-reopen-memory-$stamp.second.in"
+first_output="$playground/.dogfood-session-reopen-memory-$stamp.first.out"
+second_output="$playground/.dogfood-session-reopen-memory-$stamp.second.out"
+timeout_seconds="${ELGAR_DOGFOOD_TIMEOUT_SECONDS:-300}"
+
+cat >"$first_input" <<EOF
+/permissions full_access
+Create exactly one file named $project_dir/README.md with the text durable reopen memory check.
+/exit
+EOF
+
+cat >"$second_input" <<EOF
+What files were created in previous sessions? Use verified session logs if available.
+/memory
+/exit
+EOF
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "first transcript: $first_output" >&2
+  echo "second transcript: $second_output" >&2
+  exit 1
+}
+
+run_elgar() {
+  local input_file="$1"
+  local output_file="$2"
+  set +e
+  (
+    cd "$playground"
+    if command -v perl >/dev/null 2>&1; then
+      perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" elgar tui <"$input_file"
+    else
+      elgar tui <"$input_file"
+    fi
+  ) | tee "$output_file"
+  local run_status=${PIPESTATUS[0]}
+  set -e
+  [[ "$run_status" -eq 0 ]] || fail "elgar tui exited nonzero or timed out after ${timeout_seconds}s"
+}
+
+echo "==> creating file in first session"
+run_elgar "$first_input" "$first_output"
+
+[[ -f "$playground/$project_dir/README.md" ]] || fail "first session did not create README.md"
+grep -q "stub provider response" "$first_output" && fail "first session used stub provider"
+grep -q "Network provider error" "$first_output" && fail "first session provider error"
+
+echo "==> asking new session about prior verified files"
+run_elgar "$second_input" "$second_output"
+
+grep -q "stub provider response" "$second_output" && fail "second session used stub provider"
+grep -q "Network provider error" "$second_output" && fail "second session provider error"
+grep -q "$project_dir/README.md" "$second_output" || fail "second session did not surface prior README.md"
+grep -q "imported verified artifact" "$second_output" || fail "/memory did not label imported durable artifact"
+grep -q "current-session verified artifact" "$second_output" \
+  && fail "second session mislabeled imported artifact as current session"
+
+echo "==> dogfood passed"
+echo "project: $playground/$project_dir"
+echo "first transcript: $first_output"
+echo "second transcript: $second_output"

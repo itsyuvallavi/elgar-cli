@@ -221,7 +221,7 @@ fn terminal_created_command_reports_verified_creations() {
     ));
 
     let rendered = shell.render();
-    assert!(rendered.contains("Created\n- directory src"));
+    assert!(rendered.contains("Created\nsource: current session\n- directory src"));
     assert!(root.join("src").is_dir());
     assert!(pending_turn.is_none());
 
@@ -271,7 +271,7 @@ fn terminal_state_command_reports_verified_creations_and_memory() {
     let rendered = shell.render();
     assert!(rendered.contains("State"));
     assert!(rendered.contains("applied actions: 2"));
-    assert!(rendered.contains("created:\n- directory tui-capability-test"));
+    assert!(rendered.contains("created: current session\n- directory tui-capability-test"));
     assert!(rendered.contains("- file tui-capability-test/PROJECT_PLAN.md"));
     assert!(rendered.contains("verified folders:"));
     assert!(rendered.contains("- ok tui-capability-test ("));
