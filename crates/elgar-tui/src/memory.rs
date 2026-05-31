@@ -28,6 +28,152 @@ pub fn render_session_plan_preview(session: &Session) -> String {
     render_structured_plan_preview(session, plan)
 }
 
+pub fn render_session_observability(session: &Session) -> String {
+    let mut lines = vec!["Observability".to_string()];
+
+    if let Some(trace) = session.latest_reasoning_trace() {
+        lines.push(format!(
+            "route: {}",
+            trace.route.as_deref().unwrap_or("unknown")
+        ));
+        lines.push(format!(
+            "decision: {}",
+            latest_line(&trace.model_decisions).unwrap_or("(none recorded)")
+        ));
+        if let Some(runtime_check) = latest_line(&trace.runtime_checks) {
+            lines.push(format!("latest runtime: {runtime_check}"));
+        }
+    } else {
+        lines.push("route: unknown".to_string());
+        lines.push("decision: (none recorded)".to_string());
+    }
+
+    render_observability_memory(session, &mut lines);
+    render_observability_plan(session, &mut lines);
+    render_observability_block(session, &mut lines);
+    render_observability_provider_requests(session, &mut lines);
+    lines.push(format!(
+        "context: {}",
+        render_context_snapshot(&session.latest_context_window_snapshot())
+    ));
+
+    lines.join("\n")
+}
+
+fn latest_line(lines: &[String]) -> Option<&str> {
+    lines.last().map(String::as_str)
+}
+
+fn render_observability_memory(session: &Session, lines: &mut Vec<String>) {
+    let Some(selection) = session.latest_provider_prompt_memory_selection() else {
+        lines.push("memory selected: (none)".to_string());
+        return;
+    };
+
+    if selection.selected.is_empty() && selection.omitted.is_empty() {
+        lines.push("memory selected: (none)".to_string());
+        return;
+    }
+
+    lines.push(format!(
+        "memory selected: {} selected, {} omitted",
+        selection.selected.len(),
+        selection.omitted.len()
+    ));
+    for fact in selection.selected.iter().take(3) {
+        lines.push(format!(
+            "- {} {} ({})",
+            provider_memory_kind_label(&fact.kind),
+            display_session_path(session, &fact.path),
+            fact.source_action_id
+        ));
+    }
+    if selection.selected.len() > 3 {
+        lines.push(format!(
+            "- {} more selected memory facts omitted",
+            selection.selected.len() - 3
+        ));
+    }
+}
+
+fn render_observability_plan(session: &Session, lines: &mut Vec<String>) {
+    let Some(plan) = session.project_memory().latest_structured_plan() else {
+        lines.push("plan: (none)".to_string());
+        return;
+    };
+
+    lines.push(format!(
+        "plan: {} {} · dirs {} · files {}",
+        structured_status(plan.runtime_status()),
+        display_session_path(session, &plan.project_root),
+        path_count(&plan.expected_directories, PathKind::Directory),
+        path_count(&plan.expected_files, PathKind::File)
+    ));
+}
+
+fn render_observability_block(session: &Session, lines: &mut Vec<String>) {
+    if let Some(block) = session.latest_runtime_block() {
+        lines.push(format!(
+            "runtime block: turn {} · {}",
+            block.turn_index,
+            truncate_observability_line(&block.message, 180)
+        ));
+    }
+}
+
+fn render_observability_provider_requests(session: &Session, lines: &mut Vec<String>) {
+    let request_summaries = latest_turn_provider_request_summaries(session);
+    if request_summaries.is_empty() {
+        lines.push("provider requests: (none)".to_string());
+        return;
+    }
+
+    lines.push(format!("provider requests: {}", request_summaries.len()));
+    for summary in request_summaries.into_iter().take(3) {
+        lines.push(format!(
+            "- {}",
+            render_observability_provider_request_summary(summary)
+        ));
+    }
+}
+
+fn render_observability_provider_request_summary(summary: ProviderRequestSummary) -> String {
+    let mut parts = vec![summary.mode];
+    if let Some(tool_count) = summary.tool_count {
+        parts.push(format!("tools {tool_count}"));
+    }
+    if let Some(emitted) = summary.emitted_tool_calls {
+        parts.push(format!("tool calls {}", if emitted { "yes" } else { "no" }));
+    }
+    if let Some(metrics) = summary.metrics {
+        if let Some(duration) = metrics.total_duration_millis {
+            parts.push(format!("{duration} ms"));
+        }
+        if let Some(usage) = metrics.usage {
+            parts.push(format!(
+                "{} input + {} output",
+                render_optional_tokens(usage.prompt_tokens),
+                render_optional_tokens(usage.completion_tokens)
+            ));
+        }
+    }
+    parts.join(" · ")
+}
+
+fn truncate_observability_line(value: &str, max_chars: usize) -> String {
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+
+    let mut truncated = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
 pub fn render_session_status(session: &Session) -> String {
     let mut lines = vec!["Status".to_string()];
     lines.push(format!("actions: {}", session.actions().len()));
@@ -884,6 +1030,129 @@ mod tests {
     }
 
     #[test]
+    fn renders_observability_for_plain_chat_route() {
+        let root = temp_root("observability-plain-chat");
+        let mut session = Session::new("memory-session", &root, &root);
+
+        AgentRuntime::default().turn(
+            &mut session,
+            "hello",
+            PermissionPolicyMode::AutoCreateReviewModify,
+        );
+
+        let rendered = render_session_observability(&session);
+        assert!(rendered.contains("Observability"));
+        assert!(rendered.contains("route: chat"));
+        assert!(rendered.contains("decision: normal turn decision selected chat"));
+        assert!(rendered.contains("memory selected: (none)"));
+        assert!(rendered.contains("plan: (none)"));
+        assert!(rendered.contains("provider requests: 1"));
+        assert!(rendered.contains("plain_chat"));
+        assert!(rendered.contains("context:"));
+        assert!(!rendered.contains("Verified memory selected by Elgar controller:"));
+        assert!(!rendered.contains("User request:"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renders_observability_for_plan_and_selected_memory() {
+        let root = temp_root("observability-plan-memory");
+        let mut session = Session::new("memory-session", &root, &root);
+        let plan_contents = "# Project Plan\n\n```text\nREADME.md\n```\n\n## Verification\n- Check README.md exists.\n\n## Acceptance Criteria\n- README.md exists.\n";
+
+        tool_runtime(
+            ModelToolName::CreateDirectory,
+            serde_json::json!({"target_path": "workspace"}),
+        )
+        .tool_turn(
+            &mut session,
+            "create folder called workspace",
+            PermissionPolicyMode::FullAccess,
+        );
+        tool_runtime(
+            ModelToolName::CreateFile,
+            serde_json::json!({
+                "target_path": "workspace/project-plan.md",
+                "contents": plan_contents,
+            }),
+        )
+        .tool_turn(
+            &mut session,
+            "create a plan in that folder",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let rendered = render_session_observability(&session);
+        assert!(rendered.contains("Observability"));
+        assert!(rendered.contains("memory selected: "));
+        assert!(rendered.contains("verified folder workspace"));
+        assert!(rendered.contains("plan: verified workspace"));
+        assert!(rendered.contains("files 0/1"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn renders_observability_for_runtime_block() {
+        let root = temp_root("observability-runtime-block");
+        let project = root.join("BlockedApp");
+        fs::create_dir_all(&project).unwrap();
+        let mut session = Session::new("memory-session", &root, &root);
+        let plan_contents = "# Project Plan\n\n```text\nscript.py\n```\n\n## Verification\n- Run `python script.py`.\n\n## Acceptance Criteria\n- script.py prints hi.\n";
+
+        tool_runtime(
+            ModelToolName::CreateFile,
+            serde_json::json!({
+                "target_path": "BlockedApp/PLAN.md",
+                "contents": plan_contents,
+            }),
+        )
+        .tool_turn(
+            &mut session,
+            "create project plan",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let blocked_provider = RouteThenToolProvider {
+            tool_output: ProviderOutput::new("Creating expected and outside files.")
+                .with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "expected-file".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: serde_json::json!({
+                            "target_path": "BlockedApp/script.py",
+                            "contents": "print('hi')\n"
+                        }),
+                        assistant_summary: Some("create expected file".to_string()),
+                    },
+                    RawModelToolCall {
+                        id: "outside-file".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: serde_json::json!({
+                            "target_path": "other/x.txt",
+                            "contents": "outside\n"
+                        }),
+                        assistant_summary: Some("create outside file".to_string()),
+                    },
+                ]),
+        };
+
+        AgentRuntime::new(blocked_provider).turn(
+            &mut session,
+            "execute the plan and create other/x.txt too",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let rendered = render_session_observability(&session);
+        assert!(rendered.contains("runtime block: turn"));
+        assert!(rendered.contains("verified plan is rooted"));
+        assert!(rendered.contains("other/x.txt"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn renders_verified_and_stale_memory_without_provider_calls() {
         let root = temp_root("verified-stale");
         let folder = root.join("project");
@@ -1120,6 +1389,43 @@ mod tests {
             }
 
             Ok(self.output.clone())
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct RouteThenToolProvider {
+        tool_output: ProviderOutput,
+    }
+
+    impl ControllerProvider for RouteThenToolProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "route-tool-provider",
+                Some("tool-model".to_string()),
+                "request-1",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            Ok(ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_execution\"}",
+            ))
+        }
+
+        fn chat_messages_with_tools_with_metadata(
+            &self,
+            messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+            _tools: Vec<ChatToolDefinition>,
+        ) -> Result<ProviderOutput, ProviderError> {
+            if messages
+                .iter()
+                .any(|message| matches!(message.role, ChatRole::Tool))
+            {
+                return Ok(ProviderOutput::new("Done."));
+            }
+
+            Ok(self.tool_output.clone())
         }
     }
 }

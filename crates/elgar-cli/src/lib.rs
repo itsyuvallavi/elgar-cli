@@ -595,6 +595,23 @@ mod tests {
     }
 
     #[test]
+    fn tui_script_renders_observability_after_normal_turns() {
+        let root = temp_root("observability-panel");
+
+        let rendered = render_tui_script(["hello", "/status"], &root, &root);
+
+        assert!(rendered.contains("Observability"));
+        assert!(rendered.contains("route: chat"));
+        assert!(rendered.contains("memory selected: (none)"));
+        assert!(rendered.contains("plan: (none)"));
+        assert!(rendered.contains("provider requests: 1"));
+        assert!(rendered.contains("Status\nactions: 0\npending: none"));
+        assert_eq!(rendered.matches("Observability").count(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn tui_script_q_alias_exits_but_plain_q_is_text() {
         let rendered = render_tui_script(["q", "/q", "what should not run?"], ".", ".");
 

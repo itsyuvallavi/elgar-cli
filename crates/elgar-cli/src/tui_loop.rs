@@ -196,7 +196,7 @@ where
             rendered_turns.push(elgar_tui::render_session_reasoning(&session));
         } else {
             submit_tui_input(&mut shell, &runtime, &action_gate, &mut session, input);
-            rendered_turns.push(shell.render_scripted_transcript());
+            rendered_turns.push(render_tui_turn_with_observability(&shell, &session));
         }
     }
 
@@ -358,11 +358,23 @@ where
         } else {
             runtime.refresh_context_accounting(&mut session, context_window_tokens);
             submit_tui_input(&mut shell, &runtime, &action_gate, &mut session, &input);
-            writeln!(writer, "{}", shell.render_scripted_transcript())?;
+            writeln!(
+                writer,
+                "{}",
+                render_tui_turn_with_observability(&shell, &session)
+            )?;
         }
     }
 
     Ok(())
+}
+
+fn render_tui_turn_with_observability(shell: &elgar_tui::TuiShell, session: &Session) -> String {
+    format!(
+        "{}\n{}",
+        shell.render_scripted_transcript(),
+        elgar_tui::render_session_observability(session)
+    )
 }
 
 pub fn run_tui_terminal() -> io::Result<()> {
