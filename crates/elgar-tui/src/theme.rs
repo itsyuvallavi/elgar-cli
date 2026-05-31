@@ -50,14 +50,17 @@ pub(crate) fn context_normal() -> Style {
     muted()
 }
 
+#[cfg(test)]
 pub(crate) fn context_mild() -> Style {
     Style::default().fg(Color::Rgb(194, 170, 112))
 }
 
+#[cfg(test)]
 pub(crate) fn context_warning() -> Style {
     warning_action()
 }
 
+#[cfg(test)]
 pub(crate) fn context_danger() -> Style {
     Style::default()
         .fg(Color::Rgb(218, 118, 118))

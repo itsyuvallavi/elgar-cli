@@ -78,7 +78,7 @@ fn terminal_layout_renders_default_shell_regions() {
 
     assert!(text.contains("(empty conversation)"));
     assert!(text.contains("> "));
-    assert!(text.contains("repo crates"));
+    assert!(text.contains("repo/crates"));
     assert!(!text.contains("context:"));
     assert!(!text.contains("br:"));
     assert!(!text.contains("select visible text"));
@@ -173,7 +173,7 @@ fn terminal_footer_uses_provider_model_metadata_when_available() {
 }
 
 #[test]
-fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
+fn terminal_footer_formats_compact_repo_cwd_and_right_aligned_model() {
     let root = temp_root("terminal-footer-git-context");
     let cwd = root.join("crates").join("elgar-tui");
     std::fs::create_dir_all(root.join(".git")).unwrap();
@@ -190,12 +190,13 @@ fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
 
     assert!(footer.contains(root.file_name().unwrap().to_str().unwrap()));
     assert!(footer.contains("crates/elgar-tui"));
-    assert!(footer.contains("(feature/footer)"));
     assert!(footer.contains("openai/gpt-oss-20b"));
+    assert_eq!(footer.lines().count(), 1);
     assert!(!footer.contains("context:"));
     assert!(!footer.contains("repo:"));
     assert!(!footer.contains("cwd:"));
     assert!(!footer.contains("branch:"));
+    assert!(!footer.contains("(feature/footer)"));
     assert!(!footer.contains("provider:"));
     assert!(!footer.contains("model:"));
     assert!(!footer.contains("select visible text"));
@@ -207,7 +208,7 @@ fn terminal_footer_formats_repo_cwd_branch_model_and_context_placeholder() {
 }
 
 #[test]
-fn terminal_footer_shows_estimated_context_accounting_with_approximate_label() {
+fn terminal_footer_hides_estimated_context_accounting() {
     let context = TerminalShellContext::new("/repo", "/repo")
         .with_provider("lm-studio", Some("openai/gpt-oss-20b".to_string()))
         .with_context_accounting(ContextAccounting {
@@ -225,10 +226,10 @@ fn terminal_footer_shows_estimated_context_accounting_with_approximate_label() {
     let footer = context.footer_body("ready", "copy");
     let lines: Vec<_> = footer.lines().collect();
 
-    assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0], "repo");
-    assert!(lines[1].contains("openai/gpt-oss-20b"));
-    assert!(lines[1].contains("~0.3%/128k"));
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("repo"));
+    assert!(lines[0].contains("openai/gpt-oss-20b"));
+    assert!(!footer.contains("~0.3%/128k"));
     assert!(!footer.contains('↑'));
     assert!(!footer.contains('↓'));
     assert!(!footer.contains("context:"));
@@ -237,7 +238,7 @@ fn terminal_footer_shows_estimated_context_accounting_with_approximate_label() {
 }
 
 #[test]
-fn terminal_footer_does_not_use_provider_metrics_without_session_snapshot() {
+fn terminal_footer_hides_context_and_provider_metrics() {
     let mut metrics = ProviderMetrics::new(
         "request-usage",
         Some("openai/gpt-oss-20b".to_string()),
@@ -263,7 +264,8 @@ fn terminal_footer_does_not_use_provider_metrics_without_session_snapshot() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("~0.3%/128k"));
+    assert!(footer.contains("openai/gpt-oss-20b"));
+    assert!(!footer.contains("~0.3%/128k"));
     assert!(!footer.contains("ctx "));
     assert!(!footer.contains('↑'));
     assert!(!footer.contains('↓'));
@@ -271,7 +273,7 @@ fn terminal_footer_does_not_use_provider_metrics_without_session_snapshot() {
 }
 
 #[test]
-fn terminal_footer_formats_provider_usage_as_compact_flow() {
+fn terminal_footer_keeps_provider_usage_out_of_footer() {
     let usage = ProviderTokenUsage {
         prompt_tokens: Some(2_200),
         completion_tokens: Some(24),
@@ -297,17 +299,18 @@ fn terminal_footer_formats_provider_usage_as_compact_flow() {
     let footer = context.footer_body("ready", "copy");
     let lines: Vec<_> = footer.lines().collect();
 
-    assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0], "repo");
-    assert!(lines[1].contains("↑2.2k ↓24 1.7%/128k"));
-    assert!(lines[1].contains("openai/gpt-oss-20b"));
-    assert!(!lines[0].contains("↑"));
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("repo"));
+    assert!(lines[0].contains("openai/gpt-oss-20b"));
+    assert!(!footer.contains("↑2.2k ↓24 1.7%/128k"));
+    assert!(!footer.contains('↑'));
+    assert!(!footer.contains('↓'));
     assert!(!footer.contains("ctx "));
     assert!(!footer.contains("tokens"));
 }
 
 #[test]
-fn terminal_context_from_session_carries_provider_usage_to_footer() {
+fn terminal_context_from_session_carries_model_but_not_usage_to_footer() {
     #[derive(Clone)]
     struct UsageProvider;
 
@@ -341,14 +344,16 @@ fn terminal_context_from_session_carries_provider_usage_to_footer() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(footer.contains("model-a"));
-    assert!(footer.contains("↑11 ↓5 ?%/?"));
+    assert!(!footer.contains("↑11 ↓5 ?%/?"));
+    assert!(!footer.contains('↑'));
+    assert!(!footer.contains('↓'));
     assert!(!footer.contains("ctx "));
     assert!(!footer.contains("context:"));
     assert!(!footer.contains("16 tokens"));
 }
 
 #[test]
-fn terminal_footer_shows_unknown_context_when_provider_usage_is_absent() {
+fn terminal_footer_hides_unknown_context_when_provider_usage_is_absent() {
     let metrics = ProviderMetrics::new(
         "request-no-usage",
         Some("openai/gpt-oss-20b".to_string()),
@@ -368,7 +373,7 @@ fn terminal_footer_shows_unknown_context_when_provider_usage_is_absent() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("?%/?"));
+    assert!(!footer.contains("?%/?"));
     assert!(!footer.contains('↑'));
     assert!(!footer.contains('↓'));
     assert!(!footer.contains("ctx "));
@@ -376,7 +381,7 @@ fn terminal_footer_shows_unknown_context_when_provider_usage_is_absent() {
 }
 
 #[test]
-fn terminal_footer_shows_unknown_context_with_configured_window() {
+fn terminal_footer_hides_unknown_context_with_configured_window() {
     let context =
         TerminalShellContext::new("/repo", "/repo").with_context_accounting(ContextAccounting {
             loaded_files: Vec::new(),
@@ -388,7 +393,7 @@ fn terminal_footer_shows_unknown_context_with_configured_window() {
     let footer = context.footer_body("ready", "copy");
 
     assert!(!footer.contains("context:"));
-    assert!(footer.contains("?%/128k"));
+    assert!(!footer.contains("?%/128k"));
     assert!(!footer.contains('↑'));
     assert!(!footer.contains('↓'));
     assert!(!footer.contains("ctx "));

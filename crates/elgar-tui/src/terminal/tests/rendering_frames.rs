@@ -112,22 +112,19 @@ fn active_working_frame_keeps_prompt_and_footer_visible() {
     let (progress, reasoning, response, top, input, bottom, footer) =
         active_working_frame_lines(&context, 1, 7, "/cancel", &live_output, 80);
 
-    assert_eq!(
-        progress,
-        vec!["", "Working with model-a. 7s · /cancel to stop"]
-    );
+    assert_eq!(progress, vec!["", "Thinking. 7s · /cancel"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
     assert_eq!(top[0], "");
     assert!(top[1].starts_with("────"));
     assert_eq!(input, vec!["▸ /cancel▌"]);
     assert_eq!(bottom, vec![top[1].clone()]);
-    assert_eq!(footer.len(), 2);
-    assert_eq!(footer[0], "repo");
-    assert!(footer[1].contains("model-a"));
-    assert!(footer[1].contains("~25%/16k"));
-    assert!(!footer[1].contains('↑'));
-    assert!(!footer[1].contains('↓'));
+    assert_eq!(footer.len(), 1);
+    assert!(footer[0].contains("repo"));
+    assert!(footer[0].contains("model-a"));
+    assert!(!footer.join("\n").contains("~25%/16k"));
+    assert!(!footer.join("\n").contains('↑'));
+    assert!(!footer.join("\n").contains('↓'));
     assert!(!footer.join("\n").contains("context:"));
 }
 
@@ -189,7 +186,7 @@ fn active_working_frame_shows_initial_progress_before_provider_chunks() {
     let (progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 0, "hello", &live_output, 80);
 
-    assert_eq!(progress, vec!["", "Working with model-a · /cancel to stop"]);
+    assert_eq!(progress, vec!["", "Thinking · /cancel"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
@@ -229,10 +226,7 @@ fn active_working_frame_uses_neutral_provider_progress_for_project_requests() {
             80,
         );
 
-    assert_eq!(
-        progress,
-        vec!["", "Working with model-a. 1s · /cancel to stop"]
-    );
+    assert_eq!(progress, vec!["", "Thinking. 1s · /cancel"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
@@ -427,10 +421,7 @@ fn active_working_frame_can_suppress_provider_turn_response_preview() {
     let (progress, _reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "create files", &live_output, 80);
 
-    assert_eq!(
-        progress,
-        vec!["", "Working with model-a 1s · /cancel to stop"]
-    );
+    assert_eq!(progress, vec!["", "Thinking 1s · /cancel"]);
     assert!(response.is_empty());
 }
 
@@ -447,10 +438,7 @@ fn active_working_frame_can_suppress_provider_turn_reasoning_preview() {
     let (progress, reasoning, response, _top, _input, _bottom, _footer) =
         active_working_frame_lines(&context, 0, 1, "create files", &live_output, 80);
 
-    assert_eq!(
-        progress,
-        vec!["", "Working with model-a 1s · /cancel to stop"]
-    );
+    assert_eq!(progress, vec!["", "Thinking 1s · /cancel"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
 }
@@ -483,10 +471,7 @@ fn active_working_frame_suppresses_provider_turn_tool_stream_with_neutral_progre
         .concat()
         .join("\n");
 
-    assert_eq!(
-        progress,
-        vec!["", "Working with model-a 1s · /cancel to stop"]
-    );
+    assert_eq!(progress, vec!["", "Thinking 1s · /cancel"]);
     assert!(reasoning.is_empty());
     assert!(response.is_empty());
     assert!(!rendered.contains("to=functions"));
