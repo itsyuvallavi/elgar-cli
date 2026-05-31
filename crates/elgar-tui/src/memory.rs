@@ -10,6 +10,7 @@ use elgar_core::{
         ProviderPromptMemorySelectedFact, ProviderPromptMemorySelection, Session,
         StructuredProjectPlan, StructuredProjectPlanStatus,
     },
+    session_log_path,
     token_accounting::ContextWindowSource,
 };
 use std::path::Path;
@@ -177,6 +178,14 @@ fn truncate_observability_line(value: &str, max_chars: usize) -> String {
 
 pub fn render_session_status(session: &Session) -> String {
     let mut lines = vec!["Status".to_string()];
+    lines.push(format!("session: {}", session.id));
+    lines.push(format!(
+        "session log: {}",
+        display_session_path(
+            session,
+            session_log_path(&session.project_root, &session.id).as_path()
+        )
+    ));
     lines.push(format!("actions: {}", session.actions().len()));
     lines.push(format!("pending: {}", pending_action_summary_line(session)));
     lines.push(format!(
@@ -868,7 +877,7 @@ fn render_provider_prompt_memory_selection(
 
     lines.push("provider prompt memory".to_string());
     if !selection.selected.is_empty() {
-        lines.push("selected".to_string());
+        lines.push("selected for provider prompt".to_string());
         for fact in &selection.selected {
             render_selected_provider_prompt_memory_fact(fact, lines);
         }
@@ -927,6 +936,8 @@ fn provider_memory_kind_label(kind: &str) -> String {
         "verified_folder" => "verified folder".to_string(),
         "verified_plan" => "verified plan".to_string(),
         "structured_plan" => "structured plan".to_string(),
+        "verified_artifact" => "current-session verified artifact".to_string(),
+        "durable_verified_artifact" => "imported verified artifact".to_string(),
         other => other.replace('_', " "),
     }
 }
@@ -1021,6 +1032,55 @@ mod tests {
 
         assert_eq!(render_session_memory(&session), "Memory\n(empty)");
         assert!(!render_session_memory(&session).contains("provider prompt memory"));
+    }
+
+    #[test]
+    fn status_reports_session_and_log_path() {
+        let root = temp_root("status-session-log");
+        let session = Session::new("session-log-test", &root, &root);
+
+        let rendered = render_session_status(&session);
+
+        assert!(rendered.contains("Status"));
+        assert!(rendered.contains("session: session-log-test"));
+        assert!(rendered.contains("session log: .elgar/sessions/session-log-test.jsonl"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn memory_labels_current_and_imported_prompt_facts() {
+        let root = temp_root("prompt-memory-kinds");
+        let current = root.join("current.txt");
+        let imported = root.join("imported.txt");
+        fs::write(&current, "current\n").unwrap();
+        fs::write(&imported, "imported\n").unwrap();
+        let selection = ProviderPromptMemorySelection::new(
+            vec![
+                ProviderPromptMemorySelectedFact::new(
+                    "verified_artifact",
+                    current.clone(),
+                    None,
+                    "action-current",
+                ),
+                ProviderPromptMemorySelectedFact::new(
+                    "durable_verified_artifact",
+                    imported.clone(),
+                    None,
+                    "prior-session:action-imported",
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let rendered = render_memory(&ProjectMemory::default(), Some(&selection));
+
+        assert!(rendered.contains("selected for provider prompt"));
+        assert!(rendered.contains("current-session verified artifact ok "));
+        assert!(rendered.contains("imported verified artifact ok "));
+        assert!(rendered.contains("prior-session:action-imported"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -456,7 +456,7 @@ fn terminal_footer_context_pressure_uses_documented_thresholds() {
 fn terminal_status_uses_named_theme_styles_by_state() {
     assert_eq!(status_style("ready"), crate::theme::success());
     assert_eq!(status_style("reply ready"), crate::theme::success());
-    assert_eq!(status_style("◐ working"), crate::theme::thinking());
+    assert_eq!(status_style("working"), crate::theme::thinking());
     assert_eq!(
         status_style("review action-1"),
         crate::theme::warning_action()

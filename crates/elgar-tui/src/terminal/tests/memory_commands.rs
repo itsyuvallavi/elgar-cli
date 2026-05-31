@@ -49,7 +49,7 @@ fn terminal_state_commands_are_local_and_empty_without_provider_call() {
     let rendered = shell.render();
     assert!(rendered.contains("State\npending: none\napplied actions: 0\ncreated: (none)"));
     assert!(rendered.contains("memory: (none)"));
-    assert!(rendered.contains("Status\nactions: 0\npending: none"));
+    assert!(rendered.contains("Status\nsession: session-1\nsession log: .elgar/sessions/session-1.jsonl\nactions: 0\npending: none"));
     assert!(rendered.contains("Pending\nnone"));
     assert!(rendered.contains("Created\n(none)"));
     assert!(rendered.contains("Plan Preview\n(none)"));

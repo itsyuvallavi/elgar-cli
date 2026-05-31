@@ -20,6 +20,7 @@ pub mod plan_tree;
 pub mod policy;
 pub mod provider;
 mod provider_visible;
+pub use local_session_log::{session_log_directory, session_log_path};
 pub use provider_visible::provider_visible_text_from_text_only_output;
 pub mod renderer;
 pub mod router;

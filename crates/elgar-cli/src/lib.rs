@@ -648,7 +648,9 @@ mod tests {
         assert!(rendered.contains("memory selected: (none)"));
         assert!(rendered.contains("plan: (none)"));
         assert!(rendered.contains("provider requests: 1"));
-        assert!(rendered.contains("Status\nactions: 0\npending: none"));
+        assert!(rendered.contains("Status\nsession: cli-tui-script-"));
+        assert!(rendered.contains("session log: .elgar/sessions/cli-tui-script-"));
+        assert!(rendered.contains("actions: 0\npending: none"));
         assert_eq!(rendered.matches("Observability").count(), 1);
 
         let _ = fs::remove_dir_all(root);
@@ -762,7 +764,9 @@ mod tests {
 
         assert!(rendered.contains("State\npending: none\napplied actions: 0\ncreated: (none)"));
         assert!(rendered.contains("memory: (none)"));
-        assert!(rendered.contains("Status\nactions: 0\npending: none"));
+        assert!(rendered.contains("Status\nsession: cli-tui-script-"));
+        assert!(rendered.contains("session log: .elgar/sessions/cli-tui-script-"));
+        assert!(rendered.contains("actions: 0\npending: none"));
         assert!(rendered.contains("Pending\nnone"));
         assert!(rendered.contains("Created\n(none)"));
         assert!(!rendered.contains("> /state"));
@@ -809,7 +813,9 @@ mod tests {
         assert!(rendered.contains(
             "The model did not return any tool actions, so no files or commands were changed."
         ));
-        assert!(rendered.contains("Status\nactions: 0\npending: none"));
+        assert!(rendered.contains("Status\nsession: cli-tui-script-"));
+        assert!(rendered.contains("session log: .elgar/sessions/cli-tui-script-"));
+        assert!(rendered.contains("actions: 0\npending: none"));
         assert!(!rendered.contains("Wrote "));
         assert!(rendered.contains("Pending Action\nnone"));
         assert!(!rendered.contains("lm-studio"));

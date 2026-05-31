@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground"
+mkdir -p "$playground"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+output_file="$playground/.dogfood-session-log-memory-$stamp.out"
+
+echo "==> checking TUI session-log diagnostics"
+(
+  cd "$playground"
+  printf '/status\n/exit\n' | elgar tui
+) | tee "$output_file"
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+grep -q '^Status$' "$output_file" || fail "status output missing"
+grep -q '^session: ' "$output_file" || fail "status did not show session id"
+grep -q 'session log: .*\.elgar/sessions/.*\.jsonl' "$output_file" \
+  || fail "status did not show session log path"
+
+echo "==> checking durable session-memory import boundaries"
+(
+  cd "$repo_root"
+  cargo test -p elgar-core session_log_memory
+  cargo test -p elgar-core durable_session_log_memory
+  cargo test -p elgar-tui memory_labels_current_and_imported_prompt_facts
+)
+
+echo "==> dogfood passed"
+echo "transcript: $output_file"

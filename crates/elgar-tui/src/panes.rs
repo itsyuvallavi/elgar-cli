@@ -267,10 +267,10 @@ mod tests {
         let mut conversation = ConversationPane::default();
 
         conversation.push_pending_provider_turn("hello");
-        assert_eq!(conversation.render_body(), "> hello\n◐ working");
+        assert_eq!(conversation.render_body(), "> hello\nworking");
 
         conversation.advance_loading_pulse();
-        assert_eq!(conversation.render_body(), "> hello\n◓ working");
+        assert_eq!(conversation.render_body(), "> hello\nworking.");
 
         conversation.discard_pending_provider_turn();
         assert_eq!(conversation.render_body(), "(empty conversation)");
@@ -867,7 +867,7 @@ mod tests {
             "stub-provider",
             "request-1",
         )));
-        assert_eq!(status.text, "◐ working");
+        assert_eq!(status.text, "working");
         assert!(status.provider_active());
 
         status.observe_event(&Event::ProviderFinished(ProviderFinished::new(
@@ -884,19 +884,19 @@ mod tests {
         let mut status = StatusLine::ready();
 
         status.start_thinking_pulse();
-        assert_eq!(status.render_body(), "◐ working");
+        assert_eq!(status.render_body(), "working");
 
         status.advance_thinking_pulse();
-        assert_eq!(status.render_body(), "◓ working");
+        assert_eq!(status.render_body(), "working.");
 
         status.advance_thinking_pulse();
-        assert_eq!(status.render_body(), "◑ working");
+        assert_eq!(status.render_body(), "working..");
 
         status.advance_thinking_pulse();
-        assert_eq!(status.render_body(), "◒ working");
+        assert_eq!(status.render_body(), "working...");
 
         status.advance_thinking_pulse();
-        assert_eq!(status.render_body(), "◐ working");
+        assert_eq!(status.render_body(), "working");
 
         status.observe_event(&Event::ProviderFinished(ProviderFinished::new(
             "stub-provider",

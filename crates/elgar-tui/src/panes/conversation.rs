@@ -309,7 +309,7 @@ pub(super) struct ThinkingPulse {
 }
 
 impl ThinkingPulse {
-    const LABELS: [&'static str; 4] = ["◐ working", "◓ working", "◑ working", "◒ working"];
+    const LABELS: [&'static str; 4] = ["working", "working.", "working..", "working..."];
 
     pub(super) fn label(&self) -> &'static str {
         Self::LABELS[self.index]

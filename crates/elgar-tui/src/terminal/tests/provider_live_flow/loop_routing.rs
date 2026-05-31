@@ -17,16 +17,16 @@ fn terminal_loop_starts_provider_text_turn_as_active_pulse() {
 
     assert!(!exited);
     assert!(pending_turn.is_some());
-    assert_eq!(shell.status.render_body(), "◐ working");
+    assert_eq!(shell.status.render_body(), "working");
     assert!(shell.status.provider_active());
     assert!(shell
         .conversation
         .render_body()
-        .contains("> what does the harness do?\n◐ working"));
+        .contains("> what does the harness do?\nworking"));
     shell.status.advance_thinking_pulse();
     shell.conversation.advance_loading_pulse();
-    assert_eq!(shell.status.render_body(), "◓ working");
-    assert!(shell.conversation.render_body().contains("◓ working"));
+    assert_eq!(shell.status.render_body(), "working.");
+    assert!(shell.conversation.render_body().contains("working."));
 
     let task = pending_turn.take().unwrap();
     let completed = wait_for_completed_provider_turn(&task);
@@ -63,7 +63,7 @@ fn terminal_loop_sends_unclassified_non_slash_text_to_provider() {
     assert!(shell
         .conversation
         .render_body()
-        .contains("> sadsadad\n◐ working"));
+        .contains("> sadsadad\nworking"));
     assert!(!shell
         .conversation
         .render_body()

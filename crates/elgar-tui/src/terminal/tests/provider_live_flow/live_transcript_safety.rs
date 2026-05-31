@@ -109,7 +109,7 @@ fn terminal_live_provider_dogfood_flow_keeps_provider_suggestions_and_actions_sa
 
     assert!(!exited);
     assert!(pending_turn.is_some());
-    assert!(shell.render().contains("◐ working"));
+    assert!(shell.render().contains("working"));
 
     let chunks = finish_provider_turn(pending_turn.take().unwrap(), &mut session, &mut shell);
 
