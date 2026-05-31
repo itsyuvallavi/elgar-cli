@@ -4,6 +4,7 @@ use elgar_core::{
     plan_contract::{
         PlanContract, PlanContractDraftIssue, PlanContractDraftIssueKind, PlanContractStatus,
     },
+    plan_tree::{render_expected_path_tree, ExpectedPathTreeEntry},
     session::{
         PendingActionSelection, ProjectMemory, ProviderPromptMemoryOmittedFact,
         ProviderPromptMemorySelectedFact, ProviderPromptMemorySelection, Session,
@@ -447,12 +448,9 @@ pub fn render_session_state_snapshot(session: &Session) -> String {
 fn render_structured_plan_preview(session: &Session, plan: &StructuredProjectPlan) -> String {
     let mut lines = vec!["Plan Preview".to_string()];
     lines.push(format!(
-        "status: {}",
-        structured_status(plan.runtime_status())
-    ));
-    lines.push(format!("stage: {}", plan.stage));
-    lines.push(format!(
-        "source action: {}",
+        "status: {} · stage: {} · action: {}",
+        structured_status(plan.runtime_status()),
+        plan.stage,
         plan.source_action_id.as_deref().unwrap_or("unknown-action")
     ));
     lines.push(format!(
@@ -463,40 +461,14 @@ fn render_structured_plan_preview(session: &Session, plan: &StructuredProjectPla
         "root: {}",
         display_session_path(session, &plan.project_root)
     ));
-
-    if plan.expected_directories.is_empty() {
-        lines.push("directories: (none listed)".to_string());
-    } else {
-        lines.push(format!(
-            "directories: {}/{} present",
-            plan.expected_directories_present_count(),
-            plan.expected_directories.len()
-        ));
-        for path in &plan.expected_directories {
-            lines.push(format!(
-                "- {} {}",
-                path_state(path, PathKind::Directory),
-                display_session_path(session, path)
-            ));
-        }
-    }
-
-    if plan.expected_files.is_empty() {
-        lines.push("files: (none listed)".to_string());
-    } else {
-        lines.push(format!(
-            "files: {}/{} present",
-            plan.expected_files_present_count(),
-            plan.expected_files.len()
-        ));
-        for path in &plan.expected_files {
-            lines.push(format!(
-                "- {} {}",
-                path_state(path, PathKind::File),
-                display_session_path(session, path)
-            ));
-        }
-    }
+    lines.push(format!(
+        "expected: dirs {}/{} · files {}/{}",
+        plan.expected_directories_present_count(),
+        plan.expected_directories.len(),
+        plan.expected_files_present_count(),
+        plan.expected_files.len()
+    ));
+    render_structured_plan_expected_tree(&plan.project_root, plan, &mut lines);
 
     if let Some(contract) = session
         .latest_plan_contract()
@@ -508,46 +480,68 @@ fn render_structured_plan_preview(session: &Session, plan: &StructuredProjectPla
     lines.join("\n")
 }
 
+fn render_structured_plan_expected_tree(
+    root: &Path,
+    plan: &StructuredProjectPlan,
+    lines: &mut Vec<String>,
+) {
+    if plan.expected_directories.is_empty() && plan.expected_files.is_empty() {
+        lines.push("tree: (none listed)".to_string());
+        return;
+    }
+
+    let mut entries = Vec::new();
+    entries.extend(
+        plan.expected_directories.iter().map(|path| {
+            ExpectedPathTreeEntry::directory(path, path_state(path, PathKind::Directory))
+        }),
+    );
+    entries.extend(
+        plan.expected_files
+            .iter()
+            .map(|path| ExpectedPathTreeEntry::file(path, path_state(path, PathKind::File))),
+    );
+
+    lines.push("tree:".to_string());
+    lines.extend(render_expected_path_tree(root, &entries));
+}
+
 fn render_plan_contract_review(
     session: &Session,
     contract: &PlanContract,
     lines: &mut Vec<String>,
 ) {
     let review = contract.review_draft();
-    lines.push("contract review:".to_string());
     lines.push(format!(
-        "- status: {}",
-        plan_contract_status(contract.runtime_status())
-    ));
-    lines.push(format!(
-        "- approvable: {}",
+        "review: {} · approvable {}",
+        plan_contract_status(contract.runtime_status()),
         if review.is_approvable() { "yes" } else { "no" }
     ));
 
     if review.issues.is_empty() {
-        lines.push("- blocking issues: none".to_string());
+        lines.push("blocking: none".to_string());
     } else {
-        lines.push("- blocking issues:".to_string());
+        lines.push("blocking:".to_string());
         for issue in &review.issues {
-            lines.push(format!("  - {}", draft_issue_line(session, issue)));
+            lines.push(format!("- {}", draft_issue_line(session, issue)));
         }
     }
 
     if contract.scope.verification_steps.is_empty() {
-        lines.push("- verification: missing".to_string());
+        lines.push("verification: missing".to_string());
     } else {
-        lines.push("- verification:".to_string());
+        lines.push("verification:".to_string());
         for step in &contract.scope.verification_steps {
-            lines.push(format!("  - {step}"));
+            lines.push(format!("- {step}"));
         }
     }
 
     if contract.scope.acceptance_criteria.is_empty() {
-        lines.push("- acceptance criteria: missing".to_string());
+        lines.push("acceptance: missing".to_string());
     } else {
-        lines.push("- acceptance criteria:".to_string());
+        lines.push("acceptance:".to_string());
         for criterion in &contract.scope.acceptance_criteria {
-            lines.push(format!("  - {criterion}"));
+            lines.push(format!("- {criterion}"));
         }
     }
 }
@@ -1218,14 +1212,15 @@ mod tests {
         let rendered = render_session_plan_preview(&session);
         assert!(rendered.contains("status: verified"));
         assert!(rendered.contains("stage: verified-plan"));
-        assert!(rendered.contains("source action: action-1"));
+        assert!(rendered.contains("action: action-1"));
         assert!(rendered.contains("plan: DemoApp/plan.md"));
         assert!(rendered.contains("root: DemoApp"));
-        assert!(rendered.contains("directories: 0/1 present"));
-        assert!(rendered.contains("files: 0/2 present"));
-        assert!(rendered.contains("contract review:"));
-        assert!(rendered.contains("- status: draft"));
-        assert!(rendered.contains("- approvable: no"));
+        assert!(rendered.contains("expected: dirs 0/1 · files 0/2"));
+        assert!(rendered.contains("tree:"));
+        assert!(rendered.contains("[missing] src/"));
+        assert!(rendered.contains("  [missing] main.py"));
+        assert!(rendered.contains("[missing] requirements.txt"));
+        assert!(rendered.contains("review: draft · approvable no"));
         assert!(rendered.contains("missing Verification section"));
         assert!(rendered.contains("missing Acceptance Criteria section"));
 
@@ -1234,9 +1229,8 @@ mod tests {
         fs::write(project.join("requirements.txt"), "").unwrap();
         let rendered = render_session_plan_preview(&session);
         assert!(rendered.contains("status: completed"));
-        assert!(rendered.contains("directories: 1/1 present"));
-        assert!(rendered.contains("files: 2/2 present"));
-        assert!(rendered.contains("- empty DemoApp/requirements.txt"));
+        assert!(rendered.contains("expected: dirs 1/1 · files 2/2"));
+        assert!(rendered.contains("[empty] requirements.txt"));
 
         fs::remove_file(project.join("plan.md")).unwrap();
         let rendered = render_session_plan_preview(&session);
@@ -1267,12 +1261,10 @@ mod tests {
         );
 
         let rendered = render_session_plan_preview(&session);
-        assert!(rendered.contains("contract review:"));
-        assert!(rendered.contains("- status: draft"));
-        assert!(rendered.contains("- approvable: yes"));
-        assert!(rendered.contains("- blocking issues: none"));
-        assert!(rendered.contains("- verification:\n  - Run the CLI smoke test."));
-        assert!(rendered.contains("- acceptance criteria:\n  - The expected files exist."));
+        assert!(rendered.contains("review: draft · approvable yes"));
+        assert!(rendered.contains("blocking: none"));
+        assert!(rendered.contains("verification:\n- Run the CLI smoke test."));
+        assert!(rendered.contains("acceptance:\n- The expected files exist."));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1300,12 +1292,12 @@ mod tests {
 
         let rendered = render_session_plan_preview(&session);
         assert!(rendered.contains("root: plan-review-copy-test"));
-        assert!(rendered.contains("- missing plan-review-copy-test/app.py"));
-        assert!(rendered.contains("- missing plan-review-copy-test/tests"));
-        assert!(rendered.contains("- missing plan-review-copy-test/tests/test_app.py"));
+        assert!(rendered.contains("[missing] app.py"));
+        assert!(rendered.contains("[missing] tests/"));
+        assert!(rendered.contains("  [missing] test_app.py"));
         assert!(!rendered.contains("/- "));
         assert!(!rendered.contains("plan-review-copy-test/- "));
-        assert!(rendered.contains("- approvable: yes"));
+        assert!(rendered.contains("review: draft · approvable yes"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1332,7 +1324,7 @@ mod tests {
         );
 
         let rendered = render_session_plan_preview(&session);
-        assert!(rendered.contains("- approvable: no"));
+        assert!(rendered.contains("review: draft · approvable no"));
         assert!(rendered
             .contains("referenced path missing from plan scope: plan-review-copy-test/cli.py"));
         assert!(rendered.contains(

@@ -180,14 +180,12 @@ fn terminal_plan_preview_command_reports_structured_plan_state() {
     assert!(rendered.contains("Plan Preview"));
     assert!(rendered.contains("status: verified"));
     assert!(rendered.contains("stage: verified-plan"));
-    assert!(rendered.contains("source action: action-1"));
+    assert!(rendered.contains("action: action-1"));
     assert!(rendered.contains("plan: DemoApp/project-plan.md"));
     assert!(rendered.contains("root: DemoApp"));
-    assert!(rendered.contains("directories: 1/2 present"));
-    assert!(rendered.contains("files: 0/2 present"));
-    assert!(rendered.contains("- missing DemoApp/src/main.py"));
-    assert!(rendered.contains("contract review:"));
-    assert!(rendered.contains("- approvable: no"));
+    assert!(rendered.contains("expected: dirs 1/2 · files 0/2"));
+    assert!(rendered.contains("[missing] main.py"));
+    assert!(rendered.contains("review: draft · approvable no"));
     assert!(rendered.contains("missing Verification section"));
     assert!(rendered.contains("missing Acceptance Criteria section"));
     assert!(!rendered.contains("stub provider response"));

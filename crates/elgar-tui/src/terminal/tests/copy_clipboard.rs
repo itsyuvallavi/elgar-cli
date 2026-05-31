@@ -254,8 +254,7 @@ fn inline_plan_preview_is_recorded_for_copy() {
     let copied = shell.conversation_copy_text();
     assert!(copied.contains("Wrote "));
     assert!(copied.contains("Plan Preview"));
-    assert!(copied.contains("contract review:"));
-    assert!(copied.contains("- approvable: yes"));
+    assert!(copied.contains("review: draft · approvable yes"));
 
     let _ = std::fs::remove_dir_all(root);
 }

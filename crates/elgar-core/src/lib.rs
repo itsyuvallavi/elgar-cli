@@ -15,6 +15,7 @@ pub mod model_runtime;
 mod normal_turn_decision;
 mod path_resolution;
 pub mod plan_contract;
+pub mod plan_tree;
 pub mod policy;
 pub mod provider;
 mod provider_visible;

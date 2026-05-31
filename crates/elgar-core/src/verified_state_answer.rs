@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::{
     event::{FileActionVerification, VerifiedActionResult},
+    plan_tree::{render_expected_path_tree, ExpectedPathTreeEntry},
     session::{PendingActionSelection, Session, StructuredProjectPlanStatus},
     verified_artifact_memory::{earliest_verified_artifacts, verified_artifacts_under_folder},
 };
@@ -246,6 +247,14 @@ fn structured_plan_state_answer(
 ) -> String {
     let mut lines = vec![
         format!(
+            "status: {} · dirs {}/{} · files {}/{}",
+            structured_plan_status_label(plan.runtime_status()),
+            plan.expected_directories_present_count(),
+            plan.expected_directories.len(),
+            plan.expected_files_present_count(),
+            plan.expected_files.len()
+        ),
+        format!(
             "plan: {}",
             display_agent_context_path(session, &plan.source_plan_path)
         ),
@@ -253,49 +262,47 @@ fn structured_plan_state_answer(
             "root: {}",
             display_agent_context_path(session, &plan.project_root)
         ),
-        format!(
-            "status: {}",
-            structured_plan_status_label(plan.runtime_status())
-        ),
     ];
 
-    lines.push(format!(
-        "directories: {}/{} present",
-        plan.expected_directories_present_count(),
-        plan.expected_directories.len()
-    ));
-    for path in &plan.expected_directories {
-        lines.push(format!(
-            "- {} {}",
-            directory_state_label(path),
-            display_agent_context_path(session, path)
-        ));
-    }
-
-    lines.push(format!(
-        "files: {}/{} present",
-        plan.expected_files_present_count(),
-        plan.expected_files.len()
-    ));
-    for path in &plan.expected_files {
-        lines.push(format!(
-            "- {} {}",
-            file_state_label(path),
-            display_agent_context_path(session, path)
-        ));
-    }
+    render_structured_plan_expected_tree(&plan.project_root, plan, &mut lines);
 
     if include_contents {
         if let Ok(contents) = std::fs::read_to_string(&plan.source_plan_path) {
             let contents = contents.trim();
             if !contents.is_empty() {
-                lines.push("plan contents:".to_string());
+                lines.push("contents:".to_string());
                 lines.push(contents.to_string());
             }
         }
     }
 
     lines.join("\n")
+}
+
+fn render_structured_plan_expected_tree(
+    root: &Path,
+    plan: &crate::session::StructuredProjectPlan,
+    lines: &mut Vec<String>,
+) {
+    if plan.expected_directories.is_empty() && plan.expected_files.is_empty() {
+        lines.push("tree: (none listed)".to_string());
+        return;
+    }
+
+    let mut entries = Vec::new();
+    entries.extend(
+        plan.expected_directories
+            .iter()
+            .map(|path| ExpectedPathTreeEntry::directory(path, directory_state_label(path))),
+    );
+    entries.extend(
+        plan.expected_files
+            .iter()
+            .map(|path| ExpectedPathTreeEntry::file(path, file_state_label(path))),
+    );
+
+    lines.push("tree:".to_string());
+    lines.extend(render_expected_path_tree(root, &entries));
 }
 
 fn verified_project_files_answer(session: &Session) -> String {
@@ -625,16 +632,16 @@ mod tests {
 
         let answer = verified_session_state_answer(&session, VerifiedStateAnswerKind::PlanDetails);
 
-        assert!(answer.contains("plan: plan.md"), "got: {answer}");
-        assert!(answer.contains("directories: 2/2 present"), "got: {answer}");
-        assert!(answer.contains("- ok src"), "got: {answer}");
-        assert!(answer.contains("files: 2/3 present"), "got: {answer}");
-        assert!(answer.contains("- ok src/main.py"), "got: {answer}");
-        assert!(answer.contains("- empty requirements.txt"), "got: {answer}");
         assert!(
-            answer.contains("- missing tests/test_main.py"),
+            answer.contains("status: verified · dirs 2/2 · files 2/3"),
             "got: {answer}"
         );
+        assert!(answer.contains("plan: plan.md"), "got: {answer}");
+        assert!(answer.contains("tree:"), "got: {answer}");
+        assert!(answer.contains("[ok] src/"), "got: {answer}");
+        assert!(answer.contains("  [ok] main.py"), "got: {answer}");
+        assert!(answer.contains("[empty] requirements.txt"), "got: {answer}");
+        assert!(answer.contains("  [missing] test_main.py"), "got: {answer}");
         assert!(answer.contains("## Verification"), "got: {answer}");
 
         let _ = std::fs::remove_dir_all(&root);
