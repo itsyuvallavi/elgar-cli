@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::{
     action::{Action, ActionLifecycleState},
     context::ContextAccounting,
-    event::{Event, ProviderMetrics, VerifiedActionResult},
+    event::{ActionKind, Event, FileActionVerification, ProviderMetrics, VerifiedActionResult},
+    local_trace,
     plan_contract::PlanContract,
     policy::PolicyDecision,
     token_accounting::{ContextWindowSnapshot, LastTurnTokenUsage, SessionTokenTotals},
@@ -49,6 +51,8 @@ pub struct Session {
     /// cumulative session inventory.
     #[serde(default)]
     current_turn_index: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    current_trace_id: Option<String>,
 }
 
 pub const PROJECT_MEMORY_LIMIT: usize = 8;
@@ -77,6 +81,7 @@ impl Session {
             latest_reasoning_trace: None,
             latest_runtime_block: None,
             current_turn_index: 0,
+            current_trace_id: None,
         }
     }
 
@@ -206,6 +211,7 @@ impl Session {
     }
 
     pub(crate) fn push_event(&mut self, event: Event) {
+        self.trace_event_for_controller_event(&event);
         self.events.push(event);
     }
 
@@ -227,6 +233,21 @@ impl Session {
     }
 
     pub(crate) fn record_provider_metrics(&mut self, metrics: &ProviderMetrics) {
+        self.trace_event(
+            "token_usage",
+            json!({
+                "request_id": &metrics.request_id,
+                "model": &metrics.model,
+                "stream": metrics.stream,
+                "message_count": metrics.message_count,
+                "serialized_request_bytes": metrics.serialized_request_bytes,
+                "prompt_tokens": metrics.usage.as_ref().and_then(|usage| usage.prompt_tokens),
+                "completion_tokens": metrics.usage.as_ref().and_then(|usage| usage.completion_tokens),
+                "total_tokens": metrics.usage.as_ref().and_then(|usage| usage.total_tokens),
+                "first_chunk_latency_millis": metrics.first_chunk_latency_millis,
+                "total_duration_millis": metrics.total_duration_millis,
+            }),
+        );
         let Some(usage) = metrics.usage.as_ref() else {
             return;
         };
@@ -240,14 +261,25 @@ impl Session {
     }
 
     pub(crate) fn start_reasoning_trace(&mut self, user_input: impl Into<String>) {
-        self.latest_reasoning_trace = Some(ReasoningTrace::new(user_input));
+        let user_input = user_input.into();
         self.current_turn_index = self.current_turn_index.saturating_add(1);
+        self.current_trace_id = Some(local_trace::new_trace_id(&self.id, self.current_turn_index));
+        self.latest_reasoning_trace = Some(ReasoningTrace::new(user_input.clone()));
+        self.trace_event(
+            "turn_start",
+            json!({
+                "input_chars": user_input.chars().count(),
+                "input_lines": user_input.lines().count().max(1),
+            }),
+        );
     }
 
     pub(crate) fn record_reasoning_route(&mut self, route: impl Into<String>) {
+        let route = route.into();
         if let Some(trace) = self.latest_reasoning_trace.as_mut() {
-            trace.route = Some(route.into());
+            trace.route = Some(route.clone());
         }
+        self.trace_event("route_decision", json!({ "route": route }));
     }
 
     pub(crate) fn push_reasoning_provider_planning(&mut self, line: impl Into<String>) {
@@ -269,10 +301,18 @@ impl Session {
     }
 
     pub(crate) fn record_runtime_block(&mut self, message: impl Into<String>) {
+        let message = message.into();
         self.latest_runtime_block = Some(RuntimeBlockRecord {
             turn_index: self.current_turn_index,
-            message: message.into(),
+            message: message.clone(),
         });
+        self.trace_event(
+            "runtime_block",
+            json!({
+                "message_chars": message.chars().count(),
+                "category": "runtime_block",
+            }),
+        );
     }
 
     pub(crate) fn clear_runtime_block(&mut self) {
@@ -309,6 +349,146 @@ impl Session {
             selection.bound();
             selection
         });
+        if let Some(selection) = self.latest_provider_prompt_memory_selection.as_ref() {
+            self.trace_event(
+                "memory_selected",
+                json!({
+                    "selected_count": selection.selected.len(),
+                    "omitted_count": selection.omitted.len(),
+                    "selected": selection.selected.iter().map(provider_memory_selected_trace_value).collect::<Vec<_>>(),
+                    "omitted": selection.omitted.iter().map(provider_memory_omitted_trace_value).collect::<Vec<_>>(),
+                }),
+            );
+        }
+    }
+
+    pub(crate) fn trace_event(&self, kind: impl Into<String>, metadata: Value) {
+        let Some(trace_id) = self.current_trace_id.as_deref() else {
+            return;
+        };
+        let _ = local_trace::append_trace_event(
+            &self.project_root,
+            &self.id,
+            trace_id,
+            self.current_turn_index,
+            kind,
+            metadata,
+        );
+    }
+
+    pub(crate) fn finish_trace_turn(&mut self) {
+        if self.current_trace_id.is_none() {
+            return;
+        }
+        let route = self
+            .latest_reasoning_trace
+            .as_ref()
+            .and_then(|trace| trace.route.clone());
+        self.trace_event(
+            "turn_finish",
+            json!({
+                "route": route,
+                "event_count": self.events.len(),
+                "action_count": self.actions.len(),
+            }),
+        );
+        self.current_trace_id = None;
+    }
+
+    fn trace_event_for_controller_event(&self, event: &Event) {
+        match event {
+            Event::ProviderStarted(started) => self.trace_event(
+                "provider_request_start",
+                json!({
+                    "provider": &started.provider,
+                    "request_id": &started.request_id,
+                    "model": &started.model,
+                    "request_mode": &started.request_mode,
+                    "tool_count": started.tool_count,
+                }),
+            ),
+            Event::ProviderFinished(finished) => self.trace_event(
+                "provider_request_finish",
+                json!({
+                    "provider": &finished.provider,
+                    "request_id": &finished.request_id,
+                    "text_chars": finished.output.text.chars().count(),
+                    "thinking_chars": finished.output.thinking.as_ref().map(|value| value.chars().count()),
+                    "tool_call_count": finished.output.tool_calls.len(),
+                    "tool_names": finished.output.tool_calls.iter().map(|tool_call| tool_call.name.raw_label()).collect::<Vec<_>>(),
+                    "has_metrics": finished.output.metrics.is_some(),
+                }),
+            ),
+            Event::ActionProposed(action) => self.trace_action_event(
+                "action_proposed",
+                action.action_id.as_str(),
+                action.action_kind,
+                action.target.as_deref(),
+                Some(action.summary.chars().count()),
+            ),
+            Event::ActionApproved(action) => self.trace_action_event(
+                "action_approved",
+                action.action_id.as_str(),
+                action.action_kind,
+                action.target.as_deref(),
+                Some(action.summary.chars().count()),
+            ),
+            Event::ActionRejected(action) => self.trace_action_event(
+                "action_rejected",
+                action.action_id.as_str(),
+                action.action_kind,
+                action.target.as_deref(),
+                Some(action.summary.chars().count()),
+            ),
+            Event::ActionApplied(applied) => self.trace_event(
+                "action_applied",
+                action_applied_trace_metadata(applied.action_id.as_str(), applied.action_kind, &applied.result),
+            ),
+            Event::ActionFailed(failed) => self.trace_event(
+                "action_failed",
+                json!({
+                    "action_id": &failed.action_id,
+                    "action_kind": format!("{:?}", failed.action_kind),
+                    "reason_chars": failed.reason.chars().count(),
+                    "category": "action_failed",
+                }),
+            ),
+            Event::Error(error) => self.trace_event(
+                "provider_error",
+                json!({
+                    "message_chars": error.message.chars().count(),
+                    "category": "provider_or_runtime_error",
+                }),
+            ),
+            Event::UserMessage(_) | Event::AssistantMessage(_) => {}
+        }
+    }
+
+    fn trace_action_event(
+        &self,
+        kind: &str,
+        action_id: &str,
+        action_kind: ActionKind,
+        target: Option<&str>,
+        summary_chars: Option<usize>,
+    ) {
+        let mut metadata = json!({
+            "action_id": action_id,
+            "action_kind": format!("{:?}", action_kind),
+            "summary_chars": summary_chars,
+        });
+        if let Some(object) = metadata.as_object_mut() {
+            match (action_kind, target) {
+                (ActionKind::ShellCommand, Some(target)) => {
+                    object.insert("target_chars".to_string(), json!(target.chars().count()));
+                }
+                (_, Some(target)) => {
+                    object.insert("target".to_string(), json!(target));
+                }
+                _ => {}
+            }
+        }
+        self.trace_event(kind, metadata);
     }
 
     pub(crate) fn mark_structured_project_plan_executed(&mut self, action_id: &str) {
@@ -336,6 +516,95 @@ fn plan_contract_id_from_structured_plan(plan: &StructuredProjectPlan) -> String
         .as_ref()
         .map(|source_action_id| format!("plan-contract:{source_action_id}"))
         .unwrap_or_else(|| format!("plan-contract:{}", plan.source_plan_path.to_string_lossy()))
+}
+
+fn provider_memory_selected_trace_value(fact: &ProviderPromptMemorySelectedFact) -> Value {
+    json!({
+        "kind": &fact.kind,
+        "path": &fact.path,
+        "project_root": &fact.project_root,
+        "source_action_id": &fact.source_action_id,
+    })
+}
+
+fn provider_memory_omitted_trace_value(fact: &ProviderPromptMemoryOmittedFact) -> Value {
+    json!({
+        "kind": &fact.kind,
+        "path": &fact.path,
+        "project_root": &fact.project_root,
+        "source_action_id": &fact.source_action_id,
+        "reason": &fact.reason,
+    })
+}
+
+fn action_applied_trace_metadata(
+    action_id: &str,
+    action_kind: ActionKind,
+    result: &VerifiedActionResult,
+) -> Value {
+    let mut metadata = json!({
+        "action_id": action_id,
+        "action_kind": format!("{:?}", action_kind),
+    });
+    if let Some(object) = metadata.as_object_mut() {
+        match result {
+            VerifiedActionResult::FileWritten { path } => {
+                object.insert("operation".to_string(), json!("file_written"));
+                object.insert("path".to_string(), json!(path));
+            }
+            VerifiedActionResult::File(verification) => match verification {
+                FileActionVerification::FileCreated { path } => {
+                    object.insert("operation".to_string(), json!("file_created"));
+                    object.insert("path".to_string(), json!(path));
+                }
+                FileActionVerification::FilePatched { path } => {
+                    object.insert("operation".to_string(), json!("file_patched"));
+                    object.insert("path".to_string(), json!(path));
+                }
+                FileActionVerification::FileOverwritten { path } => {
+                    object.insert("operation".to_string(), json!("file_overwritten"));
+                    object.insert("path".to_string(), json!(path));
+                }
+                FileActionVerification::FileDeleted { path } => {
+                    object.insert("operation".to_string(), json!("file_deleted"));
+                    object.insert("path".to_string(), json!(path));
+                }
+                FileActionVerification::FileMoved {
+                    source_path,
+                    target_path,
+                } => {
+                    object.insert("operation".to_string(), json!("file_moved"));
+                    object.insert("source_path".to_string(), json!(source_path));
+                    object.insert("path".to_string(), json!(target_path));
+                }
+                FileActionVerification::DirectoryCreated { path } => {
+                    object.insert("operation".to_string(), json!("directory_created"));
+                    object.insert("path".to_string(), json!(path));
+                }
+            },
+            VerifiedActionResult::Shell(verification) => {
+                object.insert("operation".to_string(), json!("shell_command"));
+                object.insert("cwd".to_string(), json!(&verification.cwd));
+                object.insert("exit_code".to_string(), json!(verification.exit_code));
+                object.insert(
+                    "elapsed_millis".to_string(),
+                    json!(verification.elapsed_millis),
+                );
+                object.insert("timed_out".to_string(), json!(verification.timed_out));
+                object.insert("stdout_bytes".to_string(), json!(verification.stdout.len()));
+                object.insert("stderr_bytes".to_string(), json!(verification.stderr.len()));
+                object.insert(
+                    "verified_effect_present".to_string(),
+                    json!(verification.verified_effect.is_some()),
+                );
+                object.insert(
+                    "command_chars".to_string(),
+                    json!(verification.command.chars().count()),
+                );
+            }
+        }
+    }
+    metadata
 }
 
 /// A data-only record of an action as known by the controller.

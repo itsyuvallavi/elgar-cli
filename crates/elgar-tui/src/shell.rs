@@ -421,7 +421,7 @@ mod tests {
         let result = shell.submit_agent_input(&runtime, &mut session, "what does the harness do?");
 
         assert_eq!(result.route, elgar_core::router::Route::AskModel);
-        assert_eq!(shell.conversation.scroll_offset(4), 8);
+        assert!(shell.conversation.is_following_latest());
         assert_eq!(before.events().len(), 0);
         assert_eq!(session.events().len(), result.events.len());
     }

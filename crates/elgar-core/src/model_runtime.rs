@@ -181,7 +181,7 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
         ),
         model_tool_definition(
             ModelToolName::ShellCommand,
-            "Draft a shell command for explicit review before execution. For compile, test, lint, or verification commands, rely on exit status and optional expected_effect; do not use expected_file for generated caches or bytecode artifacts.",
+            "Draft a shell command for explicit review before execution. Use this for local inspection commands such as cat, ls, pwd, test, build, lint, or compile. For read-only inspection commands, leave expected_file and expected_directory empty; stdout and exit status are the proof. For compile, test, lint, or verification commands, rely on exit status and optional expected_effect; do not use expected_file for generated caches or bytecode artifacts.",
             object_parameters(
                 &[
                     (
@@ -212,7 +212,7 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
                     (
                         "expected_file",
                         string_property(
-                            "Optional durable project-relative file expected after execution. Do not use for generated caches, Python bytecode, or other unstable verification artifacts.",
+                            "Optional durable project-relative file expected after execution. Leave empty for read-only inspection commands like cat or ls. Do not use for generated caches, Python bytecode, or other unstable verification artifacts.",
                         ),
                     ),
                     (
@@ -226,6 +226,17 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
             ),
         ),
     ]
+}
+
+pub fn elgar_model_tool_definitions_for(tool_names: &[ModelToolName]) -> Vec<ChatToolDefinition> {
+    let labels = tool_names
+        .iter()
+        .map(|name| name.label())
+        .collect::<Vec<_>>();
+    elgar_model_tool_definitions()
+        .into_iter()
+        .filter(|definition| labels.contains(&definition.function.name.as_str()))
+        .collect()
 }
 
 fn model_tool_definition(
@@ -1040,6 +1051,11 @@ mod tests {
         assert!(schema["properties"]["expected_file"]["description"]
             .as_str()
             .is_some_and(|description| description.contains("Do not use for generated caches")));
+        assert!(schema["properties"]["expected_file"]["description"]
+            .as_str()
+            .is_some_and(
+                |description| description.contains("Leave empty for read-only inspection commands")
+            ));
     }
 
     #[test]

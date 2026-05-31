@@ -74,6 +74,11 @@ impl ConversationPane {
     }
 
     #[cfg(test)]
+    pub(crate) fn is_following_latest(&self) -> bool {
+        self.scrollback.is_following_latest()
+    }
+
+    #[cfg(test)]
     pub(crate) fn advance_loading_pulse(&mut self) {
         if self.last_line_style() == Some(ConversationLineStyle::Loading) {
             self.loading_pulse.advance();
@@ -282,6 +287,11 @@ impl ConversationScrollback {
 
     fn follow_latest(&mut self) {
         self.lines_from_bottom = 0;
+    }
+
+    #[cfg(test)]
+    fn is_following_latest(&self) -> bool {
+        self.lines_from_bottom == 0
     }
 
     fn offset_for(&self, content_lines: usize, viewport_lines: usize) -> u16 {

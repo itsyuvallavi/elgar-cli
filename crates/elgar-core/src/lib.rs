@@ -10,6 +10,7 @@ mod controller_reporting;
 mod controller_shell_verify;
 pub mod event;
 pub mod fs;
+mod local_trace;
 pub mod model_runtime;
 mod normal_turn_decision;
 mod path_resolution;
@@ -25,6 +26,7 @@ pub mod shell;
 #[cfg(test)]
 mod test_env;
 pub mod token_accounting;
+mod verified_artifact_memory;
 mod verified_state_answer;
 
 pub const CORE_PHILOSOPHY: &str = "Model reasons. Runtime routes. Action gate enforces. Filesystem confirms. UI reports. Tests protect. Extensions wait.";

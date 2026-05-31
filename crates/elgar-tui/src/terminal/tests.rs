@@ -245,6 +245,16 @@ fn temp_root(name: &str) -> std::path::PathBuf {
     root
 }
 
+fn root_has_no_user_files(root: &Path) -> bool {
+    std::fs::read_dir(root).unwrap().all(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name == ".elgar")
+    })
+}
+
 fn provider_event_count(session: &Session) -> usize {
     session
         .events()

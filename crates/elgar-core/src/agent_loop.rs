@@ -4,10 +4,13 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::{
-    action::{Action, ActionLifecycleState, ActionRequest, CreateFileAction, OverwriteFileAction},
+    action::{
+        Action, ActionLifecycleState, ActionRequest, CreateFileAction, OverwriteFileAction,
+        ShellCommandAction,
+    },
     context::ContextBundle,
     controller::TurnResult,
     controller_project_memory::{is_plan_path_or_contents, record_verified_project_memory},
@@ -20,9 +23,9 @@ use crate::{
     },
     fs::Filesystem,
     model_runtime::{
-        elgar_model_tool_definitions, validate_model_tool_outputs, ModelToolValidationErrorKind,
-        RawModelToolCall, ValidatedModelGuidanceRequest, ValidatedModelToolAction,
-        ValidatedModelToolOutput,
+        elgar_model_tool_definitions, elgar_model_tool_definitions_for,
+        validate_model_tool_outputs, ModelToolName, ModelToolValidationErrorKind, RawModelToolCall,
+        ValidatedModelGuidanceRequest, ValidatedModelToolAction, ValidatedModelToolOutput,
     },
     normal_turn_decision::{
         parse_normal_turn_decision, NormalTurnDecision, NormalTurnExecuteIntent,
@@ -34,8 +37,8 @@ use crate::{
     plan_contract::{PlanContractDraftIssue, PlanContractDraftIssueKind},
     policy::{PermissionPolicyMode, PolicyDecision},
     provider::{
-        ChatMessage, ChatRole, ChatToolCall, ChatToolCallFunction, ControllerProvider,
-        ProviderErrorKind,
+        ChatMessage, ChatRole, ChatToolCall, ChatToolCallFunction, ChatToolDefinition,
+        ControllerProvider, ProviderErrorKind,
     },
     provider_visible_text_from_text_only_output,
     router::Route,
@@ -45,6 +48,10 @@ use crate::{
         VerifiedFolderReference, VerifiedPlanReference,
     },
     shell::ShellExecutor,
+    verified_artifact_memory::{
+        earliest_verified_artifacts, latest_action_turn_artifacts, latest_verified_artifacts,
+        verified_artifacts_under_folder, CappedVerifiedArtifacts, VerifiedArtifactFact,
+    },
     verified_state_answer::{
         parse_verified_state_answer_kind, verified_session_state_answer, VerifiedStateAnswerKind,
     },
@@ -152,10 +159,7 @@ where
         {
             return run_agent_tool_chat(provider, session, input, policy_mode, start_index, intent);
         }
-        return TurnResult {
-            route: Route::AskModel,
-            events: session.events()[start_index..].to_vec(),
-        };
+        return finish_agent_turn_result(session, start_index, Route::AskModel);
     };
 
     if tool_input.is_empty() {
@@ -163,10 +167,7 @@ where
             "Usage: /tool <request>",
             AssistantMessageSource::Controller,
         )));
-        return TurnResult {
-            route: Route::AskModel,
-            events: session.events()[start_index..].to_vec(),
-        };
+        return finish_agent_turn_result(session, start_index, Route::AskModel);
     }
 
     session.record_reasoning_route("execute");
@@ -222,6 +223,14 @@ fn push_provider_finished(
     )));
 }
 
+fn finish_agent_turn_result(session: &mut Session, start_index: usize, route: Route) -> TurnResult {
+    session.finish_trace_turn();
+    TurnResult {
+        route,
+        events: session.events()[start_index..].to_vec(),
+    }
+}
+
 fn run_agent_tool_chat<P>(
     provider: &P,
     session: &mut Session,
@@ -260,10 +269,7 @@ where
             "The latest verified plan is already complete. No filesystem changes were needed.",
             AssistantMessageSource::Controller,
         )));
-        return TurnResult {
-            route: Route::AskModel,
-            events: session.events()[start_index..].to_vec(),
-        };
+        return finish_agent_turn_result(session, start_index, Route::AskModel);
     }
     if intent.plan_execution {
         if let Some(message) = missing_expected_plan_paths_message(session) {
@@ -276,7 +282,7 @@ where
         }
     }
     messages.push(ChatMessage::user(input));
-    let tools = elgar_model_tool_definitions();
+    let tools = tool_definitions_for_intent(intent);
     let prompt_project_root = explicit_project_root_from_input(session, input);
     let mut handled_tool_call_ids = HashSet::new();
     let mut plan_created_this_turn = false;
@@ -434,11 +440,40 @@ where
             &tool_calls,
         ));
 
+        if let Err(message) = validate_tool_calls_in_scope(&tool_calls, &tools) {
+            validation_repair_in_progress = true;
+            session.trace_event(
+                "tool_call_repaired",
+                json!({
+                    "repair_kind": "tool_scope",
+                    "tool_count": tool_calls.len(),
+                    "tool_names": tool_calls.iter().map(|tool_call| tool_call.name.raw_label()).collect::<Vec<_>>(),
+                    "message_chars": message.chars().count(),
+                }),
+            );
+            for tool_call in tool_calls {
+                handled_tool_call_ids.remove(&tool_call.id);
+                messages.push(ChatMessage::tool(tool_call.id, message.clone()));
+            }
+            session.push_reasoning_runtime_check(format!("tool scope repair: {message}"));
+            continue;
+        }
+
         let outputs = match validate_model_tool_outputs(&tool_calls) {
             Ok(outputs) => outputs,
             Err(error) => match tool_validation_recovery(&error) {
                 ToolValidationRecovery::RepairModel(message) => {
                     validation_repair_in_progress = true;
+                    session.trace_event(
+                        "tool_call_repaired",
+                        json!({
+                            "repair_kind": "tool_validation",
+                            "error_kind": format!("{:?}", error.kind),
+                            "tool_name": &error.tool_name,
+                            "argument": &error.argument,
+                            "message_chars": message.chars().count(),
+                        }),
+                    );
                     for tool_call in tool_calls {
                         handled_tool_call_ids.remove(&tool_call.id);
                         messages.push(ChatMessage::tool(tool_call.id, message.clone()));
@@ -446,6 +481,16 @@ where
                     continue;
                 }
                 ToolValidationRecovery::Error(message) => {
+                    session.trace_event(
+                        "tool_call_repaired",
+                        json!({
+                            "repair_kind": "tool_validation_error",
+                            "error_kind": format!("{:?}", error.kind),
+                            "tool_name": &error.tool_name,
+                            "argument": &error.argument,
+                            "message_chars": message.chars().count(),
+                        }),
+                    );
                     session.push_event(Event::Error(ErrorEvent::new(message.clone())));
                     for tool_call in tool_calls {
                         messages.push(ChatMessage::tool(tool_call.id, message.clone()));
@@ -455,6 +500,14 @@ where
             },
         };
         validation_repair_in_progress = false;
+        session.trace_event(
+            "tool_call_validated",
+            json!({
+                "tool_count": tool_calls.len(),
+                "tool_names": tool_calls.iter().map(|tool_call| tool_call.name.raw_label()).collect::<Vec<_>>(),
+                "validated_output_count": outputs.len(),
+            }),
+        );
         record_validated_tool_output_trace(session, &outputs);
 
         let path_resolution = AgentPathResolution::new(None, None, &session.project_root);
@@ -568,10 +621,7 @@ where
                     action.summary.clone(),
                     policy_mode,
                 );
-                return TurnResult {
-                    route: Route::AskModel,
-                    events: session.events()[start_index..].to_vec(),
-                };
+                return finish_agent_turn_result(session, start_index, Route::AskModel);
             }
         }
 
@@ -676,10 +726,7 @@ where
                         session.pending_action_selection(),
                         PendingActionSelection::None
                     ) {
-                        return TurnResult {
-                            route: Route::AskModel,
-                            events: session.events()[start_index..].to_vec(),
-                        };
+                        return finish_agent_turn_result(session, start_index, Route::AskModel);
                     }
                 }
             }
@@ -745,10 +792,7 @@ where
         )));
     }
 
-    TurnResult {
-        route: Route::AskModel,
-        events: session.events()[start_index..].to_vec(),
-    }
+    finish_agent_turn_result(session, start_index, Route::AskModel)
 }
 
 fn explicit_tool_command_input(input: &str) -> Option<&str> {
@@ -862,6 +906,50 @@ where
             PlainAgentChatOutcome::Finished
         }
     }
+}
+
+fn tool_definitions_for_intent(intent: AgentExecutionIntent) -> Vec<ChatToolDefinition> {
+    if intent.explicit_tool_command {
+        return elgar_model_tool_definitions();
+    }
+    if intent.shell_execution {
+        return elgar_model_tool_definitions_for(&[
+            ModelToolName::AskGuidance,
+            ModelToolName::ShellCommand,
+        ]);
+    }
+    if intent.plan_execution || intent.plan_creation_execution {
+        return elgar_model_tool_definitions_for(&[
+            ModelToolName::AskGuidance,
+            ModelToolName::CreateFiles,
+            ModelToolName::CreateFile,
+            ModelToolName::CreateDirectory,
+            ModelToolName::OverwriteFile,
+            ModelToolName::PatchFile,
+            ModelToolName::ShellCommand,
+        ]);
+    }
+    elgar_model_tool_definitions()
+}
+
+fn validate_tool_calls_in_scope(
+    tool_calls: &[RawModelToolCall],
+    tools: &[ChatToolDefinition],
+) -> Result<(), String> {
+    let allowed_names = tools
+        .iter()
+        .map(|tool| tool.function.name.as_str())
+        .collect::<Vec<_>>();
+    for tool_call in tool_calls {
+        let tool_name = tool_call.name.raw_label();
+        if !allowed_names.contains(&tool_name.as_str()) {
+            let allowed = allowed_names.join(", ");
+            return Err(format!(
+                "Tool `{tool_name}` is not available for this route. Use one of: {allowed}."
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn retry_plain_agent_chat_with_verified_context<P>(
@@ -1630,7 +1718,7 @@ fn anchor_prompt_project_root_path(
 }
 
 fn guard_shell_execution_tool_outputs(
-    session: &Session,
+    session: &mut Session,
     outputs: Vec<ResolvedAgentToolOutput>,
     shell_execution: bool,
 ) -> Vec<ResolvedAgentToolOutput> {
@@ -1641,9 +1729,19 @@ fn guard_shell_execution_tool_outputs(
     outputs
         .into_iter()
         .map(|output| match output {
-            ResolvedAgentToolOutput::Action(action)
+            ResolvedAgentToolOutput::Action(mut action)
                 if matches!(action.request, ActionRequest::ShellCommand(_)) =>
             {
+                if let ActionRequest::ShellCommand(shell) = action.request {
+                    let (shell, dropped) =
+                        drop_preexisting_shell_expected_paths(session, shell);
+                    if dropped {
+                        session.push_reasoning_runtime_check(
+                            "ignored shell expected paths that already existed before execution",
+                        );
+                    }
+                    action.request = ActionRequest::ShellCommand(shell);
+                }
                 ResolvedAgentToolOutput::Action(action)
             }
             ResolvedAgentToolOutput::Action(action)
@@ -1659,6 +1757,45 @@ fn guard_shell_execution_tool_outputs(
             other => other,
         })
         .collect()
+}
+
+fn drop_preexisting_shell_expected_paths(
+    session: &Session,
+    mut shell: ShellCommandAction,
+) -> (ShellCommandAction, bool) {
+    let mut dropped = false;
+
+    if shell
+        .expected_file
+        .as_ref()
+        .is_some_and(|path| absolute_session_path(session, path).is_file())
+    {
+        shell.expected_file = None;
+        dropped = true;
+    }
+
+    let original_file_count = shell.expected_files.len();
+    shell
+        .expected_files
+        .retain(|path| !absolute_session_path(session, path).is_file());
+    dropped |= shell.expected_files.len() != original_file_count;
+
+    if shell
+        .expected_directory
+        .as_ref()
+        .is_some_and(|path| absolute_session_path(session, path).is_dir())
+    {
+        shell.expected_directory = None;
+        dropped = true;
+    }
+
+    let original_directory_count = shell.expected_directories.len();
+    shell
+        .expected_directories
+        .retain(|path| !absolute_session_path(session, path).is_dir());
+    dropped |= shell.expected_directories.len() != original_directory_count;
+
+    (shell, dropped)
 }
 
 fn shell_execution_new_create_target_allowed(session: &Session, request: &ActionRequest) -> bool {
@@ -3103,6 +3240,18 @@ fn apply_agent_action_with_policy(
     };
     let proposed = Action::proposed(next_action_id(session), request, summary);
     let policy_decision = policy_decision_for_agent_action(session, policy_mode, &proposed);
+    session.trace_event(
+        "policy_decision",
+        json!({
+            "action_id": &proposed.id,
+            "action_kind": format!("{:?}", proposed.kind()),
+            "mode": policy_decision.mode.as_str(),
+            "kind": format!("{:?}", policy_decision.kind),
+            "user_approval_required": policy_decision.user_approval_required,
+            "filesystem_verification_required": policy_decision.filesystem_verification_required,
+            "reason_chars": policy_decision.reason.chars().count(),
+        }),
+    );
 
     if policy_decision.user_approval_required {
         return propose_agent_action_for_review(session, proposed, policy_decision);
@@ -3494,7 +3643,8 @@ fn friendly_tool_validation_error(
 fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryContext {
     let mut selected = Vec::new();
     let mut lines = Vec::new();
-    if let Some(folder) = latest_verified_folder_for_prompt(session) {
+    let latest_folder = latest_verified_folder_for_prompt(session).cloned();
+    if let Some(folder) = latest_folder.as_ref() {
         lines.push(format!(
             "- latest verified folder: {}",
             display_agent_context_path(session, &folder.path)
@@ -3588,6 +3738,12 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
             plan.source_action_id.clone().unwrap_or_default(),
         ));
     }
+    append_verified_artifact_memory_context(
+        session,
+        latest_folder.as_ref().map(|folder| folder.path.as_path()),
+        &mut lines,
+        &mut selected,
+    );
 
     if selected.is_empty() {
         session.set_latest_provider_prompt_memory_selection(None);
@@ -3612,6 +3768,122 @@ fn agent_verified_memory_context(session: &mut Session) -> AgentVerifiedMemoryCo
     };
 
     AgentVerifiedMemoryContext { prompt_context }
+}
+
+const VERIFIED_ARTIFACT_LATEST_TURN_LIMIT: usize = 4;
+const VERIFIED_ARTIFACT_LATEST_LIMIT: usize = 6;
+const VERIFIED_ARTIFACT_EARLIEST_LIMIT: usize = 3;
+const VERIFIED_ARTIFACT_FOLDER_LIMIT: usize = 4;
+
+fn append_verified_artifact_memory_context(
+    session: &Session,
+    latest_folder: Option<&Path>,
+    lines: &mut Vec<String>,
+    selected: &mut Vec<ProviderPromptMemorySelectedFact>,
+) {
+    let latest_turn = latest_action_turn_artifacts(session, VERIFIED_ARTIFACT_LATEST_TURN_LIMIT);
+    let latest = latest_verified_artifacts(session, VERIFIED_ARTIFACT_LATEST_LIMIT);
+    let earliest = earliest_verified_artifacts(session, VERIFIED_ARTIFACT_EARLIEST_LIMIT);
+    let under_latest_folder = latest_folder
+        .map(|folder| {
+            (
+                folder,
+                verified_artifacts_under_folder(session, folder, VERIFIED_ARTIFACT_FOLDER_LIMIT),
+            )
+        })
+        .filter(|(_folder, artifacts)| !artifacts.artifacts.is_empty());
+
+    if latest_turn.artifacts.is_empty()
+        && latest.artifacts.is_empty()
+        && earliest.artifacts.is_empty()
+        && under_latest_folder.is_none()
+    {
+        return;
+    }
+
+    lines.push("- verified artifacts from prior actions:".to_string());
+    append_artifact_group(session, lines, selected, "latest action turn", &latest_turn);
+    append_artifact_group(
+        session,
+        lines,
+        selected,
+        "latest session artifacts",
+        &latest,
+    );
+    append_artifact_group(
+        session,
+        lines,
+        selected,
+        "earliest session artifacts",
+        &earliest,
+    );
+    if let Some((folder, artifacts)) = under_latest_folder {
+        append_artifact_group(
+            session,
+            lines,
+            selected,
+            &format!(
+                "artifacts under latest folder {}",
+                display_agent_context_path(session, folder)
+            ),
+            &artifacts,
+        );
+    }
+}
+
+fn append_artifact_group(
+    session: &Session,
+    lines: &mut Vec<String>,
+    selected: &mut Vec<ProviderPromptMemorySelectedFact>,
+    label: &str,
+    artifacts: &CappedVerifiedArtifacts,
+) {
+    if artifacts.artifacts.is_empty() {
+        return;
+    }
+
+    lines.push(format!("  - {label}:"));
+    for artifact in &artifacts.artifacts {
+        lines.push(format!(
+            "    - {}",
+            verified_artifact_context_line(session, artifact)
+        ));
+        selected.push(ProviderPromptMemorySelectedFact::new(
+            "verified_artifact",
+            artifact.path.clone(),
+            artifact.project_root.clone(),
+            artifact.action_id.clone(),
+        ));
+    }
+    if artifacts.omitted_count > 0 {
+        lines.push(format!(
+            "    - omitted {} older verified artifact(s) due to prompt cap",
+            artifacts.omitted_count
+        ));
+    }
+}
+
+fn verified_artifact_context_line(session: &Session, artifact: &VerifiedArtifactFact) -> String {
+    let mut line = format!(
+        "{} turn {} {} {}",
+        artifact.action_id,
+        artifact.turn_index,
+        artifact.operation,
+        display_agent_context_path(session, &artifact.path)
+    );
+    if let Some(source_path) = artifact.source_path.as_ref() {
+        line.push_str(&format!(
+            " from {}",
+            display_agent_context_path(session, source_path)
+        ));
+    }
+    if let Some(project_root) = artifact.project_root.as_ref() {
+        line.push_str(&format!(
+            " under {}",
+            display_agent_context_path(session, project_root)
+        ));
+    }
+    line
 }
 
 fn latest_verified_folder_for_prompt(session: &Session) -> Option<&VerifiedFolderReference> {
@@ -6412,6 +6684,147 @@ mod tests {
     }
 
     #[test]
+    fn verified_artifact_memory_injects_created_files_into_tool_turns() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-artifact-context-tool",
+            std::process::id()
+        ));
+        let cwd = root.join("playground");
+        let project = cwd.join("workspace");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("I can use verified artifacts."),
+            crate::event::ProviderOutput::new("No tool action needed."),
+        ]);
+        let mut session = Session::new("session", &root, &cwd);
+        session.record_verified_folder_reference(crate::session::VerifiedFolderReference {
+            path: project.clone(),
+            source_action_id: "action-folder".to_string(),
+        });
+        push_verified_file_record(&mut session, "action-readme", "workspace/README.md");
+        push_verified_file_record(&mut session, "action-main", "workspace/src/main.py");
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "continue the project",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let messages = provider.messages.lock().unwrap();
+        let verified_context = messages[0]
+            .iter()
+            .find(|message| message.content.contains("Verified filesystem context"))
+            .expect("tool turn should include verified memory context");
+        assert!(verified_context
+            .content
+            .contains("- verified artifacts from prior actions:"));
+        assert!(verified_context.content.contains("latest action turn"));
+        assert!(verified_context.content.contains("action-main turn"));
+        assert!(verified_context
+            .content
+            .contains("created_file workspace/src/main.py under workspace"));
+        assert!(verified_context
+            .content
+            .contains("earliest session artifacts"));
+        assert!(verified_context.content.contains("action-readme turn"));
+        assert!(verified_context
+            .content
+            .contains("artifacts under latest folder workspace"));
+
+        let selection = session
+            .latest_provider_prompt_memory_selection()
+            .expect("artifact prompt selection should be recorded");
+        assert!(selection
+            .selected
+            .iter()
+            .any(|fact| fact.kind == "verified_artifact"
+                && fact.path.ends_with("workspace/src/main.py")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_artifact_memory_stays_out_of_plain_chat() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-artifact-plain-clean",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new();
+        let mut session = Session::new("session", &root, &root);
+        push_verified_file_record(&mut session, "action-notes", "notes.txt");
+
+        run_permissive_agent_turn(&provider, &mut session, "hello");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[0].tool_count, 0);
+        let joined = joined_request_messages(&requests[0]);
+        assert!(!joined.contains("verified artifacts from prior actions"));
+        assert!(!joined.contains("notes.txt"));
+        assert!(session.latest_provider_prompt_memory_selection().is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verified_artifact_memory_prompt_caps_and_reports_omitted_count() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-artifact-context-cap",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = SequenceProvider::new(vec![
+            crate::event::ProviderOutput::new("I can use capped verified artifacts."),
+            crate::event::ProviderOutput::new("No tool action needed."),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+        for index in 1..=8 {
+            push_verified_file_record(
+                &mut session,
+                &format!("action-{index}"),
+                &format!("file-{index}.txt"),
+            );
+        }
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "use the first file you created",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let messages = provider.messages.lock().unwrap();
+        let verified_context = messages[0]
+            .iter()
+            .find(|message| message.content.contains("Verified filesystem context"))
+            .expect("tool turn should include verified memory context");
+        assert!(verified_context
+            .content
+            .contains("earliest session artifacts"));
+        assert!(verified_context.content.contains("action-1 turn"));
+        assert!(verified_context.content.contains("file-1.txt"));
+        assert!(verified_context
+            .content
+            .contains("latest session artifacts"));
+        assert!(verified_context.content.contains("action-8 turn"));
+        assert!(verified_context.content.contains("file-8.txt"));
+        assert!(verified_context
+            .content
+            .contains("omitted 2 older verified artifact(s) due to prompt cap"));
+        assert!(verified_context
+            .content
+            .contains("omitted 5 older verified artifact(s) due to prompt cap"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn completed_structured_plan_prompt_context_keeps_files_editable() {
         let root = std::env::temp_dir().join(format!(
             "elgar-agent-loop-{}-completed-plan-editable-context",
@@ -6748,6 +7161,7 @@ mod tests {
         mode: CapturedProviderRequestMode,
         messages: Vec<ChatMessage>,
         tool_count: usize,
+        tool_names: Vec<String>,
     }
 
     #[derive(Debug, Clone)]
@@ -6893,6 +7307,7 @@ mod tests {
                 mode: CapturedProviderRequestMode::Tool,
                 messages,
                 tool_count: tools.len(),
+                tool_names: tools.into_iter().map(|tool| tool.function.name).collect(),
             });
             match self.next_tool_step() {
                 CapturedToolStep::Output(output) => Ok(output),
@@ -6911,6 +7326,7 @@ mod tests {
                 mode: CapturedProviderRequestMode::Plain,
                 messages,
                 tool_count: 0,
+                tool_names: Vec::new(),
             });
             Ok(self.next_plain_output())
         }
@@ -6923,6 +7339,52 @@ mod tests {
             .map(|message| message.content.as_str())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn only_tool_request(provider: &CapturingProvider) -> CapturedProviderRequest {
+        provider
+            .requests()
+            .into_iter()
+            .find(|request| request.mode == CapturedProviderRequestMode::Tool)
+            .expect("tool request should be captured")
+    }
+
+    fn push_verified_file_record(session: &mut Session, action_id: &str, path: &str) {
+        session.start_reasoning_trace(format!("turn for {action_id}"));
+        let action = Action::proposed(
+            action_id,
+            ActionRequest::CreateFile(CreateFileAction {
+                target_path: PathBuf::from(path),
+                contents: String::new(),
+            }),
+            "create file",
+        )
+        .approve()
+        .mark_applied();
+        let mut record = ActionRecord::new(action);
+        record.verified_result = Some(VerifiedActionResult::File(
+            crate::event::FileActionVerification::FileCreated {
+                path: path.to_string(),
+            },
+        ));
+        session.push_action(record);
+    }
+
+    fn trace_events(root: &Path, session_id: &str) -> Vec<serde_json::Value> {
+        let path = crate::local_trace::trace_file_path(root, session_id);
+        let contents = std::fs::read_to_string(path).expect("trace file should exist");
+        contents
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("trace line should be valid json"))
+            .collect()
+    }
+
+    fn trace_kinds(events: &[serde_json::Value]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| event.get("kind").and_then(serde_json::Value::as_str))
+            .map(ToString::to_string)
+            .collect()
     }
 
     impl ControllerProvider for CapturingProvider {
@@ -6947,6 +7409,7 @@ mod tests {
                 mode: CapturedProviderRequestMode::Tool,
                 messages,
                 tool_count: tools.len(),
+                tool_names: tools.into_iter().map(|tool| tool.function.name).collect(),
             });
             Ok(self.next_tool_output(has_tool_result))
         }
@@ -6960,6 +7423,7 @@ mod tests {
                 mode: CapturedProviderRequestMode::Plain,
                 messages,
                 tool_count: 0,
+                tool_names: Vec::new(),
             });
             Ok(self.next_plain_output())
         }
@@ -7003,6 +7467,97 @@ mod tests {
                     if started.request_mode.as_deref() == Some("tool_enabled")
             )));
         }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plain_chat_writes_redacted_local_trace_without_tools_or_memory() {
+        std::env::set_var("ELGAR_TRACE", "on");
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plain-trace",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new().with_plain_output(
+            crate::event::ProviderOutput::new("{\"route\":\"chat\",\"content\":\"Plain answer.\"}"),
+        );
+        let mut session = Session::new("trace-session", &root, &root);
+
+        let result = run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "hello secret-user-prompt-that-must-not-be-traced",
+        );
+
+        assert_eq!(result.route, Route::AskModel);
+        let events = trace_events(&root, "trace-session");
+        let kinds = trace_kinds(&events);
+        assert!(kinds.contains(&"turn_start".to_string()));
+        assert!(kinds.contains(&"provider_request_start".to_string()));
+        assert!(kinds.contains(&"provider_request_finish".to_string()));
+        assert!(kinds.contains(&"route_decision".to_string()));
+        assert!(kinds.contains(&"turn_finish".to_string()));
+        assert!(!kinds.contains(&"memory_selected".to_string()));
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(!serialized.contains("secret-user-prompt-that-must-not-be-traced"));
+        assert!(events.iter().any(|event| {
+            event.get("kind").and_then(serde_json::Value::as_str) == Some("provider_request_start")
+                && event
+                    .get("metadata")
+                    .and_then(|metadata| metadata.get("tool_count"))
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(0)
+        }));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_action_turn_writes_action_trace_without_file_contents() {
+        std::env::set_var("ELGAR_TRACE", "on");
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-tool-trace",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating file.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "call-1".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "notes.txt",
+                            "contents": "secret-file-contents-that-must-not-be-traced",
+                        }),
+                        assistant_summary: None,
+                    },
+                ]),
+            );
+        let mut session = Session::new("trace-session-tool", &root, &root);
+
+        let result = run_permissive_agent_turn(
+            &provider,
+            &mut session,
+            "create a file with secret-file-contents-that-must-not-be-traced",
+        );
+
+        assert_eq!(result.route, Route::AskModel);
+        assert!(root.join("notes.txt").is_file());
+        let events = trace_events(&root, "trace-session-tool");
+        let kinds = trace_kinds(&events);
+        assert!(kinds.contains(&"tool_call_validated".to_string()));
+        assert!(kinds.contains(&"policy_decision".to_string()));
+        assert!(kinds.contains(&"action_approved".to_string()));
+        assert!(kinds.contains(&"action_applied".to_string()));
+        assert!(kinds.contains(&"turn_finish".to_string()));
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(!serialized.contains("secret-file-contents-that-must-not-be-traced"));
+        assert!(serialized.contains("notes.txt"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -8762,7 +9317,8 @@ Acceptance Criteria:
                         arguments: json!({
                             "command": "cat notes.txt",
                             "cwd": ".",
-                            "expected_effect": "hello world"
+                            "expected_effect": "hello world",
+                            "expected_file": "notes.txt"
                         }),
                         assistant_summary: Some("cat notes".to_string()),
                     },
@@ -8786,7 +9342,213 @@ Acceptance Criteria:
         assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
             .runtime_checks
             .iter()
-            .any(|line| line.contains("requires shell_command"))));
+            .any(|line| line.contains("Tool `create_file` is not available"))));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("ignored shell expected paths"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_execution_intent_exposes_only_shell_safe_tools_before_model_call() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-shell-scoped-tools",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("USAGE.md"), "usage\n").unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"shell_execution\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Creating usage.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "shell-scoped-wrong-file".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFile),
+                        arguments: json!({
+                            "target_path": "USAGE.md",
+                            "contents": "changed\n"
+                        }),
+                        assistant_summary: Some("rewrite usage".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new("Running cat.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "shell-scoped-cat".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                        arguments: json!({
+                            "command": "cat USAGE.md",
+                            "cwd": ".",
+                            "expected_effect": "usage",
+                            "expected_file": "USAGE.md"
+                        }),
+                        assistant_summary: Some("cat usage".to_string()),
+                    },
+                ]),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "run cat USAGE.md");
+
+        let tool_requests = provider
+            .requests()
+            .into_iter()
+            .filter(|request| request.mode == CapturedProviderRequestMode::Tool)
+            .collect::<Vec<_>>();
+        assert!(tool_requests.len() >= 2);
+        for tool_request in &tool_requests {
+            assert_eq!(
+                tool_request.tool_names,
+                vec!["ask_guidance".to_string(), "shell_command".to_string()]
+            );
+            assert_eq!(tool_request.tool_count, 2);
+            assert!(!tool_request
+                .tool_names
+                .iter()
+                .any(|name| name == "create_file" || name == "create_files"));
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("USAGE.md")).unwrap(),
+            "usage\n"
+        );
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Tool `create_file` is not available"))));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("ignored shell expected paths"))));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::ActionApplied(applied)
+                if matches!(&applied.result, VerifiedActionResult::Shell(shell)
+                    if shell.stdout.contains("usage"))
+        )));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_execution_intent_exposes_plan_safe_tools_before_model_call() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-plan-scoped-tools",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("PlanScoped");
+        std::fs::create_dir_all(&project).unwrap();
+        let plan_path = project.join("plan.md");
+        std::fs::write(
+            &plan_path,
+            "# Plan\n\n```text\nREADME.md\nsrc/main.py\n```\n\n## Verification\n- Files exist.\n\n## Acceptance Criteria\n- Expected files exist.\n",
+        )
+        .unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"plan_execution\"}",
+            ))
+            .with_tool_output(
+                crate::event::ProviderOutput::new("Creating files.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "plan-scoped-files".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::CreateFiles),
+                        arguments: json!({
+                            "directories": ["PlanScoped/src"],
+                            "files": [
+                                {
+                                    "target_path": "PlanScoped/README.md",
+                                    "contents": "# Plan Scoped\n"
+                                },
+                                {
+                                    "target_path": "PlanScoped/src/main.py",
+                                    "contents": "print('ok')\n"
+                                }
+                            ]
+                        }),
+                        assistant_summary: Some("create files".to_string()),
+                    },
+                ]),
+            );
+        let mut session = Session::new("session", &root, &root);
+        session.record_verified_plan_reference(VerifiedPlanReference {
+            path: plan_path.clone(),
+            project_root: project.clone(),
+            source_action_id: "action-plan".to_string(),
+        });
+        session.record_structured_project_plan(crate::session::StructuredProjectPlan {
+            source_action_id: Some("action-plan".to_string()),
+            source_plan_path: plan_path,
+            project_root: project.clone(),
+            stage: "verified-plan".to_string(),
+            status: crate::session::StructuredProjectPlanStatus::Verified,
+            expected_directories: vec![project.join("src")],
+            expected_files: vec![project.join("README.md"), project.join("src/main.py")],
+        });
+
+        run_permissive_agent_turn(&provider, &mut session, "execute the verified plan");
+
+        let tool_request = only_tool_request(&provider);
+        assert_eq!(
+            tool_request.tool_names,
+            vec![
+                "ask_guidance".to_string(),
+                "create_files".to_string(),
+                "create_file".to_string(),
+                "create_directory".to_string(),
+                "overwrite_file".to_string(),
+                "patch_file".to_string(),
+                "shell_command".to_string(),
+            ]
+        );
+        assert_eq!(tool_request.tool_count, 7);
+        assert!(!tool_request
+            .tool_names
+            .iter()
+            .any(|name| name == "delete_file" || name == "move_file"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explicit_tool_command_still_exposes_full_tool_set() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-explicit-full-tools",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new().with_tool_output(
+            crate::event::ProviderOutput::new("Creating file.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "explicit-full-tools-file".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::CreateFile),
+                    arguments: json!({
+                        "target_path": "notes.txt",
+                        "contents": "hello\n"
+                    }),
+                    assistant_summary: Some("create file".to_string()),
+                },
+            ]),
+        );
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "/tool create notes.txt");
+
+        let tool_request = only_tool_request(&provider);
+        assert_eq!(tool_request.tool_count, 9);
+        assert!(tool_request
+            .tool_names
+            .iter()
+            .any(|name| name == "delete_file"));
+        assert!(tool_request
+            .tool_names
+            .iter()
+            .any(|name| name == "move_file"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
