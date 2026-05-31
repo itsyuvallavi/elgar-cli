@@ -3861,6 +3861,21 @@ const VERIFIED_ARTIFACT_LATEST_LIMIT: usize = 6;
 const VERIFIED_ARTIFACT_EARLIEST_LIMIT: usize = 3;
 const VERIFIED_ARTIFACT_FOLDER_LIMIT: usize = 4;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct VerifiedArtifactPromptKey {
+    action_id: String,
+    path: PathBuf,
+}
+
+impl VerifiedArtifactPromptKey {
+    fn from_artifact(artifact: &VerifiedArtifactFact) -> Self {
+        Self {
+            action_id: artifact.action_id.clone(),
+            path: artifact.path.clone(),
+        }
+    }
+}
+
 fn append_verified_artifact_memory_context(
     session: &Session,
     latest_folder: Option<&Path>,
@@ -3888,13 +3903,22 @@ fn append_verified_artifact_memory_context(
     }
 
     lines.push("- verified artifacts from prior actions:".to_string());
-    append_artifact_group(session, lines, selected, "latest action turn", &latest_turn);
+    let mut emitted = HashSet::new();
+    append_artifact_group(
+        session,
+        lines,
+        selected,
+        "latest action turn",
+        &latest_turn,
+        &mut emitted,
+    );
     append_artifact_group(
         session,
         lines,
         selected,
         "latest session artifacts",
         &latest,
+        &mut emitted,
     );
     append_artifact_group(
         session,
@@ -3902,6 +3926,7 @@ fn append_verified_artifact_memory_context(
         selected,
         "earliest session artifacts",
         &earliest,
+        &mut emitted,
     );
     if let Some((folder, artifacts)) = under_latest_folder {
         append_artifact_group(
@@ -3913,6 +3938,7 @@ fn append_verified_artifact_memory_context(
                 display_agent_context_path(session, folder)
             ),
             &artifacts,
+            &mut emitted,
         );
     }
 }
@@ -3923,13 +3949,23 @@ fn append_artifact_group(
     selected: &mut Vec<ProviderPromptMemorySelectedFact>,
     label: &str,
     artifacts: &CappedVerifiedArtifacts,
+    emitted: &mut HashSet<VerifiedArtifactPromptKey>,
 ) {
     if artifacts.artifacts.is_empty() {
         return;
     }
 
+    let artifacts_to_emit = artifacts
+        .artifacts
+        .iter()
+        .filter(|artifact| emitted.insert(VerifiedArtifactPromptKey::from_artifact(artifact)))
+        .collect::<Vec<_>>();
+    if artifacts_to_emit.is_empty() {
+        return;
+    }
+
     lines.push(format!("  - {label}:"));
-    for artifact in &artifacts.artifacts {
+    for artifact in artifacts_to_emit {
         lines.push(format!(
             "    - {}",
             verified_artifact_context_line(session, artifact)
@@ -6811,13 +6847,7 @@ mod tests {
         assert!(verified_context
             .content
             .contains("created_file workspace/src/main.py under workspace"));
-        assert!(verified_context
-            .content
-            .contains("earliest session artifacts"));
         assert!(verified_context.content.contains("action-readme turn"));
-        assert!(verified_context
-            .content
-            .contains("artifacts under latest folder workspace"));
 
         let selection = session
             .latest_provider_prompt_memory_selection()
@@ -6827,6 +6857,30 @@ mod tests {
             .iter()
             .any(|fact| fact.kind == "verified_artifact"
                 && fact.path.ends_with("workspace/src/main.py")));
+        let artifact_facts = selection
+            .selected
+            .iter()
+            .filter(|fact| fact.kind == "verified_artifact")
+            .collect::<Vec<_>>();
+        let unique_artifact_facts = artifact_facts
+            .iter()
+            .map(|fact| (fact.source_action_id.as_str(), fact.path.as_path()))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(artifact_facts.len(), unique_artifact_facts.len());
+        assert_eq!(
+            verified_context
+                .content
+                .matches("workspace/src/main.py")
+                .count(),
+            1
+        );
+        assert_eq!(
+            verified_context
+                .content
+                .matches("workspace/README.md")
+                .count(),
+            1
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
