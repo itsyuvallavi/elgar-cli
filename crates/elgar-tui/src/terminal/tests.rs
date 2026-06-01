@@ -42,8 +42,9 @@ use super::prompt::{
 use super::{
     active_working_frame_lines, active_working_frame_lines_with_cursor, context_window_pressure,
     conversation_print_blocks, copy_conversation_to_terminal_clipboard,
-    copy_conversation_with_clipboards, default_shell_text, encode_base64, handle_inline_submission,
-    handle_scroll_key, handle_submitted_terminal_input_for_loop, handle_terminal_key,
+    copy_conversation_with_clipboards, copy_text_with_command_and_args, default_shell_text,
+    encode_base64, handle_inline_submission, handle_scroll_key,
+    handle_submitted_terminal_input_for_loop, handle_terminal_key,
     handle_terminal_key_with_copy_writer, inline_prompt_frame_lines,
     inline_prompt_frame_lines_with_cursor, live_render_due, osc52_clipboard_sequence,
     parse_terminal_command, plain_block_lines, render_terminal_help, render_tui_shell, should_exit,

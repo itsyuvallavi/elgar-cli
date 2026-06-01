@@ -1,5 +1,5 @@
 use elgar_core::event::{
-    ActionEvent, ActionKind, AssistantMessageSource, Event, ProviderTokenUsage,
+    ActionEvent, ActionFailed, ActionKind, AssistantMessageSource, Event, ProviderTokenUsage,
 };
 use elgar_core::policy::ApprovalSource;
 
@@ -48,11 +48,9 @@ pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLin
             render_verified_action_result(&applied.result),
             ConversationLineStyle::Plain,
         )),
-        Event::ActionFailed(failed) => Some(format!(
-            "Action failed: {} {:?} {}",
-            failed.action_id, failed.action_kind, failed.reason
-        ))
-        .map(|line| (line, ConversationLineStyle::Plain)),
+        Event::ActionFailed(failed) => {
+            Some(render_action_failed(failed)).map(|line| (line, ConversationLineStyle::Plain))
+        }
         Event::Error(error) => Some((
             render_error_line(&error.message),
             ConversationLineStyle::Plain,
@@ -119,6 +117,18 @@ fn render_action_approved(action: &ActionEvent) -> Option<String> {
 
     if action.summary.starts_with("execute Markdown plan in ") {
         return Some("Approved. Creating the project files.".to_string());
+    }
+
+    if action.action_kind == ActionKind::ShellCommand {
+        let mut lines = vec!["Approved. Local executor is running the shell command.".to_string()];
+        if let Some(command) = action.target.as_deref() {
+            lines.push(format!("Command: {}", command.trim()));
+        }
+        if let Some(details) = action.shell_details.as_ref() {
+            lines.push(format!("Cwd: {}", user_display_path(&details.cwd)));
+            lines.push(format!("Timeout: {}s", details.timeout_seconds));
+        }
+        return Some(lines.join("\n"));
     }
 
     Some("Approved. Applying the action.".to_string())
@@ -216,7 +226,8 @@ fn render_assistant_output(content: &str) -> String {
 fn render_shell_action_proposal(action: &ActionEvent) -> String {
     if let Some(command) = action.target.as_deref() {
         let mut lines = vec![
-            "I can run this command. Approve to run it.".to_string(),
+            "Model proposed a shell command. It has not run yet.".to_string(),
+            "Approve to run it with the local executor.".to_string(),
             format!("Command: {}", command.trim()),
         ];
         if let Some(details) = action.shell_details.as_ref() {
@@ -241,6 +252,26 @@ fn render_shell_action_proposal(action: &ActionEvent) -> String {
     }
 
     "I can run this command. Approve to run it.".to_string()
+}
+
+fn render_action_failed(failed: &ActionFailed) -> String {
+    if failed.action_kind == ActionKind::ShellCommand {
+        let mut lines = vec!["Shell command failed.".to_string()];
+        if let Some(command) = failed.target.as_deref() {
+            lines.push(format!("Command: {}", command.trim()));
+        }
+        if let Some(details) = failed.shell_details.as_ref() {
+            lines.push(format!("Cwd: {}", user_display_path(&details.cwd)));
+            lines.push(format!("Timeout: {}s", details.timeout_seconds));
+        }
+        lines.push(format!("Reason: {}", failed.reason));
+        return lines.join("\n");
+    }
+
+    format!(
+        "Action failed: {} {:?} {}",
+        failed.action_id, failed.action_kind, failed.reason
+    )
 }
 
 fn is_controller_action_boilerplate(content: &str) -> bool {

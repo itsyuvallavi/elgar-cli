@@ -25,8 +25,9 @@ mod text;
 
 #[cfg(test)]
 use commands::{
-    copy_conversation_to_terminal_clipboard, copy_conversation_with_clipboards, encode_base64,
-    osc52_clipboard_sequence, parse_terminal_command, render_terminal_help, TerminalCommand,
+    copy_conversation_to_terminal_clipboard, copy_conversation_with_clipboards,
+    copy_text_with_command_and_args, encode_base64, osc52_clipboard_sequence,
+    parse_terminal_command, render_terminal_help, TerminalCommand,
 };
 #[cfg(test)]
 use context::{context_window_pressure, ContextWindowPressure};

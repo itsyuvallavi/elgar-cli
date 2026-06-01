@@ -179,6 +179,23 @@ fn terminal_copy_reports_failure_when_system_and_terminal_clipboards_fail() {
         .contains("system clipboard failed: pbcopy missing"));
 }
 
+#[cfg(unix)]
+#[test]
+fn terminal_system_clipboard_command_has_timeout() {
+    let started = std::time::Instant::now();
+
+    let error = copy_text_with_command_and_args(
+        "/bin/sh",
+        &["-c", "cat >/dev/null; sleep 5"],
+        "copy target",
+        std::time::Duration::from_millis(50),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
+
 #[test]
 fn terminal_copy_slash_command_does_not_change_controller_or_scroll_state() {
     let controller = Controller::default();

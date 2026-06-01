@@ -193,9 +193,8 @@ fn handle_approve_action(session: &mut Session) {
                         record.action = approved_for_execution.mark_failed();
                         session
                             .remove_structured_project_plan_for_action(&approved_for_execution.id);
-                        session.push_event(Event::ActionFailed(ActionFailed::new(
-                            approved_for_execution.id.clone(),
-                            approved_for_execution.kind(),
+                        session.push_event(Event::ActionFailed(action_failed_for_action(
+                            &approved_for_execution,
                             reason,
                         )));
                         push_action_gate_message(
@@ -223,9 +222,8 @@ fn handle_approve_action(session: &mut Session) {
                 record.failure_reason = Some(reason.clone());
                 record.action = approved_for_execution.mark_failed();
                 session.remove_structured_project_plan_for_action(&approved_for_execution.id);
-                session.push_event(Event::ActionFailed(ActionFailed::new(
-                    approved_for_execution.id.clone(),
-                    approved_for_execution.kind(),
+                session.push_event(Event::ActionFailed(action_failed_for_action(
+                    &approved_for_execution,
                     reason,
                 )));
                 push_action_gate_message(
@@ -258,6 +256,19 @@ fn action_event_for_action(action: &Action) -> ActionEvent {
         );
     }
     event
+}
+
+fn action_failed_for_action(action: &Action, reason: impl Into<String>) -> ActionFailed {
+    let mut failed = ActionFailed::new(action.id.clone(), action.kind(), reason.into());
+    failed = failed.with_target(action_target_label(action));
+    if let ActionRequest::ShellCommand(shell) = &action.request {
+        failed = failed.with_shell_details(
+            shell.cwd.display().to_string(),
+            shell.timeout_seconds,
+            shell.expected_effect.clone(),
+        );
+    }
+    failed
 }
 
 fn shell_command_action_metadata(action_id: &str, shell: &ShellCommandAction) -> Value {

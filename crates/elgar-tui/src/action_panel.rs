@@ -41,7 +41,7 @@ impl PendingActionArea {
             Event::ActionRejected(action) => self.update_or_replace(
                 action,
                 ActionPanelState::Rejected,
-                Some("Rejected. No file was changed.".to_string()),
+                Some(rejected_result_text(action)),
             ),
             Event::ActionApplied(action) => {
                 if self.hidden_policy_actions.remove(&action.action_id) {
@@ -154,7 +154,14 @@ impl ActionApprovalPanel {
     }
 
     fn render(&self) -> String {
-        let mut lines = vec![format!("Status: {}", self.state.render())];
+        let mut lines = Vec::new();
+        if self.action_type == "ShellCommand" && self.state == ActionPanelState::Proposed {
+            lines.push("Model proposed a shell command; it has not run yet.".to_string());
+        }
+        if self.action_type == "ShellCommand" && self.state == ActionPanelState::Approved {
+            lines.push("Local executor is running this shell command.".to_string());
+        }
+        lines.push(format!("Status: {}", self.state.render()));
 
         if let Some(request) = self.request_line() {
             lines.push(request);
@@ -255,6 +262,14 @@ impl ActionPanelState {
             Self::Rejected => "Rejected. Nothing was changed.",
             Self::Failed => "Failed before verification completed.",
         }
+    }
+}
+
+fn rejected_result_text(action: &ActionEvent) -> String {
+    if action.action_kind == elgar_core::event::ActionKind::ShellCommand {
+        "Rejected. The shell command was not run.".to_string()
+    } else {
+        "Rejected. No file was changed.".to_string()
     }
 }
 

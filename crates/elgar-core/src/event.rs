@@ -319,6 +319,10 @@ pub struct ActionFailed {
     pub action_id: String,
     pub action_kind: ActionKind,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_details: Option<ShellCommandEventDetails>,
 }
 
 impl ActionFailed {
@@ -331,7 +335,28 @@ impl ActionFailed {
             action_id: action_id.into(),
             action_kind,
             reason: reason.into(),
+            target: None,
+            shell_details: None,
         }
+    }
+
+    pub fn with_target(mut self, target: impl Into<String>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+
+    pub fn with_shell_details(
+        mut self,
+        cwd: impl Into<String>,
+        timeout_seconds: u64,
+        expected_effect: impl Into<String>,
+    ) -> Self {
+        self.shell_details = Some(ShellCommandEventDetails {
+            cwd: cwd.into(),
+            timeout_seconds,
+            expected_effect: expected_effect.into(),
+        });
+        self
     }
 }
 

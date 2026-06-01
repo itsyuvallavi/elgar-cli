@@ -148,6 +148,42 @@ mod tests {
     }
 
     #[test]
+    fn conversation_renders_shell_lifecycle_with_command_context() {
+        let mut conversation = ConversationPane::default();
+        let action = ActionEvent::new(
+            "action-1",
+            elgar_core::event::ActionKind::ShellCommand,
+            "run npm install",
+        )
+        .with_target("npm install && npm run dev")
+        .with_shell_details("Nextjs-1", 300, "starts dev server");
+
+        conversation.push_event(&Event::ActionProposed(action.clone()));
+        conversation.push_event(&Event::ActionApproved(
+            action.with_approval_source(elgar_core::policy::ApprovalSource::user()),
+        ));
+        conversation.push_event(&Event::ActionFailed(
+            elgar_core::event::ActionFailed::new(
+                "action-1",
+                elgar_core::event::ActionKind::ShellCommand,
+                "shell command timed out after 300000 ms",
+            )
+            .with_target("npm install && npm run dev")
+            .with_shell_details("Nextjs-1", 300, "starts dev server"),
+        ));
+
+        let rendered = conversation.render_body();
+        assert!(rendered.contains("Model proposed a shell command. It has not run yet."));
+        assert!(rendered.contains("Approve to run it with the local executor."));
+        assert!(rendered.contains("Approved. Local executor is running the shell command."));
+        assert!(rendered.contains("Shell command failed."));
+        assert!(rendered.contains("Command: npm install && npm run dev"));
+        assert!(rendered.contains("Cwd: Nextjs-1"));
+        assert!(rendered.contains("Timeout: 300s"));
+        assert!(rendered.contains("Reason: shell command timed out after 300000 ms"));
+    }
+
+    #[test]
     fn empty_panes_render_default_body_text() {
         assert_eq!(
             ConversationPane::default().render_body(),

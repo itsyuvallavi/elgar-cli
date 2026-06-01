@@ -3583,9 +3583,8 @@ fn apply_agent_action_with_policy(
             record.verified_result = None;
             record.failure_reason = Some(reason.clone());
             record.action = execution_action.mark_failed();
-            session.push_event(Event::ActionFailed(ActionFailed::new(
-                action.id.clone(),
-                action.kind(),
+            session.push_event(Event::ActionFailed(action_failed_for_action(
+                &execution_action,
                 reason.clone(),
             )));
             format!("Tool failed: {reason}")
@@ -3690,6 +3689,19 @@ fn action_event_for_action(action: &Action) -> ActionEvent {
         );
     }
     event
+}
+
+fn action_failed_for_action(action: &Action, reason: impl Into<String>) -> ActionFailed {
+    let mut failed = ActionFailed::new(action.id.clone(), action.kind(), reason.into())
+        .with_target(action.request.approval_target());
+    if let ActionRequest::ShellCommand(shell) = &action.request {
+        failed = failed.with_shell_details(
+            shell.cwd.display().to_string(),
+            shell.timeout_seconds,
+            shell.expected_effect.clone(),
+        );
+    }
+    failed
 }
 
 fn policy_decision_for_agent_action(

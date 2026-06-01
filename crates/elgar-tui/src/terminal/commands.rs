@@ -1,6 +1,9 @@
-use std::io::{self, Write};
-#[cfg(all(not(test), target_os = "macos"))]
+#[cfg(any(test, all(not(test), target_os = "macos")))]
 use std::process::{Command, Stdio};
+use std::{
+    io::{self, Write},
+    time::Duration,
+};
 
 use crate::TuiShell;
 
@@ -164,7 +167,18 @@ fn copy_text_to_system_clipboard(_text: &str) -> io::Result<()> {
 
 #[cfg(all(not(test), target_os = "macos"))]
 fn copy_text_with_command(command: &str, text: &str) -> io::Result<()> {
+    copy_text_with_command_and_args(command, &[], text, Duration::from_millis(1_500))
+}
+
+#[cfg(any(test, all(not(test), target_os = "macos")))]
+pub(super) fn copy_text_with_command_and_args(
+    command: &str,
+    args: &[&str],
+    text: &str,
+    timeout: Duration,
+) -> io::Result<()> {
     let mut child = Command::new(command)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -176,10 +190,34 @@ fn copy_text_with_command(command: &str, text: &str) -> io::Result<()> {
             "clipboard command did not open stdin",
         )
     })?;
-    stdin.write_all(text.as_bytes())?;
-    drop(stdin);
+    let text = text.as_bytes().to_vec();
+    let writer = std::thread::spawn(move || {
+        stdin.write_all(&text)?;
+        drop(stdin);
+        io::Result::Ok(())
+    });
 
-    let status = child.wait()?;
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = writer.join();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "clipboard command timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    writer
+        .join()
+        .map_err(|_| io::Error::other("clipboard writer thread panicked"))??;
+
     if status.success() {
         Ok(())
     } else {
