@@ -181,7 +181,7 @@ pub fn elgar_model_tool_definitions() -> Vec<ChatToolDefinition> {
         ),
         model_tool_definition(
             ModelToolName::ShellCommand,
-            "Draft a shell command for explicit review before execution. Use this for local inspection commands such as cat, ls, pwd, test, build, lint, or compile. For read-only inspection commands, leave expected_file and expected_directory empty; stdout and exit status are the proof. For compile, test, lint, or verification commands, rely on exit status and optional expected_effect; do not use expected_file for generated caches or bytecode artifacts.",
+            "Draft a bounded shell command for explicit review before execution. Use this for local inspection commands such as cat, ls, pwd, test, build, lint, compile, or dependency install. Do not use this for long-running dev servers/watchers such as npm run dev, next dev, vite --host, or python -m http.server; ask for guidance or use a future background process mode instead. For read-only inspection commands, leave expected_file and expected_directory empty; stdout and exit status are the proof. For compile, test, lint, or verification commands, rely on exit status and optional expected_effect; do not use expected_file for generated caches or bytecode artifacts.",
             object_parameters(
                 &[
                     (
@@ -626,6 +626,14 @@ fn validate_shell_command(
     tool_name: ModelToolName,
 ) -> Result<ActionRequest, ModelToolValidationError> {
     let command = required_non_empty_string(tool_call, arguments, tool_name, "command")?;
+    if command_contains_long_running_server(&command) {
+        return Err(ModelToolValidationError::malformed_argument(
+            tool_call.id.clone(),
+            tool_name.label(),
+            "command",
+            "a bounded command that exits; long-running dev servers/watchers are not supported by shell_command yet",
+        ));
+    }
     let cwd = required_path(tool_call, arguments, tool_name, "cwd")?;
     let mut action = ShellCommandAction::new(command, cwd);
 
@@ -651,6 +659,83 @@ fn validate_shell_command(
     }
 
     Ok(ActionRequest::ShellCommand(action))
+}
+
+fn command_contains_long_running_server(command: &str) -> bool {
+    command
+        .split([';', '\n'])
+        .flat_map(|segment| segment.split("&&"))
+        .flat_map(|segment| segment.split("||"))
+        .any(segment_is_long_running_server)
+}
+
+fn segment_is_long_running_server(segment: &str) -> bool {
+    let tokens = shell_words(segment);
+    let words = tokens.iter().map(String::as_str).collect::<Vec<_>>();
+    match words.as_slice() {
+        ["npm", "run", "dev", ..]
+        | ["npm", "start", ..]
+        | ["npm", "run", "start", ..]
+        | ["pnpm", "dev", ..]
+        | ["pnpm", "run", "dev", ..]
+        | ["pnpm", "start", ..]
+        | ["yarn", "dev", ..]
+        | ["yarn", "start", ..]
+        | ["yarn", "run", "dev", ..]
+        | ["bun", "dev", ..]
+        | ["bun", "run", "dev", ..]
+        | ["next", "dev", ..]
+        | ["vite", ..]
+        | ["python", "-m", "http.server", ..]
+        | ["python3", "-m", "http.server", ..]
+        | ["python", "-m", "uvicorn", ..]
+        | ["python3", "-m", "uvicorn", ..]
+        | ["uvicorn", ..]
+        | ["flask", "run", ..]
+        | ["cargo", "watch", ..] => true,
+        [first, ..] if first.ends_with("/next") && words.get(1) == Some(&"dev") => true,
+        [first, ..] if first.ends_with("/vite") => true,
+        _ => false,
+    }
+}
+
+fn shell_words(segment: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escape = false;
+
+    for character in segment.chars() {
+        if escape {
+            current.push(character);
+            escape = false;
+            continue;
+        }
+        if character == '\\' {
+            escape = true;
+            continue;
+        }
+        if matches!(quote, Some(active) if active == character) {
+            quote = None;
+            continue;
+        }
+        if quote.is_none() && (character == '\'' || character == '"') {
+            quote = Some(character);
+            continue;
+        }
+        if quote.is_none() && character.is_whitespace() {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push(character);
+    }
+
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
 }
 
 fn arguments_object(
@@ -1227,6 +1312,48 @@ mod tests {
             panic!("expected ShellCommand");
         };
         assert_eq!(action.timeout_seconds, SHELL_COMMAND_MAX_TIMEOUT_SECONDS);
+    }
+
+    #[test]
+    fn shell_command_rejects_long_running_dev_server_commands() {
+        let error = validate_exactly_one_model_tool_call(&[raw_call(
+            "tool-1",
+            RawModelToolName::Known(ModelToolName::ShellCommand),
+            json!({
+                "command": "npm install && npm run dev",
+                "cwd": "Nextjs-1",
+                "timeout_seconds": 300
+            }),
+        )])
+        .expect_err("dev server commands must not become bounded shell actions");
+
+        assert_eq!(error.kind, ModelToolValidationErrorKind::MalformedArgument);
+        assert_eq!(error.argument.as_deref(), Some("command"));
+        assert!(error.message.contains("bounded command"));
+        assert!(error.message.contains("long-running dev servers"));
+    }
+
+    #[test]
+    fn shell_command_accepts_bounded_install_build_and_test_commands() {
+        for command in [
+            "npm install",
+            "npm run build",
+            "npm test",
+            "cargo test -p elgar-core",
+        ] {
+            let validated = validate_exactly_one_model_tool_call(&[raw_call(
+                "tool-1",
+                RawModelToolName::Known(ModelToolName::ShellCommand),
+                json!({
+                    "command": command,
+                    "cwd": "."
+                }),
+            )])
+            .unwrap_or_else(|error| panic!("{command} should validate: {error:?}"))
+            .expect("one action");
+
+            assert!(matches!(validated.request, ActionRequest::ShellCommand(_)));
+        }
     }
 
     #[test]
