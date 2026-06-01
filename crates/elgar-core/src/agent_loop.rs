@@ -49,6 +49,7 @@ use crate::{
     },
     session_log_memory::{latest_durable_verified_artifacts, DurableVerifiedArtifactFact},
     shell::ShellExecutor,
+    shell_allowlist::is_read_only_shell_command,
     verified_artifact_memory::{
         earliest_verified_artifacts, latest_action_turn_artifacts, latest_verified_artifacts,
         verified_artifacts_under_folder, CappedVerifiedArtifacts, VerifiedArtifactFact,
@@ -3558,9 +3559,7 @@ fn apply_agent_action_with_policy(
     record.policy_decision = Some(policy_decision);
     session.push_action(record);
 
-    let mut approved_event =
-        ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
-            .with_target(action.request.approval_target());
+    let mut approved_event = action_event_for_action(&action);
     if let Some(source) = approval_source {
         approved_event = approved_event.with_approval_source(source);
     }
@@ -3670,8 +3669,7 @@ fn propose_agent_action_for_review(
     let mut record = ActionRecord::new(action.clone());
     record.policy_decision = Some(policy_decision);
     session.push_event(Event::ActionProposed(
-        ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
-            .with_target(target.clone()),
+        action_event_for_action(&action).with_target(target.clone()),
     ));
     session.push_action(record);
 
@@ -3681,11 +3679,33 @@ fn propose_agent_action_for_review(
     )
 }
 
+fn action_event_for_action(action: &Action) -> ActionEvent {
+    let mut event = ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+        .with_target(action.request.approval_target());
+    if let ActionRequest::ShellCommand(shell) = &action.request {
+        event = event.with_shell_details(
+            shell.cwd.display().to_string(),
+            shell.timeout_seconds,
+            shell.expected_effect.clone(),
+        );
+    }
+    event
+}
+
 fn policy_decision_for_agent_action(
     session: &Session,
     mode: PermissionPolicyMode,
     action: &Action,
 ) -> PolicyDecision {
+    if let ActionRequest::ShellCommand(shell) = &action.request {
+        if is_read_only_shell_command(shell) {
+            return PolicyDecision::allow_apply(
+                mode,
+                "policy allowlist permits read-only shell inspection commands",
+            );
+        }
+    }
+
     match (mode, &action.request) {
         (PermissionPolicyMode::FullAccess, _) => PolicyDecision::allow_apply(
             mode,

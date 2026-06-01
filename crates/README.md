@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Rust workspace crates for the active Elgar v0.2 implementation.
+Rust workspace crates for the active Elgar v0.10 implementation.
 
 ## Important Folders
 

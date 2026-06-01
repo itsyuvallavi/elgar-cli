@@ -4,7 +4,7 @@ use crate::{
 };
 
 pub fn placeholder_message() -> &'static str {
-    "Elgar v0.2 is ready. Run `elgar` from an interactive terminal for the TUI, or pass a prompt/subcommand."
+    "Elgar v0.10 is ready. Run `elgar` from an interactive terminal for the TUI, or pass a prompt/subcommand."
 }
 
 pub fn render_session(session: &Session) -> String {

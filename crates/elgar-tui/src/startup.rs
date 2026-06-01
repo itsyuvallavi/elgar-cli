@@ -48,7 +48,7 @@ impl StartupBlock {
 
     pub fn render(&self) -> String {
         format!(
-            "elgar v0.2\n/commands · /permissions · /clear · /approve · /reject · /copy · /exit\n\n{}\n\n[Context]\n{}\n\n[Provider]\n  {} · {}\n\n[Policy]\n  {}",
+            "elgar v0.10\n/commands · /permissions · /clear · /approve · /reject · /copy · /exit\n\n{}\n\n[Context]\n{}\n\n[Provider]\n  {} · {}\n\n[Policy]\n  {}",
             self.provider_description(),
             self.render_context_files(),
             self.provider.as_deref().unwrap_or("none"),
@@ -102,7 +102,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "elgar v0.2\n/commands · /permissions · /clear · /approve · /reject · /copy · /exit\n\nElgar uses your local LM Studio model.\n\n[Context]\n  AGENTS.md\n\n[Provider]\n  lm-studio · openai/gpt-oss-20b\n\n[Policy]\n  auto_create_review_modify"
+            "elgar v0.10\n/commands · /permissions · /clear · /approve · /reject · /copy · /exit\n\nElgar uses your local LM Studio model.\n\n[Context]\n  AGENTS.md\n\n[Provider]\n  lm-studio · openai/gpt-oss-20b\n\n[Policy]\n  auto_create_review_modify"
         );
         assert!(!rendered.contains("elgar-provider.json"));
         assert!(!rendered.contains("Commands:"));

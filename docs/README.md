@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Active project documentation for Elgar v0.2 architecture, local checks,
+Active project documentation for Elgar v0.10 architecture, local checks,
 provider behavior, permission policy, and TUI direction.
 
 ## Start Here

@@ -12,7 +12,7 @@ hardcoded phrase routing.
 
 ## Current Contract
 
-Keep the active v0.2 contract:
+Keep the active v0.10 contract:
 
 ```text
 Model owns intent.
@@ -157,7 +157,7 @@ Constraints: no hardcoded phrase routing; preserve verified memory and plan pref
 ```text
 You are my main Elgar agent.
 
-We are continuing from the Elgar v0.2 workable prototype checkpoint. Start by
+We are continuing from the Elgar v0.10 workable prototype checkpoint. Start by
 reading:
 - AGENTS.md
 - zz_elgar_agent_docs/AGENTS.md

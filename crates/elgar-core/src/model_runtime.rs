@@ -1029,7 +1029,7 @@ mod tests {
         assert!(schema["properties"].get("command").is_some());
         assert!(schema["properties"].get("cwd").is_some());
         assert!(schema["properties"].get("timeout_seconds").is_some());
-        assert_eq!(schema["properties"]["timeout_seconds"]["maximum"], 300);
+        assert_eq!(schema["properties"]["timeout_seconds"]["maximum"], 900);
         assert!(schema["properties"].get("expected_effect").is_some());
         assert!(schema["properties"].get("risk_notes").is_some());
         assert!(schema["properties"].get("expected_file").is_some());

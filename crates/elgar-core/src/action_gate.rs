@@ -4,16 +4,17 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::{
-    action::{Action, ActionRequest},
+    action::{Action, ActionRequest, ShellCommandAction},
     controller::TurnResult,
     controller_project_memory::record_verified_project_memory,
     controller_reporting::{truth_guard_visible_message, verified_action_success_message},
     controller_shell_verify::verify_expected_shell_effect,
     event::{
         ActionApplied, ActionEvent, ActionFailed, AssistantMessage, AssistantMessageSource, Event,
-        UserMessage,
+        ShellActionVerification, UserMessage, VerifiedActionResult,
     },
     fs::Filesystem,
     path_resolution::resolve_shell_action_paths_for_session,
@@ -73,11 +74,22 @@ fn run_lifecycle_turn(
     handler: fn(&mut Session),
 ) -> TurnResult {
     let start_index = session.events().len();
+    session.start_reasoning_trace(command);
+    session.record_reasoning_route(lifecycle_route_label(route));
     session.push_event(Event::UserMessage(UserMessage::new(command)));
     handler(session);
+    session.finish_trace_turn();
     TurnResult {
         route,
         events: session.events()[start_index..].to_vec(),
+    }
+}
+
+fn lifecycle_route_label(route: Route) -> &'static str {
+    match route {
+        Route::ApproveAction => "approve_action",
+        Route::RejectAction => "reject_action",
+        _ => "action_lifecycle",
     }
 }
 
@@ -100,14 +112,7 @@ fn handle_reject_action(session: &mut Session) {
         .action_mut(index)
         .expect("latest proposed action index must reference an action record");
     record.action = rejected.clone();
-    session.push_event(Event::ActionRejected(
-        ActionEvent::new(
-            rejected.id.clone(),
-            rejected.kind(),
-            rejected.summary.clone(),
-        )
-        .with_target(action_target_label(&rejected)),
-    ));
+    session.push_event(Event::ActionRejected(action_event_for_action(&rejected)));
     push_action_gate_message(session, "Rejected action. No filesystem change was made.");
 }
 
@@ -130,59 +135,87 @@ fn handle_approve_action(session: &mut Session) {
         .expect("latest proposed action index must reference an action record");
     record.action = approved.clone();
     session.push_event(Event::ActionApproved(
-        ActionEvent::new(
-            approved.id.clone(),
-            approved.kind(),
-            approved.summary.clone(),
-        )
-        .with_target(action_target_label(&approved))
-        .with_approval_source(ApprovalSource::user()),
+        action_event_for_action(&approved).with_approval_source(ApprovalSource::user()),
     ));
 
     let approved_for_execution = resolve_shell_action_paths_for_session(session, &approved);
     if let ActionRequest::ShellCommand(shell_command) = &approved_for_execution.request {
+        session.trace_event(
+            "shell_command_start",
+            shell_command_action_metadata(&approved_for_execution.id, shell_command),
+        );
         match ShellExecutor::execute(shell_command) {
-            Ok(result) => match verify_expected_shell_effect(shell_command, result) {
-                Ok(result) => {
-                    let message =
-                        verified_action_success_message(session, &approved_for_execution, &result);
-                    session.clear_runtime_block();
-                    let record = session
-                        .action_mut(index)
-                        .expect("approved action index must reference an action record");
-                    record.verified_result = Some(result.clone());
-                    record.failure_reason = None;
-                    record.action = approved_for_execution.mark_applied();
-                    record_verified_project_memory(session, &approved_for_execution, &result);
-                    session.mark_structured_project_plan_executed(&approved_for_execution.id);
-                    session.push_event(Event::ActionApplied(ActionApplied::new(
-                        approved_for_execution.id.clone(),
-                        approved_for_execution.kind(),
-                        result,
-                    )));
-                    push_action_gate_message(session, message);
+            Ok(result) => {
+                if let VerifiedActionResult::Shell(shell) = &result {
+                    session.trace_event(
+                        "shell_command_finish",
+                        shell_command_result_metadata(&approved_for_execution.id, shell),
+                    );
                 }
-                Err(reason) => {
-                    let record = session
-                        .action_mut(index)
-                        .expect("approved action index must reference an action record");
-                    record.verified_result = None;
-                    record.failure_reason = Some(reason.clone());
-                    record.action = approved_for_execution.mark_failed();
-                    session.remove_structured_project_plan_for_action(&approved_for_execution.id);
-                    session.push_event(Event::ActionFailed(ActionFailed::new(
-                        approved_for_execution.id.clone(),
-                        approved_for_execution.kind(),
-                        reason,
-                    )));
-                    push_action_gate_message(
+                match verify_expected_shell_effect(shell_command, result) {
+                    Ok(result) => {
+                        let message = verified_action_success_message(
+                            session,
+                            &approved_for_execution,
+                            &result,
+                        );
+                        session.clear_runtime_block();
+                        let record = session
+                            .action_mut(index)
+                            .expect("approved action index must reference an action record");
+                        record.verified_result = Some(result.clone());
+                        record.failure_reason = None;
+                        record.action = approved_for_execution.mark_applied();
+                        record_verified_project_memory(session, &approved_for_execution, &result);
+                        session.mark_structured_project_plan_executed(&approved_for_execution.id);
+                        session.push_event(Event::ActionApplied(ActionApplied::new(
+                            approved_for_execution.id.clone(),
+                            approved_for_execution.kind(),
+                            result,
+                        )));
+                        push_action_gate_message(session, message);
+                    }
+                    Err(reason) => {
+                        session.trace_event(
+                            "shell_command_verification_failed",
+                            shell_command_failure_metadata(
+                                &approved_for_execution.id,
+                                shell_command,
+                                "verification_failed",
+                                &reason,
+                            ),
+                        );
+                        let record = session
+                            .action_mut(index)
+                            .expect("approved action index must reference an action record");
+                        record.verified_result = None;
+                        record.failure_reason = Some(reason.clone());
+                        record.action = approved_for_execution.mark_failed();
+                        session
+                            .remove_structured_project_plan_for_action(&approved_for_execution.id);
+                        session.push_event(Event::ActionFailed(ActionFailed::new(
+                            approved_for_execution.id.clone(),
+                            approved_for_execution.kind(),
+                            reason,
+                        )));
+                        push_action_gate_message(
                         session,
                         "Approved shell command ran, but expected filesystem verification failed.",
                     );
+                    }
                 }
-            },
+            }
             Err(error) => {
                 let reason = error.to_string();
+                session.trace_event(
+                    "shell_command_failed",
+                    shell_command_failure_metadata(
+                        &approved_for_execution.id,
+                        shell_command,
+                        "execution_error",
+                        &reason,
+                    ),
+                );
                 let record = session
                     .action_mut(index)
                     .expect("approved action index must reference an action record");
@@ -212,6 +245,79 @@ fn handle_approve_action(session: &mut Session) {
         &allowed_root,
         "Approved file action failed. No verified filesystem result was recorded.",
     );
+}
+
+fn action_event_for_action(action: &Action) -> ActionEvent {
+    let mut event = ActionEvent::new(action.id.clone(), action.kind(), action.summary.clone())
+        .with_target(action_target_label(action));
+    if let ActionRequest::ShellCommand(shell) = &action.request {
+        event = event.with_shell_details(
+            shell.cwd.display().to_string(),
+            shell.timeout_seconds,
+            shell.expected_effect.clone(),
+        );
+    }
+    event
+}
+
+fn shell_command_action_metadata(action_id: &str, shell: &ShellCommandAction) -> Value {
+    json!({
+        "action_id": action_id,
+        "action_kind": "ShellCommand",
+        "command": &shell.command,
+        "command_chars": shell.command.chars().count(),
+        "cwd": shell.cwd.display().to_string(),
+        "timeout_seconds": shell.timeout_seconds,
+        "expected_effect_chars": shell.expected_effect.chars().count(),
+        "expected_file": shell.expected_file.as_ref().map(|path| path.display().to_string()),
+        "expected_files": shell.expected_files.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
+        "expected_directory": shell.expected_directory.as_ref().map(|path| path.display().to_string()),
+        "expected_directories": shell.expected_directories.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
+        "stdout_cap_bytes": shell.output_caps.stdout_bytes,
+        "stderr_cap_bytes": shell.output_caps.stderr_bytes,
+    })
+}
+
+fn shell_command_result_metadata(action_id: &str, shell: &ShellActionVerification) -> Value {
+    json!({
+        "action_id": action_id,
+        "action_kind": "ShellCommand",
+        "command": &shell.command,
+        "command_chars": shell.command.chars().count(),
+        "cwd": &shell.cwd,
+        "exit_code": shell.exit_code,
+        "elapsed_millis": shell.elapsed_millis,
+        "timed_out": shell.timed_out,
+        "stdout_bytes": shell.stdout.len(),
+        "stderr_bytes": shell.stderr.len(),
+        "stdout_truncated": shell.stdout_truncated,
+        "stderr_truncated": shell.stderr_truncated,
+        "stdout_tail": shell_output_tail(&shell.stdout),
+        "stderr_tail": shell_output_tail(&shell.stderr),
+        "verified_effect_present": shell.verified_effect.is_some(),
+    })
+}
+
+fn shell_command_failure_metadata(
+    action_id: &str,
+    shell: &ShellCommandAction,
+    category: &str,
+    reason: &str,
+) -> Value {
+    let mut metadata = shell_command_action_metadata(action_id, shell);
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("category".to_string(), json!(category));
+        object.insert("reason_chars".to_string(), json!(reason.chars().count()));
+        object.insert("reason".to_string(), json!(reason));
+    }
+    metadata
+}
+
+fn shell_output_tail(output: &str) -> String {
+    const MAX_CHARS: usize = 2_000;
+    let chars = output.chars().collect::<Vec<_>>();
+    let start = chars.len().saturating_sub(MAX_CHARS);
+    chars[start..].iter().collect()
 }
 
 fn apply_approved_file_action_at_index(
@@ -333,6 +439,8 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    use serde_json::Value;
 
     use crate::{
         action::{
@@ -501,6 +609,7 @@ mod tests {
 
     #[test]
     fn action_gate_shell_approval_fails_when_command_times_out() {
+        std::env::set_var("ELGAR_SESSION_LOG", "on");
         let root = temp_root("approve-shell-timeout");
         let gate = ActionGate::default();
         let mut session = Session::new("session-1", &root, &root);
@@ -532,6 +641,25 @@ mod tests {
             .events
             .iter()
             .any(|event| matches!(event, Event::ActionApplied(_))));
+        let events = session_log_events(&root, "session-1");
+        let kinds = session_log_kinds(&events);
+        assert!(kinds.contains(&"action_approved".to_string()));
+        assert!(kinds.contains(&"shell_command_start".to_string()));
+        assert!(kinds.contains(&"shell_command_finish".to_string()));
+        assert!(kinds.contains(&"shell_command_verification_failed".to_string()));
+        assert!(kinds.contains(&"action_failed".to_string()));
+
+        let start = session_log_event(&events, "shell_command_start");
+        assert_eq!(start["metadata"]["command"].as_str(), Some("sleep 1"));
+        assert_eq!(start["metadata"]["timeout_seconds"].as_u64(), Some(0));
+        assert_eq!(
+            start["metadata"]["cwd"].as_str(),
+            Some(root.to_str().unwrap())
+        );
+
+        let finish = session_log_event(&events, "shell_command_finish");
+        assert_eq!(finish["metadata"]["command"].as_str(), Some("sleep 1"));
+        assert_eq!(finish["metadata"]["timed_out"].as_bool(), Some(true));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -637,5 +765,29 @@ mod tests {
             .any(|event| matches!(event, Event::ActionRejected(_))));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn session_log_events(root: &std::path::Path, session_id: &str) -> Vec<Value> {
+        let path = crate::local_session_log::session_log_file_path(root, session_id);
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn session_log_kinds(events: &[Value]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| event.get("kind").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn session_log_event<'a>(events: &'a [Value], kind: &str) -> &'a Value {
+        events
+            .iter()
+            .find(|event| event.get("kind").and_then(Value::as_str) == Some(kind))
+            .unwrap_or_else(|| panic!("missing session log event {kind}"))
     }
 }

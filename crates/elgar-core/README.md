@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Core library for Elgar v0.2. It owns agent runtime flow, the explicit action gate, routes, sessions, actions, provider integration, filesystem boundaries, and renderer output.
+Core library for Elgar v0.10. It owns agent runtime flow, the explicit action gate, routes, sessions, actions, provider integration, filesystem boundaries, and renderer output.
 
 ## Important Folders
 

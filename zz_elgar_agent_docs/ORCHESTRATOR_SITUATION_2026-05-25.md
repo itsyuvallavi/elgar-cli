@@ -181,7 +181,7 @@ Tests protect.
 You are the Elgar orchestrator.
 
 Goal:
-Review the current Elgar v0.2 direction and align the next work around this target:
+Review the current Elgar v0.10 direction and align the next work around this target:
 
 Pi-like UX + Codex-like coding capability + Elgar-owned verified trust.
 

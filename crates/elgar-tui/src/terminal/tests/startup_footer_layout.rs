@@ -4,7 +4,7 @@ use super::*;
 fn default_terminal_shell_is_empty_and_no_network() {
     let text = default_shell_text();
 
-    assert!(text.contains("elgar v0.2"));
+    assert!(text.contains("elgar v0.10"));
     assert!(text.contains("/commands · /permissions · /clear · /approve · /reject · /copy · /exit"));
     assert!(text.contains("Elgar is running with the default no-network stub provider."));
     assert!(text.contains("[Context]"));
@@ -139,6 +139,7 @@ fn terminal_layout_renders_pending_action_only_when_present() {
     assert!(text.contains("review action"));
     assert!(text.contains("File: hello.py"));
     assert!(text.contains("Status: waiting for approval"));
+    assert!(text.contains("[ Approve ]  [ Reject ]"));
     assert!(text.contains("No changes have been made yet"));
     assert!(text.contains("Use /approve to apply or /reject"));
     assert!(!text.contains("Action: action-1 CreateFile"));
@@ -512,7 +513,7 @@ fn terminal_conversation_scrollback_keeps_input_status_and_pending_visible() {
 
     let text = draw_to_text(&shell, &TerminalShellContext::from_session(&session));
 
-    assert!(text.contains("elgar v0.2"));
+    assert!(text.contains("elgar v0.10"));
     assert!(!text.contains("Review needed: action-1 CreateFile write hello.py"));
     assert!(text.contains("review action"));
     assert!(text.contains("File: hello.py"));

@@ -214,6 +214,18 @@ fn render_assistant_output(content: &str) -> String {
 }
 
 fn render_shell_action_proposal(action: &ActionEvent) -> String {
+    if let Some(command) = action.target.as_deref() {
+        let mut lines = vec![
+            "I can run this command. Approve to run it.".to_string(),
+            format!("Command: {}", command.trim()),
+        ];
+        if let Some(details) = action.shell_details.as_ref() {
+            lines.push(format!("Cwd: {}", user_display_path(&details.cwd)));
+            lines.push(format!("Timeout: {}s", details.timeout_seconds));
+        }
+        return lines.join("\n");
+    }
+
     if let Some(path) = action.summary.strip_prefix("create Markdown plan ") {
         return format!(
             "I can create the plan at {}. Approve to write it.",

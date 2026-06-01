@@ -72,7 +72,7 @@ fn zero_arg_elgar_non_interactive_keeps_placeholder_without_hanging() {
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Elgar v0.2 is ready"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Elgar v0.10 is ready"));
 }
 
 #[test]

@@ -226,7 +226,17 @@ pub struct ActionEvent {
     pub target: Option<String>,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_details: Option<ShellCommandEventDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_source: Option<ApprovalSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellCommandEventDetails {
+    pub cwd: String,
+    pub timeout_seconds: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub expected_effect: String,
 }
 
 impl ActionEvent {
@@ -240,6 +250,7 @@ impl ActionEvent {
             action_kind,
             target: None,
             summary: summary.into(),
+            shell_details: None,
             approval_source: None,
         }
     }
@@ -251,6 +262,20 @@ impl ActionEvent {
 
     pub fn with_approval_source(mut self, source: ApprovalSource) -> Self {
         self.approval_source = Some(source);
+        self
+    }
+
+    pub fn with_shell_details(
+        mut self,
+        cwd: impl Into<String>,
+        timeout_seconds: u64,
+        expected_effect: impl Into<String>,
+    ) -> Self {
+        self.shell_details = Some(ShellCommandEventDetails {
+            cwd: cwd.into(),
+            timeout_seconds,
+            expected_effect: expected_effect.into(),
+        });
         self
     }
 }

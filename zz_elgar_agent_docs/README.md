@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Active agent instructions, roster, and planning-source guidance for Elgar v0.2
+Active agent instructions, roster, and planning-source guidance for Elgar v0.10
 work.
 
 ## Start Here

@@ -111,6 +111,8 @@ impl PendingActionArea {
                 action_id: action_id.to_string(),
                 action_type: "unknown".to_string(),
                 target: None,
+                cwd: None,
+                timeout_seconds: None,
                 summary: "not available from this result".to_string(),
                 state,
                 result,
@@ -124,6 +126,8 @@ pub struct ActionApprovalPanel {
     pub action_id: String,
     pub action_type: String,
     pub target: Option<String>,
+    pub cwd: Option<String>,
+    pub timeout_seconds: Option<u64>,
     pub summary: String,
     pub state: ActionPanelState,
     pub result: Option<String>,
@@ -135,6 +139,14 @@ impl ActionApprovalPanel {
             action_id: action.action_id.clone(),
             action_type: format!("{:?}", action.action_kind),
             target: action.target.clone(),
+            cwd: action
+                .shell_details
+                .as_ref()
+                .map(|details| details.cwd.clone()),
+            timeout_seconds: action
+                .shell_details
+                .as_ref()
+                .map(|details| details.timeout_seconds),
             summary: action.summary.clone(),
             state: ActionPanelState::Proposed,
             result: None,
@@ -147,11 +159,22 @@ impl ActionApprovalPanel {
         if let Some(request) = self.request_line() {
             lines.push(request);
         }
+        if self.action_type == "ShellCommand" {
+            if let Some(cwd) = self.cwd.as_deref() {
+                lines.push(format!("Cwd: {}", user_display_path(cwd)));
+            }
+            if let Some(timeout_seconds) = self.timeout_seconds {
+                lines.push(format!("Timeout: {timeout_seconds}s"));
+            }
+        }
 
         if let Some(result) = &self.result {
             lines.push(format!("Result: {result}"));
         }
 
+        if self.state == ActionPanelState::Proposed {
+            lines.push("[ Approve ]  [ Reject ]".to_string());
+        }
         lines.push(self.state.instructions().to_string());
         lines.join("\n")
     }
@@ -364,6 +387,7 @@ mod tests {
         let rendered = pending_action.render_body();
         assert!(rendered.contains("File: hello.py"));
         assert!(rendered.contains("Status: waiting for approval"));
+        assert!(rendered.contains("[ Approve ]  [ Reject ]"));
         assert!(rendered.contains("No changes have been made yet."));
         assert!(rendered.contains("Use /approve to apply or /reject"));
         assert!(!rendered.contains("Action: action-1 CreateFile"));
@@ -395,6 +419,27 @@ mod tests {
         assert!(rendered.contains("Status: rejected"));
         assert!(rendered.contains("Result: Rejected. No file was changed."));
         assert!(rendered.contains("Rejected. Nothing was changed."));
+    }
+
+    #[test]
+    fn proposed_shell_action_shows_command_cwd_timeout_and_buttons() {
+        let mut pending_action = PendingActionArea::default();
+
+        pending_action.observe_event(&Event::ActionProposed(
+            ActionEvent::new(
+                "action-1",
+                elgar_core::event::ActionKind::ShellCommand,
+                "run shell command npm create",
+            )
+            .with_target("npm create vite@latest demo -- --template react-ts")
+            .with_shell_details("/repo", 300, "Scaffold the project."),
+        ));
+
+        let rendered = pending_action.render_body();
+        assert!(rendered.contains("Command: npm create vite@latest demo -- --template react-ts"));
+        assert!(rendered.contains("Cwd: /repo"));
+        assert!(rendered.contains("Timeout: 300s"));
+        assert!(rendered.contains("[ Approve ]  [ Reject ]"));
     }
 
     #[test]

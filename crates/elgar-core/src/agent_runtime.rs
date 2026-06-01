@@ -257,6 +257,64 @@ mod tests {
     }
 
     #[test]
+    fn agent_runtime_policy_allows_read_only_shell_commands_without_review() {
+        for mode in [
+            PermissionPolicyMode::ReviewAll,
+            PermissionPolicyMode::AutoCreateReviewModify,
+            PermissionPolicyMode::WorkspaceWriteWithReview,
+        ] {
+            let root = temp_root(&format!("read-only-shell-{}", mode.as_str()));
+            fs::write(root.join("README.md"), "hello\n").unwrap();
+            let runtime = shell_runtime("cat README.md");
+            let mut session = Session::new("session-1", &root, &root);
+
+            let result = runtime.tool_turn(&mut session, "read README", mode);
+
+            assert!(result
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ActionApplied(_))));
+            assert!(!result
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ActionProposed(_))));
+            let record = session.actions().last().expect("applied shell action");
+            assert_eq!(record.action.state, ActionLifecycleState::Applied);
+            assert!(record
+                .policy_decision
+                .as_ref()
+                .is_some_and(|decision| decision.is_policy_approved()));
+
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn agent_runtime_policy_reviews_complex_shell_syntax_even_for_read_command() {
+        let root = temp_root("complex-shell-review");
+        fs::write(root.join("README.md"), "hello\n").unwrap();
+        let runtime = shell_runtime("cat README.md | wc -l");
+        let mut session = Session::new("session-1", &root, &root);
+
+        let result = runtime.tool_turn(
+            &mut session,
+            "count README lines",
+            PermissionPolicyMode::AutoCreateReviewModify,
+        );
+
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionProposed(_))));
+        assert!(!result
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ActionApplied(_))));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn agent_runtime_full_access_executes_validated_shell_commands() {
         let root = temp_root("full-access-shell");
         let marker_file_name = "full-access-shell-marker.txt";
@@ -638,6 +696,18 @@ mod tests {
                 "command": command,
                 "cwd": ".",
                 "expected_file": expected_file
+            }),
+            assistant_summary: Some(format!("run {command}")),
+        }))
+    }
+
+    fn shell_runtime(command: &str) -> AgentRuntime<ToolProvider> {
+        AgentRuntime::new(ToolProvider::new(RawModelToolCall {
+            id: "tool-1".to_string(),
+            name: RawModelToolName::Known(ModelToolName::ShellCommand),
+            arguments: serde_json::json!({
+                "command": command,
+                "cwd": "."
             }),
             assistant_summary: Some(format!("run {command}")),
         }))

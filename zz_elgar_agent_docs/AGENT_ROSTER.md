@@ -1,8 +1,8 @@
-# Elgar v0.2 Agent Roster
+# Elgar v0.10 Agent Roster
 
 ## Purpose
 
-Use a small, stable set of specialized agents for Elgar v0.2 work.
+Use a small, stable set of specialized agents for Elgar v0.10 work.
 
 The orchestrator chooses one agent per handoff by default. Do not create a
 swarm or add new standing agent roles unless the project scope changes.

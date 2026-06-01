@@ -1,42 +1,63 @@
-# Elgar v0.2
+# Elgar v0.10
 
-Elgar is a local-first Rust agent harness. The v0.2 line is a clean restart
-focused on a small, inspectable core:
+Elgar is a local-first Rust agent harness for coding work with local or
+OpenAI-compatible models. The current line is focused on a simple contract:
 
 ```text
-Model reasons.
-Runtime routes.
-Action gate enforces.
-Filesystem confirms.
+Model owns intent.
+Runtime validates.
+Policy decides.
+Executors verify.
 UI reports.
 Tests protect.
-Extensions wait.
 ```
 
-The current build includes a model-first agent runtime, a narrow action gate
-for explicit approvals, permissioned file and shell actions, a terminal TUI,
-LM Studio provider support, context accounting, and no-network regression
-checks.
+The goal is a Pi-like terminal experience with Codex-like coding capability,
+while keeping Elgar-owned truth about files, commands, plans, approvals, and
+state.
+
+## Current Capabilities
+
+- Terminal TUI for normal chat, planning, execution, approvals, memory, status,
+  and trace inspection.
+- LM Studio / OpenAI-compatible provider support with deterministic stub mode
+  for local tests.
+- Plain chat stays plain: no tools, no project memory, and no folder anchoring
+  on simple messages.
+- Route-first runtime with typed tool validation, policy decisions, verified
+  filesystem and shell execution, and local state answers.
+- Verified project plans with expected file/folder tracking and readable tree
+  rendering.
+- Follow-up memory from verified action records, including created files,
+  folders, plans, structured plans, and imported session artifacts.
+- Append-only local observability logs under `.elgar/` for traces and session
+  events.
+- Shell commands are first-class actions: visible in the TUI, logged in JSONL,
+  bounded by timeout, and policy-gated unless allowlisted.
+- Conservative read-only shell allowlist for inspection commands such as
+  `pwd`, `ls`, `cat`, `head`, `tail`, `wc`, `rg`, safe `sed`, safe `find`, and
+  read-only `git` subcommands.
 
 ## Workspace
 
 ```text
-crates/elgar-core   runtime, action gate, routing, session, actions, filesystem, provider, shell
-crates/elgar-cli    command-line entry point and smoke/performance commands
-crates/elgar-tui    terminal UI rendering, input, panes, theme, and TUI shell
-docs/               current implementation notes and local operating docs
-zz_elgar_agent_docs agent-facing instructions and roster
+crates/elgar-core   runtime, actions, policy, sessions, memory, provider, fs, shell
+crates/elgar-cli    CLI entry point, TUI launch, provider smoke, install/runtime paths
+crates/elgar-tui    terminal UI, rendering, input, panes, memory/status views
+bin/                local checks, dogfood scripts, install helpers
+docs/               architecture notes, planning references, local operating docs
+zz_elgar_agent_docs agent instructions, roster, and repo working rules
 ```
 
 ## Quick Start
 
-Run the no-network local verification path:
+Run the full local verification path:
 
 ```sh
 ./bin/check-local
 ```
 
-Run the CLI from source:
+Run from source:
 
 ```sh
 cargo run -p elgar-cli -- "hello"
@@ -49,56 +70,121 @@ Install the local `elgar` command:
 elgar
 ```
 
-`elgar` with no arguments launches the terminal TUI when run from an
-interactive terminal. In non-interactive shells it exits safely with a short
-message instead of hanging. The local install records this repo path so
-`elgar` can still find `elgar-provider.json` and `AGENTS.md` when launched from
-another directory. A configured project in the current directory or one of its
-parents still takes precedence.
+When launched interactively with no arguments, `elgar` opens the terminal TUI.
+In non-interactive shells it exits safely instead of hanging. The local install
+records this repo path so `elgar` can find `elgar-provider.json` and
+`AGENTS.md` even when launched from another directory. A provider config in the
+current project still takes precedence.
 
 ## Provider Mode
 
-Normal CLI/TUI runs can use LM Studio when `elgar-provider.json` enables live
-mode and LM Studio is running locally. Without a live provider config, Elgar
-uses deterministic stub/no-network behavior.
+Elgar uses LM Studio when `elgar-provider.json` enables live mode and LM Studio
+is running locally. Without a live provider config, Elgar falls back to
+deterministic no-network behavior.
 
-To force a no-network run:
+Force no-network mode:
 
 ```sh
 ELGAR_PROVIDER_CONFIG=off elgar
 ```
 
-Live provider smoke commands are manual and optional. They are documented in:
+Optional live-provider smoke details:
 
 ```text
 docs/live-provider-smoke.md
 ```
 
-Default local checks and CI do not require LM Studio.
+## Permission And Shell Model
 
-## Permission Model
+Provider output is never treated as filesystem or shell truth. Elgar records a
+typed action first, then policy decides whether it can apply immediately or
+needs explicit user approval.
 
-Provider/model text is never treated as verified truth. For file or shell work,
-Elgar records a typed action first. The action gate handles explicit
-`/approve` or `/reject` commands before any gated operation mutates or executes.
-The filesystem or shell executor then records the verified result.
+Current policy behavior:
 
-Examples:
+- File creation can be policy-applied in permissive modes.
+- Edits, deletes, moves, and non-allowlisted shell commands require approval
+  unless `full_access` is enabled.
+- Read-only allowlisted shell inspection commands can run without manual
+  approval.
+- Shell proposals show the exact command, cwd, timeout, and approve/reject
+  affordance in the TUI.
+- Approved shell commands write structured JSONL lifecycle events, including
+  command, cwd, timeout, elapsed time, exit/timed-out status, expected paths,
+  output byte counts, and safe stdout/stderr tails.
 
-- project-relative folder creation uses a typed `CreateDirectory` action
-- external folder creation uses an approved `ShellCommand` and verifies the
-  directory exists after execution
-- rejected actions are terminal and do not mutate files or run commands
+Use explicit slash commands for local control:
+
+```text
+/approve
+/reject
+/permissions
+/pending
+/status
+/memory
+/created
+/plan
+/reasoning
+/tokens
+/trace
+/new
+/exit
+```
+
+Normal text like “yes”, “approve”, or “create a file” still goes through the
+model/runtime path. Local control is slash-only.
+
+## Planning And Memory
+
+Elgar stores verified plan state and verified action facts in the session. It
+can answer questions such as:
+
+- what files were created
+- what the current plan expects
+- which files are present or missing
+- what the first/latest created artifact was
+- whether facts came from the current session or imported session logs
+
+Plain chat does not receive project memory. Tool, follow-up, and verified-state
+turns receive compact verified context derived from `Session::actions()` and
+local session JSONL when appropriate.
+
+## Observability
+
+Elgar has human-facing views:
+
+```text
+/reasoning
+/tokens
+/memory
+/state
+/status
+/created
+/plan
+/trace
+```
+
+It also writes machine-readable local JSONL under `.elgar/`:
+
+```text
+.elgar/traces/
+.elgar/sessions/
+```
+
+Logs are append-only and redacted by default: they store routes, request ids,
+token counts, action metadata, tool names, paths, command metadata, status,
+timings, and error categories. They do not log raw provider prompts or generated
+file contents by default.
 
 ## Local Checks
 
-Use this before handing off changes:
+Before handing off changes, run:
 
 ```sh
 ./bin/check-local
 ```
 
-It runs:
+That covers:
 
 ```text
 cargo fmt --check
@@ -112,19 +198,44 @@ CI also runs:
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Documentation
+## Dogfood
 
-Start with:
+Useful local dogfood scripts include:
 
 ```text
+./bin/dogfood-plan-followup-execution
+./bin/dogfood-adhoc-create-roundtrip
+./bin/dogfood-session-reopen-memory
+./bin/dogfood-plain-memory-regression
+./bin/dogfood-plan-scope-unrelated-create
+```
+
+Live TUI dogfood remains important because local models vary. Prefer small,
+repeatable prompts that exercise one behavior at a time.
+
+## Documentation
+
+Start here:
+
+```text
+docs/elgar-product-architecture-plan.md
+docs/codex-style-agent-runtime-plan.md
 docs/local-checks.md
 docs/live-provider-smoke.md
 docs/permissioned-shell-commands.md
-docs/elgar-product-architecture-plan.md
-docs/codex-style-agent-runtime-plan.md
 zz_elgar_agent_docs/AGENTS.md
 zz_elgar_agent_docs/AGENT_ROSTER.md
 ```
 
-Planning exports are tracked under `docs/planning/`. Linear is the execution
-map for active implementation work.
+Linear is the execution map for active implementation work. The repo-local
+architecture plan is the source of truth when external notes are stale.
+
+## Deferred Work
+
+- Project-scoped persistent command approvals: approve once vs always allow in
+  this project.
+- Intent-scoped tool refinements and shell repair loops after failed commands.
+- LM Studio-specific context-window discovery/config sync.
+- Session resume, compaction, and branch/fork support.
+- Langfuse, Phoenix, or OpenTelemetry exporters.
+- Continued split of large runtime/TUI modules once behavior is stable.

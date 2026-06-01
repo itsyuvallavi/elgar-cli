@@ -6,7 +6,10 @@ use serde_json::{json, Value};
 use crate::{
     action::{Action, ActionLifecycleState},
     context::ContextAccounting,
-    event::{ActionKind, Event, FileActionVerification, ProviderMetrics, VerifiedActionResult},
+    event::{
+        ActionEvent, ActionKind, Event, FileActionVerification, ProviderMetrics,
+        VerifiedActionResult,
+    },
     local_session_log, local_trace,
     plan_contract::PlanContract,
     policy::PolicyDecision,
@@ -438,27 +441,9 @@ impl Session {
                     "has_metrics": finished.output.metrics.is_some(),
                 }),
             ),
-            Event::ActionProposed(action) => self.trace_action_event(
-                "action_proposed",
-                action.action_id.as_str(),
-                action.action_kind,
-                action.target.as_deref(),
-                Some(action.summary.chars().count()),
-            ),
-            Event::ActionApproved(action) => self.trace_action_event(
-                "action_approved",
-                action.action_id.as_str(),
-                action.action_kind,
-                action.target.as_deref(),
-                Some(action.summary.chars().count()),
-            ),
-            Event::ActionRejected(action) => self.trace_action_event(
-                "action_rejected",
-                action.action_id.as_str(),
-                action.action_kind,
-                action.target.as_deref(),
-                Some(action.summary.chars().count()),
-            ),
+            Event::ActionProposed(action) => self.trace_action_event("action_proposed", action),
+            Event::ActionApproved(action) => self.trace_action_event("action_approved", action),
+            Event::ActionRejected(action) => self.trace_action_event("action_rejected", action),
             Event::ActionApplied(applied) => self.trace_event(
                 "action_applied",
                 action_applied_trace_metadata(applied.action_id.as_str(), applied.action_kind, &applied.result),
@@ -491,23 +476,28 @@ impl Session {
         }
     }
 
-    fn trace_action_event(
-        &self,
-        kind: &str,
-        action_id: &str,
-        action_kind: ActionKind,
-        target: Option<&str>,
-        summary_chars: Option<usize>,
-    ) {
+    fn trace_action_event(&self, kind: &str, action: &ActionEvent) {
         let mut metadata = json!({
-            "action_id": action_id,
-            "action_kind": format!("{:?}", action_kind),
-            "summary_chars": summary_chars,
+            "action_id": &action.action_id,
+            "action_kind": format!("{:?}", action.action_kind),
+            "summary_chars": action.summary.chars().count(),
         });
         if let Some(object) = metadata.as_object_mut() {
-            match (action_kind, target) {
+            match (action.action_kind, action.target.as_deref()) {
                 (ActionKind::ShellCommand, Some(target)) => {
-                    object.insert("target_chars".to_string(), json!(target.chars().count()));
+                    object.insert("command".to_string(), json!(target));
+                    object.insert("command_chars".to_string(), json!(target.chars().count()));
+                    if let Some(details) = action.shell_details.as_ref() {
+                        object.insert("cwd".to_string(), json!(&details.cwd));
+                        object.insert(
+                            "timeout_seconds".to_string(),
+                            json!(details.timeout_seconds),
+                        );
+                        object.insert(
+                            "expected_effect_chars".to_string(),
+                            json!(details.expected_effect.chars().count()),
+                        );
+                    }
                 }
                 (_, Some(target)) => {
                     object.insert("target".to_string(), json!(target));
@@ -611,6 +601,7 @@ fn action_applied_trace_metadata(
             },
             VerifiedActionResult::Shell(verification) => {
                 object.insert("operation".to_string(), json!("shell_command"));
+                object.insert("command".to_string(), json!(&verification.command));
                 object.insert("cwd".to_string(), json!(&verification.cwd));
                 object.insert("exit_code".to_string(), json!(verification.exit_code));
                 object.insert(
@@ -628,10 +619,25 @@ fn action_applied_trace_metadata(
                     "command_chars".to_string(),
                     json!(verification.command.chars().count()),
                 );
+                object.insert(
+                    "stdout_tail".to_string(),
+                    json!(trace_output_tail(&verification.stdout)),
+                );
+                object.insert(
+                    "stderr_tail".to_string(),
+                    json!(trace_output_tail(&verification.stderr)),
+                );
             }
         }
     }
     metadata
+}
+
+fn trace_output_tail(output: &str) -> String {
+    const MAX_CHARS: usize = 2_000;
+    let chars = output.chars().collect::<Vec<_>>();
+    let start = chars.len().saturating_sub(MAX_CHARS);
+    chars[start..].iter().collect()
 }
 
 /// A data-only record of an action as known by the controller.

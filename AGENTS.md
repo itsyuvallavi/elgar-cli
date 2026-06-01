@@ -1,6 +1,6 @@
 # Elgar Agent Entry Point
 
-Use the active v0.2 agent instructions in:
+Use the active v0.10 agent instructions in:
 
 ```text
 zz_elgar_agent_docs/AGENTS.md

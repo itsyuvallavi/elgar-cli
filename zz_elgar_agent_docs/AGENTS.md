@@ -1,10 +1,10 @@
-# Elgar v0.2 Agent Instructions
+# Elgar v0.10 Agent Instructions
 
 ## Purpose
 
-This document defines how coding agents should work on Elgar v0.2.
+This document defines how coding agents should work on Elgar v0.10.
 
-Elgar v0.2 is a clean restart. Do not preserve v0.1 architecture unless
+Elgar v0.10 is a clean restart. Do not preserve v0.1 architecture unless
 explicitly instructed.
 
 ## Current Contract

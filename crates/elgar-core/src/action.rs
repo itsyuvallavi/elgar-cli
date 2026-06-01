@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub const SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
-pub const SHELL_COMMAND_MAX_TIMEOUT_SECONDS: u64 = 5 * 60;
+pub const SHELL_COMMAND_DEFAULT_TIMEOUT_SECONDS: u64 = 5 * 60;
+pub const SHELL_COMMAND_MAX_TIMEOUT_SECONDS: u64 = 15 * 60;
 pub const SHELL_COMMAND_STDOUT_CAP_BYTES: usize = 16 * 1024;
 pub const SHELL_COMMAND_STDERR_CAP_BYTES: usize = 16 * 1024;
 
@@ -767,8 +767,8 @@ mod tests {
     fn shell_command_policy_defines_timeout_output_caps_and_environment() {
         let policy = ShellCommandPolicy::default();
 
-        assert_eq!(policy.default_timeout_seconds, 30);
-        assert_eq!(policy.max_timeout_seconds, 300);
+        assert_eq!(policy.default_timeout_seconds, 300);
+        assert_eq!(policy.max_timeout_seconds, 900);
         assert_eq!(policy.output_caps.stdout_bytes, 16 * 1024);
         assert_eq!(policy.output_caps.stderr_bytes, 16 * 1024);
         assert_eq!(

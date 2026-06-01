@@ -27,6 +27,7 @@ pub mod router;
 pub mod session;
 pub mod session_log_memory;
 pub mod shell;
+mod shell_allowlist;
 #[cfg(test)]
 mod test_env;
 pub mod token_accounting;

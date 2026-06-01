@@ -6,7 +6,7 @@ Scope reviewed: ELG-216 through ELG-219.
 
 ## Result
 
-The expanded permissioned action slice was originally reviewed against the v0.2 controller boundary. Current normal chat should enter through `AgentRuntime`; explicit approvals go through the action gate.
+The expanded permissioned action slice was originally reviewed against the v0.10 controller boundary. Current normal chat should enter through `AgentRuntime`; explicit approvals go through the action gate.
 
 - Core owns action lifecycle and verified truth.
 - Model/provider text can suggest tool calls but cannot approve, execute,

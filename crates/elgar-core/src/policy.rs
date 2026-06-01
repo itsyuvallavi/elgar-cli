@@ -46,12 +46,12 @@ impl PermissionPolicyMode {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::ReviewAll => "review every file and shell action",
+            Self::ReviewAll => "review every file and non-allowlisted shell action",
             Self::AutoCreateReviewModify => {
-                "auto-create files and folders; review edits, deletes, moves, and shell"
+                "auto-create files and folders; review edits, deletes, moves, and non-allowlisted shell"
             }
             Self::WorkspaceWriteWithReview => {
-                "auto-apply workspace file writes; review deletes, moves, and shell"
+                "auto-apply workspace file writes; review deletes, moves, and non-allowlisted shell"
             }
             Self::FullAccess => "auto-apply validated file and shell actions",
         }

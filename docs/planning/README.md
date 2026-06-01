@@ -1,4 +1,4 @@
-# Elgar v0.2 Planning
+# Elgar v0.10 Planning
 
 Canonical planning documents currently live in Google Drive and are listed in:
 
