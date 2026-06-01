@@ -360,15 +360,10 @@ impl Default for ShellCommandOutputCaps {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShellCommandEnvironmentPolicy {
+    #[default]
     InheritControllerEnvironment,
-}
-
-impl Default for ShellCommandEnvironmentPolicy {
-    fn default() -> Self {
-        Self::InheritControllerEnvironment
-    }
 }
 
 /// Display data needed before user approval.

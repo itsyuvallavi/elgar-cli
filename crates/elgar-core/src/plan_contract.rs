@@ -220,18 +220,18 @@ impl PlanContract {
                     if is_runtime_data_file_reference(&path, &self.project_root, &scope_paths) {
                         continue;
                     }
-                    if !scope_contains_referenced_path(&scope_paths, &path, &self.project_root) {
-                        if referenced_path_is_in_executable_scope_area(
+                    if !scope_contains_referenced_path(&scope_paths, &path, &self.project_root)
+                        && referenced_path_is_in_executable_scope_area(
                             &self.scope.allowed_directories,
                             &path,
                             &self.project_root,
-                        ) {
-                            issues.push(PlanContractDraftIssue {
-                                severity: PlanContractDraftIssueSeverity::Blocking,
-                                kind: PlanContractDraftIssueKind::ReferencedPathMissingFromScope,
-                                path: Some(path),
-                            });
-                        }
+                        )
+                    {
+                        issues.push(PlanContractDraftIssue {
+                            severity: PlanContractDraftIssueSeverity::Blocking,
+                            kind: PlanContractDraftIssueKind::ReferencedPathMissingFromScope,
+                            path: Some(path),
+                        });
                     }
                 }
                 PlanVerificationCheckKind::PythonModule { module } => {
@@ -643,7 +643,7 @@ fn clean_reference_token(token: &str) -> Option<String> {
         let cleaned = token
             .trim()
             .trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']' | '{' | '}'))
-            .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':'))
+            .trim_end_matches(['.', ',', ';', ':'])
             .trim_matches('`')
             .trim_matches('"')
             .trim_matches('\'');
@@ -740,9 +740,7 @@ fn python_module_references(text: &str) -> Vec<String> {
 }
 
 fn is_valid_python_module_reference(module: &str) -> bool {
-    module
-        .split('.')
-        .all(|segment| is_valid_python_module_segment(segment))
+    module.split('.').all(is_valid_python_module_segment)
 }
 
 fn is_valid_python_module_segment(segment: &str) -> bool {

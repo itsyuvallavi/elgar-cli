@@ -338,6 +338,7 @@ pub struct ValidatedModelGuidanceRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum ValidatedModelToolOutput {
     Action(ValidatedModelToolAction),
     Guidance(ValidatedModelGuidanceRequest),

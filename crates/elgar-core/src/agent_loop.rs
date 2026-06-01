@@ -1783,7 +1783,7 @@ fn explicit_project_root_token(session: &Session, token: &str) -> Option<PathBuf
         return None;
     }
 
-    let root = normalize_path(&absolute_session_path(session, path));
+    let root = normalize_path(absolute_session_path(session, path));
     (root != session.cwd && path_is_within(&root, &session.project_root)).then_some(root)
 }
 
@@ -1861,6 +1861,7 @@ fn agent_route_location_context(session: &Session) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 enum ResolvedAgentToolOutput {
     Guidance(ValidatedModelGuidanceRequest),
     Action(ValidatedModelToolAction),
@@ -2672,7 +2673,7 @@ fn all_skipped_tool_result_signature(
 fn repeated_identical_skip_breaker_message(signature: &AllSkippedToolResultSignature) -> String {
     let mut messages = Vec::<&str>::new();
     for message in &signature.messages {
-        if !messages.iter().any(|seen| *seen == message.as_str()) {
+        if !messages.contains(&message.as_str()) {
             messages.push(message);
         }
     }
@@ -4731,7 +4732,7 @@ mod tests {
         // A normal relative project path under the root is still accepted.
         assert_eq!(
             explicit_project_root_token(&session, "my-project/api"),
-            Some(normalize_path(&root.join("my-project/api")))
+            Some(normalize_path(root.join("my-project/api")))
         );
     }
 
@@ -8014,6 +8015,7 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    #[allow(clippy::large_enum_variant)]
     enum CapturedToolStep {
         Output(crate::event::ProviderOutput),
         EmptyResponse,

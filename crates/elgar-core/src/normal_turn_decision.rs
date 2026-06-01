@@ -19,6 +19,7 @@ pub(crate) enum NormalTurnDecision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum NormalTurnExecuteIntent {
     PlanExecution,
     PlanCreationAndExecution,

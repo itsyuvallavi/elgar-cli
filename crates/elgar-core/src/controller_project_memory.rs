@@ -400,7 +400,7 @@ fn inline_path_from_line(line: &str) -> Option<(PathBuf, PlanPathKind)> {
         .split_once(char::is_whitespace)
         .map(|(token, suffix)| (token, Some(suffix.trim_start())))
         .unwrap_or((line, None));
-    let token = token.trim_end_matches(|ch: char| matches!(ch, ',' | ';' | ':' | ')'));
+    let token = token.trim_end_matches([',', ';', ':', ')']);
     let path = clean_plan_path_token(token)?;
 
     if suffix.is_some_and(|suffix| !suffix.starts_with('|')) {

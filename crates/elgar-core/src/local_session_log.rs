@@ -46,8 +46,7 @@ pub(crate) fn append_session_event(
         fs::create_dir_all(parent)?;
     }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    let line = serde_json::to_string(&event)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+    let line = serde_json::to_string(&event).map_err(std::io::Error::other)?;
     writeln!(file, "{line}")?;
     Ok(())
 }
