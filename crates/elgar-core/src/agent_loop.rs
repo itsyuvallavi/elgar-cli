@@ -79,15 +79,14 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "After tools run, answer naturally and briefly with what happened."
 );
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
-    "You are Elgar. Classify only. ",
-    "Return compact JSON; no prose. ",
-    "{\"route\":\"execute\",\"intent\":\"shell_execution\"}=run/inspect shell command; not file content. ",
-    "{\"route\":\"execute\"}=local file/artifact/plan work. ",
-    "{\"route\":\"chat\",\"content\":\"...\"}=text only, not runtime state. ",
+    "You are Elgar. Classify only; Return compact JSON, no prose. ",
+    "{\"route\":\"execute\",\"intent\":\"shell_execution\"}=run/inspect shell. ",
+    "{\"route\":\"execute\"}=local file/artifact/plan work or review current/root/this folder/project. ",
+    "{\"route\":\"chat\",\"content\":\"...\"}=text only, not local/runtime state. ",
     "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=execute verified plan. ",
-    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=same prompt asks to create a plan then execute/implement it. ",
+    "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=same prompt creates plan then executes/implements it. ",
     "Plan-only: execute, no intent. ",
-    "{\"route\":\"state\",\"answer_kind\":\"...\"}=questions about verified plan/status/created files, not commands. ",
+    "{\"route\":\"state\",\"answer_kind\":\"...\"}=verified status/plan/created files questions. ",
     "{\"route\":\"ask_guidance\",\"question\":\"...\"}=missing required detail."
 );
 const AGENT_STATE_KIND_CLASSIFIER_PROMPT: &str = concat!(
@@ -1783,7 +1782,24 @@ fn agent_local_runtime_context(session: &mut Session) -> Option<String> {
     let max_window_tokens = session.context_accounting().max_window_tokens;
     let bundle = ContextBundle::from_default_local_files(project_root, cwd, max_window_tokens);
     session.set_context_accounting(bundle.accounting.clone());
-    bundle.system_context()
+    let cwd_relative = session
+        .cwd
+        .strip_prefix(&session.project_root)
+        .ok()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let runtime_context = format!(
+        "Elgar runtime session:\n- project_root: {}\n- cwd: {}\n- cwd_relative_to_project_root: {}\n- current/root/this folder/project refers to cwd; use cwd `.` for shell commands targeting it.",
+        session.project_root.display(),
+        session.cwd.display(),
+        cwd_relative
+    );
+
+    Some(match bundle.system_context() {
+        Some(context) => format!("{runtime_context}\n\n{context}"),
+        None => runtime_context,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4518,7 +4534,10 @@ mod tests {
         assert!(AGENT_SYSTEM_PROMPT
             .contains("create the plan file first, then implement the planned files"));
         assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT
-            .contains("same prompt asks to create a plan then execute/implement it"));
+            .contains("same prompt creates plan then executes/implements it"));
+        assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT
+            .contains("review current/root/this folder/project"));
+        assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT.len() <= 700);
     }
 
     #[test]
@@ -8073,6 +8092,33 @@ mod tests {
                     if started.request_mode.as_deref() == Some("tool_enabled")
             )));
         }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_review_tool_turn_gets_runtime_location_context() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-runtime-location-context",
+            std::process::id()
+        ));
+        let cwd = root.join("playground").join("Nextjs-1");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&cwd).unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_tool_output(crate::event::ProviderOutput::new("No tool action needed."));
+        let mut session = Session::new("session", &root, &cwd);
+
+        run_permissive_agent_turn(&provider, &mut session, "review the folder you are in");
+
+        let tool_request = only_tool_request(&provider);
+        let joined = joined_request_messages(&tool_request);
+        assert!(joined.contains("Elgar runtime session:"));
+        assert!(joined.contains(&format!("project_root: {}", root.display())));
+        assert!(joined.contains(&format!("cwd: {}", cwd.display())));
+        assert!(joined.contains("cwd_relative_to_project_root: playground/Nextjs-1"));
+        assert!(joined.contains("current/root/this folder/project refers to cwd"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
