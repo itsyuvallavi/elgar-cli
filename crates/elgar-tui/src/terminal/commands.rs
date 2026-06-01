@@ -1,9 +1,6 @@
+use std::io::{self, Write};
 #[cfg(any(test, all(not(test), target_os = "macos")))]
 use std::process::{Command, Stdio};
-use std::{
-    io::{self, Write},
-    time::Duration,
-};
 
 use crate::TuiShell;
 
@@ -167,7 +164,7 @@ fn copy_text_to_system_clipboard(_text: &str) -> io::Result<()> {
 
 #[cfg(all(not(test), target_os = "macos"))]
 fn copy_text_with_command(command: &str, text: &str) -> io::Result<()> {
-    copy_text_with_command_and_args(command, &[], text, Duration::from_millis(1_500))
+    copy_text_with_command_and_args(command, &[], text, std::time::Duration::from_millis(1_500))
 }
 
 #[cfg(any(test, all(not(test), target_os = "macos")))]
@@ -175,7 +172,7 @@ pub(super) fn copy_text_with_command_and_args(
     command: &str,
     args: &[&str],
     text: &str,
-    timeout: Duration,
+    timeout: std::time::Duration,
 ) -> io::Result<()> {
     let mut child = Command::new(command)
         .args(args)
@@ -211,7 +208,7 @@ pub(super) fn copy_text_with_command_and_args(
                 "clipboard command timed out",
             ));
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     };
 
     writer
@@ -225,14 +222,6 @@ pub(super) fn copy_text_with_command_and_args(
             "clipboard command exited with {status}"
         )))
     }
-}
-
-#[cfg(all(not(test), not(target_os = "macos")))]
-fn copy_text_with_command(_command: &str, _text: &str) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "no local system clipboard command configured",
-    ))
 }
 
 pub(super) fn osc52_clipboard_sequence(text: &str) -> String {

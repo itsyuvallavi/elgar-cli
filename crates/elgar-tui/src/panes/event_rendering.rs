@@ -189,7 +189,7 @@ pub(super) fn render_turn_metrics_summary(
 fn compact_token_count(tokens: u64) -> String {
     if tokens >= 1_000 {
         let value = tokens as f64 / 1_000.0;
-        if tokens % 1_000 == 0 {
+        if tokens.is_multiple_of(1_000) {
             format!("{value:.0}k")
         } else {
             format!("{value:.1}k")
