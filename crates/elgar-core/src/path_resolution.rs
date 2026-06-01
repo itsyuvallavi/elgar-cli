@@ -64,7 +64,7 @@ pub(crate) fn resolve_shell_command_paths(
 ) -> ShellCommandAction {
     let mut resolved = action.clone();
     expand_home_path(&mut resolved.cwd);
-    resolved.cwd = session_path(&session.cwd, &resolved.cwd);
+    resolved.cwd = session_path(session, &resolved.cwd);
     let cwd = resolved.cwd.clone();
 
     resolved.expected_directory = resolved
@@ -106,12 +106,72 @@ fn expand_home_paths(validated: &mut ValidatedModelToolAction) {
     }
 }
 
-fn session_path(cwd: &Path, path: &Path) -> PathBuf {
+fn session_path(session: &Session, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        cwd.join(path)
+        relative_session_path(session, path)
     }
+}
+
+fn relative_session_path(session: &Session, path: &Path) -> PathBuf {
+    let path = normalize_relative_path(path);
+    if path.as_os_str().is_empty() {
+        return session.cwd.clone();
+    }
+
+    if path.file_name() == session.cwd.file_name() && path.components().count() == 1 {
+        return session.cwd.clone();
+    }
+
+    if let Ok(cwd_relative) = session.cwd.strip_prefix(&session.project_root) {
+        if let Some(resolved) = path_under_current_cwd(session, cwd_relative, &path) {
+            return resolved;
+        }
+
+        if let Some(project_name) = session.project_root.file_name() {
+            let project_prefixed_cwd = PathBuf::from(project_name).join(cwd_relative);
+            if let Some(resolved) = path_under_current_cwd(session, &project_prefixed_cwd, &path) {
+                return resolved;
+            }
+        }
+    }
+
+    if let Some(project_name) = session.project_root.file_name() {
+        if let Ok(project_relative) = path.strip_prefix(project_name) {
+            return session.project_root.join(project_relative);
+        }
+    }
+
+    session.cwd.join(path)
+}
+
+fn path_under_current_cwd(session: &Session, cwd_prefix: &Path, path: &Path) -> Option<PathBuf> {
+    if cwd_prefix.as_os_str().is_empty() {
+        return None;
+    }
+
+    let suffix = path.strip_prefix(cwd_prefix).ok()?;
+    if suffix.as_os_str().is_empty() {
+        Some(session.cwd.clone())
+    } else {
+        Some(session.cwd.join(suffix))
+    }
+}
+
+fn normalize_relative_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::ParentDir => normalized.push(".."),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                normalized.push(component.as_os_str())
+            }
+        }
+    }
+    normalized
 }
 
 fn shell_expected_path(cwd: &Path, mut path: PathBuf) -> PathBuf {
@@ -240,6 +300,58 @@ mod tests {
         assert_eq!(
             resolved.expected_directories,
             vec![PathBuf::from("/workspace/playground/project/other")]
+        );
+    }
+
+    #[test]
+    fn resolve_shell_cwd_deduplicates_project_prefixed_current_cwd() {
+        let session = Session::new(
+            "session",
+            "/Users/yuval/__git/elgar",
+            "/Users/yuval/__git/elgar/playground/Nextjs-1",
+        );
+        let action =
+            ShellCommandAction::new("ls -R playground/Nextjs-1", "elgar/playground/Nextjs-1");
+
+        let resolved = resolve_shell_command_paths(&session, &action);
+
+        assert_eq!(
+            resolved.cwd,
+            PathBuf::from("/Users/yuval/__git/elgar/playground/Nextjs-1")
+        );
+    }
+
+    #[test]
+    fn resolve_shell_cwd_deduplicates_project_relative_current_cwd() {
+        let session = Session::new(
+            "session",
+            "/Users/yuval/__git/elgar",
+            "/Users/yuval/__git/elgar/playground/Nextjs-1",
+        );
+        let action = ShellCommandAction::new("ls -R playground/Nextjs-1", "playground/Nextjs-1");
+
+        let resolved = resolve_shell_command_paths(&session, &action);
+
+        assert_eq!(
+            resolved.cwd,
+            PathBuf::from("/Users/yuval/__git/elgar/playground/Nextjs-1")
+        );
+    }
+
+    #[test]
+    fn resolve_shell_cwd_uses_current_cwd_prefix_for_child_project() {
+        let session = Session::new(
+            "session",
+            "/Users/yuval/__git/elgar",
+            "/Users/yuval/__git/elgar/playground",
+        );
+        let action = ShellCommandAction::new("ls -R playground/Nextjs-1", "playground/Nextjs-1");
+
+        let resolved = resolve_shell_command_paths(&session, &action);
+
+        assert_eq!(
+            resolved.cwd,
+            PathBuf::from("/Users/yuval/__git/elgar/playground/Nextjs-1")
         );
     }
 
