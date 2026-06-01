@@ -320,6 +320,7 @@ where
     let mut repeated_all_skipped_count = 0usize;
     let mut validation_repair_in_progress = false;
     let allow_no_tool_response_repair = !intent.explicit_tool_command;
+    let mut completed_shell_command_signatures_this_turn = HashSet::new();
 
     for _round in 0..MAX_AGENT_TOOL_ROUNDS {
         let request = provider.request_metadata();
@@ -661,6 +662,7 @@ where
 
         let verified_actions_before_outputs = verified_actions_this_tool_turn;
         let mut tool_results_need_provider_followup = false;
+        let mut stop_tool_loop_after_round = false;
         for output in resolved_outputs {
             match output {
                 ResolvedAgentToolOutput::Guidance(guidance) => {
@@ -694,6 +696,22 @@ where
                     append_tool_feedback_message(&mut messages, tool_call_id, message);
                 }
                 ResolvedAgentToolOutput::Action(action) => {
+                    let shell_signature = shell_command_signature(&action.request);
+                    if shell_signature.as_ref().is_some_and(|signature| {
+                        completed_shell_command_signatures_this_turn.contains(signature)
+                    }) {
+                        tool_results_need_provider_followup = true;
+                        stop_tool_loop_after_round = true;
+                        let message = "Skipped repeated shell command because the same command already completed in this turn.".to_string();
+                        session.push_reasoning_runtime_check(message.clone());
+                        session.record_runtime_block(message.clone());
+                        session.push_event(Event::AssistantMessage(AssistantMessage::new(
+                            message.clone(),
+                            AssistantMessageSource::Controller,
+                        )));
+                        append_tool_feedback_message(&mut messages, action.tool_call_id, message);
+                        continue;
+                    }
                     if plan_creation_repair_in_progress
                         && !is_latest_verified_plan_file_action(session, &action.request)
                     {
@@ -733,6 +751,18 @@ where
                         .is_some()
                     {
                         verified_actions_this_tool_turn += 1;
+                        if let Some(signature) = shell_signature {
+                            if session
+                                .actions()
+                                .last()
+                                .and_then(|record| record.verified_result.as_ref())
+                                .is_some_and(|result| {
+                                    matches!(result, VerifiedActionResult::Shell(_))
+                                })
+                            {
+                                completed_shell_command_signatures_this_turn.insert(signature);
+                            }
+                        }
                     }
                     if is_plan_creation
                         && session
@@ -765,6 +795,9 @@ where
                     }
                 }
             }
+        }
+        if stop_tool_loop_after_round {
+            break;
         }
         let verified_actions_this_round =
             verified_actions_this_tool_turn.saturating_sub(verified_actions_before_outputs);
@@ -937,6 +970,13 @@ fn action_request_kind_label(request: &ActionRequest) -> &'static str {
     }
 }
 
+fn shell_command_signature(request: &ActionRequest) -> Option<String> {
+    let ActionRequest::ShellCommand(shell) = request else {
+        return None;
+    };
+    Some(format!("{}\n{}", shell.cwd.display(), shell.command.trim()))
+}
+
 fn run_plain_agent_chat<P>(
     provider: &P,
     session: &mut Session,
@@ -952,6 +992,7 @@ where
     ));
     let messages = vec![
         ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
+        ChatMessage::system(agent_route_location_context(session)),
         ChatMessage::user(input),
     ];
 
@@ -1033,6 +1074,7 @@ where
     ));
     let messages = vec![
         ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
+        ChatMessage::system(agent_route_location_context(session)),
         ChatMessage::system(context),
         ChatMessage::system(
             "Verified context is available for this retry. If it resolves the missing detail, choose the appropriate route instead of asking for guidance.",
@@ -1088,9 +1130,10 @@ where
         ProviderStarted::new(request.provider.clone(), request.request_id.clone())
             .with_request_details(request.model.clone(), "plain_route_retry", 0),
     ));
-    let mut messages = vec![ChatMessage::system(
-        AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT,
-    )];
+    let mut messages = vec![
+        ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
+        ChatMessage::system(agent_route_location_context(session)),
+    ];
     if include_verified_context {
         if let Some(context) = agent_verified_memory_context(session, true).prompt_context {
             messages.push(ChatMessage::system(context));
@@ -1132,6 +1175,7 @@ where
     ));
     let messages = vec![
         ChatMessage::system(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT),
+        ChatMessage::system(agent_route_location_context(session)),
         ChatMessage::system(context),
         ChatMessage::system(AGENT_POST_PLAN_CREATION_DECISION_PROMPT),
         ChatMessage::user(input),
@@ -1800,6 +1844,23 @@ fn agent_local_runtime_context(session: &mut Session) -> Option<String> {
         Some(context) => format!("{runtime_context}\n\n{context}"),
         None => runtime_context,
     })
+}
+
+fn agent_route_location_context(session: &Session) -> String {
+    let cwd_relative = session
+        .cwd
+        .strip_prefix(&session.project_root)
+        .ok()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    format!(
+        "Runtime location: project_root={} cwd={} cwd_relative={}. Current/root/this folder/project means cwd.",
+        session.project_root.display(),
+        session.cwd.display(),
+        cwd_relative
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8075,7 +8136,14 @@ mod tests {
             assert_eq!(requests[0].tool_count, 0);
             assert_eq!(requests[0].messages.last(), Some(&ChatMessage::user(input)));
             let joined = joined_request_messages(&requests[0]);
-            assert!(joined.len() <= 700, "plain route prompt grew: {joined}");
+            assert!(
+                requests[0].messages[0].content.len() <= 700,
+                "plain route prompt grew: {}",
+                requests[0].messages[0].content
+            );
+            assert!(joined.contains("Runtime location:"));
+            assert!(joined.contains(&format!("project_root={}", root.display())));
+            assert!(joined.contains("Current/root/this folder/project means cwd"));
             assert!(!joined.contains("latest verified folder"));
             assert!(!joined.contains("latest verified plan"));
             assert!(!joined.contains("Verified filesystem context"));
@@ -8092,6 +8160,62 @@ mod tests {
                     if started.request_mode.as_deref() == Some("tool_enabled")
             )));
         }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn identical_successful_shell_command_runs_once_per_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-repeat-shell-breaker",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = CapturingProvider::new().with_tool_outputs(vec![
+            crate::event::ProviderOutput::new("List project tree.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "shell-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                    arguments: json!({
+                        "command": "pwd",
+                        "cwd": root.display().to_string()
+                    }),
+                    assistant_summary: Some("list project tree".to_string()),
+                },
+            ]),
+            crate::event::ProviderOutput::new("List project tree again.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "shell-2".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                    arguments: json!({
+                        "command": "pwd",
+                        "cwd": root.display().to_string()
+                    }),
+                    assistant_summary: Some("list project tree again".to_string()),
+                },
+            ]),
+        ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "show me the project tree",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let applied_shell_actions = session
+            .actions()
+            .iter()
+            .filter(|record| matches!(record.verified_result, Some(VerifiedActionResult::Shell(_))))
+            .count();
+        assert_eq!(applied_shell_actions, 1);
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.content.contains("Skipped repeated shell command")
+        )));
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -720,6 +720,8 @@ fn verified_status_answer(session: &Session) -> String {
         .filter(|record| record.action.state == crate::action::ActionLifecycleState::Applied)
         .count();
     let mut lines = vec![
+        format!("project root: {}", session.project_root.display()),
+        format!("working folder: {}", session.cwd.display()),
         format!("pending: {}", verified_pending_summary_value(session)),
         format!("applied actions: {applied}"),
     ];
@@ -1011,6 +1013,25 @@ mod tests {
         let path = local_session_log::session_log_file_path(root, session_id);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, lines.join("\n")).unwrap();
+    }
+
+    #[test]
+    fn status_answer_reports_project_root_and_working_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-state-answer-{}-status-location",
+            std::process::id()
+        ));
+        let cwd = root.join("playground").join("Nextjs-1");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&cwd).unwrap();
+        let session = Session::new("session", &root, &cwd);
+
+        let answer = verified_session_state_answer(&session, VerifiedStateAnswerKind::Status);
+
+        assert!(answer.contains(&format!("project root: {}", root.display())));
+        assert!(answer.contains(&format!("working folder: {}", cwd.display())));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
