@@ -142,6 +142,8 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
+        assert!(rendered.contains("Command: printf hello"));
+        assert!(rendered.contains("Cwd: /repo"));
         assert!(rendered.contains("Shell command finished: exit 0."));
         assert!(rendered.contains("stdout: hello"));
         assert!(!rendered.contains("Shell command finished and verification was recorded."));

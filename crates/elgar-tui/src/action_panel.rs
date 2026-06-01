@@ -497,7 +497,9 @@ mod tests {
 
         let rendered = pending_action.render_body();
         assert!(rendered.contains("Status: applied and verified"));
-        assert!(rendered.contains("Result: Shell command timed out after 30000 ms."));
+        assert!(rendered.contains("Command: sleep 60"));
+        assert!(rendered.contains("Cwd: /repo"));
+        assert!(rendered.contains("Shell command timed out after 30000 ms."));
         assert!(rendered.contains("stderr: timed out (truncated)"));
         assert!(!rendered.contains("Shell command finished and verification was recorded."));
     }

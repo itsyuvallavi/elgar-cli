@@ -546,6 +546,7 @@ where
         );
         let resolved_outputs =
             guard_shell_execution_tool_outputs(session, resolved_outputs, intent.shell_execution);
+        let resolved_outputs = guard_shell_inspection_tool_outputs(session, resolved_outputs);
         let resolved_outputs =
             anchor_bare_plan_artifacts_to_batch_project_root(session, resolved_outputs);
         let resolved_outputs = guard_plan_creation_tool_outputs(
@@ -705,10 +706,6 @@ where
                         let message = "Skipped repeated shell command because the same command already completed in this turn.".to_string();
                         session.push_reasoning_runtime_check(message.clone());
                         session.record_runtime_block(message.clone());
-                        session.push_event(Event::AssistantMessage(AssistantMessage::new(
-                            message.clone(),
-                            AssistantMessageSource::Controller,
-                        )));
                         append_tool_feedback_message(&mut messages, action.tool_call_id, message);
                         continue;
                     }
@@ -2077,6 +2074,115 @@ fn guard_shell_execution_tool_outputs(
             other => other,
         })
         .collect()
+}
+
+fn guard_shell_inspection_tool_outputs(
+    session: &mut Session,
+    outputs: Vec<ResolvedAgentToolOutput>,
+) -> Vec<ResolvedAgentToolOutput> {
+    outputs
+        .into_iter()
+        .map(|output| match output {
+            ResolvedAgentToolOutput::Action(mut action) => {
+                let ActionRequest::ShellCommand(shell) = action.request else {
+                    return ResolvedAgentToolOutput::Action(action);
+                };
+                let (shell, rewrite_reason) = rewrite_heavy_shell_inspection(shell);
+                if let Some(reason) = rewrite_reason {
+                    session.push_reasoning_runtime_check(reason);
+                }
+                action.request = ActionRequest::ShellCommand(shell);
+                action.target_label = action.request.approval_target();
+                ResolvedAgentToolOutput::Action(action)
+            }
+            other => other,
+        })
+        .collect()
+}
+
+fn rewrite_heavy_shell_inspection(
+    mut shell: ShellCommandAction,
+) -> (ShellCommandAction, Option<String>) {
+    if !shell_command_is_heavy_project_listing(&shell.command) {
+        return (shell, None);
+    }
+
+    let original = shell.command.clone();
+    shell.command = safe_project_listing_command().to_string();
+    shell.output_caps.stdout_bytes = shell.output_caps.stdout_bytes.min(8 * 1024);
+    (
+        shell,
+        Some(format!(
+            "rewrote heavy project listing shell command `{}` to bounded project inspection",
+            original.trim()
+        )),
+    )
+}
+
+fn shell_command_is_heavy_project_listing(command: &str) -> bool {
+    let Some(words) = simple_shell_words(command) else {
+        return false;
+    };
+    let Some(program) = words.first().map(String::as_str) else {
+        return false;
+    };
+
+    match program {
+        "ls" => words[1..]
+            .iter()
+            .any(|word| word.starts_with('-') && word.chars().skip(1).any(|ch| ch == 'R')),
+        "find" => words
+            .get(1)
+            .is_some_and(|target| matches!(target.as_str(), "." | "./")),
+        _ => false,
+    }
+}
+
+fn safe_project_listing_command() -> &'static str {
+    "find . -maxdepth 3 -not -path './.git' -not -path './.git/*' -not -path './node_modules' -not -path './node_modules/*' -not -path './.next' -not -path './.next/*' -not -path './target' -not -path './target/*' -not -path './dist' -not -path './dist/*' -not -path './build' -not -path './build/*' -not -path './coverage' -not -path './coverage/*' -print"
+}
+
+fn simple_shell_words(command: &str) -> Option<Vec<String>> {
+    if command.trim().is_empty() || command.chars().any(|ch| matches!(ch, '\n' | '\r')) {
+        return None;
+    }
+
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for ch in command.chars() {
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else if matches!(ch, '$' | '`' | '\\') {
+                return None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            ' ' | '\t' => {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
+                }
+            }
+            ';' | '|' | '&' | '>' | '<' | '(' | ')' | '{' | '}' | '$' | '`' | '\\' => {
+                return None;
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if quote.is_some() {
+        return None;
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    Some(words)
 }
 
 fn drop_preexisting_shell_expected_paths(
@@ -8211,11 +8317,83 @@ mod tests {
             .filter(|record| matches!(record.verified_result, Some(VerifiedActionResult::Shell(_))))
             .count();
         assert_eq!(applied_shell_actions, 1);
-        assert!(session.events().iter().any(|event| matches!(
+        assert!(!session.events().iter().any(|event| matches!(
             event,
             Event::AssistantMessage(message)
                 if message.content.contains("Skipped repeated shell command")
         )));
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("Skipped repeated shell command"))));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recursive_project_listing_shell_command_is_rewritten_to_bounded_inspection() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-safe-project-listing",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(
+            root.join("app/page.tsx"),
+            "export default function Page() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("node_modules/pkg/index.js"),
+            "module.exports = {}\n",
+        )
+        .unwrap();
+        let provider = CapturingProvider::new().with_tool_output(
+            crate::event::ProviderOutput::new("List project tree.").with_tool_calls(vec![
+                RawModelToolCall {
+                    id: "shell-1".to_string(),
+                    name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                    arguments: json!({
+                        "command": "ls -R .",
+                        "cwd": root.display().to_string()
+                    }),
+                    assistant_summary: Some("list project tree".to_string()),
+                },
+            ]),
+        );
+        let mut session = Session::new("session", &root, &root);
+
+        run_agent_tool_turn_with_policy(
+            &provider,
+            &mut session,
+            "show me the project tree",
+            PermissionPolicyMode::FullAccess,
+        );
+
+        let shell = session
+            .actions()
+            .iter()
+            .find_map(|record| match record.verified_result.as_ref()? {
+                VerifiedActionResult::Shell(shell) => Some(shell),
+                _ => None,
+            })
+            .expect("shell action should be verified");
+        assert!(
+            shell.command.starts_with("find . -maxdepth 3"),
+            "{}",
+            shell.command
+        );
+        assert!(shell.stdout.contains("./app/page.tsx"), "{}", shell.stdout);
+        assert!(
+            !shell.stdout.contains("node_modules/pkg"),
+            "{}",
+            shell.stdout
+        );
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| trace
+            .runtime_checks
+            .iter()
+            .any(|line| line.contains("rewrote heavy project listing"))));
 
         let _ = std::fs::remove_dir_all(&root);
     }

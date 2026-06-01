@@ -2,6 +2,8 @@ use elgar_core::event::ShellActionVerification;
 
 pub(crate) fn render_shell_execution_details(shell: &ShellActionVerification) -> String {
     let mut lines = Vec::new();
+    lines.push(format!("Command: {}", shell.command.trim()));
+    lines.push(format!("Cwd: {}", shell.cwd));
     if shell.timed_out {
         lines.push(format!(
             "Shell command timed out after {} ms.",
