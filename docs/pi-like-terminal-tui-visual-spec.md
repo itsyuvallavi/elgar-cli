@@ -59,6 +59,35 @@ context: TBD
 Avoid full-screen panel layouts around normal chat. Use whitespace, short labels,
 and muted color for hierarchy.
 
+## Color And Containers
+
+Color should clarify hierarchy, not decorate the terminal.
+
+Rules:
+
+- normal assistant prose uses the default high-contrast model text color
+- user submissions use the muted full-width user block treatment
+- thinking/progress uses muted text
+- verified state and ordinary tool summaries use calm model/tool text
+- success uses calm green, warnings use amber, errors use red
+- code/config containers use a muted border with readable body text
+- code container headers use muted or subtle accent metadata text
+- code/config body lines may use lightweight token color for keys, strings,
+  numbers, booleans/null-like literals, and comments when the fenced language
+  label is known
+- collapsed/hidden-line hints are muted but still legible
+- raw details views keep readable plain text and should not look like normal
+  assistant prose
+
+Do not use saturated dashboard colors, large filled panels, or decorative
+backgrounds. Containers are acceptable for bounded artifacts such as code,
+config, and compact tool summaries; they should not wrap the whole chat.
+
+Syntax styling is a readability aid, not a source of truth. Keep it
+dependency-free and conservative unless a future issue explicitly approves a
+grammar-aware highlighter. Unknown languages and `text` blocks should stay
+plain.
+
 ## Startup Block
 
 Startup should be short and factual:

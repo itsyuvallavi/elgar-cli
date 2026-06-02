@@ -75,13 +75,15 @@ const AGENT_SYSTEM_PROMPT: &str = concat!(
     "Verified plans guide runtime validation but do not make completed files immutable; if the user requests an edit under a verified plan root, use the appropriate file tool and let runtime validation, policy, and executors decide. ",
     "If the user asks what the plan is, summarize the existing plan; do not implement it. ",
     "If a verified plan already exists and the user gives a short choice follow-up, answer from that plan instead of recreating the same file. ",
+    "For project review requests, inspect representative source/config files before giving concise findings. ",
     "When creating a framework project, infer the necessary starter files from the requested stack and create the complete runnable scaffold before the final answer. ",
     "After tools run, answer naturally and briefly with what happened."
 );
 const AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT: &str = concat!(
     "You are Elgar. Classify only; Return compact JSON, no prose. ",
     "{\"route\":\"execute\",\"intent\":\"shell_execution\"}=run/inspect shell. ",
-    "{\"route\":\"execute\"}=local file/artifact/plan work or review current/root/this folder/project. ",
+    "{\"route\":\"execute\",\"intent\":\"project_review\"}=review current/root/this folder/project. ",
+    "{\"route\":\"execute\"}=local file/artifact/plan work. ",
     "{\"route\":\"chat\",\"content\":\"...\"}=text only, not local/runtime state. ",
     "{\"route\":\"execute\",\"intent\":\"plan_execution\"}=execute verified plan. ",
     "{\"route\":\"execute\",\"intent\":\"plan_creation_execution\"}=same prompt creates plan then executes/implements it. ",
@@ -145,6 +147,7 @@ struct AgentExecutionIntent {
     plan_execution: bool,
     plan_creation_execution: bool,
     shell_execution: bool,
+    project_review: bool,
     after_plan_creation_decision: bool,
     explicit_tool_command: bool,
 }
@@ -275,6 +278,9 @@ where
     }
     if let Some(context) = agent_context.prompt_context.clone() {
         messages.push(ChatMessage::system(context));
+    }
+    if intent.project_review {
+        messages.push(ChatMessage::system(project_review_tool_instruction()));
     }
     if intent.plan_execution
         && !input_contains_local_work_syntax(input)
@@ -440,7 +446,7 @@ where
                 session,
                 start_index,
                 assistant_text,
-                validation_repair_in_progress,
+                validation_repair_in_progress || intent.project_review,
             );
             break;
         }
@@ -453,7 +459,7 @@ where
                 session,
                 start_index,
                 assistant_text,
-                false,
+                intent.project_review,
             );
             break;
         }
@@ -888,6 +894,10 @@ where
     finish_agent_turn_result(session, start_index, Route::AskModel)
 }
 
+fn project_review_tool_instruction() -> &'static str {
+    "Project review mode: inspect the project tree plus representative source, config, and package files before finalizing. Use bounded read-only shell commands. Return concise findings with file references; do not stop after only listing files."
+}
+
 fn explicit_tool_command_input(input: &str) -> Option<&str> {
     let trimmed = input.trim();
     if trimmed == TOOL_COMMAND_PREFIX {
@@ -1216,6 +1226,14 @@ where
             );
             false
         }
+        Some(NormalTurnDecision::Execute {
+            intent: Some(NormalTurnExecuteIntent::ProjectReview),
+        }) => {
+            session.push_reasoning_model_decision(
+                "post-plan classifier selected project review; kept plan-only boundary",
+            );
+            false
+        }
         Some(NormalTurnDecision::State { answer_kind }) => {
             session.push_reasoning_model_decision(format!(
                 "post-plan classifier kept plan-only state{}",
@@ -1349,6 +1367,7 @@ where
                 ),
                 shell_execution: matches!(intent, Some(NormalTurnExecuteIntent::ShellExecution))
                     || (intent.is_none() && input_contains_executable_command_shape(input)),
+                project_review: matches!(intent, Some(NormalTurnExecuteIntent::ProjectReview)),
                 after_plan_creation_decision: intent.is_none(),
                 explicit_tool_command: false,
             };
@@ -1364,6 +1383,10 @@ where
             } else if execution_intent.shell_execution {
                 session.push_reasoning_model_decision(
                     "normal turn decision selected execute intent shell_execution",
+                );
+            } else if execution_intent.project_review {
+                session.push_reasoning_model_decision(
+                    "normal turn decision selected execute intent project_review",
                 );
             } else {
                 session.push_reasoning_model_decision("normal turn decision selected execute");
@@ -1477,6 +1500,14 @@ where
             PlainAgentChatOutcome::Finished
         }
         None => {
+            if route_failure_can_fall_back_to_chat(input, &assistant_text) {
+                session.record_reasoning_route("chat");
+                session.push_reasoning_model_decision(
+                    "normal turn decision returned unstructured text for text-only input; surfaced as chat",
+                );
+                push_plain_provider_message_if_visible(session, assistant_text);
+                return PlainAgentChatOutcome::Finished;
+            }
             if allow_route_retry {
                 session.push_reasoning_model_decision(
                     "normal turn decision did not return structured JSON; retrying route JSON",
@@ -1563,6 +1594,30 @@ fn looks_like_local_work_chat_misroute(input: &str, content: &str) -> bool {
         && !looks_like_raw_tool_protocol(content)
         && !content_echoes_original_input(input, content)
         && input_contains_local_work_syntax(input)
+}
+
+fn route_failure_can_fall_back_to_chat(input: &str, content: &str) -> bool {
+    !content.trim().is_empty()
+        && !looks_like_raw_tool_protocol(content)
+        && looks_like_single_non_artifact_fenced_code_block(content)
+        && !looks_like_misrouted_artifact_chat(content)
+        && !looks_like_misrouted_artifact_chat_after_retry(content)
+        && !input_contains_local_work_syntax(input)
+}
+
+fn looks_like_single_non_artifact_fenced_code_block(content: &str) -> bool {
+    let trimmed = content.trim();
+    if !trimmed.starts_with("```") || local_path_like_token_count(trimmed) > 0 {
+        return false;
+    }
+    let mut lines = trimmed.lines();
+    lines
+        .next()
+        .is_some_and(|line| line.trim_start().starts_with("```"))
+        && trimmed
+            .lines()
+            .last()
+            .is_some_and(|line| line.trim() == "```")
 }
 
 fn content_echoes_original_input(input: &str, content: &str) -> bool {
@@ -1675,6 +1730,7 @@ fn local_path_like_token_count(content: &str) -> usize {
                 .trim_end_matches('/');
             if token.is_empty()
                 || token.contains("://")
+                || token.starts_with("//")
                 || token.contains('=')
                 || token.starts_with('$')
                 || token.starts_with('~')
@@ -4028,18 +4084,21 @@ fn push_provider_message_after_tool_turn_if_visible(
     session: &mut Session,
     turn_start_index: usize,
     message: impl Into<String>,
-    allow_unverified_provider_message: bool,
+    allow_provider_message_after_verified_action: bool,
 ) {
     if turn_has_verified_action_applied(session, turn_start_index) {
         debug_assert!(session
             .actions_in_latest_action_turn()
             .iter()
             .any(|record| record.verified_result.is_some()));
+        if allow_provider_message_after_verified_action {
+            push_provider_message_if_visible(session, message);
+        }
         return;
     }
 
     let message = message.into();
-    if allow_unverified_provider_message {
+    if allow_provider_message_after_verified_action {
         push_provider_message_if_visible(session, message);
         return;
     }
@@ -4703,8 +4762,7 @@ mod tests {
             .contains("create the plan file first, then implement the planned files"));
         assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT
             .contains("same prompt creates plan then executes/implements it"));
-        assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT
-            .contains("review current/root/this folder/project"));
+        assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT.contains("\"intent\":\"project_review\""));
         assert!(AGENT_NORMAL_TURN_DECISION_SYSTEM_PROMPT.len() <= 700);
     }
 
@@ -8410,7 +8468,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&cwd).unwrap();
         let provider = CapturingProvider::new()
-            .with_plain_output(crate::event::ProviderOutput::new("{\"route\":\"execute\"}"))
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"project_review\"}",
+            ))
             .with_tool_output(crate::event::ProviderOutput::new("No tool action needed."));
         let mut session = Session::new("session", &root, &cwd);
 
@@ -8423,6 +8483,64 @@ mod tests {
         assert!(joined.contains(&format!("cwd: {}", cwd.display())));
         assert!(joined.contains("cwd_relative_to_project_root: playground/Nextjs-1"));
         assert!(joined.contains("current/root/this folder/project refers to cwd"));
+        assert!(joined.contains("Project review mode: inspect the project tree"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_review_surfaces_final_findings_after_verified_inspection() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-project-review-final",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"scripts":{"dev":"next dev"},"dependencies":{"next":"latest"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("app/page.tsx"),
+            "export default function Home() { return <main>Hello</main>; }\n",
+        )
+        .unwrap();
+        let provider = CapturingProvider::new()
+            .with_plain_output(crate::event::ProviderOutput::new(
+                "{\"route\":\"execute\",\"intent\":\"project_review\"}",
+            ))
+            .with_tool_outputs(vec![
+                crate::event::ProviderOutput::new("Inspect project files.").with_tool_calls(vec![
+                    RawModelToolCall {
+                        id: "review-shell-1".to_string(),
+                        name: RawModelToolName::Known(ModelToolName::ShellCommand),
+                        arguments: json!({
+                            "command": "find . -maxdepth 2 -type f | sort && printf '\\n--- package.json ---\\n' && sed -n '1,120p' package.json && printf '\\n--- app/page.tsx ---\\n' && sed -n '1,120p' app/page.tsx",
+                            "cwd": root.display().to_string()
+                        }),
+                        assistant_summary: Some("inspect representative project files".to_string()),
+                    },
+                ]),
+                crate::event::ProviderOutput::new(
+                    "Findings:\n- app/page.tsx: page is minimal and renders a static main element.\n- package.json: dev script is present.",
+                ),
+            ]);
+        let mut session = Session::new("session", &root, &root);
+
+        run_permissive_agent_turn(&provider, &mut session, "review this project");
+
+        assert!(session
+            .actions()
+            .iter()
+            .any(|record| matches!(record.verified_result, Some(VerifiedActionResult::Shell(_)))));
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content.contains("Findings:")
+                    && message.content.contains("app/page.tsx")
+        )));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -12403,6 +12521,50 @@ Acceptance Criteria:
             Event::AssistantMessage(message) if message.content.contains("\"route\"")
         )));
         assert!(session.actions().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn text_only_code_block_prompt_falls_back_to_visible_chat_without_tools() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-agent-loop-{}-text-code-block-chat",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let input = "Write only one fenced TOML code block with [features], js_repl = false, count = 42, url = \"https://mcp.linear.app/mcp\", and a # disabled comment. No prose.";
+        let output = "```toml\n[features]\njs_repl = false\ncount = 42\nurl = \"https://mcp.linear.app/mcp\"\n# disabled\n```";
+        let provider =
+            CapturingProvider::new().with_plain_output(crate::event::ProviderOutput::new(output));
+        let mut session = Session::new("session", &root, &root);
+
+        assert_eq!(local_path_like_token_count(input), 0);
+        assert!(!input_contains_local_work_syntax(input));
+        run_permissive_agent_turn(&provider, &mut session, input);
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].mode, CapturedProviderRequestMode::Plain);
+        assert_eq!(requests[0].tool_count, 0);
+        assert!(session.events().iter().any(|event| matches!(
+            event,
+            Event::AssistantMessage(message)
+                if message.source == AssistantMessageSource::Provider
+                    && message.content == output
+        )));
+        assert!(!session
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::Error(_))));
+        assert!(session.actions().is_empty());
+        assert!(session.latest_reasoning_trace().is_some_and(|trace| {
+            trace.route.as_deref() == Some("chat")
+                && trace
+                    .model_decisions
+                    .iter()
+                    .any(|line| line.contains("unstructured text for text-only input"))
+        }));
 
         let _ = std::fs::remove_dir_all(&root);
     }

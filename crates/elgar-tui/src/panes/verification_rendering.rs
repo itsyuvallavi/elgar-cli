@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use elgar_core::event::{FileActionVerification, VerifiedActionResult};
 
-use crate::shell_result::render_shell_execution_details;
+use crate::shell_result::render_shell_execution_summary;
 
 pub(super) fn render_verified_action_result(result: &VerifiedActionResult) -> String {
     match result {
@@ -16,7 +16,7 @@ pub(super) fn render_verified_action_result(result: &VerifiedActionResult) -> St
                     return message;
                 }
             }
-            render_shell_execution_details(shell)
+            render_shell_execution_summary(shell)
         }
     }
 }

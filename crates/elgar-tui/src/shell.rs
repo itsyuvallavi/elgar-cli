@@ -156,6 +156,18 @@ impl TuiShell {
         self.conversation.render_copy_body()
     }
 
+    pub fn raw_details_copy_text(&self) -> Option<String> {
+        self.conversation.render_raw_copy_body()
+    }
+
+    pub fn push_latest_raw_details(&mut self) {
+        if !self.conversation.push_latest_raw_details() {
+            self.conversation
+                .push_local_message("No raw details are available.");
+        }
+        self.conversation.follow_latest();
+    }
+
     pub fn clear_conversation(&mut self) {
         self.conversation.clear();
     }

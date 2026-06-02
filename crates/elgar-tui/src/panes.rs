@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_renders_shell_result_exit_code_and_output() {
+    fn conversation_renders_shell_result_summary_and_hides_raw_output() {
         let mut conversation = ConversationPane::default();
 
         conversation.push_event(&Event::ActionApplied(ActionApplied::new(
@@ -142,11 +142,137 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Command: printf hello"));
-        assert!(rendered.contains("Cwd: /repo"));
-        assert!(rendered.contains("Shell command finished: exit 0."));
-        assert!(rendered.contains("stdout: hello"));
+        assert!(rendered.contains("Tool result"));
+        assert!(rendered.contains("shell command finished · exit 0 · 12ms"));
+        assert!(rendered.contains("stdout hidden"));
+        assert!(rendered.contains("details: /details last or /copy raw"));
+        assert!(!rendered.contains("Command: printf hello"));
+        assert!(!rendered.contains("Cwd: /repo"));
+        assert!(!rendered.contains("stdout: hello"));
         assert!(!rendered.contains("Shell command finished and verification was recorded."));
+
+        let raw = conversation.latest_raw_details().unwrap();
+        assert!(raw.contains("Command: printf hello"));
+        assert!(raw.contains("Cwd: /repo"));
+        assert!(raw.contains("stdout:\nhello"));
+    }
+
+    #[test]
+    fn conversation_renders_shell_project_listing_as_clean_tree() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::ShellCommand,
+            VerifiedActionResult::Shell(ShellActionVerification {
+                command: "find . -maxdepth 3 -print".to_string(),
+                cwd: "/repo".to_string(),
+                stdout: ".\n./app\n./app/page.tsx\n./Cargo.toml\n".to_string(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                exit_code: Some(0),
+                elapsed_millis: 12,
+                timed_out: false,
+                verified_effect: None,
+            }),
+        )));
+
+        let rendered = conversation.render_body();
+        assert!(rendered.contains("listed files · 3 entries · exit 0 · 12ms"));
+        assert!(rendered.contains("Project tree\n.\n  Cargo.toml\n  app/\n    page.tsx"));
+        assert!(!rendered.contains("Command:"));
+        assert!(!rendered.contains("Cwd:"));
+        assert!(!rendered.contains("stdout:"));
+        assert!(!rendered.contains("./app/page.tsx"));
+    }
+
+    #[test]
+    fn conversation_renders_shell_file_read_as_code_panel() {
+        let mut conversation = ConversationPane::default();
+
+        conversation.push_event(&Event::ActionApplied(ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::ShellCommand,
+            VerifiedActionResult::Shell(ShellActionVerification {
+                command: "cat tailwind.config.ts".to_string(),
+                cwd: "/repo".to_string(),
+                stdout: "export default {\n  content: [\"./app/**/*.tsx\"],\n}\n".to_string(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                exit_code: Some(0),
+                elapsed_millis: 12,
+                timed_out: false,
+                verified_effect: None,
+            }),
+        )));
+
+        let rendered = conversation.render_body();
+        assert!(rendered.contains("Read file · tailwind.config.ts · 3 lines · exit 0 · 12ms"));
+        assert!(rendered.contains(" ╭─ code (ts) · tailwind.config.ts · 3 lines "));
+        assert!(rendered.contains(" │ export default {"));
+        assert!(!rendered.contains("stdout hidden"));
+
+        let rendered_lines = conversation.render_lines_with_styles();
+        assert!(rendered_lines.iter().any(|(line, style)| {
+            line.starts_with(" ╭─ code (ts) · tailwind.config.ts")
+                && *style == ConversationLineStyle::Plain
+        }));
+
+        let raw = conversation.latest_raw_details().unwrap();
+        assert!(raw.contains("Command: cat tailwind.config.ts"));
+        assert!(raw.contains("stdout:\nexport default {"));
+    }
+
+    #[test]
+    fn conversation_suppresses_repeated_shell_project_listing() {
+        let mut conversation = ConversationPane::default();
+
+        let first = ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::ShellCommand,
+            VerifiedActionResult::Shell(ShellActionVerification {
+                command: "find . -maxdepth 3 -print".to_string(),
+                cwd: "/repo".to_string(),
+                stdout: ".\n./app\n./app/page.tsx\n./Cargo.toml\n".to_string(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                exit_code: Some(0),
+                elapsed_millis: 12,
+                timed_out: false,
+                verified_effect: None,
+            }),
+        );
+        let second = ActionApplied::new(
+            "action-2",
+            elgar_core::event::ActionKind::ShellCommand,
+            VerifiedActionResult::Shell(ShellActionVerification {
+                command: "ls -R .".to_string(),
+                cwd: "/repo".to_string(),
+                stdout: ".:\nCargo.toml\napp\n\n./app:\npage.tsx\n".to_string(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                exit_code: Some(0),
+                elapsed_millis: 14,
+                timed_out: false,
+                verified_effect: None,
+            }),
+        );
+
+        conversation.push_event(&Event::ActionApplied(first));
+        conversation.push_event(&Event::UserMessage(UserMessage::new(
+            "show me the project tree again",
+        )));
+        conversation.push_event(&Event::ActionApplied(second));
+
+        let rendered = conversation.render_body();
+        assert_eq!(rendered.matches("Project tree").count(), 1);
+        assert!(rendered.contains("same listing as previous · exit 0 · 14ms"));
+        assert!(rendered.contains("details: /details last or /copy raw"));
+        assert_eq!(conversation.raw_details.len(), 2);
     }
 
     #[test]
@@ -175,14 +301,17 @@ mod tests {
         ));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Model proposed a shell command. It has not run yet."));
+        assert!(rendered.contains("Shell command proposed. It has not run yet."));
+        assert!(rendered.contains("run: npm install && npm run dev"));
         assert!(rendered.contains("Approve to run it with the local executor."));
-        assert!(rendered.contains("Approved. Local executor is running the shell command."));
+        assert!(rendered.contains("Approved. Running the shell command locally."));
         assert!(rendered.contains("Shell command failed."));
-        assert!(rendered.contains("Command: npm install && npm run dev"));
-        assert!(rendered.contains("Cwd: Nextjs-1"));
-        assert!(rendered.contains("Timeout: 300s"));
+        assert!(rendered.contains("cwd Nextjs-1 · timeout 300s"));
         assert!(rendered.contains("Reason: shell command timed out after 300000 ms"));
+        assert!(rendered.contains("details: /pending or /trace"));
+        assert!(!rendered.contains("Command: npm install && npm run dev"));
+        assert!(!rendered.contains("Cwd: Nextjs-1"));
+        assert!(!rendered.contains("Timeout: 300s"));
     }
 
     #[test]
@@ -208,21 +337,16 @@ mod tests {
         assert!(rendered
             .iter()
             .all(|(line, _style)| !line.trim().is_empty()));
-        assert_eq!(
-            rendered
-                .iter()
-                .map(|(line, _style)| line.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "Plan",
-                "- One",
-                "- Two",
-                "code:",
-                "code (python):",
-                "    print(\"one\")",
-                "    print(\"two\")",
-            ]
-        );
+        let lines = rendered
+            .iter()
+            .map(|(line, _style)| line.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(&lines[..4], ["Plan", "- One", "- Two", "code:"]);
+        assert!(lines
+            .iter()
+            .any(|line| line.starts_with(" ╭─ code (python) · 2 lines")));
+        assert!(lines.iter().any(|line| line.contains("│ print(\"one\")")));
+        assert!(lines.iter().any(|line| line.contains("│ print(\"two\")")));
     }
 
     #[test]
@@ -282,11 +406,41 @@ mod tests {
         )));
 
         let rendered = conversation.render_body();
-        assert!(rendered.contains("Plan:\n- read files\n- render output"));
+        assert!(rendered.contains("Plan:\n- read files\n- `render` output"));
         assert!(!rendered.contains("Model:"));
-        assert!(rendered.contains("code (rust):\n    fn main() {}"));
+        assert!(rendered.contains("╭─ code (rust) · 1 line"));
+        assert!(rendered.contains("│ fn main() {}"));
         assert!(!rendered.contains("```"));
         assert!(!rendered.contains("**read**"));
+    }
+
+    #[test]
+    fn conversation_keeps_raw_details_for_collapsed_assistant_code_blocks() {
+        let mut conversation = ConversationPane::default();
+        let code = (1..=90)
+            .map(|index| format!("line-{index:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let markdown = format!("Large block:\n```text\n{code}\n```");
+
+        conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            markdown,
+            AssistantMessageSource::Provider,
+        )));
+
+        let rendered = conversation.render_body();
+        assert!(rendered.contains("╭─ code (text) · 90 lines · collapsed, showing 40"));
+        assert!(rendered.contains("line-040"));
+        assert!(!rendered.contains("line-090"));
+
+        let copy = conversation.render_copy_body();
+        assert!(copy.contains("... 50 lines hidden; use /details last or /copy raw"));
+        assert!(!copy.contains("line-090"));
+
+        let raw = conversation.render_raw_copy_body().unwrap();
+        assert!(raw.contains("Assistant message details"));
+        assert!(raw.contains("```text"));
+        assert!(raw.contains("line-090"));
     }
 
     #[test]

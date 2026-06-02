@@ -52,7 +52,23 @@ fn terminal_commands_are_slash_only() {
         TerminalCommand::Reasoning
     );
     assert_eq!(parse_terminal_command("/trace"), TerminalCommand::Reasoning);
+    assert_eq!(
+        parse_terminal_command("/details"),
+        TerminalCommand::DetailsLast
+    );
+    assert_eq!(
+        parse_terminal_command("/details last"),
+        TerminalCommand::DetailsLast
+    );
     assert_eq!(parse_terminal_command("/copy"), TerminalCommand::Copy);
+    assert_eq!(
+        parse_terminal_command("/copy raw"),
+        TerminalCommand::CopyRaw
+    );
+    assert_eq!(
+        parse_terminal_command("/copy details"),
+        TerminalCommand::CopyRaw
+    );
     assert_eq!(parse_terminal_command("/exit"), TerminalCommand::Exit);
     assert_eq!(parse_terminal_command("/quit"), TerminalCommand::Exit);
     assert_eq!(parse_terminal_command("/q"), TerminalCommand::Exit);
@@ -127,7 +143,9 @@ fn terminal_commands_are_slash_only() {
     assert!(help.contains("/plan preview"));
     assert!(help.contains("/reasoning"));
     assert!(help.contains("/trace"));
+    assert!(help.contains("/details last"));
     assert!(help.contains("/copy"));
+    assert!(help.contains("/copy raw"));
     assert!(help.contains("/exit"));
     assert!(help.contains("/quit"));
     assert!(help.contains("/q"));

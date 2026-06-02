@@ -1,9 +1,6 @@
+use std::io::{self, Write};
 #[cfg(any(test, all(not(test), target_os = "macos")))]
 use std::process::{Command, Stdio};
-use std::{
-    io::{self, Write},
-    time::Duration,
-};
 
 use crate::TuiShell;
 
@@ -23,9 +20,11 @@ pub(super) enum TerminalCommand<'a> {
     Memory,
     PlanPreview,
     Reasoning,
+    DetailsLast,
     Tool(&'a str),
     Permissions(Option<&'a str>),
     Copy,
+    CopyRaw,
     Exit,
     Unknown(&'a str),
     Text(&'a str),
@@ -48,6 +47,7 @@ pub(super) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
         "/memory" => TerminalCommand::Memory,
         "/plan" | "/plan preview" => TerminalCommand::PlanPreview,
         "/reasoning" | "/trace" => TerminalCommand::Reasoning,
+        "/details" | "/details last" => TerminalCommand::DetailsLast,
         "/tool" => TerminalCommand::Tool(""),
         command if command.strip_prefix("/tool ").is_some() => TerminalCommand::Tool(
             command
@@ -71,6 +71,7 @@ pub(super) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
             )
         }
         "/copy" => TerminalCommand::Copy,
+        "/copy raw" | "/copy details" => TerminalCommand::CopyRaw,
         "/exit" | "/quit" | "/q" => TerminalCommand::Exit,
         command if command.starts_with('/') => TerminalCommand::Unknown(command),
         text => TerminalCommand::Text(text),
@@ -78,7 +79,7 @@ pub(super) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
 }
 
 pub(super) fn render_terminal_help() -> &'static str {
-    "Commands\nSession\n  /status              Show session status\n  /tokens              Show token and context usage\n  /memory              Show verified memory\n  /state               Show verified state snapshot\n  /plan                Preview latest structured plan\n  /plan preview        Preview latest structured plan\n  /created             Show verified creations\n  /pending             Show pending action\n  /reasoning           Show latest reasoning trace\n  /trace               Show latest reasoning trace\nActions\n  /tool <request>      Run an explicit tool-enabled turn\n  /approve             Apply the pending action\n  /reject              Reject the pending action\n  /cancel              Cancel the active provider turn\nPolicy\n  /permissions         Show permission mode\n  /permissions next    Cycle permission mode\n  /permissions <mode>  Set permission mode\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /copy                Copy the conversation\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
+    "Commands\nSession\n  /status              Show session status\n  /tokens              Show token and context usage\n  /memory              Show verified memory\n  /state               Show verified state snapshot\n  /plan                Preview latest structured plan\n  /plan preview        Preview latest structured plan\n  /created             Show verified creations\n  /pending             Show pending action\n  /details last        Show latest raw hidden details\n  /reasoning           Show latest reasoning trace\n  /trace               Show latest reasoning trace\nActions\n  /tool <request>      Run an explicit tool-enabled turn\n  /approve             Apply the pending action\n  /reject              Reject the pending action\n  /cancel              Cancel the active provider turn\nPolicy\n  /permissions         Show permission mode\n  /permissions next    Cycle permission mode\n  /permissions <mode>  Set permission mode\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /copy                Copy the conversation\n  /copy raw            Copy raw hidden details\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
 }
 
 pub(super) fn render_unknown_command(command: &str) -> String {
@@ -114,14 +115,45 @@ pub(super) fn copy_conversation_with_clipboards(
 ) -> io::Result<()> {
     let text = shell.conversation_copy_text();
 
-    match system_clipboard(&text) {
+    copy_text_with_clipboards(&mut writer, shell, &text, "conversation", system_clipboard)
+}
+
+pub(super) fn copy_raw_details_to_terminal_clipboard(
+    writer: impl Write,
+    shell: &mut TuiShell,
+) -> io::Result<()> {
+    copy_raw_details_with_clipboards(writer, shell, copy_text_to_system_clipboard)
+}
+
+pub(super) fn copy_raw_details_with_clipboards(
+    writer: impl Write,
+    shell: &mut TuiShell,
+    system_clipboard: impl FnOnce(&str) -> io::Result<()>,
+) -> io::Result<()> {
+    let Some(text) = shell.raw_details_copy_text() else {
+        let message = "no raw details available".to_string();
+        shell.copy.mark_failed(message.clone());
+        return Err(io::Error::new(io::ErrorKind::NotFound, message));
+    };
+
+    copy_text_with_clipboards(writer, shell, &text, "raw details", system_clipboard)
+}
+
+fn copy_text_with_clipboards(
+    mut writer: impl Write,
+    shell: &mut TuiShell,
+    text: &str,
+    copied_item: &str,
+    system_clipboard: impl FnOnce(&str) -> io::Result<()>,
+) -> io::Result<()> {
+    match system_clipboard(text) {
         Ok(()) => {
-            shell.copy.mark_copied(text.len());
+            mark_copy_success(shell, copied_item, text.len());
             Ok(())
         }
-        Err(system_error) => match copy_text_with_osc52(&mut writer, &text) {
+        Err(system_error) => match copy_text_with_osc52(&mut writer, text) {
             Ok(()) => {
-                shell.copy.mark_copied(text.len());
+                mark_copy_success(shell, copied_item, text.len());
                 Ok(())
             }
             Err(terminal_error) => {
@@ -132,6 +164,14 @@ pub(super) fn copy_conversation_with_clipboards(
                 Err(io::Error::new(terminal_error.kind(), message))
             }
         },
+    }
+}
+
+fn mark_copy_success(shell: &mut TuiShell, copied_item: &str, bytes: usize) {
+    if copied_item == "conversation" {
+        shell.copy.mark_copied(bytes);
+    } else {
+        shell.copy.mark_copied_item(copied_item, bytes);
     }
 }
 
@@ -167,7 +207,7 @@ fn copy_text_to_system_clipboard(_text: &str) -> io::Result<()> {
 
 #[cfg(all(not(test), target_os = "macos"))]
 fn copy_text_with_command(command: &str, text: &str) -> io::Result<()> {
-    copy_text_with_command_and_args(command, &[], text, Duration::from_millis(1_500))
+    copy_text_with_command_and_args(command, &[], text, std::time::Duration::from_millis(1_500))
 }
 
 #[cfg(any(test, all(not(test), target_os = "macos")))]
@@ -175,7 +215,7 @@ pub(super) fn copy_text_with_command_and_args(
     command: &str,
     args: &[&str],
     text: &str,
-    timeout: Duration,
+    timeout: std::time::Duration,
 ) -> io::Result<()> {
     let mut child = Command::new(command)
         .args(args)
@@ -211,7 +251,7 @@ pub(super) fn copy_text_with_command_and_args(
                 "clipboard command timed out",
             ));
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     };
 
     writer
@@ -293,6 +333,26 @@ mod tests {
     }
 
     #[test]
+    fn details_and_raw_copy_commands_parse_as_local_view_commands() {
+        assert_eq!(
+            parse_terminal_command("/details"),
+            TerminalCommand::DetailsLast
+        );
+        assert_eq!(
+            parse_terminal_command("/details last"),
+            TerminalCommand::DetailsLast
+        );
+        assert_eq!(
+            parse_terminal_command("/copy raw"),
+            TerminalCommand::CopyRaw
+        );
+        assert_eq!(
+            parse_terminal_command("/copy details"),
+            TerminalCommand::CopyRaw
+        );
+    }
+
+    #[test]
     fn help_lists_permissions_command() {
         let help = render_terminal_help();
 
@@ -308,5 +368,7 @@ mod tests {
         assert!(help.contains("/status"));
         assert!(help.contains("/pending"));
         assert!(help.contains("/created"));
+        assert!(help.contains("/details last"));
+        assert!(help.contains("/copy raw"));
     }
 }

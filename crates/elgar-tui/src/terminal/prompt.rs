@@ -7,7 +7,12 @@ use elgar_core::provider_visible_text_from_text_only_output;
 
 use crate::{markdown::render_assistant_markdown, reasoning::format_provider_reasoning_summary};
 
-use super::{transcript_output_ansi, TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET};
+#[cfg(test)]
+use super::transcript_output_ansi;
+use super::{
+    render::{write_transcript_line_ansi, CodeLineStyleState},
+    TerminalShellContext, ANSI_CYAN, ANSI_MUTED, ANSI_RESET,
+};
 
 #[cfg(test)]
 pub(super) const LIVE_REASONING_PREVIEW_BYTES: usize = 1024;
@@ -118,12 +123,9 @@ impl InlineWorkingRenderer {
         for line in &reasoning_lines {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
         }
+        let mut code_state = CodeLineStyleState::default();
         for line in &response_lines {
-            write!(
-                io::stdout(),
-                "{}{line}{ANSI_RESET}\r\n",
-                live_response_ansi()
-            )?;
+            write_transcript_line_ansi(line, "\r\n", &mut code_state)?;
         }
         for line in &top_lines {
             write!(io::stdout(), "{ANSI_MUTED}{line}{ANSI_RESET}\r\n")?;
@@ -164,6 +166,7 @@ impl Drop for InlineWorkingRenderer {
     }
 }
 
+#[cfg(test)]
 pub(super) fn live_response_ansi() -> &'static str {
     transcript_output_ansi()
 }

@@ -1,4 +1,10 @@
-use elgar_core::event::{Event, ProviderFinished, ProviderTokenUsage};
+use elgar_core::event::{AssistantMessageSource, Event, ProviderFinished, ProviderTokenUsage};
+
+use crate::markdown::{assistant_markdown_has_hidden_details, render_assistant_markdown_details};
+use crate::shell_result::{
+    render_repeated_shell_listing_summary, render_shell_execution_details,
+    shell_execution_listing_fingerprint,
+};
 
 use super::{
     event_rendering::{is_hidden_policy_approval, render_tui_event, render_turn_metrics_summary},
@@ -16,6 +22,8 @@ pub struct ConversationPane {
     pub(super) scrollback: ConversationScrollback,
     pub(super) loading_pulse: ThinkingPulse,
     pub(super) create_batch: Option<CreateWriteToolBatch>,
+    pub(super) raw_details: Vec<String>,
+    pub(super) last_shell_listing_fingerprint: Option<String>,
 }
 
 impl ConversationPane {
@@ -27,6 +35,22 @@ impl ConversationPane {
         }
 
         if let Event::ActionApplied(applied) = event {
+            if let elgar_core::event::VerifiedActionResult::Shell(shell) = &applied.result {
+                self.raw_details.push(render_shell_execution_details(shell));
+
+                if let Some(fingerprint) = shell_execution_listing_fingerprint(shell) {
+                    if self.last_shell_listing_fingerprint.as_deref() == Some(fingerprint.as_str())
+                    {
+                        self.push_line(
+                            render_repeated_shell_listing_summary(shell),
+                            ConversationLineStyle::Tool,
+                        );
+                        return;
+                    }
+                    self.last_shell_listing_fingerprint = Some(fingerprint);
+                }
+            }
+
             if let Some(item) = create_write_tool_item(&applied.result) {
                 self.push_create_batch_item(item);
                 return;
@@ -35,6 +59,15 @@ impl ConversationPane {
 
         if is_hidden_policy_approval(event) {
             return;
+        }
+
+        if let Event::AssistantMessage(message) = event {
+            if message.source == AssistantMessageSource::Provider
+                && assistant_markdown_has_hidden_details(&message.content)
+            {
+                self.raw_details
+                    .push(render_assistant_markdown_details(&message.content));
+            }
         }
 
         if !matches!(event, Event::Error(_)) {
@@ -114,6 +147,8 @@ impl ConversationPane {
         self.scrollback.follow_latest();
         self.loading_pulse.reset();
         self.create_batch = None;
+        self.raw_details.clear();
+        self.last_shell_listing_fingerprint = None;
     }
 
     #[cfg(test)]
@@ -157,6 +192,23 @@ impl ConversationPane {
         } else {
             lines.join("\n")
         }
+    }
+
+    pub(crate) fn render_raw_copy_body(&self) -> Option<String> {
+        (!self.raw_details.is_empty()).then(|| self.raw_details.join("\n\n---\n\n"))
+    }
+
+    pub(crate) fn latest_raw_details(&self) -> Option<&str> {
+        self.raw_details.last().map(String::as_str)
+    }
+
+    pub(crate) fn push_latest_raw_details(&mut self) -> bool {
+        let Some(details) = self.latest_raw_details().map(str::to_string) else {
+            return false;
+        };
+
+        self.push_line(details, ConversationLineStyle::Details);
+        true
     }
 
     pub(crate) fn render_lines_with_styles(&self) -> Vec<(String, ConversationLineStyle)> {
@@ -269,6 +321,7 @@ pub(crate) enum ConversationLineStyle {
     Thinking,
     Metrics,
     Tool,
+    Details,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

@@ -20,8 +20,8 @@ use crate::{
     },
     terminal::commands::{
         clear_terminal_conversation, copy_conversation_to_terminal_clipboard,
-        parse_terminal_command, render_terminal_help, render_tool_usage, render_unknown_command,
-        TerminalCommand,
+        copy_raw_details_to_terminal_clipboard, parse_terminal_command, render_terminal_help,
+        render_tool_usage, render_unknown_command, TerminalCommand,
     },
     TuiShell,
 };
@@ -149,6 +149,9 @@ where
                 .push_local_message(crate::render_session_reasoning(session));
             shell.conversation.follow_latest();
         }
+        TerminalCommand::DetailsLast => {
+            shell.push_latest_raw_details();
+        }
         TerminalCommand::Status => {
             shell
                 .conversation
@@ -182,6 +185,9 @@ where
         }
         TerminalCommand::Copy => {
             let _ = copy_conversation_to_terminal_clipboard(copy_writer, shell);
+        }
+        TerminalCommand::CopyRaw => {
+            let _ = copy_raw_details_to_terminal_clipboard(copy_writer, shell);
         }
         TerminalCommand::Exit => return true,
         TerminalCommand::Unknown(command) => {

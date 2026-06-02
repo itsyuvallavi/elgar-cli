@@ -128,6 +128,165 @@ fn terminal_copy_marks_policy_auto_create_without_manual_approval_copy() {
 }
 
 #[test]
+fn terminal_copy_raw_details_preserves_shell_truth_hidden_from_default_copy() {
+    let mut shell = TuiShell::new();
+    shell.consume_event(&Event::ActionApplied(
+        elgar_core::event::ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::ShellCommand,
+            elgar_core::event::VerifiedActionResult::Shell(
+                elgar_core::event::ShellActionVerification {
+                    command: "printf 'hello\\n'".to_string(),
+                    cwd: "/repo".to_string(),
+                    stdout: "hello\n".to_string(),
+                    stderr: "warn\n".to_string(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                    exit_code: Some(0),
+                    elapsed_millis: 12,
+                    timed_out: false,
+                    verified_effect: None,
+                },
+            ),
+        ),
+    ));
+    let rendered = shell.conversation.render_body();
+    assert!(rendered.contains("stdout hidden"));
+    assert!(rendered.contains("stderr hidden"));
+    assert!(!rendered.contains("Command: printf"));
+    assert!(!rendered.contains("Cwd: /repo"));
+    assert!(!rendered.contains("stdout:\nhello"));
+    assert!(!rendered.contains("stderr:\nwarn"));
+
+    let mut copied = String::new();
+    let mut output = Vec::new();
+    copy_raw_details_with_clipboards(&mut output, &mut shell, |text| {
+        copied = text.to_string();
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(output.is_empty());
+    assert!(copied.contains("Command: printf 'hello\\n'"));
+    assert!(copied.contains("Cwd: /repo"));
+    assert!(copied.contains("Exit code: 0"));
+    assert!(copied.contains("Elapsed: 12ms"));
+    assert!(copied.contains("stdout:\nhello"));
+    assert!(copied.contains("stderr:\nwarn"));
+    assert!(shell.copy.render_hint().starts_with("copied raw details"));
+}
+
+#[test]
+fn terminal_copy_raw_details_preserves_collapsed_assistant_markdown() {
+    let mut shell = TuiShell::new();
+    let code = (1..=90)
+        .map(|index| format!("line-{index:03}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let markdown = format!("Large block:\n```text\n{code}\n```");
+
+    shell.consume_event(&Event::AssistantMessage(AssistantMessage::new(
+        markdown,
+        AssistantMessageSource::Provider,
+    )));
+
+    let rendered = shell.conversation.render_body();
+    assert!(rendered.contains("╭─ code (text) · 90 lines · collapsed, showing 40"));
+    assert!(rendered.contains("line-040"));
+    assert!(!rendered.contains("line-090"));
+    assert!(!shell.conversation_copy_text().contains("line-090"));
+
+    let mut copied = String::new();
+    let mut output = Vec::new();
+    copy_raw_details_with_clipboards(&mut output, &mut shell, |text| {
+        copied = text.to_string();
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(output.is_empty());
+    assert!(copied.contains("Assistant message details"));
+    assert!(copied.contains("```text"));
+    assert!(copied.contains("line-090"));
+    assert!(shell.copy.render_hint().starts_with("copied raw details"));
+}
+
+#[test]
+fn terminal_details_last_appends_collapsed_assistant_raw_markdown() {
+    let runtime = AgentRuntime::default();
+    let action_gate = ActionGate::default();
+    let mut session = Session::new("session-1", "/repo", "/repo");
+    let mut shell = TuiShell::new();
+    let code = (1..=90)
+        .map(|index| format!("line-{index:03}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let markdown = format!("Large block:\n```text\n{code}\n```");
+
+    shell.consume_event(&Event::AssistantMessage(AssistantMessage::new(
+        markdown,
+        AssistantMessageSource::Provider,
+    )));
+    handle_inline_submission(
+        "/details last",
+        &runtime,
+        &action_gate,
+        &mut session,
+        &mut shell,
+    )
+    .unwrap();
+
+    let rendered = shell.conversation.render_body();
+    assert!(rendered.contains("... 50 lines hidden; use /details last or /copy raw"));
+    assert!(rendered.contains("Assistant message details"));
+    assert!(rendered.contains("```text"));
+    assert!(rendered.contains("line-090"));
+}
+
+#[test]
+fn terminal_details_last_appends_latest_raw_shell_details_on_request() {
+    let runtime = AgentRuntime::default();
+    let action_gate = ActionGate::default();
+    let mut session = Session::new("session-1", "/repo", "/repo");
+    let mut shell = TuiShell::new();
+    shell.consume_event(&Event::ActionApplied(
+        elgar_core::event::ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::ShellCommand,
+            elgar_core::event::VerifiedActionResult::Shell(
+                elgar_core::event::ShellActionVerification {
+                    command: "printf 'hello\\n'".to_string(),
+                    cwd: "/repo".to_string(),
+                    stdout: "hello\n".to_string(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                    exit_code: Some(0),
+                    elapsed_millis: 12,
+                    timed_out: false,
+                    verified_effect: None,
+                },
+            ),
+        ),
+    ));
+
+    handle_inline_submission(
+        "/details last",
+        &runtime,
+        &action_gate,
+        &mut session,
+        &mut shell,
+    )
+    .unwrap();
+
+    let rendered = shell.conversation.render_body();
+    assert!(rendered.contains("details: /details last or /copy raw"));
+    assert!(rendered.contains("Shell result details"));
+    assert!(rendered.contains("Command: printf 'hello\\n'"));
+    assert!(rendered.contains("stdout:\nhello"));
+}
+
+#[test]
 fn terminal_copy_uses_osc52_for_full_rendered_conversation() {
     let mut shell = TuiShell::new();
     shell.conversation.lines = vec![

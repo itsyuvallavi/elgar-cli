@@ -132,7 +132,7 @@ fn footer_context_window_label(snapshot: Option<&ContextWindowSnapshot>) -> Opti
 fn format_compact_tokens(tokens: u64) -> String {
     if tokens >= 1_000 {
         let value = tokens as f64 / 1_000.0;
-        if tokens % 1_000 == 0 {
+        if tokens.is_multiple_of(1_000) {
             format!("{}k", tokens / 1_000)
         } else {
             format!("{value:.1}k")

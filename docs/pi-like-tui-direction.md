@@ -154,6 +154,17 @@ Do not expose every raw event by default. The TUI should summarize runtime
 truth without hiding it. A later diagnostics view can show raw event detail if
 needed.
 
+Current urgent rendering task:
+
+```text
+zz_elgar_agent_docs/ORCHESTRATOR_SITUATION_2026-06-01_TUI_RENDERING.md
+```
+
+The default conversation pane should not print raw shell `Command`, `Cwd`, or
+flattened `stdout` blocks. It should render typed summaries and clean
+tree/list blocks while preserving full raw verified details through trace,
+details, and raw-copy paths.
+
 ## Next Implementation Direction
 
 Next TUI implementation work should stay aligned with:

@@ -6,7 +6,7 @@ use std::{
 use elgar_core::event::{ActionEvent, Event, FileActionVerification, VerifiedActionResult};
 use elgar_core::policy::ApprovalSource;
 
-use crate::shell_result::render_shell_execution_details;
+use crate::shell_result::render_shell_execution_summary;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PendingActionArea {
@@ -285,7 +285,7 @@ fn render_verified_result(result: &VerifiedActionResult) -> String {
                     return message;
                 }
             }
-            render_shell_execution_details(shell)
+            render_shell_execution_summary(shell)
         }
     }
 }
@@ -475,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn applied_shell_result_renders_timeout_and_stderr_details() {
+    fn applied_shell_result_renders_timeout_summary_and_hides_stderr_details() {
         let mut pending_action = PendingActionArea::default();
 
         pending_action.observe_event(&Event::ActionApplied(ActionApplied::new(
@@ -497,10 +497,12 @@ mod tests {
 
         let rendered = pending_action.render_body();
         assert!(rendered.contains("Status: applied and verified"));
-        assert!(rendered.contains("Command: sleep 60"));
-        assert!(rendered.contains("Cwd: /repo"));
-        assert!(rendered.contains("Shell command timed out after 30000 ms."));
-        assert!(rendered.contains("stderr: timed out (truncated)"));
+        assert!(rendered.contains("shell command timed out · 30.0s"));
+        assert!(rendered.contains("stderr hidden (truncated)"));
+        assert!(rendered.contains("details: /details last or /copy raw"));
+        assert!(!rendered.contains("Command: sleep 60"));
+        assert!(!rendered.contains("Cwd: /repo"));
+        assert!(!rendered.contains("stderr: timed out"));
         assert!(!rendered.contains("Shell command finished and verification was recorded."));
     }
 

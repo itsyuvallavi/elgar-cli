@@ -1,5 +1,6 @@
 use elgar_core::event::{
     ActionEvent, ActionFailed, ActionKind, AssistantMessageSource, Event, ProviderTokenUsage,
+    VerifiedActionResult,
 };
 use elgar_core::policy::ApprovalSource;
 
@@ -44,10 +45,17 @@ pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLin
         Event::ActionRejected(action) => {
             Some((render_action_rejected(action), ConversationLineStyle::Plain))
         }
-        Event::ActionApplied(applied) => Some((
-            render_verified_action_result(&applied.result),
-            ConversationLineStyle::Plain,
-        )),
+        Event::ActionApplied(applied) => {
+            let rendered = render_verified_action_result(&applied.result);
+            let style = if matches!(applied.result, VerifiedActionResult::Shell(_))
+                && rendered.starts_with("Tool result")
+            {
+                ConversationLineStyle::Tool
+            } else {
+                ConversationLineStyle::Plain
+            };
+            Some((rendered, style))
+        }
         Event::ActionFailed(failed) => {
             Some(render_action_failed(failed)).map(|line| (line, ConversationLineStyle::Plain))
         }
@@ -120,15 +128,7 @@ fn render_action_approved(action: &ActionEvent) -> Option<String> {
     }
 
     if action.action_kind == ActionKind::ShellCommand {
-        let mut lines = vec!["Approved. Local executor is running the shell command.".to_string()];
-        if let Some(command) = action.target.as_deref() {
-            lines.push(format!("Command: {}", command.trim()));
-        }
-        if let Some(details) = action.shell_details.as_ref() {
-            lines.push(format!("Cwd: {}", user_display_path(&details.cwd)));
-            lines.push(format!("Timeout: {}s", details.timeout_seconds));
-        }
-        return Some(lines.join("\n"));
+        return Some("Approved. Running the shell command locally.".to_string());
     }
 
     Some("Approved. Applying the action.".to_string())
@@ -189,7 +189,7 @@ pub(super) fn render_turn_metrics_summary(
 fn compact_token_count(tokens: u64) -> String {
     if tokens >= 1_000 {
         let value = tokens as f64 / 1_000.0;
-        if tokens % 1_000 == 0 {
+        if tokens.is_multiple_of(1_000) {
             format!("{value:.0}k")
         } else {
             format!("{value:.1}k")
@@ -226,13 +226,16 @@ fn render_assistant_output(content: &str) -> String {
 fn render_shell_action_proposal(action: &ActionEvent) -> String {
     if let Some(command) = action.target.as_deref() {
         let mut lines = vec![
-            "Model proposed a shell command. It has not run yet.".to_string(),
+            "Shell command proposed. It has not run yet.".to_string(),
+            format!("run: {}", command.trim()),
             "Approve to run it with the local executor.".to_string(),
-            format!("Command: {}", command.trim()),
         ];
         if let Some(details) = action.shell_details.as_ref() {
-            lines.push(format!("Cwd: {}", user_display_path(&details.cwd)));
-            lines.push(format!("Timeout: {}s", details.timeout_seconds));
+            lines.push(format!(
+                "cwd {} · timeout {}s",
+                user_display_path(&details.cwd),
+                details.timeout_seconds
+            ));
         }
         return lines.join("\n");
     }
@@ -256,15 +259,13 @@ fn render_shell_action_proposal(action: &ActionEvent) -> String {
 
 fn render_action_failed(failed: &ActionFailed) -> String {
     if failed.action_kind == ActionKind::ShellCommand {
-        let mut lines = vec!["Shell command failed.".to_string()];
-        if let Some(command) = failed.target.as_deref() {
-            lines.push(format!("Command: {}", command.trim()));
+        let mut lines = vec![
+            "Shell command failed.".to_string(),
+            format!("Reason: {}", failed.reason),
+        ];
+        if failed.target.is_some() || failed.shell_details.is_some() {
+            lines.push("details: /pending or /trace".to_string());
         }
-        if let Some(details) = failed.shell_details.as_ref() {
-            lines.push(format!("Cwd: {}", user_display_path(&details.cwd)));
-            lines.push(format!("Timeout: {}s", details.timeout_seconds));
-        }
-        lines.push(format!("Reason: {}", failed.reason));
         return lines.join("\n");
     }
 

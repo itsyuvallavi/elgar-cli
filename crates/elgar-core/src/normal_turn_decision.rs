@@ -24,6 +24,7 @@ pub(crate) enum NormalTurnExecuteIntent {
     PlanExecution,
     PlanCreationAndExecution,
     ShellExecution,
+    ProjectReview,
 }
 
 pub(crate) fn parse_normal_turn_decision(message: &str) -> Option<NormalTurnDecision> {
@@ -56,6 +57,7 @@ fn parse_execute_intent(value: &Value) -> Option<NormalTurnExecuteIntent> {
         "plan_execution" => Some(NormalTurnExecuteIntent::PlanExecution),
         "plan_creation_execution" => Some(NormalTurnExecuteIntent::PlanCreationAndExecution),
         "shell_execution" => Some(NormalTurnExecuteIntent::ShellExecution),
+        "project_review" => Some(NormalTurnExecuteIntent::ProjectReview),
         _ => None,
     }
 }
@@ -109,6 +111,12 @@ mod tests {
             parse_normal_turn_decision("{\"route\":\"execute\",\"intent\":\"shell_execution\"}"),
             Some(NormalTurnDecision::Execute {
                 intent: Some(NormalTurnExecuteIntent::ShellExecution)
+            })
+        );
+        assert_eq!(
+            parse_normal_turn_decision("{\"route\":\"execute\",\"intent\":\"project_review\"}"),
+            Some(NormalTurnDecision::Execute {
+                intent: Some(NormalTurnExecuteIntent::ProjectReview)
             })
         );
     }

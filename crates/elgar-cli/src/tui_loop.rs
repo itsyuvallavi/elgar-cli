@@ -43,6 +43,14 @@ pub fn is_tui_copy_command(input: &str) -> bool {
     input.trim() == "/copy"
 }
 
+pub fn is_tui_copy_raw_command(input: &str) -> bool {
+    matches!(input.trim(), "/copy raw" | "/copy details")
+}
+
+pub fn is_tui_details_command(input: &str) -> bool {
+    matches!(input.trim(), "/details" | "/details last")
+}
+
 pub fn is_tui_memory_command(input: &str) -> bool {
     input.trim() == "/memory"
 }
@@ -119,6 +127,8 @@ pub fn tui_unknown_command(input: &str) -> Option<&str> {
         || is_tui_approval_command(trimmed)
         || is_tui_rejection_command(trimmed)
         || is_tui_copy_command(trimmed)
+        || is_tui_copy_raw_command(trimmed)
+        || is_tui_details_command(trimmed)
         || is_tui_memory_command(trimmed)
         || is_tui_state_snapshot_command(trimmed)
         || is_tui_status_command(trimmed)
@@ -163,6 +173,8 @@ fn submit_tui_input<P>(
         shell.submit_rejection(action_gate, session);
     } else if is_tui_cancel_command(input) {
         shell.push_local_message("No active provider turn to cancel.");
+    } else if is_tui_details_command(input) {
+        shell.push_latest_raw_details();
     } else if let Some(argument) = tui_permission_command_argument(input) {
         let message = shell.apply_permission_command(argument);
         shell.push_local_message(message);
@@ -180,7 +192,7 @@ fn submit_tui_input<P>(
 }
 
 pub fn render_tui_help() -> &'static str {
-    "Commands\nSession\n  /status              Show session status\n  /tokens              Show token and context usage\n  /memory              Show verified memory\n  /state               Show verified state snapshot\n  /plan                Preview latest structured plan\n  /plan preview        Preview latest structured plan\n  /created             Show verified creations\n  /pending             Show pending action\n  /reasoning           Show latest reasoning trace\n  /trace               Show latest reasoning trace\nActions\n  /tool <request>      Run an explicit tool-enabled turn\n  /approve             Apply the pending action\n  /reject              Reject the pending action\n  /cancel              Cancel the active provider turn\nPolicy\n  /permissions         Show permission mode\n  /permissions next    Cycle permission mode\n  /permissions <mode>  Set permission mode\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /copy                Copy the conversation\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
+    "Commands\nSession\n  /status              Show session status\n  /tokens              Show token and context usage\n  /memory              Show verified memory\n  /state               Show verified state snapshot\n  /plan                Preview latest structured plan\n  /plan preview        Preview latest structured plan\n  /created             Show verified creations\n  /pending             Show pending action\n  /details last        Show latest raw hidden details\n  /reasoning           Show latest reasoning trace\n  /trace               Show latest reasoning trace\nActions\n  /tool <request>      Run an explicit tool-enabled turn\n  /approve             Apply the pending action\n  /reject              Reject the pending action\n  /cancel              Cancel the active provider turn\nPolicy\n  /permissions         Show permission mode\n  /permissions next    Cycle permission mode\n  /permissions <mode>  Set permission mode\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /copy                Copy the conversation\n  /copy raw            Copy raw hidden details\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
 }
 
 pub fn render_tui_script<I, S>(
@@ -228,6 +240,15 @@ where
             rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_copy_command(input) {
             rendered_turns.push(shell.conversation_copy_text());
+        } else if is_tui_copy_raw_command(input) {
+            rendered_turns.push(
+                shell
+                    .raw_details_copy_text()
+                    .unwrap_or_else(|| "No raw details are available.".to_string()),
+            );
+        } else if is_tui_details_command(input) {
+            shell.push_latest_raw_details();
+            rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_state_snapshot_command(input) {
             rendered_turns.push(elgar_tui::render_session_state_snapshot(&session));
         } else if is_tui_status_command(input) {
@@ -374,6 +395,17 @@ where
             writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_copy_command(&input) {
             writeln!(writer, "{}", shell.conversation_copy_text())?;
+        } else if is_tui_copy_raw_command(&input) {
+            writeln!(
+                writer,
+                "{}",
+                shell
+                    .raw_details_copy_text()
+                    .unwrap_or_else(|| "No raw details are available.".to_string())
+            )?;
+        } else if is_tui_details_command(&input) {
+            shell.push_latest_raw_details();
+            writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_state_snapshot_command(&input) {
             writeln!(
                 writer,

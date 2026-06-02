@@ -1,5 +1,43 @@
 use super::*;
 
+fn rendered_line_text(line: &ratatui::text::Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn line_has_styled_span(
+    line: &ratatui::text::Line<'_>,
+    text: &str,
+    style: ratatui::style::Style,
+) -> bool {
+    line.spans
+        .iter()
+        .any(|span| span.content.as_ref() == text && span.style == style)
+}
+
+fn shell_result(
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    exit_code: Option<i32>,
+) -> elgar_core::event::ShellActionVerification {
+    elgar_core::event::ShellActionVerification {
+        command: command.to_string(),
+        cwd: "/repo".to_string(),
+        stdout: stdout.to_string(),
+        stderr: stderr.to_string(),
+        stdout_truncated: false,
+        stderr_truncated: false,
+        exit_code,
+        elapsed_millis: 12,
+        timed_out: false,
+        verified_effect: None,
+    }
+}
+
 #[test]
 fn terminal_user_message_renders_as_padded_block_without_prompt_marker() {
     let mut conversation = ConversationPane::default();
@@ -42,7 +80,7 @@ fn live_and_completed_provider_transcript_styles_match() {
 }
 
 #[test]
-fn completed_provider_response_gets_model_label() {
+fn completed_provider_response_is_unlabeled() {
     let mut conversation = ConversationPane::default();
     conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
         "completed response",
@@ -61,9 +99,8 @@ fn completed_provider_response_gets_model_label() {
         })
         .collect::<Vec<_>>();
 
-    assert!(rendered
-        .windows(2)
-        .any(|window| window == ["model", "completed response"]));
+    assert!(rendered.iter().any(|line| line == "completed response"));
+    assert!(!rendered.iter().any(|line| line == "model"));
 }
 
 #[test]
@@ -72,10 +109,188 @@ fn terminal_markdown_code_blocks_print_with_compact_spacing() {
         "Use:\n\n```rust\n\nfn main() {}\n\n```\n\nDone.",
     );
 
-    assert_eq!(
-        plain_block_lines(&rendered, 80),
-        vec!["Use:", "code (rust):", "    fn main() {}", "Done."]
-    );
+    let lines = plain_block_lines(&rendered, 80);
+    assert_eq!(lines.first(), Some(&"Use:".to_string()));
+    assert!(lines
+        .iter()
+        .any(|line| line.starts_with(" ╭─ code (rust) · 1 line")));
+    assert!(lines.iter().any(|line| line.contains("│ fn main() {}")));
+    assert_eq!(lines.last(), Some(&"Done.".to_string()));
+}
+
+#[test]
+fn terminal_code_container_uses_distinct_visual_styles() {
+    let mut conversation = ConversationPane::default();
+    conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+        "Use this:\n```rust\nfn main() {}\n```",
+        AssistantMessageSource::Provider,
+    )));
+
+    let styled = style_terminal_conversation("startup", &conversation, 80);
+    let top = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).starts_with(" ╭─ code (rust)"))
+        .unwrap();
+    assert_eq!(top.spans[0].style, crate::theme::code_border());
+    assert_eq!(top.spans[1].style, crate::theme::code_header());
+    assert_eq!(top.spans[2].style, crate::theme::code_border());
+
+    let body = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).contains("fn main() {}"))
+        .unwrap();
+    assert_eq!(body.spans[0].style, crate::theme::code_border());
+    assert_eq!(body.spans[1].style, crate::theme::code_body());
+    assert_eq!(body.spans[2].style, crate::theme::code_border());
+
+    let bottom = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).starts_with(" ╰"))
+        .unwrap();
+    assert_eq!(bottom.style, crate::theme::code_border());
+}
+
+#[test]
+fn terminal_code_body_applies_lightweight_syntax_styles() {
+    let mut conversation = ConversationPane::default();
+    conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+        "Config:\n```toml\n[features]\njs_repl = false\ncount = 42\nurl = \"https://mcp.linear.app/mcp\"\n# disabled\n```",
+        AssistantMessageSource::Provider,
+    )));
+
+    let styled = style_terminal_conversation("startup", &conversation, 100);
+    let flag = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).contains("js_repl = false"))
+        .unwrap();
+    assert!(line_has_styled_span(
+        flag,
+        "js_repl",
+        crate::theme::code_key()
+    ));
+    assert!(line_has_styled_span(
+        flag,
+        "false",
+        crate::theme::code_literal()
+    ));
+
+    let number = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).contains("count = 42"))
+        .unwrap();
+    assert!(line_has_styled_span(
+        number,
+        "42",
+        crate::theme::code_number()
+    ));
+
+    let url = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).contains("https://mcp.linear.app/mcp"))
+        .unwrap();
+    assert!(line_has_styled_span(
+        url,
+        "\"https://mcp.linear.app/mcp\"",
+        crate::theme::code_string()
+    ));
+
+    let comment = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).contains("# disabled"))
+        .unwrap();
+    assert!(line_has_styled_span(
+        comment,
+        "# disabled",
+        crate::theme::code_comment()
+    ));
+}
+
+#[test]
+fn terminal_collapsed_code_hint_and_raw_details_have_separate_styles() {
+    let mut conversation = ConversationPane::default();
+    let code = (1..=90)
+        .map(|index| format!("line-{index:03}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    conversation.push_event(&Event::AssistantMessage(AssistantMessage::new(
+        format!("```text\n{code}\n```"),
+        AssistantMessageSource::Provider,
+    )));
+
+    let styled = style_terminal_conversation("startup", &conversation, 80);
+    let hint = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).contains("lines hidden"))
+        .unwrap();
+    assert_eq!(hint.spans[1].style, crate::theme::code_hint());
+
+    assert!(conversation.push_latest_raw_details());
+    let styled = style_terminal_conversation("startup", &conversation, 80);
+    let details = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line) == "Assistant message details")
+        .unwrap();
+    assert_eq!(details.style, crate::theme::raw_details());
+}
+
+#[test]
+fn terminal_tool_summary_lines_use_status_colors() {
+    let mut conversation = ConversationPane::default();
+    conversation.push_event(&Event::ActionApplied(
+        elgar_core::event::ActionApplied::new(
+            "action-1",
+            elgar_core::event::ActionKind::ShellCommand,
+            elgar_core::event::VerifiedActionResult::Shell(shell_result(
+                "printf hello",
+                "hello\n",
+                "",
+                Some(0),
+            )),
+        ),
+    ));
+    conversation.push_event(&Event::ActionApplied(
+        elgar_core::event::ActionApplied::new(
+            "action-2",
+            elgar_core::event::ActionKind::ShellCommand,
+            elgar_core::event::VerifiedActionResult::Shell(shell_result(
+                "npm test",
+                "",
+                "boom\n",
+                Some(1),
+            )),
+        ),
+    ));
+
+    let styled = style_terminal_conversation("startup", &conversation, 80);
+    let success = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).contains("shell command finished"))
+        .unwrap();
+    assert_eq!(success.style, crate::theme::tool_success());
+
+    let error = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).contains("shell command failed"))
+        .unwrap();
+    assert_eq!(error.style, crate::theme::tool_error());
+
+    let warning = styled
+        .lines
+        .iter()
+        .find(|line| rendered_line_text(line).contains("stderr hidden"))
+        .unwrap();
+    assert_eq!(warning.style, crate::theme::tool_warning());
 }
 
 #[test]
@@ -599,9 +814,15 @@ fn active_working_frame_expands_inline_markdown_artifacts() {
         active_working_frame_lines(&context, 0, 1, "help", &live_output, 120);
 
     assert!(response.contains(&"Use this:".to_string()));
-    assert!(response.contains(&"code (bash):".to_string()));
-    assert!(response.contains(&"    # 1. Start lm-studio --port 1234".to_string()));
-    assert!(response.contains(&"    # 2. Check curl http://127.0.0.1:1234/v1/health".to_string()));
+    assert!(response
+        .iter()
+        .any(|line| line.starts_with(" ╭─ code (bash) · 2 lines")));
+    assert!(response
+        .iter()
+        .any(|line| line.contains("│ # 1. Start lm-studio --port 1234")));
+    assert!(response
+        .iter()
+        .any(|line| line.contains("│ # 2. Check curl http://127.0.0.1:1234/v1/health")));
     assert!(response.contains(&"Done.".to_string()));
 }
 

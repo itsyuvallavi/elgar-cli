@@ -20,7 +20,14 @@ pub struct CopyArea {
 
 impl CopyArea {
     pub(crate) fn mark_copied(&mut self, bytes: usize) {
-        self.last_result = Some(CopyResult::Copied { bytes });
+        self.mark_copied_item("conversation", bytes);
+    }
+
+    pub(crate) fn mark_copied_item(&mut self, item: impl Into<String>, bytes: usize) {
+        self.last_result = Some(CopyResult::Copied {
+            item: item.into(),
+            bytes,
+        });
     }
 
     pub(crate) fn mark_failed(&mut self, message: impl Into<String>) {
@@ -31,8 +38,8 @@ impl CopyArea {
 
     pub(crate) fn render_hint(&self) -> String {
         match &self.last_result {
-            Some(CopyResult::Copied { bytes }) => {
-                format!("copied conversation ({bytes} bytes)")
+            Some(CopyResult::Copied { item, bytes }) => {
+                format!("copied {item} ({bytes} bytes)")
             }
             Some(CopyResult::Failed { message }) => {
                 format!("copy failed: {message}")
@@ -44,7 +51,7 @@ impl CopyArea {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CopyResult {
-    Copied { bytes: usize },
+    Copied { item: String, bytes: usize },
     Failed { message: String },
 }
 

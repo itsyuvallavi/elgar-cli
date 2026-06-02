@@ -84,12 +84,13 @@ mod tests {
 
     use super::{
         default_permission_policy_mode, is_tui_approval_command, is_tui_clear_command,
-        is_tui_copy_command, is_tui_created_command, is_tui_exit_command, is_tui_help_command,
-        is_tui_memory_command, is_tui_pending_command, is_tui_plan_preview_command,
-        is_tui_reasoning_command, is_tui_rejection_command, is_tui_state_snapshot_command,
-        is_tui_status_command, is_tui_tokens_command, load_runtime_provider, provider_smoke_config,
-        provider_smoke_prompt, render_cli_turn_from_runtime_config, render_tui_help,
-        render_tui_script, resolve_runtime_project_root, run_tui_loop, run_tui_loop_with_runtime,
+        is_tui_copy_command, is_tui_copy_raw_command, is_tui_created_command,
+        is_tui_details_command, is_tui_exit_command, is_tui_help_command, is_tui_memory_command,
+        is_tui_pending_command, is_tui_plan_preview_command, is_tui_reasoning_command,
+        is_tui_rejection_command, is_tui_state_snapshot_command, is_tui_status_command,
+        is_tui_tokens_command, load_runtime_provider, provider_smoke_config, provider_smoke_prompt,
+        render_cli_turn_from_runtime_config, render_tui_help, render_tui_script,
+        resolve_runtime_project_root, run_tui_loop, run_tui_loop_with_runtime,
         runtime_permission_policy_mode, should_launch_terminal_tui_by_default,
         tui_permission_command_argument, tui_tool_command_argument, tui_unknown_command,
         ProviderSmokeError, RuntimePaths, RuntimeProviderConfigError, PROVIDER_CONFIG_FILE,
@@ -113,6 +114,42 @@ mod tests {
                 ProviderOutput::new("{\"route\":\"chat\",\"content\":\"visible answer\"}")
                     .with_thinking("Internal reasoning should stay hidden."),
             )
+        }
+
+        fn chat_messages_with_metadata(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _metadata: &ProviderRequestMetadata,
+        ) -> Result<ProviderOutput, ProviderError> {
+            self.chat("")
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct MarkdownCodeBlockProvider;
+
+    impl ControllerProvider for MarkdownCodeBlockProvider {
+        fn request_metadata(&self) -> ProviderRequestMetadata {
+            ProviderRequestMetadata::new(
+                "markdown-provider",
+                Some("test-model".to_string()),
+                "request-markdown",
+            )
+        }
+
+        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+            let code = (1..=85)
+                .map(|index| format!("code-block-smoke-{index:03}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let content = format!("```text\n{code}\n```");
+            Ok(ProviderOutput::new(
+                serde_json::json!({
+                    "route": "chat",
+                    "content": content,
+                })
+                .to_string(),
+            ))
         }
 
         fn chat_messages_with_metadata(
@@ -474,8 +511,10 @@ mod tests {
         assert!(help.contains("/plan preview"));
         assert!(help.contains("/reasoning"));
         assert!(help.contains("/trace"));
+        assert!(help.contains("/details last"));
         assert!(help.contains("/permissions"));
         assert!(help.contains("/copy"));
+        assert!(help.contains("/copy raw"));
         assert!(help.contains("/exit"));
         assert!(help.contains("/quit"));
         assert!(help.contains("/q"));
@@ -534,6 +573,8 @@ mod tests {
         assert_eq!(tui_unknown_command("/help"), None);
         assert_eq!(tui_unknown_command("/tool"), None);
         assert_eq!(tui_unknown_command("/tool create file hello.py"), None);
+        assert_eq!(tui_unknown_command("/details last"), None);
+        assert_eq!(tui_unknown_command("/copy raw"), None);
         assert_eq!(tui_unknown_command("/permissions next"), None);
         assert_eq!(tui_unknown_command("model"), None);
     }
@@ -567,6 +608,18 @@ mod tests {
         assert!(is_tui_copy_command(" /copy "));
         assert!(!is_tui_copy_command("copy"));
         assert!(!is_tui_copy_command("/clipboard"));
+    }
+
+    #[test]
+    fn tui_raw_detail_commands_are_explicit() {
+        assert!(is_tui_details_command("/details"));
+        assert!(is_tui_details_command(" /details last "));
+        assert!(is_tui_copy_raw_command("/copy raw"));
+        assert!(is_tui_copy_raw_command(" /copy details "));
+
+        assert!(!is_tui_details_command("details"));
+        assert!(!is_tui_copy_raw_command("/copy"));
+        assert!(!is_tui_copy_raw_command("copy raw"));
     }
 
     #[test]
@@ -685,7 +738,9 @@ mod tests {
         assert!(rendered.contains("/plan preview"));
         assert!(rendered.contains("/reasoning"));
         assert!(rendered.contains("/trace"));
+        assert!(rendered.contains("/details last"));
         assert!(rendered.contains("/copy"));
+        assert!(rendered.contains("/copy raw"));
         assert!(!rendered.contains("> /help"));
         assert!(!rendered.contains("> /commands"));
         assert!(!rendered.contains("Input was not recognized"));
@@ -735,6 +790,17 @@ mod tests {
         assert!(!rendered.contains("Model:"));
         assert!(!rendered.contains("> /copy"));
         assert!(!rendered.contains("Input was not recognized"));
+        assert!(!rendered.contains("lm-studio"));
+    }
+
+    #[test]
+    fn tui_script_raw_detail_commands_are_local_without_raw_details() {
+        let rendered = render_tui_script(["/details last", "/copy raw"], ".", ".");
+
+        assert!(rendered.contains("No raw details are available."));
+        assert!(!rendered.contains("> /details last"));
+        assert!(!rendered.contains("> /copy raw"));
+        assert!(!rendered.contains("stub provider response"));
         assert!(!rendered.contains("lm-studio"));
     }
 
@@ -917,6 +983,35 @@ mod tests {
         assert!(rendered.contains("> hello"));
         assert!(rendered.contains("visible answer"));
         assert!(!rendered.contains("Internal reasoning should stay hidden."));
+        assert!(rendered.contains("Exiting Elgar TUI."));
+    }
+
+    #[test]
+    fn tui_loop_details_and_raw_copy_preserve_collapsed_markdown_details() {
+        let input = b"show markdown\n/details last\n/copy raw\n/exit\n";
+        let mut output = Vec::new();
+
+        run_tui_loop_with_runtime(
+            &input[..],
+            &mut output,
+            ".",
+            ".",
+            AgentRuntime::new(MarkdownCodeBlockProvider),
+            None,
+            PermissionPolicyMode::AutoCreateReviewModify,
+        )
+        .unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("╭─ code (text) · 85 lines · collapsed, showing 40"));
+        assert!(rendered.contains("│ code-block-smoke-040"));
+        assert!(rendered.contains("│ ... 45 lines hidden; use /details last or /copy raw"));
+        assert!(rendered.contains("Assistant message details"));
+        assert!(rendered.contains("Raw markdown:"));
+        assert!(rendered.contains("```text"));
+        assert!(rendered.contains("code-block-smoke-085"));
+        assert!(!rendered.contains("Unknown command: /details last"));
+        assert!(!rendered.contains("Unknown command: /copy raw"));
         assert!(rendered.contains("Exiting Elgar TUI."));
     }
 

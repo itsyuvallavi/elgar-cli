@@ -26,8 +26,8 @@ mod text;
 #[cfg(test)]
 use commands::{
     copy_conversation_to_terminal_clipboard, copy_conversation_with_clipboards,
-    copy_text_with_command_and_args, encode_base64, osc52_clipboard_sequence,
-    parse_terminal_command, render_terminal_help, TerminalCommand,
+    copy_raw_details_with_clipboards, copy_text_with_command_and_args, encode_base64,
+    osc52_clipboard_sequence, parse_terminal_command, render_terminal_help, TerminalCommand,
 };
 #[cfg(test)]
 use context::{context_window_pressure, ContextWindowPressure};
@@ -52,6 +52,7 @@ use prompt::{
 use provider_task::ProviderTurnUpdate;
 #[cfg(test)]
 use provider_task::{start_provider_turn, ProviderTurnTask};
+#[cfg(test)]
 use render::transcript_output_ansi;
 #[cfg(test)]
 use render::{status_style, style_terminal_conversation};
@@ -71,7 +72,20 @@ const ANSI_CYAN: &str = "[38;2;143;207;198m";
 const ANSI_MUTED: &str = "[38;2;118;126;126m";
 const ANSI_TEXT: &str = "[38;2;214;219;224m";
 const ANSI_TOOL_BLOCK: &str = "[38;2;186;214;194m[48;2;29;45;34m";
+const ANSI_TOOL_SUCCESS: &str = "[38;2;143;188;143m[48;2;29;45;34m";
+const ANSI_TOOL_WARNING: &str = "[38;2;214;181;110m[48;2;45;38;25m";
+const ANSI_TOOL_ERROR: &str = "[38;2;218;118;118m[48;2;45;29;29m";
 const ANSI_USER_BLOCK: &str = "[1m[38;2;143;207;198m[48;2;8;32;32m";
+const ANSI_CODE_BORDER: &str = "[38;2;83;94;108m[48;2;18;22;28m";
+const ANSI_CODE_HEADER: &str = "[38;2;117;196;187m[48;2;18;22;28m";
+const ANSI_CODE_BODY: &str = "[38;2;224;229;235m[48;2;18;22;28m";
+const ANSI_CODE_HINT: &str = "[38;2;150;159;176m[48;2;18;22;28m";
+const ANSI_CODE_KEY: &str = "[38;2;117;196;187m[48;2;18;22;28m";
+const ANSI_CODE_STRING: &str = "[38;2;186;214;194m[48;2;18;22;28m";
+const ANSI_CODE_NUMBER: &str = "[38;2;214;181;110m[48;2;18;22;28m";
+const ANSI_CODE_LITERAL: &str = "[38;2;218;154;118m[48;2;18;22;28m";
+const ANSI_CODE_COMMENT: &str = "[38;2;117;126;138m[48;2;18;22;28m";
+const ANSI_RAW_DETAILS: &str = "[38;2;180;188;196m";
 const ANSI_CURSOR_HIDE: &str = "[?25l";
 const ANSI_CURSOR_SHOW: &str = "[?25h";
 
