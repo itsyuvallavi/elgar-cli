@@ -1,0 +1,9 @@
+//! CLI unit tests split out of `lib.rs`.
+//!
+//! Keep these tests aligned with the active raw-chat CLI. Tests for archived
+//! tool/policy behavior belong in `_legacy`, not here.
+
+mod paths_test;
+mod provider_config_test;
+mod provider_smoke_test;
+mod scripted_tui_test;

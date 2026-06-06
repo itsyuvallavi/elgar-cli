@@ -1,3 +1,8 @@
+//! End-to-end smoke tests for the compiled `elgar` binary.
+//!
+//! These tests execute the real CLI process and verify raw-chat behavior,
+//! runtime config lookup, and scripted TUI command handling.
+
 use std::{
     fs,
     io::Write,
@@ -293,16 +298,15 @@ fn tui_command_help_is_local_and_does_not_call_provider() {
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Commands\nSession"));
-    assert!(stdout.contains("Actions"));
-    assert!(stdout.contains("Policy"));
+    assert!(stdout.contains("Commands\nChat"));
     assert!(stdout.contains("View"));
     assert!(stdout.contains("Exit"));
     assert!(stdout.contains("/clear"));
     assert!(stdout.contains("/new"));
-    assert!(stdout.contains("/approve"));
-    assert!(stdout.contains("/reject"));
-    assert!(stdout.contains("/memory"));
+    assert!(stdout.contains("/raw <prompt>"));
+    assert!(stdout.contains("/cancel"));
+    assert!(stdout.contains("/details last"));
+    assert!(stdout.contains("/copy raw"));
     assert!(stdout.contains("/copy"));
     assert!(stdout.contains("/help"));
     assert!(stdout.contains("/commands"));
@@ -355,9 +359,8 @@ fn tui_command_plain_file_request_and_reject_do_not_write_without_tool_result() 
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stub provider response"));
-    assert!(stdout.contains("Pending Action\nnone"));
     assert!(!stdout.contains("Status: applied and verified"));
-    assert!(stdout.contains("No proposed action is waiting for rejection."));
+    assert!(stdout.contains("Unknown command: /reject"));
     assert!(!stdout.contains("Wrote "));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
@@ -401,9 +404,8 @@ fn tui_command_plain_file_request_and_approve_do_not_write_without_tool_result()
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stub provider response"));
-    assert!(stdout.contains("Pending Action\nnone"));
     assert!(!stdout.contains("Status: applied and verified"));
-    assert!(stdout.contains("No proposed action is waiting for approval."));
+    assert!(stdout.contains("Unknown command: /approve"));
     assert!(!stdout.contains("Wrote "));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
@@ -451,8 +453,7 @@ fn tui_command_plain_shell_text_and_approve_do_not_execute_without_tool_result()
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stub provider response"));
-    assert!(stdout.contains("Pending Action\nnone"));
-    assert!(stdout.contains("No proposed action is waiting for approval."));
+    assert!(stdout.contains("Unknown command: /approve"));
     assert!(!stdout.contains("Shell command finished and verification was recorded."));
     assert!(!stdout.contains("Status: applied and verified"));
     assert!(stdout.contains("Exiting Elgar TUI."));
@@ -501,8 +502,7 @@ fn tui_command_plain_shell_text_and_reject_do_not_execute_without_tool_result() 
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stub provider response"));
-    assert!(stdout.contains("Pending Action\nnone"));
-    assert!(stdout.contains("No proposed action is waiting for rejection."));
+    assert!(stdout.contains("Unknown command: /reject"));
     assert!(!stdout.contains("Status: rejected"));
     assert!(!stdout.contains("Shell command finished and verification was recorded."));
     assert!(stdout.contains("Exiting Elgar TUI."));
@@ -553,10 +553,9 @@ fn tui_command_line_loop_keeps_plain_requests_non_mutating() {
     assert!(stdout.contains("> create file rejected.py"));
     assert!(stdout.contains("stub provider response"));
     assert!(!stdout.contains("Wrote "));
-    assert!(stdout.contains("No proposed action is waiting for rejection."));
-    assert!(stdout.contains("No proposed action is waiting for approval."));
+    assert!(stdout.contains("Unknown command: /reject"));
+    assert!(stdout.contains("Unknown command: /approve"));
     assert!(stdout.contains("> create file approved.py"));
-    assert!(stdout.contains("Pending Action\nnone"));
     assert!(!stdout.contains("Status: applied and verified"));
     assert!(!stdout.contains("Action: action-1 CreateFile"));
     assert!(!stdout.contains("Action: action-2 CreateFile"));

@@ -1,6 +1,11 @@
+//! Turn timing and token usage helpers.
+//!
+//! This file converts provider events into the compact `response ... tokens`
+//! summary shown after a model turn.
+
 use std::time::Duration;
 
-use elgar_core::event::{Event, ProviderTokenUsage};
+use elgar_core::{event::Event, token_accounting::ProviderTokenUsage};
 
 pub(crate) fn duration_millis(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)

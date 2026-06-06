@@ -1,0 +1,152 @@
+//! Tests for the line-based scripted TUI mode.
+
+use std::fs;
+
+use crate::{
+    is_tui_cancel_command, is_tui_clear_command, is_tui_copy_command, is_tui_copy_raw_command,
+    is_tui_details_command, is_tui_exit_command, is_tui_help_command, render_tui_help,
+    render_tui_script, run_tui_loop, should_launch_terminal_tui_by_default,
+    tui_raw_command_argument, tui_unknown_command, TUI_COMMAND, TUI_TERMINAL_COMMAND,
+};
+
+#[test]
+fn default_terminal_launch_requires_interactive_stdio() {
+    assert!(should_launch_terminal_tui_by_default(true, true));
+    assert!(!should_launch_terminal_tui_by_default(false, true));
+    assert!(!should_launch_terminal_tui_by_default(true, false));
+    assert!(!should_launch_terminal_tui_by_default(false, false));
+}
+
+#[test]
+fn terminal_tui_command_is_separate_from_line_loop_command() {
+    assert_eq!(TUI_COMMAND, "tui");
+    assert_eq!(TUI_TERMINAL_COMMAND, "tui-terminal");
+}
+
+#[test]
+fn tui_exit_commands_are_explicit() {
+    assert!(is_tui_exit_command("/exit"));
+    assert!(is_tui_exit_command(" /quit "));
+    assert!(is_tui_exit_command("/q"));
+    assert!(!is_tui_exit_command("exit"));
+}
+
+#[test]
+fn tui_supported_commands_are_explicit() {
+    assert!(is_tui_help_command("/help"));
+    assert!(is_tui_help_command(" /commands "));
+    assert!(is_tui_copy_command("/copy"));
+    assert!(is_tui_copy_raw_command("/copy raw"));
+    assert!(is_tui_details_command("/details last"));
+    assert!(is_tui_clear_command("/clear"));
+    assert!(is_tui_clear_command(" /new "));
+    assert!(is_tui_cancel_command("/cancel"));
+
+    assert!(!is_tui_help_command("help"));
+    assert!(!is_tui_copy_command("copy"));
+    assert!(!is_tui_clear_command("clear"));
+}
+
+#[test]
+fn tui_raw_command_is_explicit() {
+    assert_eq!(tui_raw_command_argument("/raw"), Some(""));
+    assert_eq!(tui_raw_command_argument("/raw hello"), Some("hello"));
+    assert_eq!(
+        tui_raw_command_argument(" /raw explain this simply "),
+        Some("explain this simply")
+    );
+    assert_eq!(tui_raw_command_argument("raw hello"), None);
+    assert_eq!(tui_raw_command_argument("hello"), None);
+}
+
+#[test]
+fn tui_unknown_slash_command_is_local() {
+    assert_eq!(tui_unknown_command("/model"), Some("/model"));
+    assert_eq!(tui_unknown_command(" /settings "), Some("/settings"));
+    assert_eq!(tui_unknown_command("/help"), None);
+    assert_eq!(tui_unknown_command("/raw hello"), None);
+    assert_eq!(tui_unknown_command("/details last"), None);
+    assert_eq!(tui_unknown_command("/copy raw"), None);
+    assert_eq!(tui_unknown_command("model"), None);
+}
+
+#[test]
+fn tui_help_lists_supported_local_commands() {
+    let help = render_tui_help();
+
+    assert!(help.starts_with("Commands\nChat"));
+    assert!(help.contains("/raw <prompt>"));
+    assert!(help.contains("/cancel"));
+    assert!(help.contains("/copy raw"));
+    assert!(help.contains("/exit"));
+    assert!(!help.contains("/tool"));
+    assert!(!help.contains("/permissions"));
+}
+
+#[test]
+fn tui_script_renders_default_stub_turns_and_stops_on_exit() {
+    let rendered = render_tui_script(
+        ["what does the harness do?", "/exit", "what should not run?"],
+        ".",
+        ".",
+    );
+
+    assert!(rendered.contains("> what does the harness do?"));
+    assert!(rendered.contains("stub provider response"));
+    assert!(!rendered.contains("what should not run?"));
+    assert!(!rendered.contains("lm-studio"));
+}
+
+#[test]
+fn tui_script_empty_raw_command_is_local_usage_without_provider_call() {
+    let rendered = render_tui_script(["/raw"], ".", ".");
+
+    assert!(rendered.contains("Usage: /raw <prompt>"));
+    assert!(rendered.contains("Example: /raw hello"));
+    assert!(!rendered.contains("> /raw"));
+    assert!(!rendered.contains("stub provider response"));
+}
+
+#[test]
+fn tui_script_raw_detail_commands_are_local_without_raw_details() {
+    let rendered = render_tui_script(["/details last", "/copy raw"], ".", ".");
+
+    assert!(rendered.contains("No raw details are available."));
+    assert!(!rendered.contains("> /details last"));
+    assert!(!rendered.contains("> /copy raw"));
+    assert!(!rendered.contains("stub provider response"));
+}
+
+#[test]
+fn tui_script_clear_commands_clear_local_rendering_without_controller_call() {
+    let root = std::env::temp_dir().join(format!("elgar-cli-clear-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+
+    let rendered = render_tui_script(
+        ["what does the harness do?", "/clear", "/new"],
+        &root,
+        &root,
+    );
+
+    assert!(!rendered.contains("> /clear"));
+    assert!(!rendered.contains("> /new"));
+    assert!(rendered.contains("stub provider response"));
+    assert!(rendered.contains("(empty conversation)"));
+    assert_eq!(rendered.matches("stub provider response").count(), 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn tui_loop_reads_lines_and_exits_cleanly() {
+    let input = b"what does the harness do?\n/quit\n";
+    let mut output = Vec::new();
+
+    run_tui_loop(&input[..], &mut output, ".", ".").unwrap();
+
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("Elgar TUI. Type /exit, /quit, or /q to leave."));
+    assert!(rendered.contains("> what does the harness do?"));
+    assert!(rendered.contains("Exiting Elgar TUI."));
+}

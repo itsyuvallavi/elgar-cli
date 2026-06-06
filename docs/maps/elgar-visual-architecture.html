@@ -1,0 +1,848 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Elgar Visual Architecture Map</title>
+  <style>
+    :root {
+      --bg: #f6f7f4;
+      --paper: #ffffff;
+      --ink: #1e2423;
+      --muted: #64706d;
+      --line: #d8ded9;
+      --core: #2f6f73;
+      --cli: #7b5f2a;
+      --tui: #6a5d93;
+      --provider: #8f4d45;
+      --exec: #3f7a43;
+      --log: #52616f;
+      --warn: #a05c28;
+      --soft-core: #e6f1f1;
+      --soft-cli: #f3ead9;
+      --soft-tui: #ece9f5;
+      --soft-provider: #f4e5e2;
+      --soft-exec: #e7f2e8;
+      --soft-log: #e8edf1;
+      --shadow: 0 10px 30px rgba(23, 35, 33, 0.08);
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.72), rgba(246,247,244,1) 380px),
+        var(--bg);
+      line-height: 1.45;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 20px 64px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+      gap: 24px;
+      align-items: end;
+      padding: 20px 0 24px;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 4.25rem);
+      line-height: 0.95;
+      letter-spacing: 0;
+      margin-bottom: 18px;
+      max-width: 850px;
+    }
+
+    h2 {
+      font-size: 1.55rem;
+      margin-bottom: 12px;
+    }
+
+    h3 {
+      font-size: 1rem;
+      margin-bottom: 8px;
+    }
+
+    p {
+      color: var(--muted);
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      background: #eef1ee;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-size: 0.92em;
+      color: #24302e;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .lead {
+      font-size: 1.08rem;
+      max-width: 760px;
+    }
+
+    .contract {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .contract strong {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .contract ol {
+      margin: 0;
+      padding-left: 22px;
+      color: var(--muted);
+    }
+
+    section {
+      margin-top: 34px;
+    }
+
+    .band {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 22px;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: end;
+      margin-bottom: 14px;
+    }
+
+    .section-head p {
+      max-width: 640px;
+      margin-bottom: 0;
+    }
+
+    .repo-map {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .node {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 13px;
+      background: #fbfcfa;
+      min-height: 112px;
+    }
+
+    .node .label {
+      font-weight: 750;
+      margin-bottom: 8px;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    .node p {
+      font-size: 0.9rem;
+      margin-bottom: 0;
+    }
+
+    .node.root {
+      grid-column: span 6;
+      min-height: 0;
+      background: #232b2a;
+      color: #fff;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .node.root p,
+    .node.root .label {
+      color: #fff;
+      margin: 0;
+    }
+
+    .cli {
+      border-top: 4px solid var(--cli);
+      background: var(--soft-cli);
+    }
+
+    .tui {
+      border-top: 4px solid var(--tui);
+      background: var(--soft-tui);
+    }
+
+    .core {
+      border-top: 4px solid var(--core);
+      background: var(--soft-core);
+    }
+
+    .provider {
+      border-top: 4px solid var(--provider);
+      background: var(--soft-provider);
+    }
+
+    .exec {
+      border-top: 4px solid var(--exec);
+      background: var(--soft-exec);
+    }
+
+    .log {
+      border-top: 4px solid var(--log);
+      background: var(--soft-log);
+    }
+
+    .wide {
+      grid-column: span 2;
+    }
+
+    .triple {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .crate-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .crate-title {
+      padding: 14px 16px;
+      color: #fff;
+      font-weight: 760;
+    }
+
+    .crate-title.cli-bg {
+      background: var(--cli);
+    }
+
+    .crate-title.tui-bg {
+      background: var(--tui);
+    }
+
+    .crate-title.core-bg {
+      background: var(--core);
+    }
+
+    .crate-card ul {
+      margin: 0;
+      padding: 14px 18px 18px 34px;
+      color: var(--muted);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(110px, 1fr));
+      gap: 10px;
+      overflow-x: auto;
+      padding-bottom: 6px;
+    }
+
+    .step {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      background: #fff;
+      min-height: 112px;
+    }
+
+    .step::after {
+      content: ">";
+      position: absolute;
+      right: -10px;
+      top: 42%;
+      color: #86918d;
+      font-weight: 700;
+    }
+
+    .step:last-child::after {
+      content: "";
+    }
+
+    .step-number {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: inline-grid;
+      place-items: center;
+      background: #26302f;
+      color: #fff;
+      font-size: 0.82rem;
+      font-weight: 760;
+      margin-bottom: 8px;
+    }
+
+    .step-title {
+      font-weight: 760;
+      margin-bottom: 5px;
+    }
+
+    .step p {
+      font-size: 0.86rem;
+      margin-bottom: 0;
+    }
+
+    .file-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .file-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      padding: 14px;
+    }
+
+    .file-card .path {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.84rem;
+      color: #2d3634;
+      overflow-wrap: anywhere;
+      margin-bottom: 10px;
+    }
+
+    .file-card p {
+      font-size: 0.9rem;
+      margin-bottom: 10px;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .badge {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 0.76rem;
+      color: #394340;
+      background: #f7f8f6;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .tab {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .tab[aria-selected="true"] {
+      background: #26302f;
+      color: #fff;
+      border-color: #26302f;
+    }
+
+    .panel {
+      display: none;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 16px;
+    }
+
+    .callout {
+      border-left: 5px solid var(--warn);
+      background: #fff8ef;
+      padding: 14px 16px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      color: #4b3726;
+    }
+
+    .callout p {
+      color: #5f4937;
+      margin-bottom: 0;
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr 1.1fr;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .matrix div {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      font-size: 0.92rem;
+    }
+
+    .matrix div:nth-child(3n) {
+      border-right: none;
+    }
+
+    .matrix .head {
+      background: #26302f;
+      color: #fff;
+      font-weight: 760;
+    }
+
+    .matrix div:nth-last-child(-n + 3) {
+      border-bottom: none;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot.cli-dot {
+      background: var(--cli);
+    }
+
+    .dot.tui-dot {
+      background: var(--tui);
+    }
+
+    .dot.core-dot {
+      background: var(--core);
+    }
+
+    .dot.provider-dot {
+      background: var(--provider);
+    }
+
+    .dot.exec-dot {
+      background: var(--exec);
+    }
+
+    .footer-note {
+      color: var(--muted);
+      margin-top: 28px;
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 920px) {
+      header,
+      .triple,
+      .two-col,
+      .file-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .repo-map {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .node.root {
+        grid-column: span 2;
+        display: block;
+      }
+
+      .wide {
+        grid-column: span 1;
+      }
+
+      .matrix {
+        grid-template-columns: 1fr;
+      }
+
+      .matrix .head {
+        display: none;
+      }
+
+      .matrix div {
+        border-right: none;
+      }
+    }
+
+    @media (max-width: 560px) {
+      main {
+        padding: 20px 12px 48px;
+      }
+
+      .repo-map {
+        grid-template-columns: 1fr;
+      }
+
+      .node.root {
+        grid-column: span 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Elgar File System And Architecture Map</h1>
+        <p class="lead">
+          This page explains the repo before explaining the behavior. Start with the folders,
+          then the crates, then the files, then the flow from your message to verified output.
+        </p>
+      </div>
+      <aside class="contract">
+        <strong>The one rule to remember</strong>
+        <ol>
+          <li>The model suggests.</li>
+          <li>Elgar validates.</li>
+          <li>Policy decides.</li>
+          <li>Executors verify.</li>
+          <li>The UI reports verified truth.</li>
+        </ol>
+      </aside>
+    </header>
+
+    <section class="band">
+      <div class="section-head">
+        <div>
+          <h2>1. The Repo As A Map</h2>
+          <p>Every top-level folder has a simple job. Do not start with function details. Start here.</p>
+        </div>
+      </div>
+      <div class="repo-map" aria-label="Elgar repository map">
+        <div class="node root">
+          <div class="label">elgar/</div>
+          <p>One Rust workspace, several crates, docs, scripts, config, and local logs.</p>
+        </div>
+        <div class="node core wide">
+          <div class="label">crates/elgar-core</div>
+          <p>The real behavior: runtime, provider, tools, policy, file writes, shell, session state.</p>
+        </div>
+        <div class="node tui wide">
+          <div class="label">crates/elgar-tui</div>
+          <p>The terminal experience: input, panes, commands, rendering, status and memory views.</p>
+        </div>
+        <div class="node cli wide">
+          <div class="label">crates/elgar-cli</div>
+          <p>The front door: command arguments, config loading, launch modes, smoke commands.</p>
+        </div>
+        <div class="node provider">
+          <div class="label">elgar-provider.json</div>
+          <p>Chooses live LM Studio mode or no-network stub behavior.</p>
+        </div>
+        <div class="node exec">
+          <div class="label">bin/</div>
+          <p>Local checks, dogfood scripts, install helpers.</p>
+        </div>
+        <div class="node log">
+          <div class="label">.elgar/</div>
+          <p>Append-only local traces and session logs.</p>
+        </div>
+        <div class="node">
+          <div class="label">docs/</div>
+          <p>Architecture plans, smoke notes, local operating docs.</p>
+        </div>
+        <div class="node">
+          <div class="label">zz_elgar_agent_docs/</div>
+          <p>Rules and roster for agents working on this repo.</p>
+        </div>
+        <div class="node">
+          <div class="label">Cargo.toml</div>
+          <p>Rust workspace file. It tells Rust which crates belong together.</p>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="dot core-dot"></i> Core behavior</span>
+        <span><i class="dot tui-dot"></i> Terminal UI</span>
+        <span><i class="dot cli-dot"></i> Launch/config</span>
+        <span><i class="dot provider-dot"></i> Provider config</span>
+        <span><i class="dot exec-dot"></i> Executors/checks</span>
+      </div>
+    </section>
+
+    <section class="band">
+      <h2>2. The Three Crates</h2>
+      <p>Think of these as three departments. They talk in one direction: CLI/TUI call core. Core does not call CLI/TUI.</p>
+      <div class="triple">
+        <article class="crate-card">
+          <div class="crate-title cli-bg">elgar-cli: starts the app</div>
+          <ul>
+            <li>Reads command-line args.</li>
+            <li>Finds project root.</li>
+            <li>Loads provider config.</li>
+            <li>Launches TUI or one-shot prompt.</li>
+          </ul>
+        </article>
+        <article class="crate-card">
+          <div class="crate-title tui-bg">elgar-tui: shows the app</div>
+          <ul>
+            <li>Reads terminal input.</li>
+            <li>Handles slash commands.</li>
+            <li>Shows conversation panes.</li>
+            <li>Renders status, memory, tokens, trace.</li>
+          </ul>
+        </article>
+        <article class="crate-card">
+          <div class="crate-title core-bg">elgar-core: runs the app</div>
+          <ul>
+            <li>Calls provider.</li>
+            <li>Validates tool calls.</li>
+            <li>Applies policy.</li>
+            <li>Executes and verifies file/shell work.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="band">
+      <h2>3. From File To Responsibility</h2>
+      <p>Use this table when opening a file. It tells you why the file exists and when to care about it.</p>
+      <div class="file-grid">
+        <article class="file-card">
+          <div class="path">crates/elgar-cli/src/main.rs</div>
+          <p>First Rust file that runs. It chooses the command mode.</p>
+          <div class="badge-row"><span class="badge">start here</span><span class="badge">CLI</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-cli/src/provider_config.rs</div>
+          <p>Loads live/stub provider settings and permission mode.</p>
+          <div class="badge-row"><span class="badge">LM Studio config</span><span class="badge">CLI</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-tui/src/terminal.rs</div>
+          <p>Top-level terminal UI entry point. Delegates to inline, render, keymap, context.</p>
+          <div class="badge-row"><span class="badge">TUI</span><span class="badge">entry</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-tui/src/terminal/commands.rs</div>
+          <p>Parses slash commands like /status, /approve, /exit.</p>
+          <div class="badge-row"><span class="badge">local commands</span><span class="badge">TUI</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-tui/src/panes/event_rendering.rs</div>
+          <p>Turns core events into visible conversation lines.</p>
+          <div class="badge-row"><span class="badge">display</span><span class="badge">events</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-core/src/agent_runtime.rs</div>
+          <p>The clean public runtime entry point. CLI/TUI call this.</p>
+          <div class="badge-row"><span class="badge">core</span><span class="badge">runtime entry</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-core/src/agent_loop.rs</div>
+          <p>The crowded control room: routing, model calls, tools, plans, memory, policy application.</p>
+          <div class="badge-row"><span class="badge">core</span><span class="badge">high risk</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-core/src/model_runtime.rs</div>
+          <p>Defines allowed model tools and validates tool call arguments.</p>
+          <div class="badge-row"><span class="badge">tool schema</span><span class="badge">validation</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-core/src/action.rs</div>
+          <p>Typed action data: create file, patch file, create folder, shell command.</p>
+          <div class="badge-row"><span class="badge">actions</span><span class="badge">data</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-core/src/policy.rs</div>
+          <p>Decides whether an action can run or needs manual review.</p>
+          <div class="badge-row"><span class="badge">permissions</span><span class="badge">safety</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-core/src/fs.rs</div>
+          <p>Actually creates, patches, deletes, moves, and verifies files/folders.</p>
+          <div class="badge-row"><span class="badge">executor</span><span class="badge">filesystem</span></div>
+        </article>
+        <article class="file-card">
+          <div class="path">crates/elgar-core/src/session.rs</div>
+          <p>Stores current conversation state, actions, memory, metadata, and facts.</p>
+          <div class="badge-row"><span class="badge">state</span><span class="badge">memory</span></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="band">
+      <h2>4. Pick A Flow</h2>
+      <p>The same files appear differently depending on whether you chat or ask Elgar to do work.</p>
+      <div class="tabs" role="tablist" aria-label="Flow selector">
+        <button class="tab" role="tab" aria-selected="true" data-panel="chat">Plain chat: hello</button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="filework">File work: create folder</button>
+        <button class="tab" role="tab" aria-selected="false" data-panel="lmstudio">Provider: LM Studio</button>
+      </div>
+
+      <div id="chat" class="panel active" role="tabpanel">
+        <div class="flow">
+          <div class="step"><span class="step-number">1</span><div class="step-title">You type</div><p><code>hello</code></p></div>
+          <div class="step tui"><span class="step-number">2</span><div class="step-title">TUI/CLI receives</div><p>Input is collected.</p></div>
+          <div class="step core"><span class="step-number">3</span><div class="step-title">Runtime starts</div><p><code>AgentRuntime::turn</code></p></div>
+          <div class="step core"><span class="step-number">4</span><div class="step-title">Plain boundary</div><p>No tools. No memory.</p></div>
+          <div class="step provider"><span class="step-number">5</span><div class="step-title">Provider answers</div><p>LM Studio or stub returns text.</p></div>
+          <div class="step core"><span class="step-number">6</span><div class="step-title">Session records</div><p>Provider events are stored.</p></div>
+          <div class="step tui"><span class="step-number">7</span><div class="step-title">UI renders</div><p>Answer appears.</p></div>
+          <div class="step"><span class="step-number">8</span><div class="step-title">No mutation</div><p>Nothing touched files.</p></div>
+        </div>
+      </div>
+
+      <div id="filework" class="panel" role="tabpanel">
+        <div class="flow">
+          <div class="step"><span class="step-number">1</span><div class="step-title">You type</div><p><code>create folder demo</code></p></div>
+          <div class="step core"><span class="step-number">2</span><div class="step-title">Runtime routes</div><p>Determines this needs execution.</p></div>
+          <div class="step provider"><span class="step-number">3</span><div class="step-title">Model tool call</div><p><code>create_directory</code></p></div>
+          <div class="step core"><span class="step-number">4</span><div class="step-title">Validate</div><p>Check path and arguments.</p></div>
+          <div class="step core"><span class="step-number">5</span><div class="step-title">Action</div><p>Typed action is recorded.</p></div>
+          <div class="step core"><span class="step-number">6</span><div class="step-title">Policy</div><p>Allow now or require review.</p></div>
+          <div class="step exec"><span class="step-number">7</span><div class="step-title">Executor</div><p><code>fs.rs</code> creates it.</p></div>
+          <div class="step log"><span class="step-number">8</span><div class="step-title">Verify + report</div><p>Session stores verified result.</p></div>
+        </div>
+      </div>
+
+      <div id="lmstudio" class="panel" role="tabpanel">
+        <div class="flow">
+          <div class="step cli"><span class="step-number">1</span><div class="step-title">Config</div><p><code>elgar-provider.json</code></p></div>
+          <div class="step cli"><span class="step-number">2</span><div class="step-title">CLI loads</div><p><code>provider_config.rs</code></p></div>
+          <div class="step provider"><span class="step-number">3</span><div class="step-title">Provider object</div><p><code>LmStudioProvider</code></p></div>
+          <div class="step provider"><span class="step-number">4</span><div class="step-title">Format request</div><p>Messages and tools become JSON.</p></div>
+          <div class="step provider"><span class="step-number">5</span><div class="step-title">HTTP</div><p><code>provider/http.rs</code></p></div>
+          <div class="step provider"><span class="step-number">6</span><div class="step-title">LM Studio</div><p>Local server must be running.</p></div>
+          <div class="step provider"><span class="step-number">7</span><div class="step-title">Parse response</div><p>Text, tools, reasoning, usage.</p></div>
+          <div class="step core"><span class="step-number">8</span><div class="step-title">Runtime continues</div><p>Chat answer or validated tool flow.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band">
+      <h2>5. What To Open When You Are Confused</h2>
+      <div class="matrix" role="table" aria-label="Confusion guide">
+        <div class="head">Question</div>
+        <div class="head">Open this</div>
+        <div class="head">Reason</div>
+
+        <div>How does Elgar start?</div>
+        <div><code>crates/elgar-cli/src/main.rs</code></div>
+        <div>It chooses one-shot, TUI, smoke, or perf mode.</div>
+
+        <div>Why is LM Studio not connecting?</div>
+        <div><code>elgar-provider.json</code>, <code>provider_config.rs</code>, <code>provider/lm_studio.rs</code></div>
+        <div>Connectivity is config plus provider HTTP behavior.</div>
+
+        <div>Why did a command need approval?</div>
+        <div><code>policy.rs</code>, <code>action_gate.rs</code></div>
+        <div>Policy decides review. Action gate handles /approve and /reject.</div>
+
+        <div>Where did the TUI line come from?</div>
+        <div><code>panes/event_rendering.rs</code>, <code>memory.rs</code></div>
+        <div>These files turn state into visible text.</div>
+
+        <div>Why did a file actually change?</div>
+        <div><code>fs.rs</code>, <code>shell.rs</code></div>
+        <div>Only executors touch real files or shell.</div>
+
+        <div>What does Elgar remember?</div>
+        <div><code>session.rs</code>, <code>.elgar/</code></div>
+        <div>Session has current facts. Logs store local JSONL records.</div>
+      </div>
+    </section>
+
+    <section class="band">
+      <h2>6. The Architecture In One Stack</h2>
+      <p>Read this from top to bottom when tracing a bug.</p>
+      <div class="two-col">
+        <div>
+          <div class="flow" style="grid-template-columns: 1fr;">
+            <div class="step cli"><span class="step-number">A</span><div class="step-title">Launch</div><p><code>elgar-cli</code> decides mode and config.</p></div>
+            <div class="step tui"><span class="step-number">B</span><div class="step-title">Interface</div><p><code>elgar-tui</code> receives input and shows output.</p></div>
+            <div class="step core"><span class="step-number">C</span><div class="step-title">Runtime</div><p><code>agent_runtime.rs</code> and <code>agent_loop.rs</code> coordinate.</p></div>
+            <div class="step provider"><span class="step-number">D</span><div class="step-title">Provider</div><p>LM Studio or stub returns model output.</p></div>
+            <div class="step core"><span class="step-number">E</span><div class="step-title">Validation + policy</div><p>Tools become typed actions, then policy decides.</p></div>
+            <div class="step exec"><span class="step-number">F</span><div class="step-title">Execution</div><p><code>fs.rs</code> and <code>shell.rs</code> do real work.</p></div>
+            <div class="step log"><span class="step-number">G</span><div class="step-title">Truth</div><p>Session and logs store what actually happened.</p></div>
+          </div>
+        </div>
+        <div>
+          <div class="callout">
+            <h3>Debugging rule</h3>
+            <p>
+              If you are lost, do not start in <code>agent_loop.rs</code>. First decide which layer owns the problem:
+              launch, TUI display, provider, policy, executor, session, or logs.
+            </p>
+          </div>
+          <p style="margin-top: 16px;">
+            The file layout exists to keep those layers separate. Some files are still too large,
+            especially <code>agent_loop.rs</code>, but the ownership model is the guide.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <p class="footer-note">
+      Suggested study order: repo map, three crates, main files, plain chat flow, file-work flow, LM Studio flow.
+    </p>
+  </main>
+
+  <script>
+    const tabs = Array.from(document.querySelectorAll(".tab"));
+    const panels = Array.from(document.querySelectorAll(".panel"));
+
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const target = tab.dataset.panel;
+        tabs.forEach((item) => item.setAttribute("aria-selected", item === tab ? "true" : "false"));
+        panels.forEach((panel) => panel.classList.toggle("active", panel.id === target));
+      });
+    });
+  </script>
+</body>
+</html>

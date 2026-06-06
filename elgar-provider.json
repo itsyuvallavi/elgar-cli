@@ -1,12 +1,35 @@
 {
   "provider": "lm-studio",
   "base_url": "http://127.0.0.1:1234/v1",
-  "default_model": "openai/gpt-oss-20b",
+  "default_model": "qwen3.6-35b-a3b-mlx",
   "context_window_tokens": 16000,
   "mode": "live",
-  "connect_timeout_millis": 2000,
-  "read_timeout_millis": 120000,
-  "write_timeout_millis": 5000,
-  "request_timeout_millis": 180000,
-  "stream": true
+  "connect_timeout_millis": 5000,
+  "read_timeout_millis": 1600000,
+  "write_timeout_millis": 10000,
+  "request_timeout_millis": 900000,
+  "stream": true,
+  "request_modes": {
+      "raw_chat": {
+        "backend": "lm_studio_native_chat",
+        "stats": true
+      },
+    "plain_chat": {
+      "backend": "lm_studio_native_chat",
+      "stats": true
+    },
+    "chat_response": {
+      "backend": "lm_studio_native_chat",
+      "stats": true
+    },
+    "tool_result_synthesis": {
+      "backend": "openai_chat_completions"
+    },
+    "project_review_synthesis": {
+      "backend": "openai_chat_completions"
+    },
+    "tool_enabled": {
+      "backend": "openai_chat_completions"
+    }
+  }
 }

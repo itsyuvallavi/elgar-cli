@@ -1,11 +1,21 @@
+//! Token and context-window accounting types.
+//!
+//! This file owns provider token usage, session token totals, latest-turn usage,
+//! and context-window snapshots derived from those numbers.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    context::ContextAccounting,
-    event::{ProviderMetrics, ProviderTokenUsage},
-};
+use crate::{context::ContextAccounting, event::ProviderMetrics};
+
+/// Token usage reported by an OpenAI-compatible provider response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderTokenUsage {
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

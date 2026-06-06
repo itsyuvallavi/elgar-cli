@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Elgar Runtime Map</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f6f7;
+      --panel: #ffffff;
+      --text: #18212f;
+      --muted: #607080;
+      --line: #d8dee6;
+      --active: #237a57;
+      --planned: #2f66b3;
+      --bypassed: #b7791f;
+      --legacy: #9b3a3a;
+      --shadow: 0 1px 2px rgba(24, 33, 47, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 22px 28px 18px;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+
+    h1 {
+      font-size: 24px;
+      margin: 0 0 4px;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .legend-item {
+      align-items: center;
+      display: inline-flex;
+      gap: 6px;
+    }
+
+    .swatch {
+      border-radius: 3px;
+      display: inline-block;
+      height: 10px;
+      width: 10px;
+    }
+
+    main {
+      display: grid;
+      gap: 18px;
+      padding: 24px 28px 32px;
+    }
+
+    .lane {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .lane-header {
+      border-bottom: 1px solid var(--line);
+      padding: 16px 18px;
+    }
+
+    .lane-title {
+      font-size: 17px;
+      margin: 0 0 4px;
+    }
+
+    .lane-summary {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0;
+    }
+
+    .flow {
+      align-items: stretch;
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
+      padding: 18px;
+    }
+
+    .node {
+      background: #fbfcfd;
+      border: 1px solid var(--line);
+      border-left: 6px solid var(--line);
+      border-radius: 8px;
+      min-height: 138px;
+      padding: 12px;
+    }
+
+    .node[data-status="active"] {
+      border-left-color: var(--active);
+    }
+
+    .node[data-status="planned"] {
+      border-left-color: var(--planned);
+    }
+
+    .node[data-status="bypassed"] {
+      border-left-color: var(--bypassed);
+      background: #fffaf0;
+    }
+
+    .node[data-status="legacy"] {
+      border-left-color: var(--legacy);
+      background: #fff5f5;
+    }
+
+    .node-label {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .node-file {
+      color: #334155;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .node-note {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 10px;
+    }
+
+    .status-pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      display: inline-block;
+      font-size: 11px;
+      margin-top: 10px;
+      padding: 2px 8px;
+      text-transform: uppercase;
+    }
+
+    .status-pill[data-status="active"] {
+      border-color: rgba(35, 122, 87, 0.35);
+      color: var(--active);
+    }
+
+    .status-pill[data-status="planned"] {
+      border-color: rgba(47, 102, 179, 0.35);
+      color: var(--planned);
+    }
+
+    .status-pill[data-status="bypassed"] {
+      border-color: rgba(183, 121, 31, 0.35);
+      color: var(--bypassed);
+    }
+
+    footer {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 0 28px 28px;
+    }
+
+    @media (max-width: 640px) {
+      header,
+      main,
+      footer {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      .flow {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Elgar Runtime Map</h1>
+    <p class="subtitle">A living view of what happens behind the scenes, starting from raw model calls and moving upward.</p>
+    <div class="legend" aria-label="Status legend">
+      <span class="legend-item"><span class="swatch" style="background: var(--active)"></span>active</span>
+      <span class="legend-item"><span class="swatch" style="background: var(--planned)"></span>planned</span>
+      <span class="legend-item"><span class="swatch" style="background: var(--bypassed)"></span>bypassed</span>
+      <span class="legend-item"><span class="swatch" style="background: var(--legacy)"></span>legacy / review</span>
+    </div>
+  </header>
+
+  <main id="runtime-map"></main>
+
+  <footer>
+    Source data is also stored in docs/runtime-map.json. Update both when the runtime changes.
+  </footer>
+
+  <script type="application/json" id="runtime-map-data">
+{
+  "lanes": [
+    {
+      "title": "Current Normal Chat Path",
+      "summary": "The existing path routes normal text through the harness before deciding whether to answer, execute, show verified state, or ask guidance.",
+      "nodes": [
+        {"label": "CLI Input", "file": "crates/elgar-cli", "status": "active", "note": "Receives user text and calls core."},
+        {"label": "Agent Loop", "file": "crates/elgar-core/src/agent_loop.rs", "status": "active", "note": "Coordinates route, tool loop, synthesis, and final events."},
+        {"label": "Route Decision", "file": "crates/elgar-core/src/agent_plain_decision.rs", "status": "active", "note": "Interprets model route JSON and may trigger more provider calls."},
+        {"label": "Provider Request", "file": "crates/elgar-core/src/provider/*", "status": "active", "note": "Sends messages to LM Studio or another configured provider."},
+        {"label": "Displayed Answer", "file": "crates/elgar-core/src/event.rs", "status": "active", "note": "Stores provider, verified, or controller messages for display."}
+      ]
+    },
+    {
+      "title": "Proposed Simple Raw Path",
+      "summary": "The baseline path we can add later: prompt in, provider text out, no harness decisions.",
+      "nodes": [
+        {"label": "Raw CLI Input", "file": "elgar raw \"hello\"", "status": "planned", "note": "Explicit command for direct model interaction."},
+        {"label": "Raw Chat", "file": "crates/elgar-core/src/raw_chat.rs", "status": "planned", "note": "Would send only the user prompt to the provider."},
+        {"label": "Provider Request", "file": "crates/elgar-core/src/provider/*", "status": "active", "note": "Same provider client, but without tools or route prompts."},
+        {"label": "Model Text", "file": "AssistantMessageSource::Provider", "status": "planned", "note": "Displays only the model response."}
+      ]
+    },
+    {
+      "title": "Bypassed In Raw Mode",
+      "summary": "These layers stay available for agent work, but the raw path should not call them.",
+      "nodes": [
+        {"label": "Route Classifier", "file": "agent_plain_decision.rs", "status": "bypassed", "note": "No chat/execute/state classification."},
+        {"label": "Tools", "file": "agent_tool_*.rs", "status": "bypassed", "note": "No tool definitions, tool calls, or tool result synthesis."},
+        {"label": "Permissions", "file": "policy.rs / action_gate.rs", "status": "bypassed", "note": "No filesystem or shell action is proposed."},
+        {"label": "Plans And Memory", "file": "agent_plan_*.rs / agent_prompt_context.rs", "status": "bypassed", "note": "No verified plan, memory, or context injection."}
+      ]
+    }
+  ]
+}
+  </script>
+  <script>
+    const data = JSON.parse(document.getElementById("runtime-map-data").textContent);
+    const root = document.getElementById("runtime-map");
+
+    for (const lane of data.lanes) {
+      const section = document.createElement("section");
+      section.className = "lane";
+
+      const header = document.createElement("div");
+      header.className = "lane-header";
+
+      const title = document.createElement("h2");
+      title.className = "lane-title";
+      title.textContent = lane.title;
+
+      const summary = document.createElement("p");
+      summary.className = "lane-summary";
+      summary.textContent = lane.summary;
+
+      const flow = document.createElement("div");
+      flow.className = "flow";
+
+      for (const node of lane.nodes) {
+        const card = document.createElement("article");
+        card.className = "node";
+        card.dataset.status = node.status;
+
+        const label = document.createElement("div");
+        label.className = "node-label";
+        label.textContent = node.label;
+
+        const file = document.createElement("div");
+        file.className = "node-file";
+        file.textContent = node.file;
+
+        const note = document.createElement("div");
+        note.className = "node-note";
+        note.textContent = node.note;
+
+        const status = document.createElement("span");
+        status.className = "status-pill";
+        status.dataset.status = node.status;
+        status.textContent = node.status;
+
+        card.append(label, file, note, status);
+        flow.append(card);
+      }
+
+      header.append(title, summary);
+      section.append(header, flow);
+      root.append(section);
+    }
+  </script>
+</body>
+</html>

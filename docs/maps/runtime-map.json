@@ -1,0 +1,118 @@
+{
+  "title": "Elgar Runtime Map",
+  "updated": "2026-06-04",
+  "lanes": [
+    {
+      "id": "current-normal-chat",
+      "title": "Current Normal Chat Path",
+      "summary": "The existing path routes normal text through the harness before deciding whether to answer, execute, show verified state, or ask guidance.",
+      "nodes": [
+        {
+          "id": "cli-input",
+          "label": "CLI Input",
+          "file": "crates/elgar-cli",
+          "status": "active",
+          "note": "Receives user text and calls core."
+        },
+        {
+          "id": "agent-loop",
+          "label": "Agent Loop",
+          "file": "crates/elgar-core/src/agent_loop.rs",
+          "status": "active",
+          "note": "Coordinates route, tool loop, synthesis, and final events."
+        },
+        {
+          "id": "plain-decision",
+          "label": "Route Decision",
+          "file": "crates/elgar-core/src/agent_plain_decision.rs",
+          "status": "active",
+          "note": "Interprets model route JSON and may trigger more provider calls."
+        },
+        {
+          "id": "provider",
+          "label": "Provider Request",
+          "file": "crates/elgar-core/src/provider/*",
+          "status": "active",
+          "note": "Sends messages to LM Studio or another configured provider."
+        },
+        {
+          "id": "rendered-answer",
+          "label": "Displayed Answer",
+          "file": "crates/elgar-core/src/event.rs",
+          "status": "active",
+          "note": "Stores provider, verified, or controller messages for display."
+        }
+      ]
+    },
+    {
+      "id": "proposed-raw-chat",
+      "title": "Proposed Simple Raw Path",
+      "summary": "The baseline path we can add later: prompt in, provider text out, no harness decisions.",
+      "nodes": [
+        {
+          "id": "raw-cli-input",
+          "label": "Raw CLI Input",
+          "file": "elgar raw \"hello\"",
+          "status": "planned",
+          "note": "Explicit command for direct model interaction."
+        },
+        {
+          "id": "raw-chat",
+          "label": "Raw Chat",
+          "file": "crates/elgar-core/src/raw_chat.rs",
+          "status": "planned",
+          "note": "Would send only the user prompt to the provider."
+        },
+        {
+          "id": "raw-provider",
+          "label": "Provider Request",
+          "file": "crates/elgar-core/src/provider/*",
+          "status": "active",
+          "note": "Same provider client, but without tools or route prompts."
+        },
+        {
+          "id": "raw-answer",
+          "label": "Model Text",
+          "file": "AssistantMessageSource::Provider",
+          "status": "planned",
+          "note": "Displays only the model response."
+        }
+      ]
+    },
+    {
+      "id": "bypassed-raw-mode",
+      "title": "Bypassed In Raw Mode",
+      "summary": "These layers stay available for agent work, but the raw path should not call them.",
+      "nodes": [
+        {
+          "id": "bypass-route",
+          "label": "Route Classifier",
+          "file": "agent_plain_decision.rs",
+          "status": "bypassed",
+          "note": "No chat/execute/state classification."
+        },
+        {
+          "id": "bypass-tools",
+          "label": "Tools",
+          "file": "agent_tool_*.rs",
+          "status": "bypassed",
+          "note": "No tool definitions, tool calls, or tool result synthesis."
+        },
+        {
+          "id": "bypass-permissions",
+          "label": "Permissions",
+          "file": "policy.rs / action_gate.rs",
+          "status": "bypassed",
+          "note": "No filesystem or shell action is proposed."
+        },
+        {
+          "id": "bypass-plans",
+          "label": "Plans And Memory",
+          "file": "agent_plan_*.rs / agent_prompt_context.rs",
+          "status": "bypassed",
+          "note": "No verified plan, memory, or context injection."
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,7 @@
+//! Input, status, and copy pane state.
+//!
+//! These structs are small data holders used by `TuiShell`.
+
 use elgar_core::event::Event;
 
 use super::{conversation::ThinkingPulse, event_rendering::parse_provider_error};
@@ -63,6 +67,7 @@ pub struct StatusLine {
 }
 
 impl StatusLine {
+    /// Build the normal idle status line.
     pub fn ready() -> Self {
         Self {
             text: "ready".to_string(),
@@ -87,21 +92,6 @@ impl StatusLine {
                 self.text = match event {
                     Event::UserMessage(_) => "sent".to_string(),
                     Event::AssistantMessage(_) => "reply ready".to_string(),
-                    Event::ActionProposed(action) => {
-                        format!("review {}", action.action_id)
-                    }
-                    Event::ActionApproved(action) => {
-                        format!("approved {}", action.action_id)
-                    }
-                    Event::ActionRejected(action) => {
-                        format!("rejected {}", action.action_id)
-                    }
-                    Event::ActionApplied(action) => {
-                        format!("applied {}", action.action_id)
-                    }
-                    Event::ActionFailed(action) => {
-                        format!("failed {}", action.action_id)
-                    }
                     Event::ProviderStarted(_) | Event::ProviderFinished(_) | Event::Error(_) => {
                         unreachable!("provider and error events are handled above")
                     }
@@ -114,24 +104,6 @@ impl StatusLine {
         self.provider_active = true;
         self.thinking_pulse.reset();
         self.text = self.thinking_pulse.label().to_string();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cancel_provider_turn(&mut self) {
-        self.finish("canceled");
-    }
-
-    #[cfg(test)]
-    pub(crate) fn advance_thinking_pulse(&mut self) {
-        if self.provider_active {
-            self.thinking_pulse.advance();
-            self.text = self.thinking_pulse.label().to_string();
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn provider_active(&self) -> bool {
-        self.provider_active
     }
 
     pub(crate) fn render_body(&self) -> String {
