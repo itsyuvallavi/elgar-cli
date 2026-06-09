@@ -1,7 +1,8 @@
 //! Bounded harness loops.
 //!
-//! Loop modules coordinate repeated model-choice and primitive evidence
-//! collection. Individual primitive implementations live outside the loop.
+//! Loop modules coordinate native tool calls, fallback model-choice parsing,
+//! and primitive evidence collection. Individual primitive implementations live
+//! outside the loop.
 
 mod control;
 mod evidence;

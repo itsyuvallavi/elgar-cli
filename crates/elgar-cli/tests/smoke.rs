@@ -263,7 +263,7 @@ fn tui_command_greeting_gets_stub_guidance_without_live_provider() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("> hello!"));
-    assert!(stdout.contains("stub provider response (no-network) to: Original user request:"));
+    assert!(stdout.contains("stub provider response (no-network) to: hello!"));
     assert!(stdout.contains("No live provider call was made"));
     assert!(!stdout.contains("Input was not recognized"));
     assert!(!stdout.contains("lm-studio"));

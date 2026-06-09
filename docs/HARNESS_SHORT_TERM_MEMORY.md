@@ -101,10 +101,10 @@ Preferred next behavior:
 
 1. Before choosing a primitive tool, the model receives short-term memory.
 2. The contract tells the model to check memory before acting.
-3. The model chooses a primitive tool or `answer_now`.
+3. The model chooses a primitive tool or returns final text.
 4. Rust validates the request against short-term memory.
 5. If it is an exact duplicate, Elgar rejects it as a no-op and asks for a
-   different tool or `answer_now`.
+   different tool or final text.
 6. If duplicates continue, Elgar stops with `duplicate_loop_detected` and
    synthesizes from verified evidence.
 
@@ -159,7 +159,8 @@ Implement memory as a harness-owned validation layer:
 - memory is visible to the model
 - memory is logged
 - duplicate/no-op requests are rejected by Rust
-- final answer still comes from synthesis over verified evidence
+- normal final answers come directly from the native provider loop
+- synthesis remains a fallback for duplicate-loop and other safe-stop paths
 
 This should improve reliability without introducing macro tools or hardcoded
 natural-language task routing.

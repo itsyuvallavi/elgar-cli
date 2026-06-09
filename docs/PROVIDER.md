@@ -33,17 +33,23 @@ Disable live provider:
 ELGAR_PROVIDER_CONFIG=off elgar
 ```
 
-## Raw Chat Contract
+## Harness Provider Contract
 
-Plain chat should send one no-tool provider request.
+Normal CLI/TUI prompts go through the harness. The active provider path is
+OpenAI-compatible chat with native tool schemas for executable read-only
+primitives.
 
-It should not:
+The normal successful flow is:
 
-- attach tools
-- send `tool_choice`
-- inject project memory
-- run folder anchoring
-- make a follow-up synthesis request
+```text
+provider returns native tool_calls
+-> Elgar validates and executes read-only primitives
+-> Elgar sends verified role:"tool" results
+-> provider returns final text
+```
+
+JSON model-choice parsing and no-tool synthesis are fallback paths, not the
+normal successful route.
 
 ## Diagnostics
 
@@ -69,5 +75,4 @@ ELGAR_LM_STUDIO_BASE_URL
 
 Active harness modes use OpenAI-compatible chat, giving provider behavior one
 supported LM Studio HTTP path.
-Tool-capable provider code can exist, but permissioned execution is not active
-yet.
+Permissioned shell/write/edit execution is not active yet.

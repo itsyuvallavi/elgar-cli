@@ -1,15 +1,15 @@
-//! Compact evidence rendering for primitive harness decision prompts.
+//! Compact evidence rendering for fallback harness prompts.
 //!
-//! The loop stores exact verified evidence locally, but future decision calls
-//! only need enough context to avoid repeating work and choose the next
-//! primitive. This module renders that smaller decision view.
+//! Native tool loops send verified evidence as provider tool messages. This
+//! module renders a smaller evidence view for fallback repair and synthesis
+//! prompts without replacing the exact evidence retained locally.
 
 use crate::harness::harness_loop::state::types::Evidence;
 
 const MAX_COMPACT_BODY_CHARS: usize = 1_200;
 const MAX_COMPACT_LINES: usize = 24;
 
-/// Render evidence for a later decision call without replaying every full body.
+/// Render evidence for a fallback prompt without replaying every full body.
 pub(in crate::harness::harness_loop) fn render_compact_evidence_for_decision(
     evidence: &[Evidence],
 ) -> String {

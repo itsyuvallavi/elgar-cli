@@ -91,14 +91,13 @@ Primitive loop decision mode:
 - Prefer the user-named path over `.` when the request names a file or
   directory. Use broader project inspection only when the named path is missing
   or the user asked for a project-wide answer.
-- Before verified evidence exists, natural text may be a final answer.
-- After verified evidence exists, do not return natural prose directly. Request
-  more primitive tools, or return `answer_now` with `evidence_depth`.
-- You may also return `answer_now` when evidence is enough but you want Elgar
-  to run final synthesis. Include `evidence_depth:"enough"` when the evidence
-  supports a normal answer, or `evidence_depth:"limited"` when the answer must
-  clearly state evidence limits. If evidence is insufficient, request more
-  primitive tools instead of returning `answer_now`.
+- Natural text may be a final answer.
+- If more verified evidence is needed, request more primitive tools.
+- You may return `answer_now` when text fallback should intentionally switch to
+  final synthesis. Include `evidence_depth:"enough"` when the evidence supports
+  a normal answer, or `evidence_depth:"limited"` when the answer must clearly
+  state evidence limits. If evidence is insufficient, request more primitive
+  tools instead of returning `answer_now`.
 
 Valid decision response shapes:
 {{"type":"structured_request","kind":"primitive_tool_name","reason":"short reason","arguments":{{}}}}

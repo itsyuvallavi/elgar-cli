@@ -1,7 +1,8 @@
 //! Provider message builders for the primitive harness loop.
 //!
-//! Decision and repair calls use compact evidence summaries so the model can
-//! choose the next primitive without resending every full evidence body.
+//! Native loop calls start with a stable system prompt and then continue through
+//! provider tool messages. Repair calls use compact evidence summaries only
+//! when text fallback output needs one bounded format repair.
 
 use crate::{
     harness::{
@@ -88,7 +89,7 @@ fn repair_response_rule(evidence: &[Evidence]) -> &'static str {
     if evidence.is_empty() {
         "Return either natural text, a provider tool call, or valid structured JSON."
     } else {
-        "Verified evidence already exists, so natural text is invalid. Return only a provider tool call, valid structured JSON tool request, or answer_now with evidence_depth."
+        "Verified evidence already exists. Return a provider tool call, valid structured JSON tool request, answer_now with evidence_depth, or final natural text."
     }
 }
 

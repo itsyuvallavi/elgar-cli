@@ -15,6 +15,9 @@ cargo check -p elgar-tui
 echo "==> cargo check -p elgar-cli"
 cargo check -p elgar-cli
 
+echo "==> cargo test -p elgar-core harness"
+cargo test -p elgar-core harness
+
 echo "==> cargo test -p elgar-tui"
 cargo test -p elgar-tui
 

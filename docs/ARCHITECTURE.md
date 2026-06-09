@@ -29,15 +29,16 @@ TUI, tests, and future surfaces.
 terminal input
 -> TUI input handling
 -> core harness turn
--> model chooses primitive evidence or answers
+-> model either answers or requests native primitive tool calls
 -> runtime validates and executes read-only primitives
--> provider synthesis/output
+-> verified results return as provider tool messages
+-> model final text
 -> session events
 -> TUI renders visible text
 ```
 
-Current plain chat must not bypass the harness, use macro tools, inject memory,
-or run folder anchoring.
+Current plain chat must not bypass the harness, use macro tools, inject durable
+memory, or run folder anchoring.
 
 The target harness direction is the native provider tool loop documented in
 `NATIVE_TOOL_LOOP.md`: native `tool_calls` first, Rust validation/execution,

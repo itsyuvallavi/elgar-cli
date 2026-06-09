@@ -5,11 +5,11 @@ Elgar is a local-first Rust terminal chat harness.
 Current baseline:
 
 ```text
-user prompt -> provider request -> model answer -> visible response
+user prompt -> harness -> native tool calls if needed -> model answer -> visible response
 ```
 
-The project is being rebuilt from this simple raw-chat baseline into a fuller
-coding agent one capability at a time.
+The project is being rebuilt into a fuller coding agent one capability at a
+time. The current stable route is a read-only primitive harness.
 
 ## Run
 
@@ -45,9 +45,9 @@ elgar-tui  owns terminal input/rendering
 elgar-core owns provider/session/runtime logic
 ```
 
-Plain chat is currently raw/no-tools. Tools, permissions, shell execution,
-memory, planning, and synthesis are paused or archived while the harness is
-rebuilt.
+All plain text goes through the harness. The active executable primitives are
+read-only: `read`, `ls`, `find`, and `grep`. Shell, write/edit, permissions,
+planning, and durable memory are future layers.
 
 ## Docs
 
