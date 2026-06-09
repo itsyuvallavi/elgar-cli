@@ -1,7 +1,6 @@
 //! OpenAI-compatible tool request shapes.
 //!
-//! Raw chat does not use tools today. These types remain as provider-format
-//! vocabulary so the tool path can be rebuilt deliberately later.
+//! These types support native harness tool calls and `role:"tool"` results.
 
 use serde::{Deserialize, Serialize};
 

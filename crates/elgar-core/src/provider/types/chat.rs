@@ -1,7 +1,7 @@
 //! Chat message types shared by provider backends.
 //!
-//! Raw chat mostly sends one system/developer message plus one user message.
-//! The extra tool-shaped fields remain provider vocabulary for future rebuilds.
+//! These messages are shared provider vocabulary for harness loops, native tool
+//! results, and fallback repair calls.
 
 use serde::{Deserialize, Deserializer, Serialize};
 

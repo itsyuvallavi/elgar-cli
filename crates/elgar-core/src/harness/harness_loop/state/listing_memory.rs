@@ -82,7 +82,7 @@ impl DirectoryListingMemory {
 
     pub fn render_duplicate_hint(&self) -> String {
         format!(
-            "- Existing listing for `{}` is already available. Use one visible child path, read a visible file, grep/find, or answer_now. {}",
+            "- Existing listing for `{}` is already available. Use one visible child path, read a visible file, grep/find, or answer in final text if existing evidence is enough. {}",
             self.path,
             self.render_for_prompt().trim_start_matches("- ")
         )

@@ -10,6 +10,9 @@ answer quality.
 
 ## Baseline: 2026-06-07 CLI Non-TUI Batch
 
+Historical pre-native-loop benchmark. It is useful for comparison, but its
+stop reasons and call shape do not describe the current native tool loop.
+
 Project:
 
 ```text
@@ -56,7 +59,7 @@ This measures core harness/provider behavior without TUI rendering.
 
 ## Current Optimization Target
 
-Improve model-choice behavior before adding compression:
+Improve native tool selection and path choice before adding compression:
 
 - Prefer the user-named path first.
 - Batch clearly independent reads after a directory listing.

@@ -15,7 +15,7 @@ Interactive terminal shell implementation for command handling, prompt input, pr
 
 ## Ownership
 
-Keep terminal interaction here, but route model behavior through core chat/provider APIs. UI drawing, input handling, command handling, and provider turns should stay in separate folders.
+Keep terminal interaction here, but route model behavior through core harness/provider APIs. UI drawing, input handling, command handling, and provider turns should stay in separate folders.
 
 ## Checks
 

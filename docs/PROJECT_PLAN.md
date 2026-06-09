@@ -35,12 +35,13 @@ Active:
 - Local logs exist under `.elgar/log/`.
 - The active harness exposes primitive read-only tools: `read`, `ls`, `find`,
   and `grep`.
-- The harness can batch multiple primitive read-only requests in one decision
-  call.
-- Harness decision and synthesis calls currently keep full verified evidence
-  for reliability.
-- `NATIVE_TOOL_LOOP.md` records the target native provider tool loop that Elgar
-  should move toward before further token optimization.
+- The harness can batch multiple primitive read-only requests in one provider
+  response through native tool calls, with JSON fallback still available.
+- Native tool results return to the provider as `role:"tool"` messages, and
+  normal final text ends the turn.
+- Fallback synthesis remains available for safe-stop paths.
+- `NATIVE_TOOL_LOOP.md` documents the active native provider tool loop and
+  remaining transition gaps.
 
 Paused or archived:
 
@@ -49,7 +50,7 @@ Paused or archived:
 - shell execution
 - project planning
 - memory/context injection
-- synthesis/project review
+- project-review macro routing
 - old controller-style routing
 
 ## Permanent Skeleton

@@ -123,7 +123,7 @@ pub(in crate::harness::harness_loop) fn render_working_memory_for_prompt(
         }
     }
     lines.push(
-        "Exact duplicate requests are already known; choose different primitive evidence or answer_now."
+        "Exact duplicate requests are already known; choose different primitive evidence or return final text if existing evidence is enough."
             .to_string(),
     );
     lines.join("\n")

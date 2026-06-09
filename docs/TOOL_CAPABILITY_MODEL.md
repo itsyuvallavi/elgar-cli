@@ -92,7 +92,8 @@ edit   -> patch one existing file after policy approval
 
 There are no active macro tools in the current harness. A project review
 should emerge from primitive tool use such as `ls .`, `read package.json`,
-`find app`, `grep "export default"`, and then synthesis from verified evidence.
+`find app`, `grep "export default"`, and then final provider text from verified
+tool results.
 
 ## Why Not Macro Tools
 
@@ -123,7 +124,9 @@ The model can be weak. The harness must compensate with structure:
 - Enforce path, byte, line, and command limits.
 - Detect repeated evidence requests.
 - Stop bounded loops before they spiral.
-- Switch to no-tool synthesis after enough verified evidence exists.
+- Use fallback synthesis only when the native loop cannot continue safely, such
+  as duplicate-loop stops, invalid native tool calls, or explicit safe-stop
+  paths.
 - Store verified events so follow-up turns can retrieve exact facts.
 
 The goal is not to make the model remember everything. The goal is to make the
@@ -136,11 +139,13 @@ call or two, but it weakens correctness exactly where Elgar needs strength.
 
 Better performance levers:
 
-- Keep plain chat as a no-tool single provider call.
+- Let trivial prompts finish in one harness provider call with no tool
+  execution.
 - Scope the visible primitive tool list by request mode.
 - Keep tool schemas compact and stable.
 - Use bounded evidence budgets.
-- Use synthesis mode after evidence instead of endless decision loops.
+- Prefer provider final text after tool results; use fallback synthesis only on
+  explicit safe-stop paths.
 - Compress large verified outputs before sending them back to the model.
 - Persist raw evidence separately so copy/details stay exact.
 
@@ -155,7 +160,7 @@ Near term:
 - Do not add `review_project` or any other hidden workflow.
 - Add tests that unknown primitive names are rejected.
 - Add tests that `read`, `ls`, `find`, and `grep` return bounded evidence.
-- Keep synthesis no-tool and evidence-only.
+- Keep fallback synthesis no-tool and evidence-only.
 
 Next primitive tool stages:
 
@@ -181,7 +186,7 @@ Elgar is following this model when:
 - Every executed action has a typed request, a validation result, a policy
   decision where needed, and a verified result.
 - Follow-up questions can be answered from verified events, not model memory.
-- Plain chat remains no-tool and cheap.
+- Trivial conversation can finish in one harness call without executing tools.
 - Tool-loop performance is improved through bounded loops and synthesis, not by
   skipping validation.
 

@@ -1,7 +1,7 @@
-//! Model-facing contracts for primitive harness model choice.
+//! Fallback text/JSON contracts for primitive harness model choice.
 //!
-//! The main contract is rendered from the primitive registry so tools are
-//! described in one place.
+//! Native provider tool calls are the preferred protocol. These contracts keep
+//! text fallback and repair prompts aligned with the primitive registry.
 
 use crate::harness::PrimitiveToolRegistry;
 
@@ -33,7 +33,10 @@ pub fn model_choice_contract(registry: &PrimitiveToolRegistry) -> String {
         .join("\n\n");
 
     format!(
-        r#"You are speaking to Elgar through a primitive model-choice harness.
+        r#"You are speaking to Elgar through Elgar's fallback text/JSON tool contract.
+
+Native provider tool calls are preferred when available. Use this text format
+only when the provider returns text instead of typed tool calls.
 
 You may either answer normally, request one available primitive tool, or request
 a small batch of available primitive tools.

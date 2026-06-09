@@ -8,7 +8,7 @@ request, send it, and turn the provider response back into Elgar data?
 ## Current Flow
 
 ```text
-chat/
+harness
   -> ControllerProvider trait
   -> LmStudioProvider
   -> provider config chooses profile

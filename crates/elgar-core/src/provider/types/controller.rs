@@ -18,7 +18,7 @@ pub trait ControllerProvider {
     /// Creates a request id and provider/model labels for the next call.
     fn request_metadata(&self) -> ProviderRequestMetadata;
 
-    /// Creates metadata for a named request mode such as raw/plain chat.
+    /// Creates metadata for a named request mode such as harness decision or synthesis.
     fn request_metadata_for_mode(&self, _request_mode: &str) -> ProviderRequestMetadata {
         self.request_metadata()
     }
@@ -57,8 +57,8 @@ pub trait ControllerProvider {
 
     /// Sends a prompt with tool definitions.
     ///
-    /// Raw chat does not use this. The default rejects tool-enabled calls until
-    /// a provider explicitly implements them.
+    /// Providers that do not implement tool-enabled chat reject this method by
+    /// default.
     fn chat_with_tools_with_metadata(
         &self,
         _prompt: &str,
