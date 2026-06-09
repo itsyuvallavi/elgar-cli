@@ -19,7 +19,8 @@ It still rejects duplicate/no-op requests so the model cannot spin on the same
 tool action forever.
 The active executable primitives are `read`, `ls`, `find`, and `grep`.
 Primitive `bash`, `write`, and `edit` are declared for the future but are not
-executable until permissions are added.
+executable yet. Permission policy decisions are logged now, but approval prompts
+and side-effect execution are still future stages.
 The model can request one primitive or a small batch of primitive requests in a
 single provider call. Verified tool results are returned as `role:"tool"`
 messages. If a text fallback response is invalid before any evidence exists,
@@ -40,6 +41,8 @@ synthesis.
   hardcode backend-routing labels.
 - `tool_definitions.rs` converts executable primitive tools into
   OpenAI-compatible provider tool schemas.
+- `permissions/` decides whether a validated primitive may execute, needs
+  approval, or must be denied.
 - `context/` owns the currently executable read-only evidence collectors for
   `read`, `ls`, `find`, and `grep`.
 - `harness_loop/` owns bounded multi-round harness flows.
@@ -52,7 +55,7 @@ synthesis.
 
 Future harness stages should be added one primitive at a time:
 
-- permission gates
+- approval prompts
 - write/shell execution
 - bounded context
 - evidence compression

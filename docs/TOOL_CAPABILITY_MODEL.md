@@ -160,6 +160,7 @@ Near term:
 - Do not add `review_project` or any other hidden workflow.
 - Add tests that unknown primitive names are rejected.
 - Add tests that `read`, `ls`, `find`, and `grep` return bounded evidence.
+- Keep permission decisions explicit before enabling side-effect execution.
 - Keep fallback synthesis no-tool and evidence-only.
 
 Next primitive tool stages:

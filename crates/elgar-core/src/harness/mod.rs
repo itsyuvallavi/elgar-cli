@@ -8,6 +8,7 @@
 mod context;
 mod harness_loop;
 mod model_choice;
+mod permissions;
 mod primitive_tools;
 mod provider_route;
 mod tool_definitions;
@@ -41,6 +42,7 @@ pub use model_choice::{
     parse_model_choice_with_registry, EvidenceDepth, ModelChoice, ModelChoiceTurnError,
     StructuredRequestKind, StructuredRequestValidationError, ValidatedStructuredRequest,
 };
+pub use permissions::{decide_primitive_permission, PermissionDecision, PermissionDecisionKind};
 pub use primitive_tools::{
     PrimitiveTool, PrimitiveToolId, PrimitiveToolRegistry, PrimitiveToolSideEffectLevel,
 };

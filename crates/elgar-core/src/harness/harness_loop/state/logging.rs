@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::{
     harness::{
         harness_loop::{evidence::state::EvidencePromptStats, state::memory::HarnessWorkingMemory},
-        ModelChoice,
+        ModelChoice, PermissionDecision, ValidatedStructuredRequest,
     },
     logs::system::{append_log_event, LogInput, LogPhase},
     session::Session,
@@ -297,6 +297,34 @@ pub(in crate::harness::harness_loop) fn log_loop_evidence(
         .with_metadata(metadata.clone()),
     );
     session.log_harness_event("harness_tool_result_verified", metadata);
+}
+
+pub(in crate::harness::harness_loop) fn log_permission_decision(
+    session: &Session,
+    round_index: usize,
+    request: &ValidatedStructuredRequest,
+    decision: &PermissionDecision,
+) {
+    let metadata = json!({
+        "round_index": round_index,
+        "tool": request.kind.as_str(),
+        "decision": decision.kind.as_str(),
+        "reason": decision.reason.as_str(),
+        "execution_allowed": decision.allows_execution()
+    });
+    let _ = append_log_event(
+        &session.project_root,
+        &session.id,
+        LogInput::new(
+            session.next_turn_id(),
+            LogPhase::Runtime,
+            file!(),
+            "run_primitive_harness_loop",
+            "harness_permission_decision",
+        )
+        .with_metadata(metadata.clone()),
+    );
+    session.log_harness_event("harness_permission_decision", metadata);
 }
 
 pub(in crate::harness::harness_loop) fn log_harness_duplicate_rejected(

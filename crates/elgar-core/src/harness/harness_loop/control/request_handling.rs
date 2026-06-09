@@ -5,20 +5,23 @@
 
 use crate::{
     harness::{
+        decide_primitive_permission,
         harness_loop::{
             evidence::execution::{
                 error_evidence, evidence_key_for_request, execute_read_only_request,
+                permission_evidence,
             },
             state::{
                 budget::{BudgetCheck, PrimitiveLoopBudget, PrimitiveLoopBudgetState},
                 logging::{
                     log_harness_duplicate_rejected, log_harness_memory_snapshot, log_loop_evidence,
+                    log_permission_decision,
                 },
                 memory::HarnessWorkingMemory,
                 types::{Evidence, PrimitiveHarnessLoopRound},
             },
         },
-        ValidatedStructuredRequest,
+        PrimitiveToolRegistry, ValidatedStructuredRequest,
     },
     session::Session,
 };
@@ -36,6 +39,7 @@ pub(super) enum RequestHandlingOutcome {
 /// evidence immediately.
 pub(super) fn collect_request_evidence(
     session: &Session,
+    registry: &PrimitiveToolRegistry,
     request: &ValidatedStructuredRequest,
     round_index: usize,
     budget: &PrimitiveLoopBudget,
@@ -64,6 +68,22 @@ pub(super) fn collect_request_evidence(
                 return Ok(RequestHandlingOutcome::NoProgress);
             }
         },
+    }
+
+    let permission = decide_primitive_permission(registry, request);
+    log_permission_decision(session, round_index, request, &permission);
+    if !permission.allows_execution() {
+        let evidence_item = permission_evidence(key.as_label(), request, &permission);
+        log_loop_evidence(session, round_index, &evidence_item);
+        budget_state.record(&evidence_item);
+        log_harness_memory_snapshot(session, round_index, "permission_blocked", memory);
+        rounds.push(PrimitiveHarnessLoopRound {
+            round_index,
+            tool: Some(request.kind.as_str().to_string()),
+            evidence_label: Some(evidence_item.label.clone()),
+        });
+        evidence.push(evidence_item);
+        return Ok(RequestHandlingOutcome::UsefulEvidence);
     }
 
     let execution_result = execute_read_only_request(session, request);

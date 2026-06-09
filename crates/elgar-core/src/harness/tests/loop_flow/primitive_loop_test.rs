@@ -181,6 +181,36 @@ fn primitive_loop_native_second_duplicate_uses_synthesis_fallback() {
 }
 
 #[test]
+fn primitive_loop_risky_json_fallback_returns_permission_tool_result() {
+    let root =
+        std::env::temp_dir().join(format!("elgar-loop-permission-test-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let provider = QueuedProvider::new_outputs(vec![
+        ProviderOutput::new(
+            r#"{"type":"structured_request","kind":"bash","reason":"try shell","arguments":{"command":"echo hello"}}"#,
+        ),
+        ProviderOutput::new("Shell execution is not enabled yet."),
+    ]);
+    let mut session = Session::new("loop-permission-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "run echo hello").unwrap();
+    let calls = provider.calls.lock().expect("calls lock");
+    let tool_messages = tool_message_contents(&calls[1]);
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(
+        result.final_text.as_deref(),
+        Some("Shell execution is not enabled yet.")
+    );
+    assert!(tool_messages.iter().any(|content| {
+        content.contains("VERIFIED_PERMISSION_DECISION")
+            && content.contains("tool: bash")
+            && content.contains("decision: needs_approval")
+            && content.contains("execution_performed: false")
+    }));
+}
+
+#[test]
 fn primitive_loop_repeated_evidence_guides_model_to_next_request() {
     let root = std::env::temp_dir().join(format!("elgar-loop-repeat-test-{}", std::process::id()));
     fs::create_dir_all(root.join("app")).unwrap();

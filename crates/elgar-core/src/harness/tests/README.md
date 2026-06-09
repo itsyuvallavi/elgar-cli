@@ -7,4 +7,5 @@ Categorized tests for the harness rebuild layer.
 - `model_choice/` tests model-choice parsing, validation, and contracts.
 - `context/` tests read-only project context collectors.
 - `loop_flow/` tests primitive harness loop behavior.
+- `permissions/` tests risky primitive permission decisions.
 - `support/` stores shared test-only provider helpers.

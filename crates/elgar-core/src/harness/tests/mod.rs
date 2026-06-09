@@ -3,4 +3,5 @@
 mod context;
 mod loop_flow;
 mod model_choice;
+mod permissions;
 mod support;

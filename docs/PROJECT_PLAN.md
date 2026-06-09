@@ -35,6 +35,8 @@ Active:
 - Local logs exist under `.elgar/log/`.
 - The active harness exposes primitive read-only tools: `read`, `ls`, `find`,
   and `grep`.
+- Permission policy decisions exist for risky primitives, but approval prompts
+  and side-effect execution are not enabled yet.
 - The harness can batch multiple primitive read-only requests in one provider
   response through native tool calls, with JSON fallback still available.
 - Native tool results return to the provider as `role:"tool"` messages, and
@@ -46,7 +48,7 @@ Active:
 Paused or archived:
 
 - permissioned tool execution
-- permission policy
+- permission approval flow
 - shell execution
 - project planning
 - memory/context injection
@@ -71,9 +73,9 @@ The skeleton must not decide ordinary-language intent.
 Add features back slowly in this order:
 
 1. Stabilize the read-only primitive harness route.
-2. Permission gate.
-3. `bash` primitive.
-4. `write` and `edit` primitives.
+2. Permission approval flow.
+3. `bash` primitive execution.
+4. `write` and `edit` primitive execution.
 5. Bounded memory/context.
 6. Evidence compression.
 7. Planning.

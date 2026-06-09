@@ -11,7 +11,7 @@ use crate::{
     harness::{
         collect_directory_summary, collect_find_matches, collect_grep_matches,
         collect_project_file, DirectoryOptions, FindOptions, GrepOptions, ModelChoiceTurnError,
-        ProjectFileOptions, StructuredRequestKind, ValidatedStructuredRequest,
+        PermissionDecision, ProjectFileOptions, StructuredRequestKind, ValidatedStructuredRequest,
     },
     session::Session,
 };
@@ -149,6 +149,26 @@ pub(in crate::harness::harness_loop) fn evidence_key_for_request(
 pub(in crate::harness::harness_loop) fn error_evidence(label: String, error: &str) -> Evidence {
     let body = format!(
         "VERIFIED_EXECUTION_ERROR\nlabel: {label}\nerror: {error}\nfile_contents_read: false\n"
+    );
+    Evidence {
+        label,
+        bytes: body.len(),
+        truncated: false,
+        body,
+    }
+}
+
+/// Convert a blocked permission decision into verified evidence.
+pub(in crate::harness::harness_loop) fn permission_evidence(
+    label: String,
+    request: &ValidatedStructuredRequest,
+    decision: &PermissionDecision,
+) -> Evidence {
+    let body = format!(
+        "VERIFIED_PERMISSION_DECISION\ntool: {}\ndecision: {}\nreason: {}\nexecution_performed: false\n",
+        request.kind.as_str(),
+        decision.kind.as_str(),
+        decision.reason.as_str()
     );
     Evidence {
         label,
