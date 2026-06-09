@@ -14,5 +14,5 @@ Focused unit tests for active CLI helper modules.
 
 ## Ownership
 
-Keep these tests aligned with the active raw-chat CLI. Do not test archived tool,
+Keep these tests aligned with the active harness CLI. Do not test archived tool,
 policy, or old agent-runtime behavior here.

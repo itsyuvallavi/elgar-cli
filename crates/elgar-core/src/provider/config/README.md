@@ -15,5 +15,5 @@ session state.
 - `ProviderConfig` stores endpoint, model, timeout, streaming, compatibility,
   and request-mode settings.
 - `ProviderCompatibility` stores optional model/provider capability hints.
-- `request_profile_for_mode` chooses backend options such as native LM Studio
-  vs OpenAI-compatible chat for a named mode.
+- `request_profile_for_mode` chooses backend options for a named mode. Active
+  harness modes currently use OpenAI-compatible chat.

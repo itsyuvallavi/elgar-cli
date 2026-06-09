@@ -2,7 +2,7 @@
 
 use std::{fs, path::PathBuf};
 
-use elgar_core::provider::{ProviderBackendKind, ProviderReasoningLevel};
+use elgar_core::provider::ProviderBackendKind;
 
 use crate::{
     load_runtime_provider, render_cli_turn_from_runtime_config, RuntimeProviderConfigError,
@@ -76,18 +76,12 @@ fn runtime_provider_config_loads_compatibility_metadata() {
             "supports_developer_role": true
           },
           "request_modes": {
-            "plain_chat": {
-              "backend": "lm_studio_native_chat",
-              "reasoning": "off",
-              "context_length": 8000,
-              "stats": true
-            },
-            "chat_response": {
-              "backend": "lm_studio_native_chat",
-              "stats": true
-            },
-            "tool_enabled": {
+            "harness_tool_decision": {
               "backend": "openai_chat_completions"
+            },
+            "harness_synthesis": {
+              "backend": "openai_chat_completions",
+              "stats": true
             }
           }
         }"#,
@@ -110,18 +104,15 @@ fn runtime_provider_config_loads_compatibility_metadata() {
         runtime.config.compatibility.reasoning.stream_fields,
         vec!["reasoning_content", "thinking"]
     );
-    let plain = runtime.config.request_profile_for_mode("plain_chat");
-    assert_eq!(plain.backend, ProviderBackendKind::LmStudioNativeChat);
-    assert_eq!(plain.reasoning, Some(ProviderReasoningLevel::Off));
-    assert_eq!(plain.context_length, Some(8000));
-    assert_eq!(plain.stats, Some(true));
-    let chat_response = runtime.config.request_profile_for_mode("chat_response");
+    let synthesis = runtime.config.request_profile_for_mode("harness_synthesis");
     assert_eq!(
-        chat_response.backend,
-        ProviderBackendKind::LmStudioNativeChat
+        synthesis.backend,
+        ProviderBackendKind::OpenAiChatCompletions
     );
-    assert_eq!(chat_response.stats, Some(true));
-    let tool = runtime.config.request_profile_for_mode("tool_enabled");
+    assert_eq!(synthesis.stats, Some(true));
+    let tool = runtime
+        .config
+        .request_profile_for_mode("harness_tool_decision");
     assert_eq!(tool.backend, ProviderBackendKind::OpenAiChatCompletions);
 
     let _ = fs::remove_dir_all(root);

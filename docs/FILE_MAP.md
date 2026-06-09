@@ -18,7 +18,7 @@
 - provider connection logic
 - sessions/events
 - logs
-- current raw chat path
+- current harness path
 
 `crates/elgar-tui/`:
 
@@ -42,6 +42,8 @@
 - `docs/PROVIDER.md` explains LM Studio/provider config.
 - `docs/LOGGING.md` explains local logs.
 - `docs/TUI.md` explains the terminal UI.
+- `docs/TOOL_CAPABILITY_MODEL.md` explains the intended low-level capability
+  model for future agent tools.
 - `docs/agent/` contains agent instructions.
 - `docs/archive/` contains historical plans.
 - `docs/maps/` contains generated visual maps.

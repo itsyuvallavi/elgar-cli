@@ -84,8 +84,7 @@ pub(super) fn chat_lm_studio_with_request_id(
 
 /// Sends an OpenAI-compatible request with tool definitions.
 ///
-/// Raw chat does not call this today, but the provider still keeps this backend
-/// boundary for a future tool rebuild.
+/// Harness tool decisions use this OpenAI-compatible boundary.
 pub(super) fn chat_lm_studio_with_tools_with_request_id(
     config: &ProviderConfig,
     messages: Vec<ChatMessage>,
@@ -98,7 +97,7 @@ pub(super) fn chat_lm_studio_with_tools_with_request_id(
     config.stream = false;
     if matches!(
         profile.map(|profile| profile.backend),
-        Some(ProviderBackendKind::LmStudioNativeChat | ProviderBackendKind::OpenAiResponsesProbe)
+        Some(ProviderBackendKind::OpenAiResponsesProbe)
     ) {
         return Err(ProviderError::configuration(
             "tool-enabled requests require openai_chat_completions backend",
@@ -219,7 +218,7 @@ pub(super) fn chat_lm_studio_streaming_with_request_id(
     }
 }
 
-/// Removes native-only controls before using OpenAI-compatible chat.
+/// Keeps only controls represented by OpenAI-compatible chat requests.
 pub(super) fn openai_chat_profile(
     profile: Option<&ProviderRequestProfile>,
 ) -> Option<ProviderRequestProfile> {
@@ -282,8 +281,12 @@ fn metrics_for_openai_request(
         request.messages.len(),
         body_len,
     );
+    metrics.backend = Some(
+        profile
+            .map(|profile| profile.backend)
+            .unwrap_or(ProviderBackendKind::OpenAiChatCompletions),
+    );
     if let Some(profile) = profile {
-        metrics.backend = Some(profile.backend);
         metrics.reasoning = profile.reasoning;
         metrics.context_length = profile.context_length;
         metrics.stats = profile.stats;

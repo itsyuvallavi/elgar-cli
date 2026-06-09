@@ -1,13 +1,13 @@
 //! Minimal TUI shell state and event application.
 //!
 //! This file connects core session events to visible conversation, status, copy,
-//! and simple scripted/raw-chat flows.
+//! and simple scripted harness flows.
 
 use std::time::Instant;
 
 use elgar_core::{
-    chat::{run_raw_chat_turn, RawChatTurnResult},
     event::Event,
+    harness::{run_harness_turn, HarnessTurnResult},
     logs::system::{append_log_event, LogInput, LogPhase},
     provider::ControllerProvider,
     session::Session,
@@ -77,12 +77,12 @@ impl TuiShell {
         self.status.observe_event(event);
     }
 
-    pub fn submit_raw_chat_input<P>(
+    pub fn submit_harness_input<P>(
         &mut self,
         provider: &P,
         session: &mut Session,
         input: &str,
-    ) -> RawChatTurnResult
+    ) -> HarnessTurnResult
     where
         P: ControllerProvider,
     {
@@ -95,14 +95,14 @@ impl TuiShell {
                 turn_id,
                 LogPhase::Tui,
                 file!(),
-                "submit_raw_chat_input",
-                "tui_raw_chat_submitted",
+                "submit_harness_input",
+                "tui_harness_submitted",
             )
             .with_metadata(serde_json::json!({
                 "input_chars": input.chars().count()
             })),
         );
-        let result = run_raw_chat_turn(provider, session, input);
+        let result = run_harness_turn(provider, session, input);
         self.consume_events(&result.events);
         self.conversation.push_turn_metrics(
             duration_millis(started.elapsed()),
@@ -116,7 +116,7 @@ impl TuiShell {
                 turn_id,
                 LogPhase::Render,
                 file!(),
-                "submit_raw_chat_input",
+                "submit_harness_input",
                 "scripted_tui_render_finished",
             )
             .with_duration_ms(duration_millis(started.elapsed()))

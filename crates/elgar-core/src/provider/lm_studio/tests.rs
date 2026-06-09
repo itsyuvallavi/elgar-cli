@@ -1,8 +1,8 @@
 //! Active tests for the LM Studio provider.
 //!
-//! These tests cover the raw/no-tool provider path we still use: request
-//! formatting, native chat, OpenAI-compatible chat, parsing, streaming, usage,
-//! and local timeout behavior.
+//! These tests cover the no-tool provider path we still use: request
+//! formatting, OpenAI-compatible chat, parsing, streaming, usage, and local
+//! timeout behavior.
 
 use serde_json::json;
 use std::{
@@ -78,7 +78,7 @@ fn formats_opt_in_streaming_openai_compatible_chat_request() {
 }
 
 #[test]
-fn openai_compatible_request_omits_native_only_profile_fields() {
+fn openai_compatible_request_omits_non_openai_profile_fields() {
     let config = ProviderConfig::lm_studio("loaded-model");
     let profile = ProviderRequestProfile {
         backend: ProviderBackendKind::OpenAiChatCompletions,
@@ -481,79 +481,6 @@ fn non_streaming_message_request_overrides_streaming_config() {
     let request = receiver.recv().unwrap();
     assert!(request.contains(r#""stream":false"#));
     assert_eq!(output.metrics.unwrap().usage.unwrap().total_tokens, Some(7));
-}
-
-#[test]
-fn native_no_tool_profile_uses_lm_studio_native_chat_and_records_stats() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let (sender, receiver) = mpsc::channel();
-    let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0_u8; 8192];
-        let bytes_read = stream.read(&mut request).unwrap();
-        sender
-            .send(String::from_utf8_lossy(&request[..bytes_read]).to_string())
-            .unwrap();
-        stream
-            .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\
-                {\"output\":[{\"type\":\"reasoning\",\"content\":\"Need answer.\"},{\"type\":\"message\",\"content\":\"Build passed.\"}],\"stats\":{\"input_tokens\":10,\"total_output_tokens\":5,\"reasoning_output_tokens\":2,\"tokens_per_second\":50.5,\"time_to_first_token_seconds\":0.42}}",
-            )
-            .unwrap();
-    });
-
-    let mut config = ProviderConfig {
-        base_url: format!("http://127.0.0.1:{port}/v1"),
-        timeout_millis: 1_000,
-        ..ProviderConfig::lm_studio("loaded-model")
-    };
-    config.request_modes.insert(
-        "plain_chat".to_string(),
-        ProviderRequestProfile {
-            backend: ProviderBackendKind::LmStudioNativeChat,
-            stream: Some(false),
-            reasoning: Some(ProviderReasoningLevel::Off),
-            context_length: Some(8000),
-            stats: Some(true),
-            stateful: None,
-        },
-    );
-    let provider = LmStudioProvider::new(config);
-    let metadata = provider.request_metadata_for_mode("plain_chat");
-    let output = provider
-        .chat_messages_without_streaming_with_metadata(
-            vec![
-                ChatMessage::system("Answer briefly."),
-                ChatMessage::user("hello"),
-            ],
-            &metadata,
-        )
-        .unwrap();
-
-    server.join().unwrap();
-    let request = receiver.recv().unwrap();
-    assert!(request.starts_with("POST /api/v1/chat "));
-    assert!(request.contains(r#""model":"loaded-model""#));
-    assert!(request.contains(r#""input":"hello""#));
-    assert!(request.contains(r#""system_prompt":"Answer briefly.""#));
-    assert!(request.contains(r#""reasoning":"off""#));
-    assert!(request.contains(r#""context_length":8000"#));
-
-    assert_eq!(output.text, "Build passed.");
-    assert_eq!(output.thinking.as_deref(), Some("Need answer."));
-    let metrics = output.metrics.unwrap();
-    assert_eq!(
-        metrics.backend,
-        Some(ProviderBackendKind::LmStudioNativeChat)
-    );
-    assert_eq!(metrics.reasoning, Some(ProviderReasoningLevel::Off));
-    assert_eq!(metrics.context_length, Some(8000));
-    assert_eq!(metrics.stats, Some(true));
-    assert_eq!(metrics.provider_time_to_first_token_millis, Some(420));
-    assert_eq!(metrics.provider_tokens_per_second_milli, Some(50_500));
-    assert_eq!(metrics.reasoning_output_tokens, Some(2));
-    assert_eq!(metrics.usage.unwrap().total_tokens, Some(15));
 }
 
 #[test]

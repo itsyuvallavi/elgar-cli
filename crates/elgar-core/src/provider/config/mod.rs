@@ -1,8 +1,7 @@
 //! Provider configuration loaded by Elgar.
 //!
 //! This file owns static provider settings: local endpoint, model, timeouts,
-//! compatibility hints, and per-mode request profiles such as native vs
-//! OpenAI-compatible chat.
+//! compatibility hints, and per-mode request profiles.
 
 use std::collections::BTreeMap;
 

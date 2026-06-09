@@ -12,13 +12,6 @@ pub(crate) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
         "/clear" | "/new" => TerminalCommand::Clear,
         "/cancel" => TerminalCommand::Cancel,
         "/details" | "/details last" => TerminalCommand::DetailsLast,
-        "/raw" => TerminalCommand::Raw(""),
-        command if command.strip_prefix("/raw ").is_some() => TerminalCommand::Raw(
-            command
-                .strip_prefix("/raw ")
-                .map(str::trim)
-                .unwrap_or_default(),
-        ),
         "/copy" => TerminalCommand::Copy,
         "/copy raw" | "/copy details" => TerminalCommand::CopyRaw,
         "/exit" | "/quit" | "/q" => TerminalCommand::Exit,

@@ -10,7 +10,7 @@ use std::{
 };
 
 use elgar_core::{
-    chat::run_raw_chat_turn,
+    harness::run_harness_turn,
     provider::{LmStudioProvider, ProviderStub},
     renderer::render_session,
     session::Session,
@@ -49,7 +49,7 @@ pub fn render_cli_turn(
     let session_id = runtime_session_id("cli-smoke");
     let mut session = Session::new(&session_id, project_root.as_ref(), cwd.as_ref());
 
-    run_raw_chat_turn(&provider, &mut session, input);
+    run_harness_turn(&provider, &mut session, input);
     render_session(&session)
 }
 
@@ -83,7 +83,7 @@ pub fn render_cli_turn_from_runtime_config(
     let session_id = runtime_session_id("cli-runtime");
     let mut session = Session::new(&session_id, project_root_ref, cwd_ref);
 
-    run_raw_chat_turn(&provider, &mut session, input);
+    run_harness_turn(&provider, &mut session, input);
     Ok(render_session(&session))
 }
 

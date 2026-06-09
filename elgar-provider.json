@@ -1,7 +1,7 @@
 {
   "provider": "lm-studio",
   "base_url": "http://127.0.0.1:1234/v1",
-  "default_model": "qwen3.6-35b-a3b-mlx",
+  "default_model": "google/gemma-4-26b-a4b-qat",
   "context_window_tokens": 16000,
   "mode": "live",
   "connect_timeout_millis": 5000,
@@ -10,26 +10,13 @@
   "request_timeout_millis": 900000,
   "stream": true,
   "request_modes": {
-      "raw_chat": {
-        "backend": "lm_studio_native_chat",
-        "stats": true
-      },
-    "plain_chat": {
-      "backend": "lm_studio_native_chat",
+    "harness_tool_decision": {
+      "backend": "openai_chat_completions",
       "stats": true
     },
-    "chat_response": {
-      "backend": "lm_studio_native_chat",
+    "harness_synthesis": {
+      "backend": "openai_chat_completions",
       "stats": true
-    },
-    "tool_result_synthesis": {
-      "backend": "openai_chat_completions"
-    },
-    "project_review_synthesis": {
-      "backend": "openai_chat_completions"
-    },
-    "tool_enabled": {
-      "backend": "openai_chat_completions"
     }
   }
 }

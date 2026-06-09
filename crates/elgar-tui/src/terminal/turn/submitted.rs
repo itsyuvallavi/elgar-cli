@@ -1,7 +1,7 @@
 //! Handles submitted terminal input while the provider is idle.
 //!
-//! This file owns local slash-command execution and forwards plain text or
-//! `/raw` prompts into the provider-turn path.
+//! This file owns local slash-command execution and forwards plain text into
+//! the harness-controlled provider-turn path.
 
 use std::io;
 
@@ -16,15 +16,12 @@ use crate::{
         commands::{
             clear_terminal_conversation, clear_visible_terminal,
             copy_conversation_to_terminal_clipboard, copy_raw_details_to_terminal_clipboard,
-            parse_terminal_command, render_raw_usage, render_terminal_help, render_unknown_command,
-            TerminalCommand,
+            parse_terminal_command, render_terminal_help, render_unknown_command, TerminalCommand,
         },
         input::keymap::{
             normalize_terminal_provider_text_input, terminal_text_should_run_inline_provider_text,
         },
-        turn::provider::{
-            run_inline_provider_text_turn, run_inline_provider_turn, InlineProviderTurnKind,
-        },
+        turn::provider::run_inline_provider_text_turn,
         ui::render::{print_and_record_local, print_new_conversation_lines, print_plain_block},
     },
     TuiShell,
@@ -32,8 +29,8 @@ use crate::{
 
 /// Executes one submitted prompt while the provider is idle.
 ///
-/// Local slash commands are handled here. Plain text and `/raw` are forwarded
-/// to the raw-chat provider turn.
+/// Local slash commands are handled here. Plain text is forwarded to the
+/// harness-controlled provider turn.
 pub(crate) fn handle_inline_submission<P>(
     submitted: &str,
     provider: &P,
@@ -98,20 +95,6 @@ where
             print_new_conversation_lines(shell, before, false, false)?;
             Ok((false, String::new()))
         }
-        TerminalCommand::Raw(text) => {
-            if text.trim().is_empty() {
-                print_and_record_local(shell, render_raw_usage())?;
-                return Ok((false, String::new()));
-            }
-            let preserved_input = run_inline_provider_turn(
-                text,
-                provider,
-                session,
-                shell,
-                InlineProviderTurnKind::Raw,
-            )?;
-            Ok((false, preserved_input))
-        }
         TerminalCommand::Unknown(command) => {
             print_and_record_local(shell, render_unknown_command(command))?;
             Ok((false, String::new()))
@@ -139,7 +122,6 @@ fn terminal_command_name(command: &TerminalCommand<'_>) -> &'static str {
         TerminalCommand::CopyRaw => "copy_raw",
         TerminalCommand::Cancel => "cancel",
         TerminalCommand::DetailsLast => "details_last",
-        TerminalCommand::Raw(_) => "raw",
         TerminalCommand::Unknown(_) => "unknown",
         TerminalCommand::Text(_) => "plain_text",
     }

@@ -113,7 +113,7 @@ fn collapses_long_code_blocks_with_raw_details_hint() {
 }
 
 #[test]
-fn short_plain_chat_does_not_need_raw_details() {
+fn short_harness_answer_does_not_need_raw_details() {
     assert!(!assistant_markdown_has_hidden_details(
         "Hello! How can I help you today?"
     ));

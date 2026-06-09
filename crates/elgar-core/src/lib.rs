@@ -3,9 +3,9 @@
 //! Core owns provider communication, session/events, rendering helpers, token
 //! accounting, and local logs used by CLI/TUI surfaces.
 
-pub mod chat;
 pub mod context;
 pub mod event;
+pub mod harness;
 pub mod logs;
 pub mod provider;
 mod provider_visible;

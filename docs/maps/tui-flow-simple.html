@@ -309,9 +309,9 @@
         <div class="plain-card">
           <h3>Active now</h3>
           <ul>
-            <li><code>raw_chat.rs</code> sends normal messages with zero tools.</li>
-            <li><code>provider/lm_studio.rs</code> handles the no-tool LM Studio call.</li>
-            <li>Depending on config, no-tool calls can use OpenAI-compatible chat or LM Studio native chat.</li>
+            <li>The harness sends all active model calls through OpenAI-compatible LM Studio chat.</li>
+            <li><code>harness_tool_decision</code> exposes primitive tool schemas when evidence may be needed.</li>
+            <li><code>harness_synthesis</code> sends final no-tool synthesis through the same API backend.</li>
           </ul>
         </div>
         <div class="plain-card">

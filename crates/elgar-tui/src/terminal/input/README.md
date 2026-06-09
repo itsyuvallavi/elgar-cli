@@ -16,7 +16,7 @@ This folder owns text input before it becomes a model request or a local command
 
 Input code should not call the provider and should not render conversation output.
 
-Terminal raw mode is not raw chat:
+Terminal raw mode is not model routing:
 
 - terminal raw mode lets Elgar read keys directly.
-- raw chat sends text to the model without tools.
+- model routing happens through the core harness.

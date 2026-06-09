@@ -1615,6 +1615,94 @@ Known limitation:
 - Qwen still may spend tens of seconds in the final no-tool synthesis request. This pass fixes incorrect loop/synthesis behavior and protocol leakage; it does not solve model-side reasoning latency.
 ```
 
+### Harness short-term memory phase 1
+
+Status: `In Progress`
+Linear sync: `Needs Linear`
+Target team: `Elgar`
+Linear issue: `ELG-324`
+
+Issue title:
+
+Harness short-term memory: normalize duplicate primitive keys and stop duplicate loops
+
+Issue description:
+
+The read-only primitive harness currently depends too much on the model remembering which tools have already been used in the same turn. Live `review the project` runs showed repeated `ls .` and low-value duplicate/no-op requests. Short-term harness memory now logs same-turn inspected paths and duplicate requests, but the next phase should make duplicate handling stricter and normalized.
+
+Update/comment:
+
+Planned Phase 1 for short-term harness memory:
+
+- Keep `HarnessWorkingMemory` as one-turn runtime memory owned by Elgar, not the provider.
+- Normalize duplicate keys before storing/checking:
+  - `./package.json` equals `package.json`
+  - `app/../package.json` equals `package.json`
+  - repeated slashes collapse
+  - absolute paths are preserved safely after existing runtime validation
+- Add duplicate stop guard:
+  - after 2 duplicate/no-op requests in one turn, stop with `duplicate_loop_detected`
+  - synthesize from verified evidence
+- Add tests for normalized duplicates and duplicate-loop stop.
+- Keep memory prompt compact:
+  - already listed paths
+  - already read files
+  - already used find patterns
+  - already used grep queries
+  - duplicate/no-op requests
+- Do not inject full JSONL or full evidence into decision calls.
+- Keep full evidence only for synthesis/logs/details.
+
+Acceptance criteria:
+
+- `ls .` repeated is blocked as duplicate.
+- `ls ./` and `ls .` are treated as the same.
+- `read ./package.json` and `read package.json` are treated as the same.
+- duplicates do not become evidence.
+- duplicates do not consume evidence budget.
+- after repeated duplicates, Elgar synthesizes with `duplicate_loop_detected`.
+- no natural-language trigger tables.
+- no macro tools.
+- model still chooses primitive tools.
+
+Pre-mortem / mitigation:
+
+- Risk: path normalization escapes project scope.
+  Mitigation: normalization is for duplicate keys only; actual execution still uses existing path validation.
+- Risk: valid repeated checks are blocked later.
+  Mitigation: same-turn only; memory resets between user turns.
+- Risk: stopping after duplicates reduces reliability.
+  Mitigation: synthesize from verified evidence and log `duplicate_loop_detected`.
+- Risk: prompt grows.
+  Mitigation: compact memory only; no full JSONL in decision calls.
+
+Files likely changed:
+
+- `crates/elgar-core/src/harness/harness_loop/state/types.rs`
+- `crates/elgar-core/src/harness/harness_loop/evidence/execution.rs`
+- `crates/elgar-core/src/harness/harness_loop/state/budget.rs`
+- `crates/elgar-core/src/harness/harness_loop/state/memory.rs`
+- `crates/elgar-core/src/harness/harness_loop/control/request_handling.rs`
+- `crates/elgar-core/src/harness/harness_loop/state/logging.rs`
+- `crates/elgar-core/src/harness/tests/loop_flow/primitive_loop_test.rs`
+- `docs/HARNESS_SHORT_TERM_MEMORY.md`
+- `crates/elgar-core/src/harness/harness_loop/state/README.md`
+
+Verification planned:
+
+- `cargo fmt --check`
+- `cargo test -p elgar-core harness::tests::loop_flow -- --nocapture`
+- `cargo test -p elgar-core harness`
+- live repeated prompt test from `playground/Nextjs-1`:
+  - `elgar "review the project"`
+  - verify `harness_memory_snapshot`, `duplicate_loop_detected`, and no duplicate evidence items
+
+Known limitations:
+
+- This does not implement long-term memory.
+- This does not solve model-side reasoning latency.
+- This does not add macro review tools or hardcoded project-review routing.
+
 ## Entry Template
 
 ```text

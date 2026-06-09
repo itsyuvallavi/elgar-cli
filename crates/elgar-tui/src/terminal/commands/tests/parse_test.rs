@@ -21,11 +21,14 @@ fn parses_local_commands() {
 }
 
 #[test]
-fn parses_raw_and_plain_text() {
-    assert_eq!(parse_terminal_command("/raw"), TerminalCommand::Raw(""));
+fn parses_plain_text_and_unknown_slash_commands() {
+    assert_eq!(
+        parse_terminal_command("/raw"),
+        TerminalCommand::Unknown("/raw")
+    );
     assert_eq!(
         parse_terminal_command(" /raw hello "),
-        TerminalCommand::Raw("hello")
+        TerminalCommand::Unknown("/raw hello")
     );
     assert_eq!(
         parse_terminal_command("raw hello"),

@@ -1,6 +1,6 @@
 //! Shared provider vocabulary.
 //!
-//! This folder describes the contract between raw chat, the TUI, tests, and
+//! This folder describes the contract between the harness, the TUI, tests, and
 //! concrete providers such as LM Studio.
 
 mod chat;

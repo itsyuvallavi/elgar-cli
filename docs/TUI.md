@@ -20,7 +20,7 @@ elgar
 terminal key input
 -> input buffer
 -> slash command check
--> raw chat provider turn or local command
+-> harness provider turn or local command
 -> render conversation
 ```
 

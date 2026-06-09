@@ -9,13 +9,21 @@ Implementation files for CLI command dispatch, startup, diagnostics, and tests.
 - `main.rs` is the binary entrypoint for the `elgar` command.
 - `lib.rs` re-exports CLI helper modules and owns the simple single-turn CLI render path.
 - `startup/` holds the real launch path: path resolution, provider config, and TUI startup.
-- `diagnostics/` holds support commands: provider smoke and scripted TUI.
+- `diagnostics/` holds support commands: provider smoke, log viewing, and scripted TUI.
 - `tests/` holds focused unit tests for the active CLI helper modules.
-- `_legacy/` holds archived CLI code that is not part of the active raw-chat path.
+- `_legacy/` holds archived CLI code that is not part of the active harness path.
 
 ## Ownership
 
 Keep argument parsing, config lookup, and process IO here. Model/provider behavior belongs in `elgar-core`; terminal rendering belongs in `elgar-tui`.
+
+## Active Commands
+
+- `elgar` launches the interactive terminal TUI when stdin/stdout are terminals.
+- `elgar tui-terminal` explicitly launches the interactive terminal TUI.
+- `elgar tui` runs the line-based scripted TUI for tests/scripts.
+- `elgar provider-smoke` sends one direct provider smoke request.
+- `elgar logs latest` prints the latest system-log turn summary.
 
 ## Checks
 

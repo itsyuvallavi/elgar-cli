@@ -4,7 +4,7 @@
 //! and provider loading state.
 
 use elgar_core::{
-    event::{AssistantMessageSource, Event, ProviderFinished},
+    event::{AssistantMessageSource, Event, ProviderFinished, ProviderStarted},
     token_accounting::ProviderTokenUsage,
 };
 
@@ -22,14 +22,27 @@ pub struct ConversationPane {
     pub(super) scrollback: ConversationScrollback,
     pub(super) loading_pulse: ThinkingPulse,
     pub(super) raw_details: Vec<String>,
+    hidden_provider_reasoning_request_ids: Vec<String>,
 }
 
 impl ConversationPane {
     /// Apply one core event to the visible conversation pane.
     pub fn push_event(&mut self, event: &Event) {
         match event {
-            Event::ProviderStarted(_) => self.loading_pulse.reset(),
-            Event::ProviderFinished(_) | Event::Error(_) => self.remove_loading_pulse(),
+            Event::ProviderStarted(started) => {
+                self.loading_pulse.reset();
+                if provider_reasoning_should_stay_hidden(started) {
+                    self.hidden_provider_reasoning_request_ids
+                        .push(started.request_id.clone());
+                }
+            }
+            Event::ProviderFinished(finished) => {
+                self.remove_loading_pulse();
+                if self.should_hide_provider_reasoning(finished) {
+                    return;
+                }
+            }
+            Event::Error(_) => self.remove_loading_pulse(),
             _ => {}
         }
 
@@ -72,6 +85,7 @@ impl ConversationPane {
         self.scrollback.follow_latest();
         self.loading_pulse.reset();
         self.raw_details.clear();
+        self.hidden_provider_reasoning_request_ids.clear();
     }
 
     pub(crate) fn scroll_offset_for_lines(
@@ -196,6 +210,26 @@ impl ConversationPane {
             self.push_line(line, ConversationLineStyle::Metrics);
         }
     }
+
+    fn should_hide_provider_reasoning(&mut self, finished: &ProviderFinished) -> bool {
+        let Some(index) = self
+            .hidden_provider_reasoning_request_ids
+            .iter()
+            .position(|request_id| request_id == &finished.request_id)
+        else {
+            return false;
+        };
+
+        self.hidden_provider_reasoning_request_ids.remove(index);
+        true
+    }
+}
+
+fn provider_reasoning_should_stay_hidden(started: &ProviderStarted) -> bool {
+    matches!(
+        started.request_mode.as_deref(),
+        Some("harness_tool_decision" | "harness_synthesis")
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -243,5 +277,85 @@ impl ThinkingPulse {
 
     pub(super) fn reset(&mut self) {
         self.index = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use elgar_core::event::{
+        AssistantMessage, AssistantMessageSource, Event, ProviderFinished, ProviderOutput,
+        ProviderStarted,
+    };
+
+    use super::ConversationPane;
+
+    #[test]
+    fn hides_harness_provider_reasoning_from_visible_conversation() {
+        let mut pane = ConversationPane::default();
+        pane.push_event(&Event::ProviderStarted(
+            ProviderStarted::new("lm-studio", "decision-1").with_request_details(
+                Some("qwen".to_string()),
+                "harness_tool_decision",
+                0,
+            ),
+        ));
+        pane.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "decision-1",
+            ProviderOutput::new("")
+                .with_thinking(r#"{"type":"structured_requests","requests":[]}"#),
+        )));
+
+        assert!(!pane.render_body().contains("structured_requests"));
+    }
+
+    #[test]
+    fn keeps_final_assistant_message_visible_after_hidden_decision() {
+        let mut pane = ConversationPane::default();
+        pane.push_event(&Event::ProviderStarted(
+            ProviderStarted::new("lm-studio", "decision-1").with_request_details(
+                Some("qwen".to_string()),
+                "harness_tool_decision",
+                0,
+            ),
+        ));
+        pane.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "decision-1",
+            ProviderOutput::new("")
+                .with_thinking(r#"{"type":"structured_requests","requests":[]}"#),
+        )));
+        pane.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "Final answer",
+            AssistantMessageSource::Provider,
+        )));
+
+        assert!(pane.render_body().contains("Final answer"));
+        assert!(!pane.render_body().contains("structured_requests"));
+    }
+
+    #[test]
+    fn hides_harness_synthesis_provider_reasoning_from_visible_conversation() {
+        let mut pane = ConversationPane::default();
+        pane.push_event(&Event::ProviderStarted(
+            ProviderStarted::new("lm-studio", "synthesis-1").with_request_details(
+                Some("qwen".to_string()),
+                "harness_synthesis",
+                0,
+            ),
+        ));
+        pane.push_event(&Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "synthesis-1",
+            ProviderOutput::new("Final answer")
+                .with_thinking(r#"{"type":"structured_requests","requests":[]}"#),
+        )));
+        pane.push_event(&Event::AssistantMessage(AssistantMessage::new(
+            "Final answer",
+            AssistantMessageSource::Provider,
+        )));
+
+        assert!(pane.render_body().contains("Final answer"));
+        assert!(!pane.render_body().contains("structured_requests"));
     }
 }

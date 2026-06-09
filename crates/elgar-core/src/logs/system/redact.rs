@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn redacts_sensitive_keys_recursively() {
         let value = json!({
-            "request_mode": "raw_chat",
+            "request_mode": "harness_tool_decision",
             "prompt": "hello",
             "nested": {
                 "thinking": "private"
@@ -77,7 +77,7 @@ mod tests {
 
         let redacted = redact_value(value);
 
-        assert_eq!(redacted["request_mode"], "raw_chat");
+        assert_eq!(redacted["request_mode"], "harness_tool_decision");
         assert_eq!(redacted["prompt"], "[redacted]");
         assert_eq!(redacted["nested"]["thinking"], "[redacted]");
     }

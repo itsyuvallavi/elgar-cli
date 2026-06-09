@@ -99,6 +99,21 @@ impl Session {
         self.events.push(event);
     }
 
+    /// Records durable harness facts in the session JSONL log.
+    ///
+    /// These entries are compact memory/audit facts, not full prompts or raw
+    /// evidence bodies.
+    pub(crate) fn log_harness_event(&self, kind: impl Into<String>, metadata: serde_json::Value) {
+        let turn_index = self.next_turn_id().saturating_sub(1);
+        let _ = sessions::append_session_event(
+            &self.project_root,
+            &self.id,
+            turn_index,
+            kind,
+            metadata,
+        );
+    }
+
     pub(crate) fn record_provider_metrics(&mut self, metrics: &ProviderMetrics) {
         if let Some(metadata) = self.provider_metadata.as_mut() {
             metadata.model = metrics.model.clone();

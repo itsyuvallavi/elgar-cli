@@ -11,12 +11,15 @@ request, send it, and turn the provider response back into Elgar data?
 chat/
   -> ControllerProvider trait
   -> LmStudioProvider
-  -> provider config chooses backend/profile
-  -> lm_studio/native.rs or lm_studio/openai.rs
+  -> provider config chooses profile
+  -> lm_studio/openai.rs
   -> http/
   -> lm_studio/parse.rs
   -> ProviderOutput
 ```
+
+Active harness request modes use OpenAI-compatible chat to keep one provider
+route.
 
 ## Folders
 
@@ -26,10 +29,10 @@ chat/
 
 - `config/` - provider settings:
   local endpoint, model name, timeouts, compatibility flags, and named request
-  profiles such as native vs OpenAI-compatible chat.
+  profiles.
 
 - `lm_studio/` - live LM Studio provider:
-  chooses the backend, formats requests, sends native/OpenAI-compatible calls,
+  formats requests, sends OpenAI-compatible calls for active harness modes,
   parses responses, and exposes `LmStudioProvider`.
 
 - `http/` - tiny local HTTP helper:

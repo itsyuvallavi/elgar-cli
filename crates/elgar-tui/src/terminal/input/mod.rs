@@ -1,7 +1,7 @@
 //! Terminal input modules.
 //!
 //! This folder owns keyboard mapping, paste cleanup, and terminal raw-mode
-//! prompt reading. Terminal raw mode is not raw chat.
+//! prompt reading. Terminal raw mode is keyboard IO, not model routing.
 
 pub(super) mod keymap;
 pub(super) mod normalization;

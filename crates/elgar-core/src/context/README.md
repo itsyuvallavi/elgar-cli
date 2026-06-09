@@ -13,8 +13,8 @@ Files:
 - `loading.rs` finds local files and memory notes.
 - `budget.rs` owns rough token estimates, context budget, and trimming.
 
-Current raw chat mostly bypasses this. Future full chat may use it when we add
-context-aware turns.
+The active harness currently sends only verified primitive evidence. Future
+harness stages may use this folder when we add broader context-aware turns.
 
 Overlap note:
 

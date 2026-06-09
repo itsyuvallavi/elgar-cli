@@ -10,7 +10,7 @@ mod tests;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    provider::{ProviderBackendKind, ProviderReasoningLevel},
+    provider::{ChatToolCall, ProviderBackendKind, ProviderReasoningLevel},
     token_accounting::ProviderTokenUsage,
 };
 
@@ -166,6 +166,8 @@ impl ProviderFinished {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderOutput {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ChatToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,9 +178,15 @@ impl ProviderOutput {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            tool_calls: Vec::new(),
             thinking: None,
             metrics: None,
         }
+    }
+
+    pub fn with_tool_calls(mut self, tool_calls: Vec<ChatToolCall>) -> Self {
+        self.tool_calls = tool_calls;
+        self
     }
 
     pub fn with_thinking(mut self, thinking: impl Into<String>) -> Self {

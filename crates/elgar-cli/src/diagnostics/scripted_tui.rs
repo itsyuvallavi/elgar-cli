@@ -91,14 +91,6 @@ pub fn tui_tool_command_argument(input: &str) -> Option<&str> {
     None
 }
 
-pub fn tui_raw_command_argument(input: &str) -> Option<&str> {
-    let trimmed = input.trim();
-    if trimmed == "/raw" {
-        return Some("");
-    }
-    trimmed.strip_prefix("/raw ").map(str::trim)
-}
-
 pub fn tui_permission_command_argument(input: &str) -> Option<Option<&str>> {
     let _ = input;
     None
@@ -124,7 +116,6 @@ pub fn tui_unknown_command(input: &str) -> Option<&str> {
         || is_tui_details_command(trimmed)
         || is_tui_clear_command(trimmed)
         || is_tui_cancel_command(trimmed)
-        || tui_raw_command_argument(trimmed).is_some()
     {
         None
     } else {
@@ -139,11 +130,7 @@ pub fn render_tui_unknown_command(command: &str) -> String {
 }
 
 pub fn render_tui_tool_usage() -> &'static str {
-    "Unknown command: /tool\nPlain text now sends one raw provider request."
-}
-
-pub fn render_tui_raw_usage() -> &'static str {
-    "Usage: /raw <prompt>\nExample: /raw hello"
+    "Unknown command: /tool\nPlain text now sends one harness-controlled model turn."
 }
 
 /// Applies one submitted scripted input to the shell/session.
@@ -159,22 +146,16 @@ fn submit_tui_input<P>(
         shell.push_local_message("No active provider turn to cancel.");
     } else if is_tui_details_command(input) {
         shell.push_latest_raw_details();
-    } else if let Some(raw_prompt) = tui_raw_command_argument(input) {
-        if raw_prompt.is_empty() {
-            shell.push_local_message(render_tui_raw_usage());
-        } else {
-            shell.submit_raw_chat_input(provider, session, raw_prompt);
-        }
     } else if let Some(command) = tui_unknown_command(input) {
         shell.push_local_message(render_tui_unknown_command(command));
     } else {
-        shell.submit_raw_chat_input(provider, session, input);
+        shell.submit_harness_input(provider, session, input);
     }
 }
 
 /// Renders the local help text for scripted TUI commands.
 pub fn render_tui_help() -> &'static str {
-    "Commands\nChat\n  plain text           Send one no-tools provider request\n  /raw <prompt>        Send one no-tools provider request\n  /cancel              Cancel the active provider turn\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /details last        Show latest raw hidden details\n  /copy                Copy the conversation\n  /copy raw            Copy raw hidden details\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
+    "Commands\nChat\n  plain text           Send one harness-controlled model turn\n  /cancel              Cancel the active provider turn\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /details last        Show latest hidden details\n  /copy                Copy the conversation\n  /copy raw            Copy hidden details\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
 }
 
 /// Runs scripted inputs against the stub provider and returns the transcript.

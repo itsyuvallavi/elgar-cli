@@ -4,8 +4,6 @@
 
 use serde_json::json;
 
-use crate::provider::ProviderReasoningLevel;
-
 use super::{
     ProviderBackendKind, ProviderConfig, LM_STUDIO_DEFAULT_BASE_URL,
     LM_STUDIO_DEFAULT_TIMEOUT_MILLIS, LM_STUDIO_PROVIDER_NAME,
@@ -135,43 +133,26 @@ fn provider_config_deserializes_request_mode_profiles() {
     let config: ProviderConfig = serde_json::from_value(json!({
         "model": "local-model",
         "request_modes": {
-            "plain_chat": {
-                "backend": "lm_studio_native_chat",
-                "reasoning": "off",
-                "context_length": 8000,
+            "harness_synthesis": {
+                "backend": "openai_chat_completions",
                 "stats": true
             },
-            "chat_response": {
-                "backend": "lm_studio_native_chat",
-                "stats": true
-            },
-            "tool_result_synthesis": {
-                "backend": "lm_studio_native_chat",
-                "reasoning": "low"
-            },
-            "tool_enabled": {
+            "harness_tool_decision": {
                 "backend": "openai_chat_completions"
             }
         }
     }))
     .unwrap();
 
-    let plain = config.request_profile_for_mode("plain_chat");
-    assert_eq!(plain.backend, ProviderBackendKind::LmStudioNativeChat);
-    assert_eq!(plain.reasoning, Some(ProviderReasoningLevel::Off));
-    assert_eq!(plain.context_length, Some(8000));
-    assert_eq!(plain.stats, Some(true));
-
-    let chat_response = config.request_profile_for_mode("chat_response");
+    let synthesis = config.request_profile_for_mode("harness_synthesis");
     assert_eq!(
-        chat_response.backend,
-        ProviderBackendKind::LmStudioNativeChat
+        synthesis.backend,
+        ProviderBackendKind::OpenAiChatCompletions
     );
-    assert_eq!(chat_response.stats, Some(true));
+    assert_eq!(synthesis.stats, Some(true));
 
-    let synthesis = config.request_profile_for_mode("tool_result_synthesis");
-    assert_eq!(synthesis.backend, ProviderBackendKind::LmStudioNativeChat);
-    assert_eq!(synthesis.reasoning, Some(ProviderReasoningLevel::Low));
+    let tool = config.request_profile_for_mode("harness_tool_decision");
+    assert_eq!(tool.backend, ProviderBackendKind::OpenAiChatCompletions);
 
     let missing = config.request_profile_for_mode("missing_mode");
     assert_eq!(missing.backend, ProviderBackendKind::OpenAiChatCompletions);

@@ -1,7 +1,7 @@
-//! Runs provider turns outside the terminal input loop.
+//! Runs harness turns outside the terminal input loop.
 //!
 //! The TUI stays responsive while this file owns the background worker thread
-//! that calls core raw chat and sends completion updates back to `provider.rs`.
+//! that calls the core harness and sends completion updates back to `provider.rs`.
 
 use std::{
     sync::{
@@ -12,8 +12,8 @@ use std::{
 };
 
 use elgar_core::{
-    chat::run_raw_chat_turn,
     event::Event,
+    harness::run_harness_turn,
     logs::system::{append_log_event, LogInput, LogPhase},
     provider::ControllerProvider,
     session::Session,
@@ -64,7 +64,7 @@ pub(super) struct CompletedProviderTurn {
     pub(super) events: Vec<Event>,
 }
 
-pub(super) fn start_raw_chat_turn<P>(
+pub(super) fn start_harness_turn<P>(
     provider: P,
     mut session: Session,
     input: String,
@@ -83,7 +83,7 @@ where
             turn_id,
             LogPhase::Worker,
             file!(),
-            "start_raw_chat_turn",
+            "start_harness_turn",
             "provider_worker_spawned",
         )
         .with_metadata(serde_json::json!({
@@ -100,11 +100,11 @@ where
                 turn_id,
                 LogPhase::Worker,
                 file!(),
-                "start_raw_chat_turn",
+                "start_harness_turn",
                 "provider_worker_started",
             ),
         );
-        let result = run_raw_chat_turn(&provider, &mut session, &input);
+        let result = run_harness_turn(&provider, &mut session, &input);
         if worker_canceled.load(Ordering::SeqCst) {
             let _ = append_log_event(
                 &session.project_root,
@@ -113,7 +113,7 @@ where
                     turn_id,
                     LogPhase::Worker,
                     file!(),
-                    "start_raw_chat_turn",
+                    "start_harness_turn",
                     "provider_worker_canceled",
                 )
                 .with_duration_ms(worker_started.elapsed().as_millis() as u64),
@@ -127,7 +127,7 @@ where
                 turn_id,
                 LogPhase::Worker,
                 file!(),
-                "start_raw_chat_turn",
+                "start_harness_turn",
                 "provider_worker_finished",
             )
             .with_duration_ms(worker_started.elapsed().as_millis() as u64)

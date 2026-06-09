@@ -43,6 +43,19 @@ fn main() {
         }
         return;
     }
+    if elgar_cli::is_logs_latest_command(&args) {
+        log::info!("running logs latest diagnostic");
+        let paths = elgar_cli::RuntimePaths::from_current_dir();
+        match elgar_cli::render_logs_latest_from_args(&args, &paths.project_root) {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                log::error!("logs latest failed: {error}");
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args
         .first()
         .is_some_and(|arg| arg == elgar_cli::TUI_COMMAND)

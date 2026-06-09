@@ -3,8 +3,7 @@
 //! Entering raw mode lets Elgar read keys directly. Dropping this guard returns
 //! the terminal to normal shell behavior.
 //!
-//! This is terminal raw mode, not raw chat. Raw chat is the model path that
-//! sends text without tools.
+//! This is terminal raw mode, not model routing. It only controls keyboard IO.
 
 use std::io::{self, Write};
 

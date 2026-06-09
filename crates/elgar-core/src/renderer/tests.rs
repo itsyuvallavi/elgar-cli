@@ -10,7 +10,7 @@ use crate::{
 };
 
 #[test]
-fn renders_current_raw_chat_event_shapes() {
+fn renders_current_harness_event_shapes() {
     assert_eq!(
         render_event(&Event::UserMessage(UserMessage::new("hello"))),
         "user: hello"
@@ -25,12 +25,12 @@ fn renders_current_raw_chat_event_shapes() {
 
     let started = ProviderStarted::new("lm-studio", "request-1").with_request_details(
         Some("qwen".to_string()),
-        "raw_chat",
-        0,
+        "harness_tool_decision",
+        4,
     );
     assert_eq!(
         render_event(&Event::ProviderStarted(started)),
-        "provider started: lm-studio request request-1 model qwen mode raw_chat tools 0"
+        "provider started: lm-studio request request-1 model qwen mode harness_tool_decision tools 4"
     );
 
     assert_eq!(

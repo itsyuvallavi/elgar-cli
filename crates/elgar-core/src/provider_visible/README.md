@@ -10,5 +10,5 @@ returned by a provider:
 - removes chat-template channel markers
 - drops raw tool protocol text
 
-This protects the raw chat path from showing internal protocol fragments as a
-normal answer.
+This protects visible assistant output from showing internal protocol fragments
+as a normal answer.

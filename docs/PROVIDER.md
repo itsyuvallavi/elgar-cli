@@ -67,6 +67,7 @@ ELGAR_LM_STUDIO_BASE_URL
 
 ## Notes
 
-LM Studio can expose different backend formats. Current raw chat may use native
-or OpenAI-compatible no-tool chat depending on provider config. Tool-capable
-provider code can exist, but tool execution is not active in the raw baseline.
+Active harness modes use OpenAI-compatible chat, giving provider behavior one
+supported LM Studio HTTP path.
+Tool-capable provider code can exist, but permissioned execution is not active
+yet.

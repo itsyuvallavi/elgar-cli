@@ -1,6 +1,6 @@
 //! Provider backend and request-mode profile types.
 //!
-//! Profiles let config select native vs OpenAI-compatible chat and optional
+//! Profiles let config select an OpenAI-compatible request mode and optional
 //! controls like reasoning level, context length, stats, and streaming.
 
 use serde::{Deserialize, Serialize};
@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderBackendKind {
     #[serde(rename = "openai_chat_completions")]
     OpenAiChatCompletions,
-    #[serde(rename = "lm_studio_native_chat")]
-    LmStudioNativeChat,
     #[serde(rename = "openai_responses_probe")]
     OpenAiResponsesProbe,
 }

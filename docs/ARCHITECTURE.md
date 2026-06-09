@@ -17,26 +17,31 @@ elgar
 -> crates/elgar-cli/src/main.rs
 -> elgar-cli/src/startup/
 -> elgar-tui
--> elgar-core chat/provider/session
+-> elgar-core harness/provider/session
 ```
 
 `elgar-core` does not start the app. It is the reusable engine used by CLI,
 TUI, tests, and future surfaces.
 
-## Raw Chat Flow
+## Harness Flow
 
 ```text
 terminal input
 -> TUI input handling
--> core chat turn
--> provider request with no tools
--> provider output
+-> core harness turn
+-> model chooses primitive evidence or answers
+-> runtime validates and executes read-only primitives
+-> provider synthesis/output
 -> session events
 -> TUI renders visible text
 ```
 
-Current plain chat must not attach tools, inject memory, run folder anchoring,
-or make a second synthesis request.
+Current plain chat must not bypass the harness, use macro tools, inject memory,
+or run folder anchoring.
+
+The target harness direction is the native provider tool loop documented in
+`NATIVE_TOOL_LOOP.md`: native `tool_calls` first, Rust validation/execution,
+provider `tool` result messages, then final text as the normal loop end.
 
 ## Crate Responsibilities
 
@@ -58,7 +63,7 @@ or make a second synthesis request.
 `elgar-core`:
 
 - provider types and requests
-- chat turn execution
+- harness turn execution
 - sessions and events
 - token/context accounting
 - logs
@@ -66,10 +71,9 @@ or make a second synthesis request.
 
 ## Current Slash Commands
 
-Current raw-only local commands include:
+Current local commands include:
 
 ```text
-/raw <prompt>
 /cancel
 /clear
 /new

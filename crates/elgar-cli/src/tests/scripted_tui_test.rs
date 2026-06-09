@@ -5,8 +5,8 @@ use std::fs;
 use crate::{
     is_tui_cancel_command, is_tui_clear_command, is_tui_copy_command, is_tui_copy_raw_command,
     is_tui_details_command, is_tui_exit_command, is_tui_help_command, render_tui_help,
-    render_tui_script, run_tui_loop, should_launch_terminal_tui_by_default,
-    tui_raw_command_argument, tui_unknown_command, TUI_COMMAND, TUI_TERMINAL_COMMAND,
+    render_tui_script, run_tui_loop, should_launch_terminal_tui_by_default, tui_unknown_command,
+    TUI_COMMAND, TUI_TERMINAL_COMMAND,
 };
 
 #[test]
@@ -48,23 +48,11 @@ fn tui_supported_commands_are_explicit() {
 }
 
 #[test]
-fn tui_raw_command_is_explicit() {
-    assert_eq!(tui_raw_command_argument("/raw"), Some(""));
-    assert_eq!(tui_raw_command_argument("/raw hello"), Some("hello"));
-    assert_eq!(
-        tui_raw_command_argument(" /raw explain this simply "),
-        Some("explain this simply")
-    );
-    assert_eq!(tui_raw_command_argument("raw hello"), None);
-    assert_eq!(tui_raw_command_argument("hello"), None);
-}
-
-#[test]
 fn tui_unknown_slash_command_is_local() {
     assert_eq!(tui_unknown_command("/model"), Some("/model"));
     assert_eq!(tui_unknown_command(" /settings "), Some("/settings"));
     assert_eq!(tui_unknown_command("/help"), None);
-    assert_eq!(tui_unknown_command("/raw hello"), None);
+    assert_eq!(tui_unknown_command("/raw hello"), Some("/raw hello"));
     assert_eq!(tui_unknown_command("/details last"), None);
     assert_eq!(tui_unknown_command("/copy raw"), None);
     assert_eq!(tui_unknown_command("model"), None);
@@ -75,10 +63,11 @@ fn tui_help_lists_supported_local_commands() {
     let help = render_tui_help();
 
     assert!(help.starts_with("Commands\nChat"));
-    assert!(help.contains("/raw <prompt>"));
+    assert!(help.contains("harness-controlled"));
     assert!(help.contains("/cancel"));
     assert!(help.contains("/copy raw"));
     assert!(help.contains("/exit"));
+    assert!(!help.contains("/raw <prompt>"));
     assert!(!help.contains("/tool"));
     assert!(!help.contains("/permissions"));
 }
@@ -95,16 +84,6 @@ fn tui_script_renders_default_stub_turns_and_stops_on_exit() {
     assert!(rendered.contains("stub provider response"));
     assert!(!rendered.contains("what should not run?"));
     assert!(!rendered.contains("lm-studio"));
-}
-
-#[test]
-fn tui_script_empty_raw_command_is_local_usage_without_provider_call() {
-    let rendered = render_tui_script(["/raw"], ".", ".");
-
-    assert!(rendered.contains("Usage: /raw <prompt>"));
-    assert!(rendered.contains("Example: /raw hello"));
-    assert!(!rendered.contains("> /raw"));
-    assert!(!rendered.contains("stub provider response"));
 }
 
 #[test]

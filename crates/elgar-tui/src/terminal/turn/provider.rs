@@ -22,7 +22,7 @@ use crate::{
         input::raw_mode::TerminalModeGuard,
         turn::{
             active::handle_active_provider_event,
-            provider_worker::{start_raw_chat_turn, ProviderTurnUpdate},
+            provider_worker::{start_harness_turn, ProviderTurnUpdate},
         },
         ui::{
             prompt::{InlineWorkingRenderer, LiveProviderOutput},
@@ -36,17 +36,7 @@ use crate::{
     TuiShell,
 };
 
-/// Controls how the user input is displayed for this turn.
-///
-/// Both variants currently use the same raw-chat provider path. The difference
-/// is only whether the visible transcript shows `/raw <prompt>` or plain text.
-#[derive(Clone, Copy)]
-pub(super) enum InlineProviderTurnKind {
-    Text,
-    Raw,
-}
-
-/// Runs normal plain text through raw chat after TUI input normalization.
+/// Runs normal plain text through the harness after TUI input normalization.
 pub(super) fn run_inline_provider_text_turn<P>(
     text: &str,
     provider: &P,
@@ -56,16 +46,15 @@ pub(super) fn run_inline_provider_text_turn<P>(
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
-    run_inline_provider_turn(text, provider, session, shell, InlineProviderTurnKind::Text)
+    run_inline_provider_turn(text, provider, session, shell)
 }
 
-/// Runs one provider turn while keeping the terminal responsive.
-pub(super) fn run_inline_provider_turn<P>(
+/// Runs one harness-controlled provider turn while keeping the terminal responsive.
+fn run_inline_provider_turn<P>(
     text: &str,
     provider: &P,
     session: &mut Session,
     shell: &mut TuiShell,
-    turn_kind: InlineProviderTurnKind,
 ) -> io::Result<String>
 where
     P: ControllerProvider + Clone + Send + 'static,
@@ -84,21 +73,14 @@ where
         )
         .with_metadata(serde_json::json!({
             "input_chars": text.chars().count(),
-            "turn_kind": match turn_kind {
-                InlineProviderTurnKind::Text => "text",
-                InlineProviderTurnKind::Raw => "raw",
-            }
+            "turn_kind": "harness"
         })),
     );
     let before = shell.conversation.render_lines_with_styles().len();
     print_spacer()?;
-    let visible_input = match turn_kind {
-        InlineProviderTurnKind::Raw => format!("/raw {text}"),
-        InlineProviderTurnKind::Text => text.to_string(),
-    };
-    print_user_block(&visible_input)?;
+    print_user_block(text)?;
 
-    let task = start_raw_chat_turn(provider.clone(), session.clone(), text.to_string());
+    let task = start_harness_turn(provider.clone(), session.clone(), text.to_string());
     let guard = TerminalModeGuard::enter()?;
     let mut working = InlineWorkingRenderer::new(terminal_context(session, provider));
     let mut input = TerminalInput::default();

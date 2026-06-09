@@ -1,7 +1,7 @@
 //! Parses LM Studio provider responses.
 //!
-//! This file turns OpenAI-compatible JSON, LM Studio native JSON, and streaming
-//! event lines into Elgar's `ProviderOutput` and stream chunks.
+//! This file turns OpenAI-compatible JSON and streaming event lines into
+//! Elgar's `ProviderOutput` and stream chunks.
 
 use serde::Deserialize;
 
@@ -27,80 +27,19 @@ pub fn parse_chat_response_json_with_metrics(
         .choices
         .iter()
         .filter_map(|choice| choice.message.as_ref())
-        .find(|message| !message.content.trim().is_empty())
-        .ok_or_else(|| ProviderError::empty_response("provider response contained no text"))?;
+        .find(|message| !message.content.trim().is_empty() || !message.tool_calls.is_empty())
+        .ok_or_else(|| {
+            ProviderError::empty_response("provider response contained no text or tool calls")
+        })?;
 
-    let mut output = ProviderOutput::new(message.content.trim().to_string());
+    let mut output = ProviderOutput::new(message.content.trim().to_string())
+        .with_tool_calls(message.tool_calls.clone());
 
     if let Some(thinking) = message.explicit_thinking() {
         output = output.with_thinking(thinking);
     }
     if let Some(mut metrics) = metrics {
         metrics.usage = response.usage.map(provider_usage_from_chat_usage);
-        output = output.with_metrics(metrics);
-    }
-
-    Ok(output)
-}
-
-/// Parses LM Studio native chat response JSON and native stats.
-pub fn parse_native_chat_response_json_with_metrics(
-    payload: &str,
-    metrics: Option<ProviderMetrics>,
-) -> Result<ProviderOutput, ProviderError> {
-    let response: NativeChatResponse = serde_json::from_str(payload)
-        .map_err(|error| ProviderError::response_parse(error.to_string()))?;
-
-    let mut text = String::new();
-    let mut thinking = String::new();
-    for item in response.output {
-        match item {
-            NativeOutputItem::Message { content, .. } => {
-                if !content.trim().is_empty() {
-                    if !text.is_empty() {
-                        text.push_str("\n\n");
-                    }
-                    text.push_str(content.trim());
-                }
-            }
-            NativeOutputItem::Reasoning { content, .. } => {
-                if !content.trim().is_empty() {
-                    if !thinking.is_empty() {
-                        thinking.push_str("\n\n");
-                    }
-                    thinking.push_str(content.trim());
-                }
-            }
-            NativeOutputItem::Other => {}
-        }
-    }
-
-    if text.trim().is_empty() {
-        return Err(ProviderError::empty_response(
-            "native provider response contained no text",
-        ));
-    }
-
-    let mut output = ProviderOutput::new(text);
-    if !thinking.trim().is_empty() {
-        output = output.with_thinking(thinking);
-    }
-    if let Some(mut metrics) = metrics {
-        if let Some(stats) = response.stats {
-            metrics.provider_time_to_first_token_millis =
-                seconds_to_millis(stats.time_to_first_token_seconds);
-            metrics.provider_tokens_per_second_milli =
-                tokens_per_second_to_milli(stats.tokens_per_second);
-            metrics.reasoning_output_tokens = stats.reasoning_output_tokens;
-            metrics.usage = Some(ProviderTokenUsage {
-                prompt_tokens: stats.input_tokens,
-                completion_tokens: stats.total_output_tokens,
-                total_tokens: match (stats.input_tokens, stats.total_output_tokens) {
-                    (Some(input), Some(output)) => Some(input.saturating_add(output)),
-                    _ => None,
-                },
-            });
-        }
         output = output.with_metrics(metrics);
     }
 
@@ -209,14 +148,6 @@ fn provider_usage_from_chat_usage(usage: crate::provider::types::ChatUsage) -> P
     }
 }
 
-fn seconds_to_millis(seconds: Option<f64>) -> Option<u64> {
-    seconds.map(|value| (value.max(0.0) * 1000.0).round() as u64)
-}
-
-fn tokens_per_second_to_milli(tokens_per_second: Option<f64>) -> Option<u64> {
-    tokens_per_second.map(|value| (value.max(0.0) * 1000.0).round() as u64)
-}
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 struct ChatStreamResponse {
     #[serde(default)]
@@ -236,39 +167,4 @@ struct ChatStreamDelta {
     reasoning: Option<String>,
     #[serde(default, alias = "thinking_content")]
     thinking: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-struct NativeChatResponse {
-    #[serde(default)]
-    output: Vec<NativeOutputItem>,
-    #[serde(default)]
-    stats: Option<NativeChatStats>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum NativeOutputItem {
-    Message {
-        content: String,
-    },
-    Reasoning {
-        content: String,
-    },
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-struct NativeChatStats {
-    #[serde(default)]
-    input_tokens: Option<u64>,
-    #[serde(default)]
-    total_output_tokens: Option<u64>,
-    #[serde(default)]
-    reasoning_output_tokens: Option<u64>,
-    #[serde(default)]
-    tokens_per_second: Option<f64>,
-    #[serde(default)]
-    time_to_first_token_seconds: Option<f64>,
 }

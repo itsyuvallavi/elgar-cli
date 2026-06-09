@@ -14,7 +14,7 @@ Owns `crates/elgar-core`.
 
 Use for:
 
-- raw chat runtime
+- harness runtime
 - provider/session/events
 - future tool/runtime boundaries
 - logs owned by core

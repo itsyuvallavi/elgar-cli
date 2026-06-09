@@ -7,7 +7,7 @@ Rebuild Elgar from the smallest useful system into a reliable coding agent.
 Current baseline:
 
 ```text
-user prompt -> provider request -> model answer -> visible response
+user prompt -> harness loop -> provider request(s) -> verified evidence -> visible response
 ```
 
 Target system:
@@ -23,20 +23,28 @@ tests protect
 
 ## Current State
 
-Elgar is currently simplified around raw chat.
+Elgar is currently simplified around one harness route.
 
 Active:
 
 - CLI starts the app.
 - TUI receives input and renders conversation state.
-- Core sends no-tool provider requests.
+- Core sends harness-controlled provider requests.
 - Sessions/events record turns.
 - Provider config supports LM Studio.
 - Local logs exist under `.elgar/log/`.
+- The active harness exposes primitive read-only tools: `read`, `ls`, `find`,
+  and `grep`.
+- The harness can batch multiple primitive read-only requests in one decision
+  call.
+- Harness decision and synthesis calls currently keep full verified evidence
+  for reliability.
+- `NATIVE_TOOL_LOOP.md` records the target native provider tool loop that Elgar
+  should move toward before further token optimization.
 
 Paused or archived:
 
-- tool execution
+- permissioned tool execution
 - permission policy
 - shell execution
 - project planning
@@ -61,15 +69,13 @@ The skeleton must not decide ordinary-language intent.
 
 Add features back slowly in this order:
 
-1. Structured logging and trace visibility.
-2. Tool-call parsing with no execution.
-3. Permission gate.
-4. One read-only inspection tool.
-5. Write tools.
-6. Shell execution.
-7. Bounded memory/context.
-8. Planning.
-9. Synthesis and project review.
+1. Stabilize the read-only primitive harness route.
+2. Permission gate.
+3. `bash` primitive.
+4. `write` and `edit` primitives.
+5. Bounded memory/context.
+6. Evidence compression.
+7. Planning.
 
 Each feature needs:
 
@@ -79,11 +85,24 @@ Each feature needs:
 - no hardcoded natural-language trigger table
 - no harness-authored assistant prose for normal chat
 
+## Execution Workflow
+
+Use this sequence for every meaningful implementation step:
+
+```text
+inspect -> map -> plan -> pre-mortem + mitigation -> implement small slices
+-> test -> update docs + Linear
+```
+
+This workflow is part of the rebuild safety model. It keeps Elgar aligned with
+the target architecture before code changes land.
+
 ## Pre-Mortem
 
 Likely failures:
 
-- simple chat gets tools or memory again
+- simple chat bypasses the harness
+- macro tools return under a different name
 - CLI/TUI starts owning runtime behavior
 - provider code mixes LM Studio quirks with policy
 - logs multiply into competing truth sources
@@ -92,7 +111,7 @@ Likely failures:
 
 Mitigations:
 
-- test provider payloads for plain chat
+- test provider payloads for the harness route
 - keep startup, UI, provider, and runtime responsibilities separate
 - keep active docs small
 - run checks after each structural move
@@ -100,7 +119,11 @@ Mitigations:
 
 ## Current Next Work
 
-1. Finish root/docs/bin cleanup.
-2. Review `bin/` scripts and archive stale dogfood scripts.
-3. Clean remaining dead code warnings.
-4. Review the raw-chat provider path before adding any new capability.
+1. Move the read-only harness toward the native provider tool-result loop
+   described in `NATIVE_TOOL_LOOP.md`.
+2. Stabilize the TUI on that harness route.
+3. Review loop token/speed logs from `Nextjs-1` manual tests only after the
+   native loop shape is stable.
+4. Add permission boundaries before enabling `bash`, `write`, or `edit`.
+5. Keep primitives small: `read`, `ls`, `find`, `grep`, then permissioned
+   `bash`, `write`, and `edit`.

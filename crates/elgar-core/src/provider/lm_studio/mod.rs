@@ -1,8 +1,8 @@
 //! Wires Elgar's LM Studio provider together.
 //!
 //! This file owns the public provider type and backend selection. The concrete
-//! request formatting, parsing, native calls, and OpenAI-compatible calls live
-//! in the sibling files in this folder.
+//! request formatting, parsing, and OpenAI-compatible calls live in the sibling
+//! files in this folder.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -20,15 +20,10 @@ use crate::{
 };
 
 mod format;
-mod native;
 mod openai;
 mod parse;
 
 use format::elgar_controller_messages_for_config;
-use native::{
-    chat_lm_studio_native_no_tool_with_request_id, messages_are_native_no_tool_safe,
-    profile_allows_native_no_tool,
-};
 use openai::{
     chat_lm_studio_streaming_with_request_id, chat_lm_studio_with_request_id,
     chat_lm_studio_with_tools_with_request_id, openai_chat_profile,
@@ -150,17 +145,6 @@ impl ControllerProvider for LmStudioProvider {
         messages: Vec<ChatMessage>,
         metadata: &ProviderRequestMetadata,
     ) -> Result<ProviderOutput, ProviderError> {
-        if profile_allows_native_no_tool(metadata.profile.as_ref())
-            && messages_are_native_no_tool_safe(&messages)
-        {
-            return chat_lm_studio_native_no_tool_with_request_id(
-                &self.config,
-                messages,
-                &metadata.request_id,
-                metadata.profile.as_ref().expect("profile checked"),
-            );
-        }
-
         if self.config.stream {
             let mut ignore_chunks = |_chunk: ProviderStreamChunk| {};
             chat_lm_studio_streaming_with_request_id(
@@ -185,22 +169,6 @@ impl ControllerProvider for LmStudioProvider {
         messages: Vec<ChatMessage>,
         metadata: &ProviderRequestMetadata,
     ) -> Result<ProviderOutput, ProviderError> {
-        if profile_allows_native_no_tool(metadata.profile.as_ref())
-            && messages_are_native_no_tool_safe(&messages)
-        {
-            let mut profile = metadata
-                .profile
-                .clone()
-                .expect("profile checked after native backend check");
-            profile.stream = Some(false);
-            return chat_lm_studio_native_no_tool_with_request_id(
-                &self.config,
-                messages,
-                &metadata.request_id,
-                &profile,
-            );
-        }
-
         let mut config = self.config.clone();
         config.stream = false;
         let mut profile = openai_chat_profile(metadata.profile.as_ref());

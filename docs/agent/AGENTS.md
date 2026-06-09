@@ -4,8 +4,8 @@
 
 Instructions for agents working on this repo.
 
-Elgar is in a simplified rebuild phase. The current baseline is raw chat, not
-the full historical agent harness.
+Elgar is in a simplified rebuild phase. The current baseline is the new
+harness route, not the full historical agent harness.
 
 ## Source Of Truth
 
@@ -27,15 +27,16 @@ Archive files are reference only. Do not use them as current instructions.
 
 ## Current Contract
 
-Plain chat must stay simple:
+Plain chat must stay harness-controlled:
 
 ```text
-user prompt -> provider request -> model answer -> visible response
+user prompt -> harness loop -> provider request(s) -> verified evidence -> visible response
 ```
 
-For plain chat, Elgar must not:
+For normal chat, Elgar must not:
 
-- attach tools
+- bypass the harness
+- use macro tools
 - send `tool_choice`
 - inject project memory
 - run folder anchoring
@@ -55,6 +56,22 @@ Keep the permanent skeleton small:
 
 Re-add tools, permissions, shell, memory, planning, and synthesis one layer at a
 time through explicit module boundaries.
+
+## Required Execution Workflow
+
+Every non-trivial implementation step must follow this order:
+
+1. Inspect the current files, logs, docs, and behavior before changing code.
+2. Map the current behavior against the intended target behavior.
+3. Plan the change, including files to edit or add.
+4. Run a pre-mortem with concrete mitigations.
+5. Implement in small slices.
+6. Test with focused checks and, when relevant, live CLI/TUI prompts.
+7. Update docs and Linear. If Linear is unavailable, update the Linear sync
+   queue or the relevant local planning doc.
+
+Do not skip from idea directly to implementation unless the user explicitly
+asks for a tiny mechanical change.
 
 ## Agent Rules
 
