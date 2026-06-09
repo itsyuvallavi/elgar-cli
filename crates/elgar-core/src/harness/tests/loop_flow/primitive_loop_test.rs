@@ -211,6 +211,40 @@ fn primitive_loop_risky_json_fallback_returns_permission_tool_result() {
 }
 
 #[test]
+fn primitive_loop_native_risky_tool_calls_return_permission_tool_results() {
+    for (tool, arguments) in [
+        ("bash", r#"{"command":"echo hello"}"#),
+        ("write", r#"{"path":"demo.txt","content":"hello"}"#),
+        ("edit", r#"{"path":"demo.txt","patch":"replace hello"}"#),
+    ] {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-loop-native-permission-{tool}-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let provider = QueuedProvider::new_outputs(vec![
+            tool_call_output(tool, arguments, &format!("call-{tool}")),
+            ProviderOutput::new(format!("{tool} needs approval.")),
+        ]);
+        let mut session = Session::new(format!("loop-native-permission-{tool}"), &root, &root);
+        let expected_final = format!("{tool} needs approval.");
+
+        let result = run_primitive_harness_loop(&provider, &mut session, "do risky work").unwrap();
+        let calls = provider.calls.lock().expect("calls lock");
+        let tool_messages = tool_message_contents(&calls[1]);
+
+        assert_eq!(result.stopped_reason, "native_final_text");
+        assert_eq!(result.final_text.as_deref(), Some(expected_final.as_str()));
+        assert!(tool_messages.iter().any(|content| {
+            content.contains("VERIFIED_PERMISSION_DECISION")
+                && content.contains(&format!("tool: {tool}"))
+                && content.contains("decision: needs_approval")
+                && content.contains("execution_performed: false")
+        }));
+    }
+}
+
+#[test]
 fn primitive_loop_repeated_evidence_guides_model_to_next_request() {
     let root = std::env::temp_dir().join(format!("elgar-loop-repeat-test-{}", std::process::id()));
     fs::create_dir_all(root.join("app")).unwrap();

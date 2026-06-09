@@ -147,6 +147,8 @@ struct HarnessDiagnosticSummary {
     completion_tokens: u64,
     total_tokens: u64,
     repair_attempts: u64,
+    permission_prompts: u64,
+    permission_denied: u64,
     synthesis_calls: u64,
     error: bool,
 }
@@ -180,6 +182,8 @@ fn latest_harness_summary(path: &Path) -> Result<HarnessDiagnosticSummary, LogsD
     let mut total_tokens = 0;
     let mut provider_calls = 0;
     let mut repair_attempts = 0;
+    let mut permission_prompts = 0;
+    let mut permission_denied = 0;
     let mut synthesis_calls = 0;
     let mut error = false;
 
@@ -230,6 +234,14 @@ fn latest_harness_summary(path: &Path) -> Result<HarnessDiagnosticSummary, LogsD
             "harness_loop_repair_finished" => {
                 repair_attempts += 1;
             }
+            "harness_permission_decision" => {
+                if metadata.get("decision").and_then(Value::as_str) == Some("needs_approval") {
+                    permission_prompts += 1;
+                }
+                if metadata.get("decision").and_then(Value::as_str) == Some("deny") {
+                    permission_denied += 1;
+                }
+            }
             _ => {}
         }
     }
@@ -251,6 +263,8 @@ fn latest_harness_summary(path: &Path) -> Result<HarnessDiagnosticSummary, LogsD
         completion_tokens,
         total_tokens,
         repair_attempts,
+        permission_prompts,
+        permission_denied,
         synthesis_calls,
         error,
     })
@@ -288,6 +302,10 @@ fn render_harness_summary(summary: &HarnessDiagnosticSummary, path: &Path) -> St
         ),
         format!("provider calls: {}", summary.provider_calls),
         format!("tools: {tools}"),
+        format!(
+            "permissions: prompts {} · denied {}",
+            summary.permission_prompts, summary.permission_denied
+        ),
         format!("repairs: {}", summary.repair_attempts),
         format!("synthesis: {}", summary.synthesis_calls),
         format!("error: {}", summary.error),

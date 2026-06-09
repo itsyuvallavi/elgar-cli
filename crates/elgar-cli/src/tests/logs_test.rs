@@ -116,6 +116,28 @@ fn latest_turn_summary_counts_native_evidence_tools() {
 }
 
 #[test]
+fn latest_turn_summary_counts_permission_decisions() {
+    let root = test_root("latest-harness-permission-decisions");
+    let log_dir = root.join(".elgar/log/system");
+    fs::create_dir_all(&log_dir).unwrap();
+    fs::write(
+        log_dir.join("cli-runtime.jsonl"),
+        [
+            r#"{"session_id":"cli-runtime","turn_id":0,"summary":"harness_turn_started","metadata":{"harness_mode":"read_only_primitive_loop"}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_permission_decision","metadata":{"tool":"bash","decision":"needs_approval","execution_allowed":false}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_loop_finished","duration_ms":1000,"metadata":{"rounds":1,"stopped_reason":"native_final_text","has_final_text":true}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let rendered = render_latest_turn_summary(&root).unwrap();
+
+    assert!(rendered.contains("Latest harness summary"));
+    assert!(rendered.contains("permissions: prompts 1 · denied 0"));
+}
+
+#[test]
 fn latest_turn_summary_skips_newer_logs_without_summary() {
     let root = test_root("skip-newer-no-summary");
     let log_dir = root.join(".elgar/log/system");

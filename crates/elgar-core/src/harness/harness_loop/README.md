@@ -29,7 +29,7 @@ This folder owns multi-round harness flows.
 - final model answer
 
 `bash`, `write`, and `edit` are known primitive names, but they do not execute
-until the permission layer exists.
+until approval prompts and side-effect executors exist.
 
 It logs every round and provider call so we can inspect what happened later.
 

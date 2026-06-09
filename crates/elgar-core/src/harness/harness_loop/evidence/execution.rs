@@ -105,18 +105,10 @@ pub(in crate::harness::harness_loop) fn execute_read_only_request(
         }
         StructuredRequestKind::Bash
         | StructuredRequestKind::Write
-        | StructuredRequestKind::Edit => Ok(ExecutedEvidence {
-            evidence: Evidence {
-                label: request.kind.as_str().to_string(),
-                body: format!(
-                    "Model requested primitive {}, which is declared but not executable in this stage.",
-                    request.kind.as_str()
-                ),
-                bytes: 0,
-                truncated: false,
-            },
-            directory_listing: None,
-        }),
+        | StructuredRequestKind::Edit => Err(ModelChoiceTurnError::ProjectContext(format!(
+            "permission policy must handle primitive `{}` before execution",
+            request.kind.as_str()
+        ))),
     }
 }
 
