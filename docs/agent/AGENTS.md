@@ -38,10 +38,28 @@ For normal chat, Elgar must not:
 - bypass the harness
 - use macro tools
 - send `tool_choice`
-- inject project memory
+- inject project memory until the memory prompt-injection slice is explicitly
+  planned and approved
 - run folder anchoring
 - use hardcoded natural-language trigger tables
 - write harness-authored assistant prose
+
+Current harness capabilities:
+
+- Native provider tool calls are the primary path.
+- JSON/model-choice parsing is fallback only.
+- The enabled primitive tools are `read`, `ls`, `find`, `grep`, `bash`,
+  `write`, and `edit`.
+- `read`, `ls`, `find`, and `grep` execute without approval.
+- `bash`, `write`, and `edit` require pending user approval.
+- `/approve` executes the current pending approval through core.
+- `/deny` and `/reject` clear the current pending approval without execution.
+- Raw chat bypass is intentionally removed; `/raw` should stay a local unknown
+  command unless a new plan explicitly reintroduces it.
+- `elgar logs latest` must stay a local diagnostic command and must not call the
+  model.
+- Durable memory currently indexes verified session JSONL facts only. It does
+  not alter model prompts yet.
 
 ## Rebuild Direction
 
@@ -85,6 +103,25 @@ asks for a tiny mechanical change.
 8. Keep CLI thin, TUI UI-focused, and core runtime-focused.
 9. Explain briefly what changed after each implementation step.
 10. Report tests run and known limitations.
+11. Never create, move, split, or delete files without first telling the user
+    what files will change, unless the user has already approved that exact
+    plan.
+12. Prefer primitive tools over macro tools. Do not add hidden shortcuts like
+    `review_project`; let the model choose primitive tools and let Rust
+    validate/execute them.
+13. When comparing behavior to other coding CLIs, stay close to their native
+    tool-loop pattern. Do not propose off-road architecture without a strong
+    reason.
+14. The user is learning Rust. Explain file responsibilities and important
+    functions plainly, without assuming Rust fluency.
+15. For large or risky changes, ask Cursor or another external agent to run
+    dogfood tests when that would shorten feedback, but treat their output as
+    evidence to verify, not truth to copy blindly.
+16. If a model response looks wrong, inspect logs before guessing.
+17. Avoid forcing model behavior with hardcoded natural-language trigger
+    tables. Prefer protocol, typed tools, validation, and verified evidence.
+18. Keep memory safe: index verified facts, keep raw logs as audit source, and
+    never trust provider prose as memory truth.
 
 ## Communication
 
