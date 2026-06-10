@@ -117,19 +117,23 @@ fn provider_tool_definition(id: PrimitiveToolId) -> Option<ChatToolDefinition> {
         )),
         PrimitiveToolId::Edit => Some(ChatToolDefinition::function(
             "edit",
-            "Request approval to patch one existing file.",
+            "Request approval to replace exact text in one existing file.",
             object_schema(
                 json!({
                     "path": {
                         "type": "string",
                         "description": "File path relative to the launch folder, or an absolute path."
                     },
-                    "patch": {
+                    "old_text": {
                         "type": "string",
-                        "description": "Patch or edit description to apply after explicit user approval."
+                        "description": "Exact text that must appear exactly once before approval can edit the file."
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "Exact replacement text to write after explicit user approval."
                     }
                 }),
-                &["path", "patch"],
+                &["path", "old_text", "new_text"],
             ),
         )),
     }

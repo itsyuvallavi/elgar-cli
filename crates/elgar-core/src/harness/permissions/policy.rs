@@ -1,7 +1,7 @@
 //! Conservative permission policy for harness primitive requests.
 //!
-//! Stage 3 exposes read-only primitives for execution. Risky primitives are
-//! known to the model but cannot execute until an approval flow exists.
+//! Stage 3 exposes read-only primitives for direct execution. Risky primitives
+//! are known to the model and must pass through the approval command path.
 
 use crate::harness::{PrimitiveToolRegistry, ValidatedStructuredRequest};
 
@@ -25,7 +25,7 @@ pub fn decide_primitive_permission(
 
     if !tool.executable_in_stage && tool.requires_permission {
         return PermissionDecision::needs_approval(format!(
-            "primitive `{}` requires approval and is not executable until the approval flow exists",
+            "primitive `{}` requires approval before side-effect execution",
             tool.id.as_str()
         ));
     }

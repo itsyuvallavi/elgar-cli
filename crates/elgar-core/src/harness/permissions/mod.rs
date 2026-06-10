@@ -6,6 +6,11 @@
 
 mod approval;
 mod approval_flow;
+mod approved_bash;
+mod approved_edit;
+mod approved_paths;
+mod approved_text;
+mod approved_write;
 mod policy;
 mod types;
 

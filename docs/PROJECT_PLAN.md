@@ -38,8 +38,8 @@ Active:
 - Permission policy decisions exist for risky primitives.
 - Core stores one pending approval record when a risky primitive needs approval.
 - Line-based CLI mode supports `/approve`, `/deny`, and `/reject`.
-- Approved `bash` requests execute in the launch folder and return verified
-  execution output. `write` and `edit` still require separate executor slices.
+- Approved `bash`, `write`, and `edit` requests execute from the launch folder
+  boundary and return verified execution output.
 - The harness can batch multiple primitive read-only requests in one provider
   response through native tool calls, with JSON fallback still available.
 - Native tool results return to the provider as `role:"tool"` messages, and
@@ -50,7 +50,6 @@ Active:
 
 Paused or archived:
 
-- `write` and `edit` execution
 - project planning
 - memory/context injection
 - project-review macro routing
@@ -123,9 +122,7 @@ Mitigations:
 
 ## Current Next Work
 
-1. Harden approved `bash` execution with richer policy and dogfood coverage.
-2. Add `write` execution behind the same approval boundary.
-3. Add `edit` execution behind the same approval boundary.
-4. Stabilize the TUI approval surface on top of core approval state.
-5. Review loop token/speed logs from `Nextjs-1` manual tests after the
+1. Dogfood approved `write` and `edit` execution from CLI/TUI entry points.
+2. Stabilize the TUI approval surface on top of core approval state.
+3. Review loop token/speed logs from `Nextjs-1` manual tests after the
    permissioned primitive path is stable.

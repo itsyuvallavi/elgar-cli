@@ -30,8 +30,9 @@ This folder owns multi-round harness flows.
 
 `bash`, `write`, and `edit` are visible risky primitives. The loop itself still
 does not run side effects. Risky requests create verified permission evidence
-and a pending approval record. Approved `bash` execution happens through the
-core approval command path after the loop, not directly from coordinator code.
+and a pending approval record. Approved `bash`, `write`, and `edit` execution
+happens through the core approval command path after the loop, not directly from
+coordinator code.
 
 It logs every round and provider call so we can inspect what happened later.
 

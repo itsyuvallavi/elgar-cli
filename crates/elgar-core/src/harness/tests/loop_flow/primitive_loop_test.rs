@@ -221,7 +221,10 @@ fn primitive_loop_native_risky_tool_calls_return_permission_tool_results() {
     for (tool, arguments) in [
         ("bash", r#"{"command":"echo hello"}"#),
         ("write", r#"{"path":"demo.txt","content":"hello"}"#),
-        ("edit", r#"{"path":"demo.txt","patch":"replace hello"}"#),
+        (
+            "edit",
+            r#"{"path":"demo.txt","old_text":"hello","new_text":"goodbye"}"#,
+        ),
     ] {
         let root = std::env::temp_dir().join(format!(
             "elgar-loop-native-permission-{tool}-{}",

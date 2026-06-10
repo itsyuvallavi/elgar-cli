@@ -260,7 +260,12 @@ fn latest_harness_summary(path: &Path) -> Result<HarnessDiagnosticSummary, LogsD
                     permission_prompts += 1;
                 }
             }
-            "harness_bash_execution_started" | "harness_bash_execution_finished" => {
+            "harness_bash_execution_started"
+            | "harness_bash_execution_finished"
+            | "harness_write_execution_started"
+            | "harness_write_execution_finished"
+            | "harness_edit_execution_started"
+            | "harness_edit_execution_finished" => {
                 collect_unique_text(&mut tools, metadata, "tool");
             }
             _ => {}

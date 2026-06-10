@@ -70,8 +70,8 @@ If requesting primitive tools, return only JSON:
 {{"type":"structured_request","kind":"primitive_tool_name","reason":"short reason"}}
 {{"type":"structured_requests","reason":"short reason","requests":[{{"kind":"primitive_tool_name","arguments":{{}}}}]}}
 
-Execution is disabled except for executable primitive tools in this
-stage. Elgar will not run shell commands, ask permissions, or apply changes yet."#
+Risky primitives require explicit user approval before execution. Elgar will
+return verified permission evidence when approval is needed."#
     )
 }
 

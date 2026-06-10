@@ -20,8 +20,9 @@ tool action forever.
 The active read-only primitives are `read`, `ls`, `find`, and `grep`.
 Primitive `bash`, `write`, and `edit` are visible to the model as risky tools.
 Core stores one pending approval record when a risky primitive needs approval.
-Line-based CLI approval can execute approved `bash` requests; `write` and
-`edit` remain approval-only until their executor slices exist.
+Line-based CLI approval can execute approved `bash`, `write`, and `edit`
+requests. `write` creates or overwrites one file; `edit` performs exact
+one-file text replacement.
 The model can request one primitive or a small batch of primitive requests in a
 single provider call. Verified tool results are returned as `role:"tool"`
 messages. If a text fallback response is invalid before any evidence exists,
@@ -57,7 +58,7 @@ synthesis.
 Future harness stages should be added one primitive at a time:
 
 - richer approval prompts
-- write/edit execution
+- richer write/edit patch operations
 - bounded context
 - evidence compression
 - TUI rendering for richer tool progress

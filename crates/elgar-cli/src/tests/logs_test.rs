@@ -142,6 +142,31 @@ fn latest_turn_summary_counts_permission_decisions() {
 }
 
 #[test]
+fn latest_turn_summary_counts_approved_write_and_edit_tools() {
+    let root = test_root("latest-harness-write-edit-tools");
+    let log_dir = root.join(".elgar/log/system");
+    fs::create_dir_all(&log_dir).unwrap();
+    fs::write(
+        log_dir.join("cli-runtime.jsonl"),
+        [
+            r#"{"session_id":"cli-runtime","turn_id":0,"summary":"harness_turn_started","metadata":{"harness_mode":"native_tool_loop"}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_approval_decision","metadata":{"approval_id":"approval-1","tool":"write","status":"approved"}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_write_execution_finished","metadata":{"approval_id":"approval-1","tool":"write","exit_code":0}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_approval_decision","metadata":{"approval_id":"approval-2","tool":"edit","status":"approved"}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_edit_execution_finished","metadata":{"approval_id":"approval-2","tool":"edit","exit_code":0}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_loop_finished","duration_ms":1000,"metadata":{"rounds":1,"stopped_reason":"approved_execution","has_final_text":true}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let rendered = render_latest_turn_summary(&root).unwrap();
+
+    assert!(rendered.contains("tools: write, edit"));
+    assert!(rendered.contains("permissions: prompts 0 · approved 2 · denied 0"));
+}
+
+#[test]
 fn latest_turn_summary_skips_newer_logs_without_summary() {
     let root = test_root("skip-newer-no-summary");
     let log_dir = root.join(".elgar/log/system");
