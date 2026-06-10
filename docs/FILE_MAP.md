@@ -44,6 +44,7 @@
 - `docs/TUI.md` explains the terminal UI.
 - `docs/TOOL_CAPABILITY_MODEL.md` explains the intended low-level capability
   model for future agent tools.
+- `docs/HARNESS_REFACTOR_PLAN.md` records selective cleanup and the harness debt inventory.
 - `docs/agent/` contains agent instructions.
 - `docs/archive/` contains historical plans.
 - `docs/maps/` contains generated visual maps.

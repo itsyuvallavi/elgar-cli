@@ -23,6 +23,8 @@ architecture unless a current doc explicitly points to them.
 - `TUI.md` explains the terminal UI path.
 - `TOOL_CAPABILITY_MODEL.md` explains how model-visible tools, runtime
   validation, policy, verified execution, and synthesis should fit together.
+- `HARNESS_REFACTOR_PLAN.md` records selective harness cleanup, the debt inventory,
+  and what to defer vs pair with product work.
 
 ## Folders
 
