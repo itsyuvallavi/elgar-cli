@@ -35,9 +35,11 @@ Active:
 - Local logs exist under `.elgar/log/`.
 - The active harness exposes primitive read-only tools: `read`, `ls`, `find`,
   and `grep`.
-- Permission policy decisions exist for risky primitives, but approval prompts
-  and side-effect execution are not enabled yet.
+- Permission policy decisions exist for risky primitives.
 - Core stores one pending approval record when a risky primitive needs approval.
+- Line-based CLI mode supports `/approve`, `/deny`, and `/reject`.
+- Approved `bash` requests execute in the launch folder and return verified
+  execution output. `write` and `edit` still require separate executor slices.
 - The harness can batch multiple primitive read-only requests in one provider
   response through native tool calls, with JSON fallback still available.
 - Native tool results return to the provider as `role:"tool"` messages, and
@@ -48,9 +50,7 @@ Active:
 
 Paused or archived:
 
-- permissioned tool execution
-- permission approval flow
-- shell execution
+- `write` and `edit` execution
 - project planning
 - memory/context injection
 - project-review macro routing
@@ -123,11 +123,9 @@ Mitigations:
 
 ## Current Next Work
 
-1. Move the read-only harness toward the native provider tool-result loop
-   described in `NATIVE_TOOL_LOOP.md`.
-2. Stabilize the TUI on that harness route.
-3. Review loop token/speed logs from `Nextjs-1` manual tests only after the
-   native loop shape is stable.
-4. Add permission boundaries before enabling `bash`, `write`, or `edit`.
-5. Keep primitives small: `read`, `ls`, `find`, `grep`, then permissioned
-   `bash`, `write`, and `edit`.
+1. Harden approved `bash` execution with richer policy and dogfood coverage.
+2. Add `write` execution behind the same approval boundary.
+3. Add `edit` execution behind the same approval boundary.
+4. Stabilize the TUI approval surface on top of core approval state.
+5. Review loop token/speed logs from `Nextjs-1` manual tests after the
+   permissioned primitive path is stable.

@@ -102,6 +102,14 @@ impl Session {
         self.pending_approval = Some(approval);
     }
 
+    pub(crate) fn take_pending_approval(&mut self) -> Option<PendingApproval> {
+        self.pending_approval.take()
+    }
+
+    pub(crate) fn restore_pending_approval(&mut self, approval: PendingApproval) {
+        self.pending_approval = Some(approval);
+    }
+
     pub(crate) fn next_approval_id(&mut self) -> String {
         self.approval_sequence = self.approval_sequence.saturating_add(1);
         format!("approval-{}", self.approval_sequence)

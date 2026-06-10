@@ -148,6 +148,7 @@ struct HarnessDiagnosticSummary {
     total_tokens: u64,
     repair_attempts: u64,
     permission_prompts: u64,
+    permission_approved: u64,
     permission_denied: u64,
     synthesis_calls: u64,
     error: bool,
@@ -171,7 +172,14 @@ fn latest_harness_summary(path: &Path) -> Result<HarnessDiagnosticSummary, LogsD
             value.get("summary").and_then(Value::as_str) == Some("harness_turn_started")
         })
         .unwrap_or(0);
-    let turn_events = &events[started_index..=finished_index];
+    let next_started_index = events[finished_index + 1..]
+        .iter()
+        .position(|value| {
+            value.get("summary").and_then(Value::as_str) == Some("harness_turn_started")
+        })
+        .map(|index| finished_index + 1 + index)
+        .unwrap_or(events.len());
+    let turn_events = &events[started_index..next_started_index];
     let finished = &events[finished_index];
     let finished_metadata = finished.get("metadata").unwrap_or(&Value::Null);
 
@@ -183,6 +191,7 @@ fn latest_harness_summary(path: &Path) -> Result<HarnessDiagnosticSummary, LogsD
     let mut provider_calls = 0;
     let mut repair_attempts = 0;
     let mut permission_prompts = 0;
+    let mut permission_approved = 0;
     let mut permission_denied = 0;
     let mut synthesis_calls = 0;
     let mut error = false;
@@ -235,14 +244,24 @@ fn latest_harness_summary(path: &Path) -> Result<HarnessDiagnosticSummary, LogsD
                 repair_attempts += 1;
             }
             "harness_permission_decision" => {
+                collect_unique_text(&mut tools, metadata, "tool");
                 if metadata.get("decision").and_then(Value::as_str) == Some("deny") {
                     permission_denied += 1;
                 }
             }
+            "harness_approval_decision" => match metadata.get("status").and_then(Value::as_str) {
+                Some("approved") => permission_approved += 1,
+                Some("denied") => permission_denied += 1,
+                _ => {}
+            },
             "harness_approval_requested" => {
+                collect_unique_text(&mut tools, metadata, "tool");
                 if metadata.get("status").and_then(Value::as_str) == Some("pending") {
                     permission_prompts += 1;
                 }
+            }
+            "harness_bash_execution_started" | "harness_bash_execution_finished" => {
+                collect_unique_text(&mut tools, metadata, "tool");
             }
             _ => {}
         }
@@ -266,6 +285,7 @@ fn latest_harness_summary(path: &Path) -> Result<HarnessDiagnosticSummary, LogsD
         total_tokens,
         repair_attempts,
         permission_prompts,
+        permission_approved,
         permission_denied,
         synthesis_calls,
         error,
@@ -305,8 +325,8 @@ fn render_harness_summary(summary: &HarnessDiagnosticSummary, path: &Path) -> St
         format!("provider calls: {}", summary.provider_calls),
         format!("tools: {tools}"),
         format!(
-            "permissions: prompts {} · denied {}",
-            summary.permission_prompts, summary.permission_denied
+            "permissions: prompts {} · approved {} · denied {}",
+            summary.permission_prompts, summary.permission_approved, summary.permission_denied
         ),
         format!("repairs: {}", summary.repair_attempts),
         format!("synthesis: {}", summary.synthesis_calls),

@@ -359,7 +359,7 @@ fn tui_command_plain_file_request_and_reject_do_not_write_without_tool_result() 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stub provider response"));
     assert!(!stdout.contains("Status: applied and verified"));
-    assert!(stdout.contains("Unknown command: /reject"));
+    assert!(stdout.contains("No pending approval."));
     assert!(!stdout.contains("Wrote "));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
@@ -404,7 +404,7 @@ fn tui_command_plain_file_request_and_approve_do_not_write_without_tool_result()
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stub provider response"));
     assert!(!stdout.contains("Status: applied and verified"));
-    assert!(stdout.contains("Unknown command: /approve"));
+    assert!(stdout.contains("No pending approval."));
     assert!(!stdout.contains("Wrote "));
     assert!(stdout.contains("Exiting Elgar TUI."));
     assert!(!stdout.contains("Input was not recognized"));
@@ -452,7 +452,7 @@ fn tui_command_plain_shell_text_and_approve_do_not_execute_without_tool_result()
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stub provider response"));
-    assert!(stdout.contains("Unknown command: /approve"));
+    assert!(stdout.contains("No pending approval."));
     assert!(!stdout.contains("Shell command finished and verification was recorded."));
     assert!(!stdout.contains("Status: applied and verified"));
     assert!(stdout.contains("Exiting Elgar TUI."));
@@ -501,7 +501,7 @@ fn tui_command_plain_shell_text_and_reject_do_not_execute_without_tool_result() 
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stub provider response"));
-    assert!(stdout.contains("Unknown command: /reject"));
+    assert!(stdout.contains("No pending approval."));
     assert!(!stdout.contains("Status: rejected"));
     assert!(!stdout.contains("Shell command finished and verification was recorded."));
     assert!(stdout.contains("Exiting Elgar TUI."));
@@ -552,8 +552,7 @@ fn tui_command_line_loop_keeps_plain_requests_non_mutating() {
     assert!(stdout.contains("> create file rejected.py"));
     assert!(stdout.contains("stub provider response"));
     assert!(!stdout.contains("Wrote "));
-    assert!(stdout.contains("Unknown command: /reject"));
-    assert!(stdout.contains("Unknown command: /approve"));
+    assert!(stdout.contains("No pending approval."));
     assert!(stdout.contains("> create file approved.py"));
     assert!(!stdout.contains("Status: applied and verified"));
     assert!(!stdout.contains("Action: action-1 CreateFile"));

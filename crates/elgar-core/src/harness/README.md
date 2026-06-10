@@ -17,11 +17,11 @@ primitive tool schemas through `harness_tool_decision`. Native provider
 The loop does not cap useful read-only evidence by a fixed decision-call count.
 It still rejects duplicate/no-op requests so the model cannot spin on the same
 tool action forever.
-The active executable primitives are `read`, `ls`, `find`, and `grep`.
-Primitive `bash`, `write`, and `edit` are declared for the future but are not
-executable yet. Permission policy decisions are logged now, but approval prompts
-and side-effect execution are still future stages. Core now stores one pending
-approval record when a risky primitive needs approval.
+The active read-only primitives are `read`, `ls`, `find`, and `grep`.
+Primitive `bash`, `write`, and `edit` are visible to the model as risky tools.
+Core stores one pending approval record when a risky primitive needs approval.
+Line-based CLI approval can execute approved `bash` requests; `write` and
+`edit` remain approval-only until their executor slices exist.
 The model can request one primitive or a small batch of primitive requests in a
 single provider call. Verified tool results are returned as `role:"tool"`
 messages. If a text fallback response is invalid before any evidence exists,
@@ -40,7 +40,7 @@ synthesis.
   of contents, not a router or executor.
 - `provider_route.rs` names harness provider request modes so loop files do not
   hardcode backend-routing labels.
-- `tool_definitions.rs` converts executable primitive tools into
+- `tool_definitions.rs` converts enabled primitive tools into
   OpenAI-compatible provider tool schemas.
 - `permissions/` decides whether a validated primitive may execute, needs
   approval, or must be denied.
@@ -56,8 +56,8 @@ synthesis.
 
 Future harness stages should be added one primitive at a time:
 
-- approval prompts
-- write/shell execution
+- richer approval prompts
+- write/edit execution
 - bounded context
 - evidence compression
 - TUI rendering for richer tool progress

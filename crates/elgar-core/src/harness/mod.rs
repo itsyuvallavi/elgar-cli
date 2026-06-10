@@ -43,8 +43,9 @@ pub use model_choice::{
     StructuredRequestKind, StructuredRequestValidationError, ValidatedStructuredRequest,
 };
 pub use permissions::{
-    decide_primitive_permission, PendingApproval, PendingApprovalStatus, PermissionDecision,
-    PermissionDecisionKind,
+    approve_pending_approval, decide_primitive_permission, deny_pending_approval,
+    ApprovalCommandError, ApprovalCommandResult, PendingApproval, PendingApprovalStatus,
+    PermissionDecision, PermissionDecisionKind,
 };
 pub use primitive_tools::{
     PrimitiveTool, PrimitiveToolId, PrimitiveToolRegistry, PrimitiveToolSideEffectLevel,

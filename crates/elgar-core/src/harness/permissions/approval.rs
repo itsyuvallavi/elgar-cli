@@ -33,6 +33,7 @@ pub struct PendingApproval {
     pub tool: String,
     pub reason: String,
     pub arguments_preview: String,
+    pub request: ValidatedStructuredRequest,
     pub status: PendingApprovalStatus,
 }
 
@@ -47,8 +48,19 @@ impl PendingApproval {
             tool: request.kind.as_str().to_string(),
             reason: reason.into(),
             arguments_preview: bounded_arguments_preview(request),
+            request: request.clone(),
             status: PendingApprovalStatus::Pending,
         }
+    }
+
+    pub fn approve(mut self) -> Self {
+        self.status = PendingApprovalStatus::Approved;
+        self
+    }
+
+    pub fn deny(mut self) -> Self {
+        self.status = PendingApprovalStatus::Denied;
+        self
     }
 }
 

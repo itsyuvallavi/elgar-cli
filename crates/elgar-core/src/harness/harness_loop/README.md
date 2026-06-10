@@ -28,15 +28,17 @@ This folder owns multi-round harness flows.
 - `grep`
 - final model answer
 
-`bash`, `write`, and `edit` are known primitive names, but they do not execute
-until approval prompts and side-effect executors exist.
+`bash`, `write`, and `edit` are visible risky primitives. The loop itself still
+does not run side effects. Risky requests create verified permission evidence
+and a pending approval record. Approved `bash` execution happens through the
+core approval command path after the loop, not directly from coordinator code.
 
 It logs every round and provider call so we can inspect what happened later.
 
 ## Decision vs Synthesis
 
 Tool decision mode uses provider request mode `harness_tool_decision`. It
-attaches provider schemas for executable primitive tools and sends the growing
+attaches provider schemas for enabled primitive tools and sends the growing
 native provider conversation. When the model returns native `tool_calls`, Elgar
 validates and executes them, then appends matching `role:"tool"` result messages
 before asking the provider again.

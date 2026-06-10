@@ -127,6 +127,8 @@ fn latest_turn_summary_counts_permission_decisions() {
             r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_permission_decision","metadata":{"tool":"bash","decision":"needs_approval","execution_allowed":false}}"#,
             r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_approval_requested","metadata":{"approval_id":"approval-1","tool":"bash","status":"pending","execution_allowed":false}}"#,
             r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_loop_finished","duration_ms":1000,"metadata":{"rounds":1,"stopped_reason":"native_final_text","has_final_text":true}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_approval_decision","metadata":{"approval_id":"approval-1","tool":"bash","status":"approved"}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_bash_execution_finished","metadata":{"approval_id":"approval-1","tool":"bash","exit_code":0}}"#,
         ]
         .join("\n"),
     )
@@ -135,7 +137,8 @@ fn latest_turn_summary_counts_permission_decisions() {
     let rendered = render_latest_turn_summary(&root).unwrap();
 
     assert!(rendered.contains("Latest harness summary"));
-    assert!(rendered.contains("permissions: prompts 1 · denied 0"));
+    assert!(rendered.contains("tools: bash"));
+    assert!(rendered.contains("permissions: prompts 1 · approved 1 · denied 0"));
 }
 
 #[test]

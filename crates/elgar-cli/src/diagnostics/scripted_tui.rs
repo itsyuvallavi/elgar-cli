@@ -10,6 +10,7 @@ use std::{
 };
 
 use elgar_core::{
+    harness::{approve_pending_approval, deny_pending_approval},
     provider::{ControllerProvider, LmStudioProvider, ProviderStub},
     session::Session,
 };
@@ -25,13 +26,11 @@ pub fn is_tui_help_command(input: &str) -> bool {
 }
 
 pub fn is_tui_approval_command(input: &str) -> bool {
-    let _ = input;
-    false
+    input.trim() == "/approve"
 }
 
 pub fn is_tui_rejection_command(input: &str) -> bool {
-    let _ = input;
-    false
+    matches!(input.trim(), "/deny" | "/reject")
 }
 
 pub fn is_tui_copy_command(input: &str) -> bool {
@@ -114,6 +113,8 @@ pub fn tui_unknown_command(input: &str) -> Option<&str> {
         || is_tui_copy_command(trimmed)
         || is_tui_copy_raw_command(trimmed)
         || is_tui_details_command(trimmed)
+        || is_tui_approval_command(trimmed)
+        || is_tui_rejection_command(trimmed)
         || is_tui_clear_command(trimmed)
         || is_tui_cancel_command(trimmed)
     {
@@ -144,6 +145,16 @@ fn submit_tui_input<P>(
 {
     if is_tui_cancel_command(input) {
         shell.push_local_message("No active provider turn to cancel.");
+    } else if is_tui_approval_command(input) {
+        match approve_pending_approval(session) {
+            Ok(result) => shell.push_local_message(result.message),
+            Err(error) => shell.push_local_message(error.to_string()),
+        }
+    } else if is_tui_rejection_command(input) {
+        match deny_pending_approval(session) {
+            Ok(result) => shell.push_local_message(result.message),
+            Err(error) => shell.push_local_message(error.to_string()),
+        }
     } else if is_tui_details_command(input) {
         shell.push_latest_raw_details();
     } else if let Some(command) = tui_unknown_command(input) {
@@ -155,7 +166,7 @@ fn submit_tui_input<P>(
 
 /// Renders the local help text for scripted TUI commands.
 pub fn render_tui_help() -> &'static str {
-    "Commands\nChat\n  plain text           Send one harness-controlled model turn\n  /cancel              Cancel the active provider turn\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /details last        Show latest hidden details\n  /copy                Copy the conversation\n  /copy raw            Copy hidden details\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
+    "Commands\nChat\n  plain text           Send one harness-controlled model turn\n  /cancel              Cancel the active provider turn\nApproval\n  /approve             Approve and execute the pending risky primitive\n  /deny                Deny the pending risky primitive\n  /reject              Deny the pending risky primitive\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /details last        Show latest hidden details\n  /copy                Copy the conversation\n  /copy raw            Copy hidden details\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
 }
 
 /// Runs scripted inputs against the stub provider and returns the transcript.
@@ -187,6 +198,18 @@ where
             rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_cancel_command(input) {
             shell.push_local_message("No active provider turn to cancel.");
+            rendered_turns.push(shell.render_scripted_transcript());
+        } else if is_tui_approval_command(input) {
+            match approve_pending_approval(&mut session) {
+                Ok(result) => shell.push_local_message(result.message),
+                Err(error) => shell.push_local_message(error.to_string()),
+            }
+            rendered_turns.push(shell.render_scripted_transcript());
+        } else if is_tui_rejection_command(input) {
+            match deny_pending_approval(&mut session) {
+                Ok(result) => shell.push_local_message(result.message),
+                Err(error) => shell.push_local_message(error.to_string()),
+            }
             rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_copy_command(input) {
             rendered_turns.push(shell.conversation_copy_text());
@@ -289,6 +312,18 @@ where
             writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_cancel_command(&input) {
             shell.push_local_message("No active provider turn to cancel.");
+            writeln!(writer, "{}", shell.render_scripted_transcript())?;
+        } else if is_tui_approval_command(&input) {
+            match approve_pending_approval(&mut session) {
+                Ok(result) => shell.push_local_message(result.message),
+                Err(error) => shell.push_local_message(error.to_string()),
+            }
+            writeln!(writer, "{}", shell.render_scripted_transcript())?;
+        } else if is_tui_rejection_command(&input) {
+            match deny_pending_approval(&mut session) {
+                Ok(result) => shell.push_local_message(result.message),
+                Err(error) => shell.push_local_message(error.to_string()),
+            }
             writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_copy_command(&input) {
             writeln!(writer, "{}", shell.conversation_copy_text())?;
