@@ -6,6 +6,7 @@
 
 mod approval;
 mod approval_flow;
+mod approval_logging;
 mod approved_bash;
 mod approved_edit;
 mod approved_paths;
@@ -13,6 +14,9 @@ mod approved_text;
 mod approved_write;
 mod policy;
 mod types;
+
+#[cfg(test)]
+mod approval_flow_tests;
 
 pub use approval::{PendingApproval, PendingApprovalStatus};
 pub use approval_flow::{

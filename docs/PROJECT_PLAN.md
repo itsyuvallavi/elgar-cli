@@ -43,6 +43,8 @@ Active:
   approval buttons/cards are still pending.
 - Approved `bash`, `write`, and `edit` requests execute from the launch folder
   boundary and return verified execution output.
+- Approved `bash` is explicit shell execution, not a sandbox. It reports the
+  requested and resolved cwd before/after execution.
 - The harness can batch multiple primitive read-only requests in one provider
   response through native tool calls, with JSON fallback still available.
 - Native tool results return to the provider as `role:"tool"` messages, and

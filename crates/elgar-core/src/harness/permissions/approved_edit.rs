@@ -8,10 +8,8 @@ use std::{fs, time::Instant};
 use crate::{harness::PendingApproval, session::Session};
 
 use super::{
-    approval_flow::{
-        log_approved_execution_finished, log_approved_execution_started, ApprovalCommandError,
-        ApprovalCommandResult,
-    },
+    approval_flow::{ApprovalCommandError, ApprovalCommandResult},
+    approval_logging::{log_approved_execution_finished, log_approved_execution_started},
     approved_paths::resolve_existing_file_target,
     approved_text::{argument_raw_text, argument_text},
 };
@@ -49,12 +47,19 @@ pub(super) fn execute_approved_edit(
     }
 
     let started = Instant::now();
-    log_approved_execution_started(session, &approval, "edit", path);
+    log_approved_execution_started(session, &approval, "edit", path, serde_json::json!({}));
     let updated = original.replacen(old_text, new_text, 1);
     fs::write(&target, updated)
         .map_err(|error| ApprovalCommandError::ExecutionFailed(error.to_string()))?;
     let duration_ms = started.elapsed().as_millis() as u64;
-    log_approved_execution_finished(session, &approval, "edit", Some(0), duration_ms);
+    log_approved_execution_finished(
+        session,
+        &approval,
+        "edit",
+        Some(0),
+        duration_ms,
+        serde_json::json!({}),
+    );
 
     Ok(ApprovalCommandResult {
         approval_id: approval.id.clone(),

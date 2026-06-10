@@ -13,7 +13,9 @@ effect themselves.
 - `approval.rs` defines the single pending approval record stored by core.
 - `approval_flow.rs` handles `/approve` and `/deny` style commands and
   dispatches approved risky primitives.
-- `approved_bash.rs` executes approved shell commands in the launch folder.
+- `approval_logging.rs` writes approval decision and approved execution logs.
+- `approved_bash.rs` executes approved shell commands in the resolved launch
+  folder.
 - `approved_write.rs` creates or overwrites one approved file.
 - `approved_edit.rs` applies exact one-file text replacement after approval.
 - `approved_paths.rs` resolves approved file targets and rejects symlink paths.
@@ -31,6 +33,9 @@ effect themselves.
   evidence and logs.
 - `/approve` executes approved `bash`, `write`, and `edit` requests.
 - `/deny` and `/reject` deny and clear the pending approval.
+- Approved `bash` runs the exact approved shell command with `sh -c` in the
+  resolved current working directory. It is not sandboxed; approval must treat
+  it as arbitrary shell execution.
 - Approved `write` writes exact `content` to one file and rejects symlink paths.
 - Approved `edit` replaces exact `old_text` with `new_text` only when the old
   text appears exactly once.
