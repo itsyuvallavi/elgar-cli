@@ -14,103 +14,21 @@ use elgar_core::{
     provider::{ControllerProvider, LmStudioProvider, ProviderStub},
     session::Session,
 };
-use elgar_tui::terminal::{
-    parse_terminal_command, render_pending_approval_text, render_terminal_help,
-    render_unknown_command, TerminalCommand,
-};
+use elgar_tui::terminal::TerminalCommand;
 
 use crate::{load_runtime_provider, runtime_session_id, RuntimeProviderConfigError};
 
-pub fn is_tui_exit_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::Exit)
-}
+mod commands;
+mod render;
 
-pub fn is_tui_help_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::Help)
-}
+pub use commands::{
+    is_tui_approval_command, is_tui_cancel_command, is_tui_clear_command, is_tui_copy_command,
+    is_tui_copy_raw_command, is_tui_details_command, is_tui_exit_command, is_tui_help_command,
+    is_tui_rejection_command, render_tui_help, render_tui_unknown_command, tui_unknown_command,
+};
 
-pub fn is_tui_approval_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::Approve)
-}
-
-pub fn is_tui_rejection_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::Deny)
-}
-
-pub fn is_tui_copy_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::Copy)
-}
-
-pub fn is_tui_copy_raw_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::CopyRaw)
-}
-
-pub fn is_tui_details_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::DetailsLast)
-}
-
-pub fn is_tui_clear_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::Clear)
-}
-
-pub fn is_tui_cancel_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::Cancel)
-}
-
-pub fn tui_unknown_command(input: &str) -> Option<&str> {
-    match parse_terminal_command(input) {
-        TerminalCommand::Unknown(command) => Some(command),
-        _ => None,
-    }
-}
-
-pub fn render_tui_unknown_command(command: &str) -> String {
-    render_unknown_command(command)
-}
-
-/// Applies one submitted scripted input to the shell/session.
-fn submit_tui_input<P>(
-    shell: &mut elgar_tui::TuiShell,
-    provider: &P,
-    session: &mut Session,
-    input: &str,
-) where
-    P: ControllerProvider,
-{
-    match parse_terminal_command(input) {
-        TerminalCommand::Cancel => {
-            shell.push_local_message("No active provider turn to cancel.");
-        }
-        TerminalCommand::Approve => match approve_pending_approval(session) {
-            Ok(result) => shell.push_local_message(result.message),
-            Err(error) => shell.push_local_message(error.to_string()),
-        },
-        TerminalCommand::Deny => match deny_pending_approval(session) {
-            Ok(result) => shell.push_local_message(result.message),
-            Err(error) => shell.push_local_message(error.to_string()),
-        },
-        TerminalCommand::DetailsLast => {
-            shell.push_latest_raw_details();
-        }
-        TerminalCommand::Unknown(command) => {
-            shell.push_local_message(render_tui_unknown_command(command));
-        }
-        TerminalCommand::Text(text) => {
-            shell.submit_harness_input(provider, session, text);
-        }
-        TerminalCommand::Empty
-        | TerminalCommand::Help
-        | TerminalCommand::Clear
-        | TerminalCommand::Copy
-        | TerminalCommand::CopyRaw
-        | TerminalCommand::Exit => {}
-    }
-}
-
-/// Renders the local help text for scripted TUI commands.
-pub fn render_tui_help() -> &'static str {
-    render_terminal_help()
-}
+use commands::parse_scripted_command;
+use render::render_tui_turn;
 
 /// Runs scripted inputs against the stub provider and returns the transcript.
 pub fn render_tui_script<I, S>(
@@ -143,16 +61,10 @@ where
             shell.push_local_message("No active provider turn to cancel.");
             rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_approval_command(input) {
-            match approve_pending_approval(&mut session) {
-                Ok(result) => shell.push_local_message(result.message),
-                Err(error) => shell.push_local_message(error.to_string()),
-            }
+            approve_scripted(&mut shell, &mut session);
             rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_rejection_command(input) {
-            match deny_pending_approval(&mut session) {
-                Ok(result) => shell.push_local_message(result.message),
-                Err(error) => shell.push_local_message(error.to_string()),
-            }
+            deny_scripted(&mut shell, &mut session);
             rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_copy_command(input) {
             rendered_turns.push(shell.conversation_copy_text());
@@ -224,7 +136,7 @@ fn runtime_provider_config_io_error(error: RuntimeProviderConfigError) -> io::Er
 }
 
 /// Shared line-loop implementation used by tests and runtime config dispatch.
-pub(crate) fn run_tui_loop_with_runtime<R, W, P>(
+pub fn run_tui_loop_with_runtime<R, W, P>(
     reader: R,
     mut writer: W,
     project_root: impl AsRef<Path>,
@@ -257,16 +169,10 @@ where
             shell.push_local_message("No active provider turn to cancel.");
             writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_approval_command(&input) {
-            match approve_pending_approval(&mut session) {
-                Ok(result) => shell.push_local_message(result.message),
-                Err(error) => shell.push_local_message(error.to_string()),
-            }
+            approve_scripted(&mut shell, &mut session);
             writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_rejection_command(&input) {
-            match deny_pending_approval(&mut session) {
-                Ok(result) => shell.push_local_message(result.message),
-                Err(error) => shell.push_local_message(error.to_string()),
-            }
+            deny_scripted(&mut shell, &mut session);
             writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_copy_command(&input) {
             writeln!(writer, "{}", shell.conversation_copy_text())?;
@@ -290,13 +196,49 @@ where
     Ok(())
 }
 
-fn render_tui_turn(shell: &elgar_tui::TuiShell, session: &Session) -> String {
-    let mut rendered = shell.render_scripted_transcript();
-    if let Some(approval) = session.pending_approval() {
-        if !rendered.is_empty() {
-            rendered.push('\n');
+/// Applies one submitted scripted input to the shell/session.
+fn submit_tui_input<P>(
+    shell: &mut elgar_tui::TuiShell,
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+) where
+    P: ControllerProvider,
+{
+    match parse_scripted_command(input) {
+        TerminalCommand::Cancel => {
+            shell.push_local_message("No active provider turn to cancel.");
         }
-        rendered.push_str(&render_pending_approval_text(approval));
+        TerminalCommand::Approve => approve_scripted(shell, session),
+        TerminalCommand::Deny => deny_scripted(shell, session),
+        TerminalCommand::DetailsLast => {
+            shell.push_latest_raw_details();
+        }
+        TerminalCommand::Unknown(command) => {
+            shell.push_local_message(render_tui_unknown_command(command));
+        }
+        TerminalCommand::Text(text) => {
+            shell.submit_harness_input(provider, session, text);
+        }
+        TerminalCommand::Empty
+        | TerminalCommand::Help
+        | TerminalCommand::Clear
+        | TerminalCommand::Copy
+        | TerminalCommand::CopyRaw
+        | TerminalCommand::Exit => {}
     }
-    rendered
+}
+
+fn approve_scripted(shell: &mut elgar_tui::TuiShell, session: &mut Session) {
+    match approve_pending_approval(session) {
+        Ok(result) => shell.push_local_message(result.message),
+        Err(error) => shell.push_local_message(error.to_string()),
+    }
+}
+
+fn deny_scripted(shell: &mut elgar_tui::TuiShell, session: &mut Session) {
+    match deny_pending_approval(session) {
+        Ok(result) => shell.push_local_message(result.message),
+        Err(error) => shell.push_local_message(error.to_string()),
+    }
 }
