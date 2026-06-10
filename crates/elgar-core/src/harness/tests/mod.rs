@@ -2,6 +2,7 @@
 
 mod context;
 mod loop_flow;
+mod memory;
 mod model_choice;
 mod permissions;
 mod support;

@@ -7,6 +7,7 @@
 
 mod context;
 mod harness_loop;
+mod memory;
 mod model_choice;
 mod permissions;
 mod primitive_tools;
@@ -36,6 +37,10 @@ pub use context::{
 pub use harness_loop::{
     render_primitive_harness_loop_result, run_primitive_harness_loop, PrimitiveHarnessLoopResult,
     PrimitiveHarnessLoopRound,
+};
+pub use memory::{
+    build_memory_index, read_session_memory_events, HarnessMemoryFact, HarnessMemoryIndex,
+    HarnessMemoryKind, SessionMemoryReadError,
 };
 pub use model_choice::{
     loop_decision_contract, model_choice_contract, parse_model_choice,
