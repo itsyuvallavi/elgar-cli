@@ -235,11 +235,13 @@ fn latest_harness_summary(path: &Path) -> Result<HarnessDiagnosticSummary, LogsD
                 repair_attempts += 1;
             }
             "harness_permission_decision" => {
-                if metadata.get("decision").and_then(Value::as_str) == Some("needs_approval") {
-                    permission_prompts += 1;
-                }
                 if metadata.get("decision").and_then(Value::as_str) == Some("deny") {
                     permission_denied += 1;
+                }
+            }
+            "harness_approval_requested" => {
+                if metadata.get("status").and_then(Value::as_str) == Some("pending") {
+                    permission_prompts += 1;
                 }
             }
             _ => {}

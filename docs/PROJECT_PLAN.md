@@ -37,6 +37,7 @@ Active:
   and `grep`.
 - Permission policy decisions exist for risky primitives, but approval prompts
   and side-effect execution are not enabled yet.
+- Core stores one pending approval record when a risky primitive needs approval.
 - The harness can batch multiple primitive read-only requests in one provider
   response through native tool calls, with JSON fallback still available.
 - Native tool results return to the provider as `role:"tool"` messages, and

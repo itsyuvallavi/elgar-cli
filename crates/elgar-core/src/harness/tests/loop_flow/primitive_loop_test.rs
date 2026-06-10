@@ -206,8 +206,14 @@ fn primitive_loop_risky_json_fallback_returns_permission_tool_result() {
         content.contains("VERIFIED_PERMISSION_DECISION")
             && content.contains("tool: bash")
             && content.contains("decision: needs_approval")
+            && content.contains("approval_id: approval-1")
             && content.contains("execution_performed: false")
     }));
+    let pending = session.pending_approval().expect("pending approval");
+    assert_eq!(pending.id, "approval-1");
+    assert_eq!(pending.tool, "bash");
+    assert_eq!(pending.status.as_str(), "pending");
+    assert!(pending.arguments_preview.contains("echo hello"));
 }
 
 #[test]
@@ -239,8 +245,13 @@ fn primitive_loop_native_risky_tool_calls_return_permission_tool_results() {
             content.contains("VERIFIED_PERMISSION_DECISION")
                 && content.contains(&format!("tool: {tool}"))
                 && content.contains("decision: needs_approval")
+                && content.contains("approval_id: approval-1")
                 && content.contains("execution_performed: false")
         }));
+        let pending = session.pending_approval().expect("pending approval");
+        assert_eq!(pending.id, "approval-1");
+        assert_eq!(pending.tool, tool);
+        assert_eq!(pending.status.as_str(), "pending");
     }
 }
 

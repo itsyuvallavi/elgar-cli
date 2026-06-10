@@ -10,15 +10,20 @@ effect themselves.
 
 - `types.rs` defines `Allow`, `NeedsApproval`, and `Deny` decisions.
 - `policy.rs` maps validated primitive requests to a permission decision.
+- `approval.rs` defines the single pending approval record stored by core.
 
 ## Current Behavior
 
 - `read`, `ls`, `find`, and `grep` are allowed.
 - `bash`, `write`, and `edit` return `NeedsApproval`.
-- No approval prompt exists yet.
+- `NeedsApproval` creates a pending approval record with id, tool, reason,
+  argument preview, and `pending` status.
+- Core stores one pending approval slot. A later risky request can replace the
+  current pending pointer, while older approval ids remain visible in verified
+  evidence and logs.
+- No approval command or button exists yet.
 - No shell command or file write/edit executes yet.
 
 ## Future Files
 
-- `approval.rs` for user approval flow state.
 - `risk.rs` for richer classification of requested operations.

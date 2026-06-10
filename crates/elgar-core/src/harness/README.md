@@ -20,7 +20,8 @@ tool action forever.
 The active executable primitives are `read`, `ls`, `find`, and `grep`.
 Primitive `bash`, `write`, and `edit` are declared for the future but are not
 executable yet. Permission policy decisions are logged now, but approval prompts
-and side-effect execution are still future stages.
+and side-effect execution are still future stages. Core now stores one pending
+approval record when a risky primitive needs approval.
 The model can request one primitive or a small batch of primitive requests in a
 single provider call. Verified tool results are returned as `role:"tool"`
 messages. If a text fallback response is invalid before any evidence exists,

@@ -125,6 +125,7 @@ fn latest_turn_summary_counts_permission_decisions() {
         [
             r#"{"session_id":"cli-runtime","turn_id":0,"summary":"harness_turn_started","metadata":{"harness_mode":"read_only_primitive_loop"}}"#,
             r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_permission_decision","metadata":{"tool":"bash","decision":"needs_approval","execution_allowed":false}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_approval_requested","metadata":{"approval_id":"approval-1","tool":"bash","status":"pending","execution_allowed":false}}"#,
             r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_loop_finished","duration_ms":1000,"metadata":{"rounds":1,"stopped_reason":"native_final_text","has_final_text":true}}"#,
         ]
         .join("\n"),

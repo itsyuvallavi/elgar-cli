@@ -42,7 +42,10 @@ pub use model_choice::{
     parse_model_choice_with_registry, EvidenceDepth, ModelChoice, ModelChoiceTurnError,
     StructuredRequestKind, StructuredRequestValidationError, ValidatedStructuredRequest,
 };
-pub use permissions::{decide_primitive_permission, PermissionDecision, PermissionDecisionKind};
+pub use permissions::{
+    decide_primitive_permission, PendingApproval, PendingApprovalStatus, PermissionDecision,
+    PermissionDecisionKind,
+};
 pub use primitive_tools::{
     PrimitiveTool, PrimitiveToolId, PrimitiveToolRegistry, PrimitiveToolSideEffectLevel,
 };

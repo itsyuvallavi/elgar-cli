@@ -155,11 +155,16 @@ pub(in crate::harness::harness_loop) fn permission_evidence(
     label: String,
     request: &ValidatedStructuredRequest,
     decision: &PermissionDecision,
+    approval_id: Option<&str>,
 ) -> Evidence {
+    let approval_line = approval_id
+        .map(|id| format!("approval_id: {id}\n"))
+        .unwrap_or_default();
     let body = format!(
-        "VERIFIED_PERMISSION_DECISION\ntool: {}\ndecision: {}\nreason: {}\nexecution_performed: false\n",
+        "VERIFIED_PERMISSION_DECISION\ntool: {}\ndecision: {}\n{}reason: {}\nexecution_performed: false\n",
         request.kind.as_str(),
         decision.kind.as_str(),
+        approval_line,
         decision.reason.as_str()
     );
     Evidence {

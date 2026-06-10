@@ -14,14 +14,14 @@ use crate::{
             state::{
                 budget::{BudgetCheck, PrimitiveLoopBudget, PrimitiveLoopBudgetState},
                 logging::{
-                    log_harness_duplicate_rejected, log_harness_memory_snapshot, log_loop_evidence,
-                    log_permission_decision,
+                    log_harness_approval_requested, log_harness_duplicate_rejected,
+                    log_harness_memory_snapshot, log_loop_evidence, log_permission_decision,
                 },
                 memory::HarnessWorkingMemory,
                 types::{Evidence, PrimitiveHarnessLoopRound},
             },
         },
-        PrimitiveToolRegistry, ValidatedStructuredRequest,
+        PendingApproval, PermissionDecisionKind, PrimitiveToolRegistry, ValidatedStructuredRequest,
     },
     session::Session,
 };
@@ -38,7 +38,7 @@ pub(super) enum RequestHandlingOutcome {
 /// Returns `ExecutionFailed` when the caller should synthesize from error
 /// evidence immediately.
 pub(super) fn collect_request_evidence(
-    session: &Session,
+    session: &mut Session,
     registry: &PrimitiveToolRegistry,
     request: &ValidatedStructuredRequest,
     round_index: usize,
@@ -73,7 +73,18 @@ pub(super) fn collect_request_evidence(
     let permission = decide_primitive_permission(registry, request);
     log_permission_decision(session, round_index, request, &permission);
     if !permission.allows_execution() {
-        let evidence_item = permission_evidence(key.as_label(), request, &permission);
+        let approval_id = if matches!(permission.kind, PermissionDecisionKind::NeedsApproval) {
+            let approval_id = session.next_approval_id();
+            let approval =
+                PendingApproval::from_request(&approval_id, request, permission.reason.clone());
+            session.set_pending_approval(approval.clone());
+            log_harness_approval_requested(session, round_index, &approval);
+            Some(approval_id)
+        } else {
+            None
+        };
+        let evidence_item =
+            permission_evidence(key.as_label(), request, &permission, approval_id.as_deref());
         log_loop_evidence(session, round_index, &evidence_item);
         budget_state.record(&evidence_item);
         log_harness_memory_snapshot(session, round_index, "permission_blocked", memory);

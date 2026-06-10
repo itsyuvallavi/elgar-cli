@@ -11,6 +11,7 @@ use serde_json::json;
 use crate::{
     context::ContextAccounting,
     event::{Event, ProviderMetrics},
+    harness::{PendingApproval, PendingApprovalStatus},
     logs::{
         sessions,
         system::{append_log_event, LogInput, LogPhase},
@@ -33,6 +34,10 @@ pub struct Session {
     session_token_totals: SessionTokenTotals,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     latest_turn_token_usage: Option<LastTurnTokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_approval: Option<PendingApproval>,
+    #[serde(default)]
+    approval_sequence: u64,
 }
 
 impl Session {
@@ -51,6 +56,8 @@ impl Session {
             latest_context_window_snapshot: None,
             session_token_totals: SessionTokenTotals::default(),
             latest_turn_token_usage: None,
+            pending_approval: None,
+            approval_sequence: 0,
         }
     }
 
@@ -84,6 +91,20 @@ impl Session {
 
     pub fn latest_turn_token_usage(&self) -> Option<&LastTurnTokenUsage> {
         self.latest_turn_token_usage.as_ref()
+    }
+
+    pub fn pending_approval(&self) -> Option<&PendingApproval> {
+        self.pending_approval.as_ref()
+    }
+
+    pub(crate) fn set_pending_approval(&mut self, mut approval: PendingApproval) {
+        approval.status = PendingApprovalStatus::Pending;
+        self.pending_approval = Some(approval);
+    }
+
+    pub(crate) fn next_approval_id(&mut self) -> String {
+        self.approval_sequence = self.approval_sequence.saturating_add(1);
+        format!("approval-{}", self.approval_sequence)
     }
 
     pub fn next_turn_id(&self) -> u64 {
