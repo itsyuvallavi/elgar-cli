@@ -17,6 +17,47 @@ again, sync each queued item to Linear, then mark the item synced here.
 
 ## Queue
 
+### Memory Slice 2: Cross-Turn Session Context
+
+Status: `Done`
+Linear sync: `Needs Linear`
+Target team: `Elgar`
+Linear issue: `Create new issue`
+
+Issue title:
+
+```text
+Memory slice 2: inject verified facts and bounded chat history into harness prompts
+```
+
+Comment:
+
+```text
+Implemented memory slice 2 on branch codex/raw-chat-baseline.
+
+What changed:
+- Inject compact verified JSONL facts + bounded prior user/assistant turns at harness turn start.
+- /clear and /new reset core Session events and rotate session id so durable memory starts fresh.
+- Write/edit execution logs now include path metadata for recall facts.
+- Repair prompts reuse session context.
+
+Key files:
+- crates/elgar-core/src/harness/harness_loop/provider/session_context.rs
+- crates/elgar-core/src/harness/memory/render.rs
+- crates/elgar-core/src/session.rs (reset_conversation)
+
+Tests:
+- cargo test -p elgar-core harness
+- cargo test -p elgar-cli
+- cargo test -p elgar-tui
+- ./bin/check-local
+
+Known limitations:
+- JSONL is re-read each turn (no in-memory index cache yet).
+- Live model recall quality still depends on LM Studio model behavior.
+- Dogfood Test 1 replay in playground/Nextjs-1 still recommended.
+```
+
 ### Plain Chat Reasoning Latency Audit
 
 Status: `In Progress`

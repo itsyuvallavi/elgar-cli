@@ -36,7 +36,7 @@ pub(super) fn execute_approved_write(
         "write",
         Some(0),
         duration_ms,
-        serde_json::json!({}),
+        serde_json::json!({ "path": path }),
     );
 
     Ok(ApprovalCommandResult {

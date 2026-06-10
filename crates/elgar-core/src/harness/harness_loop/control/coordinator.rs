@@ -27,12 +27,13 @@ use crate::{
             provider::{
                 context::native_tool_loop_initial_messages,
                 decision::request_native_tool_loop_response,
+                session_context::TurnPromptContextStats,
             },
             state::{
                 budget::{PrimitiveLoopBudget, PrimitiveLoopBudgetState},
                 logging::{
                     log_loop_model_choice, log_loop_repair_finished, log_loop_repair_started,
-                    log_loop_round_finished, log_loop_round_started,
+                    log_loop_round_finished, log_loop_round_started, log_turn_prompt_context,
                 },
                 memory::HarnessWorkingMemory,
                 types::PrimitiveHarnessLoopResult,
@@ -61,9 +62,21 @@ where
     let mut rounds = Vec::new();
     let mut evidence = Vec::new();
     let mut memory = HarnessWorkingMemory::default();
-    let mut messages = native_tool_loop_initial_messages(input);
+    let turn_context = native_tool_loop_initial_messages(session, input);
+    let TurnPromptContextStats {
+        initial_message_count,
+        history_turns,
+        verified_fact_count,
+    } = turn_context.stats;
+    let mut messages = turn_context.messages;
 
     log_loop_started(session, loop_turn_id, input, &budget);
+    log_turn_prompt_context(
+        session,
+        initial_message_count,
+        history_turns,
+        verified_fact_count,
+    );
 
     let mut round_index = 0usize;
     loop {

@@ -55,6 +55,7 @@ where
         if is_tui_help_command(input) {
             rendered_turns.push(render_tui_help().to_string());
         } else if is_tui_clear_command(input) {
+            session.reset_conversation();
             shell.clear_conversation();
             rendered_turns.push(shell.render_scripted_transcript());
         } else if is_tui_cancel_command(input) {
@@ -163,6 +164,7 @@ where
         if is_tui_help_command(&input) {
             writeln!(writer, "{}", render_tui_help())?;
         } else if is_tui_clear_command(&input) {
+            session.reset_conversation();
             shell.clear_conversation();
             writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else if is_tui_cancel_command(&input) {
@@ -220,9 +222,12 @@ fn submit_tui_input<P>(
         TerminalCommand::Text(text) => {
             shell.submit_harness_input(provider, session, text);
         }
+        TerminalCommand::Clear => {
+            session.reset_conversation();
+            shell.clear_conversation();
+        }
         TerminalCommand::Empty
         | TerminalCommand::Help
-        | TerminalCommand::Clear
         | TerminalCommand::Copy
         | TerminalCommand::CopyRaw
         | TerminalCommand::Exit => {}

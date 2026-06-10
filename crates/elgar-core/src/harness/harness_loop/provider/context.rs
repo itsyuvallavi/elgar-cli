@@ -11,17 +11,24 @@ use crate::{
                 state::{evidence_prompt_stats, EvidencePromptStats},
                 summary::render_compact_evidence_for_decision,
             },
+            provider::session_context::{
+                load_verified_memory_index, native_tool_loop_turn_context, TurnPromptContext,
+                TurnPromptContextStats, HISTORY_DISCLAIMER, VERIFIED_MEMORY_HEADER,
+            },
             state::{
                 memory::{render_working_memory_for_prompt, HarnessWorkingMemory},
                 types::Evidence,
             },
         },
-        loop_decision_contract, PrimitiveToolRegistry,
+        loop_decision_contract,
+        memory::render_verified_memory_for_prompt,
+        PrimitiveToolRegistry,
     },
     provider::ChatMessage,
+    session::Session,
 };
 
-const NATIVE_TOOL_LOOP_PROMPT: &str = r#"You are Elgar.
+pub(in crate::harness::harness_loop) const NATIVE_TOOL_LOOP_PROMPT: &str = r#"You are Elgar.
 
 Use the attached tools when you need verified local project evidence.
 If no tool is needed, answer normally in concise terminal-friendly text.
@@ -35,20 +42,21 @@ pub(in crate::harness::harness_loop) struct ProviderPromptContext {
     pub messages: Vec<ChatMessage>,
     pub evidence_mode: &'static str,
     pub stats: EvidencePromptStats,
+    #[allow(dead_code)]
+    pub turn_stats: TurnPromptContextStats,
 }
 
 /// Build the initial native provider tool-loop conversation.
 pub(in crate::harness::harness_loop) fn native_tool_loop_initial_messages(
+    session: &Session,
     input: &str,
-) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::system(NATIVE_TOOL_LOOP_PROMPT),
-        ChatMessage::user(input.trim()),
-    ]
+) -> TurnPromptContext {
+    native_tool_loop_turn_context(session, NATIVE_TOOL_LOOP_PROMPT, input)
 }
 
 /// Build messages for the one allowed protocol-repair call.
 pub(in crate::harness::harness_loop) fn repair_prompt_context(
+    session: &Session,
     input: &str,
     registry: &PrimitiveToolRegistry,
     evidence: &[Evidence],
@@ -64,24 +72,38 @@ pub(in crate::harness::harness_loop) fn repair_prompt_context(
         "compact"
     };
 
+    let turn_context = native_tool_loop_turn_context(session, NATIVE_TOOL_LOOP_PROMPT, input);
+    let memory_index = load_verified_memory_index(session);
+    let verified_facts = render_verified_memory_for_prompt(&memory_index);
+    let mut messages = turn_context.messages;
+    messages.pop();
+
+    let mut system_parts = vec![
+        loop_decision_contract(registry).to_string(),
+        HISTORY_DISCLAIMER.to_string(),
+    ];
+    if !verified_facts.is_empty() {
+        system_parts.push(format!("{VERIFIED_MEMORY_HEADER}\n{verified_facts}"));
+    }
+    messages[0] = ChatMessage::system(format!(
+        "{}\n\nYour previous response did not match the harness protocol. Repair only the format. Return exactly one valid decision. Do not use markdown, code fences, bullets, or explanatory prose. {} Do not explain the repair.",
+        system_parts.join("\n\n"),
+        repair_response_rule(evidence)
+    ));
+    messages.push(ChatMessage::user(format!(
+        "Original user request:\n{}\n\nShort-term harness memory for this turn:\n{}\n\nVerified evidence summary collected so far:\n{}\n\nValidation error:\n{}\n\nInvalid response:\n{}",
+        input.trim(),
+        render_working_memory_for_prompt(memory),
+        evidence_text,
+        validation_error,
+        bounded_raw_response(raw_response)
+    )));
+
     ProviderPromptContext {
-        messages: vec![
-            ChatMessage::system(format!(
-                "{}\n\nYour previous response did not match the harness protocol. Repair only the format. Return exactly one valid decision. Do not use markdown, code fences, bullets, or explanatory prose. {} Do not explain the repair.",
-                loop_decision_contract(registry),
-                repair_response_rule(evidence)
-            )),
-            ChatMessage::user(format!(
-                "Original user request:\n{}\n\nShort-term harness memory for this turn:\n{}\n\nVerified evidence summary collected so far:\n{}\n\nValidation error:\n{}\n\nInvalid response:\n{}",
-                input.trim(),
-                render_working_memory_for_prompt(memory),
-                evidence_text,
-                validation_error,
-                bounded_raw_response(raw_response)
-            )),
-        ],
+        messages,
         evidence_mode,
         stats,
+        turn_stats: turn_context.stats,
     }
 }
 

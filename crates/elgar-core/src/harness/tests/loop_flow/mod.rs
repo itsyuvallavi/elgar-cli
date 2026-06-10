@@ -8,3 +8,4 @@ mod memory_loop_test;
 mod native_loop_test;
 mod permission_loop_test;
 mod repair_loop_test;
+mod session_history_test;

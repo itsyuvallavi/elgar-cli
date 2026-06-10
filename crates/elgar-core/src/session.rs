@@ -118,6 +118,17 @@ impl Session {
             .count() as u64
     }
 
+    /// Clears in-memory conversation state and rotates the session id.
+    ///
+    /// JSONL logs for the previous id remain on disk for audit. New turns use a
+    /// fresh session id so durable memory indexes start empty.
+    pub fn reset_conversation(&mut self) {
+        self.events.clear();
+        self.pending_approval = None;
+        self.latest_turn_token_usage = None;
+        self.id = rotate_session_id(&self.id);
+    }
+
     pub(crate) fn push_event(&mut self, event: Event) {
         self.log_event(&event);
         self.log_session_system_event(&event);
@@ -204,6 +215,15 @@ impl Session {
     }
 }
 
+fn rotate_session_id(current: &str) -> String {
+    if let Some((base, suffix)) = current.rsplit_once("-clear-") {
+        if let Ok(generation) = suffix.parse::<u32>() {
+            return format!("{base}-clear-{}", generation + 1);
+        }
+    }
+    format!("{current}-clear-1")
+}
+
 fn event_log_kind(event: &Event) -> &'static str {
     match event {
         Event::UserMessage(_) => "user_message",
@@ -231,5 +251,34 @@ impl ProviderMetadata {
             request_id: None,
             metrics: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{AssistantMessage, AssistantMessageSource, Event, UserMessage};
+
+    #[test]
+    fn reset_conversation_clears_events_and_rotates_session_id() {
+        let root = std::env::temp_dir().join(format!("elgar-session-reset-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let mut session = Session::new("terminal-tui-session", &root, &root);
+        session.push_event(Event::UserMessage(UserMessage::new("hello")));
+        session.push_event(Event::AssistantMessage(AssistantMessage::new(
+            "hi",
+            AssistantMessageSource::Provider,
+        )));
+
+        session.reset_conversation();
+
+        assert!(session.events().is_empty());
+        assert_eq!(session.id, "terminal-tui-session-clear-1");
+
+        session.reset_conversation();
+        assert_eq!(session.id, "terminal-tui-session-clear-2");
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

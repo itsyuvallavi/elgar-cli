@@ -40,6 +40,8 @@ Current active path:
 
 ```text
 user prompt
+-> harness builds initial provider messages:
+     system prompt + verified session facts + bounded prior user/assistant turns
 -> harness native tool loop call
 -> provider gets native tool schemas
 -> provider returns native tool_calls, JSON/text fallback, or final text
@@ -60,6 +62,9 @@ Current strengths:
 - provider tool calls are already preferred when present
 - JSON parsing exists as fallback only
 - logs show rounds, provider calls, tools, tokens, repairs, and stop reason
+- cross-turn session context injects compact verified facts and bounded chat
+  history at turn start; `/clear` rotates the session id and clears in-memory
+  conversation state
 
 Current weaknesses:
 

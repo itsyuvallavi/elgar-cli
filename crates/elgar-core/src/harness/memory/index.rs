@@ -33,46 +33,89 @@ pub fn build_memory_index(events: &[LocalSessionLogEvent]) -> HarnessMemoryIndex
 }
 
 fn index_tool_result(index: &mut HarnessMemoryIndex, event: &LocalSessionLogEvent) {
-    let Some(tool) = metadata_string(&event.metadata, "tool") else {
+    if let Some(tool) = metadata_string(&event.metadata, "tool") {
+        match tool.as_str() {
+            "read" => push_metadata_fact(index, event, HarnessMemoryKind::ReadFile, "path"),
+            "ls" => push_metadata_fact(index, event, HarnessMemoryKind::ListedDirectory, "path"),
+            "find" => push_compound_fact(
+                index,
+                event,
+                HarnessMemoryKind::FindQuery,
+                &["path", "pattern"],
+            ),
+            "grep" => push_compound_fact(
+                index,
+                event,
+                HarnessMemoryKind::GrepQuery,
+                &["path", "query"],
+            ),
+            _ => {}
+        }
+        return;
+    }
+
+    if let Some(label) = metadata_string(&event.metadata, "evidence_label") {
+        index_tool_result_from_evidence_label(index, event, &label);
+    }
+}
+
+fn index_tool_result_from_evidence_label(
+    index: &mut HarnessMemoryIndex,
+    event: &LocalSessionLogEvent,
+    label: &str,
+) {
+    let Some((tool, rest)) = label.split_once(':') else {
         return;
     };
-    match tool.as_str() {
-        "read" => push_metadata_fact(index, event, HarnessMemoryKind::ReadFile, "path"),
-        "ls" => push_metadata_fact(index, event, HarnessMemoryKind::ListedDirectory, "path"),
-        "find" => push_compound_fact(
-            index,
-            event,
-            HarnessMemoryKind::FindQuery,
-            &["path", "pattern"],
-        ),
-        "grep" => push_compound_fact(
-            index,
-            event,
-            HarnessMemoryKind::GrepQuery,
-            &["path", "query"],
-        ),
+
+    match tool {
+        "read" => push_fact(index, event, HarnessMemoryKind::ReadFile, rest.to_string()),
+        "ls" => push_fact(index, event, HarnessMemoryKind::ListedDirectory, rest.to_string()),
+        "find" => {
+            let Some((path, pattern)) = rest.split_once(':') else {
+                return;
+            };
+            push_fact(
+                index,
+                event,
+                HarnessMemoryKind::FindQuery,
+                format!("{path}:{pattern}"),
+            );
+        }
+        "grep" => {
+            let Some((path, query)) = rest.split_once(':') else {
+                return;
+            };
+            push_fact(
+                index,
+                event,
+                HarnessMemoryKind::GrepQuery,
+                format!("{path}:{query}"),
+            );
+        }
         _ => {}
     }
 }
 
 fn index_approved_execution(index: &mut HarnessMemoryIndex, event: &LocalSessionLogEvent) {
-    if let Some(tool) = metadata_string(&event.metadata, "tool") {
-        push_fact(index, event, HarnessMemoryKind::ApprovedExecution, tool);
-        return;
-    }
-
-    let key = match event.kind.as_str() {
-        "harness_bash_execution_finished" => "bash",
-        "harness_write_execution_finished" => "write",
-        "harness_edit_execution_finished" => "edit",
-        _ => return,
+    let tool = if let Some(tool) = metadata_string(&event.metadata, "tool") {
+        tool
+    } else {
+        match event.kind.as_str() {
+            "harness_bash_execution_finished" => "bash".to_string(),
+            "harness_write_execution_finished" => "write".to_string(),
+            "harness_edit_execution_finished" => "edit".to_string(),
+            _ => return,
+        }
     };
-    push_fact(
-        index,
-        event,
-        HarnessMemoryKind::ApprovedExecution,
-        key.to_string(),
-    );
+
+    let path = metadata_string(&event.metadata, "path")
+        .or_else(|| metadata_string(&event.metadata, "target_requested_path"));
+    let key = match path {
+        Some(path) => format!("{tool}:{path}"),
+        None => tool,
+    };
+    push_fact(index, event, HarnessMemoryKind::ApprovedExecution, key);
 }
 
 fn push_metadata_fact(

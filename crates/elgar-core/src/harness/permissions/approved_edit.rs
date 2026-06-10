@@ -58,7 +58,7 @@ pub(super) fn execute_approved_edit(
         "edit",
         Some(0),
         duration_ms,
-        serde_json::json!({}),
+        serde_json::json!({ "path": path }),
     );
 
     Ok(ApprovalCommandResult {

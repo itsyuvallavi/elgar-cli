@@ -87,6 +87,71 @@ fn builds_memory_index_from_verified_session_events() {
         .facts_by_kind(HarnessMemoryKind::PermissionDecision)
         .iter()
         .any(|fact| fact.key == "write"));
+    write_session_event(
+        &root,
+        "session-1",
+        2,
+        "harness_write_execution_finished",
+        json!({
+            "tool": "write",
+            "path": "mem-audit.md",
+            "exit_code": 0
+        }),
+    );
+
+    let events_with_write = read_session_memory_events(&root, "session-1").unwrap();
+    let index_with_write = build_memory_index(&events_with_write);
+    assert!(index_with_write
+        .facts_by_kind(HarnessMemoryKind::ApprovedExecution)
+        .iter()
+        .any(|fact| fact.key == "write:mem-audit.md"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn builds_memory_index_from_evidence_label_metadata() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-memory-evidence-label-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    write_session_event(
+        &root,
+        "session-1",
+        0,
+        "harness_tool_result_verified",
+        json!({
+            "evidence_label": "read:package.json",
+            "evidence_bytes": 100,
+            "truncated": false
+        }),
+    );
+    write_session_event(
+        &root,
+        "session-1",
+        1,
+        "harness_tool_result_verified",
+        json!({
+            "evidence_label": "ls:app",
+            "evidence_bytes": 200,
+            "truncated": false
+        }),
+    );
+
+    let events = read_session_memory_events(&root, "session-1").unwrap();
+    let index = build_memory_index(&events);
+
+    assert!(index
+        .facts_by_kind(HarnessMemoryKind::ReadFile)
+        .iter()
+        .any(|fact| fact.key == "package.json"));
+    assert!(index
+        .facts_by_kind(HarnessMemoryKind::ListedDirectory)
+        .iter()
+        .any(|fact| fact.key == "app"));
 
     let _ = std::fs::remove_dir_all(root);
 }

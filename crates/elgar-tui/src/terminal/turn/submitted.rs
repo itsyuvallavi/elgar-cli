@@ -66,6 +66,7 @@ where
             Ok((false, String::new()))
         }
         TerminalCommand::Clear => {
+            session.reset_conversation();
             clear_terminal_conversation(shell);
             clear_visible_terminal()?;
             Ok((false, String::new()))
@@ -213,6 +214,26 @@ mod tests {
     }
 
     #[test]
+    fn clear_command_resets_core_session_and_visible_conversation() {
+        let root = test_root("clear-session");
+        fs::create_dir_all(&root).unwrap();
+        let mut session = Session::new("terminal-tui-session", &root, &root);
+        let provider = ToolCallProvider::text_response("hello back");
+        let mut shell = TuiShell::new();
+
+        shell.submit_harness_input(&provider, &mut session, "hello");
+        assert!(!session.events().is_empty());
+
+        let result = handle_inline_submission("/clear", &provider, &mut session, &mut shell)
+            .expect("clear command should run");
+
+        assert_eq!(result, (false, String::new()));
+        assert!(session.events().is_empty());
+        assert_eq!(session.id, "terminal-tui-session-clear-1");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn approve_command_without_pending_request_stays_local() {
         let root = test_root("approve-empty");
         fs::create_dir_all(&root).unwrap();
@@ -239,6 +260,12 @@ mod tests {
         fn empty() -> Self {
             Self {
                 outputs: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn text_response(message: &str) -> Self {
+            Self {
+                outputs: Arc::new(Mutex::new(vec![ProviderOutput::new(message)])),
             }
         }
 

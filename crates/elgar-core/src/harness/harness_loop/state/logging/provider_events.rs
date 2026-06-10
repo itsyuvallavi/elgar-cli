@@ -99,6 +99,30 @@ pub(in crate::harness::harness_loop) fn log_provider_call_failed(
     );
 }
 
+pub(in crate::harness::harness_loop) fn log_turn_prompt_context(
+    session: &Session,
+    initial_message_count: usize,
+    history_turns: usize,
+    verified_fact_count: usize,
+) {
+    let _ = append_log_event(
+        &session.project_root,
+        &session.id,
+        LogInput::new(
+            session.next_turn_id(),
+            LogPhase::Runtime,
+            file!(),
+            "run_primitive_harness_loop",
+            "harness_turn_prompt_context_built",
+        )
+        .with_metadata(json!({
+            "initial_message_count": initial_message_count,
+            "history_turns": history_turns,
+            "verified_fact_count": verified_fact_count
+        })),
+    );
+}
+
 pub(in crate::harness::harness_loop) fn log_decision_context(
     session: &Session,
     round_index: usize,

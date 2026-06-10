@@ -67,6 +67,7 @@ where
     ));
 
     let prompt_context = repair_prompt_context(
+        session,
         input,
         registry,
         evidence,

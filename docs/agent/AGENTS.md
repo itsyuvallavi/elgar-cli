@@ -38,8 +38,8 @@ For normal chat, Elgar must not:
 - bypass the harness
 - use macro tools
 - send `tool_choice`
-- inject project memory until the memory prompt-injection slice is explicitly
-  planned and approved
+- inject unbounded or raw JSONL memory (use compact verified facts and bounded
+  chat history only)
 - run folder anchoring
 - use hardcoded natural-language trigger tables
 - write harness-authored assistant prose
@@ -58,8 +58,9 @@ Current harness capabilities:
   command unless a new plan explicitly reintroduces it.
 - `elgar logs latest` must stay a local diagnostic command and must not call the
   model.
-- Durable memory currently indexes verified session JSONL facts only. It does
-  not alter model prompts yet.
+- Durable memory indexes verified session JSONL facts and injects compact
+  advisory facts plus bounded prior user/assistant turns into harness prompts.
+  Assistant replay is display-only; verified facts override for file claims.
 
 ## Rebuild Direction
 

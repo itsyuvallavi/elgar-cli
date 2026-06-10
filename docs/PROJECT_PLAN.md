@@ -53,13 +53,15 @@ Active:
 - Native tool results return to the provider as `role:"tool"` messages, and
   normal final text ends the turn.
 - Fallback synthesis remains available for safe-stop paths.
+- Cross-turn harness memory injects compact verified JSONL facts plus bounded
+  prior user/assistant turns into provider prompts. `/clear` and `/new` reset
+  core conversation state and rotate the session id.
 - `NATIVE_TOOL_LOOP.md` documents the active native provider tool loop and
   remaining transition gaps.
 
 Paused or archived:
 
 - project planning
-- memory/context injection
 - project-review macro routing
 - old controller-style routing
 
@@ -130,8 +132,8 @@ Mitigations:
 
 ## Current Next Work
 
-1. Dogfood interactive TUI approval prompts and commands with write/edit/bash.
+1. Dogfood cross-turn recall and follow-up edits in `playground/Nextjs-1`
+   (Test 1 sequence).
 2. Design and add richer TUI approval buttons/cards on top of core approval
    state.
-3. Review loop token/speed logs from `Nextjs-1` manual tests after the
-   permissioned primitive path is stable.
+3. Review loop token/speed logs after memory injection on live LM Studio runs.

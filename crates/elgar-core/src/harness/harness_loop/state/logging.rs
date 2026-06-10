@@ -22,7 +22,7 @@ pub(in crate::harness::harness_loop) use permission_events::{
 };
 pub(in crate::harness::harness_loop) use provider_events::{
     log_decision_context, log_provider_call_failed, log_provider_call_finished,
-    log_provider_call_started,
+    log_provider_call_started, log_turn_prompt_context,
 };
 pub(in crate::harness::harness_loop) use round_events::{
     log_loop_finished, log_loop_round_finished, log_loop_round_started,
