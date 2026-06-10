@@ -70,7 +70,12 @@ fn index_tool_result_from_evidence_label(
 
     match tool {
         "read" => push_fact(index, event, HarnessMemoryKind::ReadFile, rest.to_string()),
-        "ls" => push_fact(index, event, HarnessMemoryKind::ListedDirectory, rest.to_string()),
+        "ls" => push_fact(
+            index,
+            event,
+            HarnessMemoryKind::ListedDirectory,
+            rest.to_string(),
+        ),
         "find" => {
             let Some((path, pattern)) = rest.split_once(':') else {
                 return;
