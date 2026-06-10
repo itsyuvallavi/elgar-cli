@@ -332,7 +332,7 @@ pub(in crate::harness::harness_loop) fn log_harness_approval_requested(
     round_index: usize,
     approval: &PendingApproval,
 ) {
-    let metadata = json!({
+    let mut metadata = json!({
         "round_index": round_index,
         "approval_id": approval.id.as_str(),
         "tool": approval.tool.as_str(),
@@ -341,6 +341,21 @@ pub(in crate::harness::harness_loop) fn log_harness_approval_requested(
         "arguments_preview_chars": approval.arguments_preview.chars().count(),
         "execution_allowed": false
     });
+    if let (Some(metadata), Some(target)) =
+        (metadata.as_object_mut(), approval.target_preview.as_ref())
+    {
+        metadata.insert(
+            "target_requested_path".to_string(),
+            json!(target.requested_path),
+        );
+        metadata.insert(
+            "target_resolved_preview_path".to_string(),
+            json!(target.resolved_preview_path),
+        );
+        metadata.insert("target_is_absolute".to_string(), json!(target.is_absolute));
+        metadata.insert("target_scope".to_string(), json!(target.scope.as_str()));
+        metadata.insert("target_warning".to_string(), json!(target.warning));
+    }
     let _ = append_log_event(
         &session.project_root,
         &session.id,

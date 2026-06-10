@@ -44,8 +44,8 @@ pub use model_choice::{
 };
 pub use permissions::{
     approve_pending_approval, decide_primitive_permission, deny_pending_approval,
-    ApprovalCommandError, ApprovalCommandResult, PendingApproval, PendingApprovalStatus,
-    PermissionDecision, PermissionDecisionKind,
+    ApprovalCommandError, ApprovalCommandResult, ApprovalTargetPreview, ApprovalTargetScope,
+    PendingApproval, PendingApprovalStatus, PermissionDecision, PermissionDecisionKind,
 };
 pub use primitive_tools::{
     PrimitiveTool, PrimitiveToolId, PrimitiveToolRegistry, PrimitiveToolSideEffectLevel,

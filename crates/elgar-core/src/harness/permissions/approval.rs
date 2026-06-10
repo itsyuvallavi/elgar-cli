@@ -3,9 +3,13 @@
 //! Approval state is runtime truth owned by core. UI surfaces may render or
 //! update it, but they should not invent approval records.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 use crate::harness::ValidatedStructuredRequest;
+
+use super::approval_preview::{preview_request_target, ApprovalTargetPreview};
 
 const ARGUMENT_PREVIEW_CHARS: usize = 500;
 
@@ -33,6 +37,7 @@ pub struct PendingApproval {
     pub tool: String,
     pub reason: String,
     pub arguments_preview: String,
+    pub target_preview: Option<ApprovalTargetPreview>,
     pub request: ValidatedStructuredRequest,
     pub status: PendingApprovalStatus,
 }
@@ -43,11 +48,30 @@ impl PendingApproval {
         request: &ValidatedStructuredRequest,
         reason: impl Into<String>,
     ) -> Self {
+        Self::build(id, request, reason, None)
+    }
+
+    pub fn from_request_with_launch_cwd(
+        id: impl Into<String>,
+        request: &ValidatedStructuredRequest,
+        reason: impl Into<String>,
+        launch_cwd: &Path,
+    ) -> Self {
+        Self::build(id, request, reason, Some(launch_cwd))
+    }
+
+    fn build(
+        id: impl Into<String>,
+        request: &ValidatedStructuredRequest,
+        reason: impl Into<String>,
+        launch_cwd: Option<&Path>,
+    ) -> Self {
         Self {
             id: id.into(),
             tool: request.kind.as_str().to_string(),
             reason: reason.into(),
             arguments_preview: bounded_arguments_preview(request),
+            target_preview: launch_cwd.and_then(|cwd| preview_request_target(cwd, request)),
             request: request.clone(),
             status: PendingApprovalStatus::Pending,
         }
@@ -107,5 +131,28 @@ mod tests {
         assert_eq!(approval.status, PendingApprovalStatus::Pending);
         assert!(approval.arguments_preview.chars().count() <= 503);
         assert!(approval.arguments_preview.ends_with("..."));
+    }
+
+    #[test]
+    fn pending_approval_carries_target_preview_when_launch_cwd_is_known() {
+        let request = ValidatedStructuredRequest {
+            kind: StructuredRequestKind::Write,
+            reason: "test".to_string(),
+            arguments: Some(json!({
+                "path": "demo.txt",
+                "content": "hello"
+            })),
+        };
+
+        let approval = PendingApproval::from_request_with_launch_cwd(
+            "approval-1",
+            &request,
+            "needs approval",
+            std::path::Path::new("/project"),
+        );
+
+        let preview = approval.target_preview.unwrap();
+        assert_eq!(preview.requested_path, "demo.txt");
+        assert_eq!(preview.resolved_preview_path, "/project/demo.txt");
     }
 }

@@ -11,6 +11,9 @@ This folder owns terminal display and formatting.
 - `prompt.rs` draws the editable prompt and live provider preview.
 - `footer.rs` formats the footer location/model/context line.
 - `render.rs` renders conversation output and Ratatui frames.
+- `code_syntax.rs` detects rendered code block borders, headers, and body
+  lines for ANSI/Ratatui styling.
+- `code_tokens.rs` classifies code body text into simple token styles.
 - `text.rs` wraps and formats transcript text for printing.
 
 ## Rule

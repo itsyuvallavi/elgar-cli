@@ -75,8 +75,12 @@ pub(super) fn collect_request_evidence(
     if !permission.allows_execution() {
         let approval_id = if matches!(permission.kind, PermissionDecisionKind::NeedsApproval) {
             let approval_id = session.next_approval_id();
-            let approval =
-                PendingApproval::from_request(&approval_id, request, permission.reason.clone());
+            let approval = PendingApproval::from_request_with_launch_cwd(
+                &approval_id,
+                request,
+                permission.reason.clone(),
+                &session.cwd,
+            );
             session.set_pending_approval(approval.clone());
             log_harness_approval_requested(session, round_index, &approval);
             Some(approval_id)

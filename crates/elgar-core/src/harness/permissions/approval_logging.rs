@@ -14,12 +14,13 @@ use crate::{
 };
 
 pub(super) fn log_approval_decision(session: &Session, approval: &PendingApproval) {
-    let metadata = json!({
+    let mut metadata = json!({
         "approval_id": approval.id,
         "tool": approval.tool,
         "status": approval.status.as_str(),
         "arguments_preview_chars": approval.arguments_preview.chars().count(),
     });
+    merge_target_preview(&mut metadata, approval);
     let _ = append_log_event(
         &session.project_root,
         &session.id,
@@ -108,6 +109,25 @@ fn merge_metadata(metadata: &mut Value, extra_metadata: Value) {
     for (key, value) in extra_metadata {
         metadata.insert(key.clone(), value.clone());
     }
+}
+
+fn merge_target_preview(metadata: &mut Value, approval: &PendingApproval) {
+    let (Some(metadata), Some(target)) =
+        (metadata.as_object_mut(), approval.target_preview.as_ref())
+    else {
+        return;
+    };
+    metadata.insert(
+        "target_requested_path".to_string(),
+        json!(target.requested_path),
+    );
+    metadata.insert(
+        "target_resolved_preview_path".to_string(),
+        json!(target.resolved_preview_path),
+    );
+    metadata.insert("target_is_absolute".to_string(), json!(target.is_absolute));
+    metadata.insert("target_scope".to_string(), json!(target.scope.as_str()));
+    metadata.insert("target_warning".to_string(), json!(target.warning));
 }
 
 fn unix_millis() -> u128 {

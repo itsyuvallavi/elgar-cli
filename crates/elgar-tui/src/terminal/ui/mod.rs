@@ -4,6 +4,8 @@
 //! start provider requests.
 
 pub(super) mod approval;
+pub(super) mod code_syntax;
+pub(super) mod code_tokens;
 pub(super) mod footer;
 pub(super) mod prompt;
 pub(super) mod render;

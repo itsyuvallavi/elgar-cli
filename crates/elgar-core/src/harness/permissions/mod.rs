@@ -7,6 +7,7 @@
 mod approval;
 mod approval_flow;
 mod approval_logging;
+mod approval_preview;
 mod approved_bash;
 mod approved_edit;
 mod approved_paths;
@@ -22,5 +23,6 @@ pub use approval::{PendingApproval, PendingApprovalStatus};
 pub use approval_flow::{
     approve_pending_approval, deny_pending_approval, ApprovalCommandError, ApprovalCommandResult,
 };
+pub use approval_preview::{ApprovalTargetPreview, ApprovalTargetScope};
 pub use policy::decide_primitive_permission;
 pub use types::{PermissionDecision, PermissionDecisionKind};

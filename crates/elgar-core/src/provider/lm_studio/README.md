@@ -15,6 +15,8 @@ root.
 - `format.rs` builds OpenAI-compatible chat request structs and JSON bodies.
 - `parse.rs` parses OpenAI-compatible, streaming, and error responses into
   Elgar `ProviderOutput` and `ProviderError` values.
+- `tests/` contains active LM Studio provider tests split by request
+  formatting, response parsing, and local HTTP behavior.
 
 ## Ownership
 
@@ -30,3 +32,4 @@ instead of reaching into these files directly.
 
 - `cargo check -p elgar-core`
 - `cargo check -p elgar-cli`
+- `cargo test -p elgar-core provider::lm_studio -- --nocapture`

@@ -37,6 +37,9 @@ Active:
   and `grep`.
 - Permission policy decisions exist for risky primitives.
 - Core stores one pending approval record when a risky primitive needs approval.
+- Pending `write` and `edit` approvals include a target preview that shows
+  relative/absolute path status and warns when the target appears outside the
+  launch folder.
 - Line-based CLI mode supports `/approve`, `/deny`, and `/reject`.
 - Interactive terminal TUI supports `/approve`, `/deny`, and `/reject` and
   renders the current pending approval record after provider turns. Richer
