@@ -7,9 +7,13 @@ use std::io;
 
 use elgar_core::harness::PendingApproval;
 
-use crate::terminal::ui::render::print_plain_block;
+use crate::terminal::ui::{
+    approval_card::{render_approval_footer_actions, render_pending_approval_card},
+    prompt::terminal_width,
+    render::print_plain_block,
+};
 
-/// Print the current pending approval, if one exists.
+/// Print the current pending approval card, if one exists.
 pub(crate) fn print_pending_approval(approval: Option<&PendingApproval>) -> io::Result<()> {
     let Some(approval) = approval else {
         return Ok(());
@@ -19,40 +23,13 @@ pub(crate) fn print_pending_approval(approval: Option<&PendingApproval>) -> io::
 }
 
 pub(in crate::terminal) fn render_pending_approval_text(approval: &PendingApproval) -> String {
-    let target = approval
-        .target_preview
-        .as_ref()
-        .map(render_target_preview)
-        .unwrap_or_default();
-    format!(
-        "Pending approval\nid: {}\ntool: {}\nstatus: {}\nreason: {}\n{}arguments: {}\n\nNot executed yet. Use /approve to run it or /deny to reject it.",
-        approval.id,
-        approval.tool,
-        approval.status.as_str(),
-        approval.reason,
-        target,
-        approval.arguments_preview
-    )
+    render_pending_approval_card(approval, terminal_width()).join("\n")
 }
 
-fn render_target_preview(approval: &elgar_core::harness::ApprovalTargetPreview) -> String {
-    let warning = approval
-        .warning
-        .as_ref()
-        .map(|warning| format!("WARNING: {warning}\n"))
-        .unwrap_or_default();
-    format!(
-        "{}target: {}\nresolved preview: {}\npath type: {}\nscope: {}\n",
-        warning,
-        approval.requested_path,
-        approval.resolved_preview_path,
-        if approval.is_absolute {
-            "absolute"
-        } else {
-            "relative"
-        },
-        approval.scope.as_str()
-    )
+pub(in crate::terminal) fn render_pending_approval_footer_actions(
+    approval: &PendingApproval,
+) -> String {
+    render_approval_footer_actions(approval)
 }
 
 #[cfg(test)]
@@ -78,11 +55,10 @@ mod tests {
 
         let rendered = render_pending_approval_text(&approval);
 
-        assert!(rendered.contains("Pending approval"));
+        assert!(rendered.contains("Approval required"));
         assert!(rendered.contains("id: approval-1"));
         assert!(rendered.contains("tool: write"));
         assert!(rendered.contains("status: pending"));
-        assert!(rendered.contains("Not executed yet."));
         assert!(rendered.contains("/approve"));
         assert!(rendered.contains("/deny"));
     }
@@ -116,5 +92,28 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn approval_card_respects_terminal_width() {
+        use crate::terminal::ui::prompt::drawable_width;
+        let request = ValidatedStructuredRequest {
+            kind: StructuredRequestKind::Write,
+            reason: "create requested file".to_string(),
+            arguments: Some(json!({
+                "path": "hello-world",
+                "content": "Hello, world!"
+            })),
+        };
+        let approval =
+            PendingApproval::from_request("approval-1", &request, "write requires approval");
+
+        let lines = crate::terminal::ui::approval_card::render_pending_approval_card(&approval, 40);
+        let max_width = lines
+            .iter()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
+        assert!(max_width <= drawable_width(40) + 2);
     }
 }

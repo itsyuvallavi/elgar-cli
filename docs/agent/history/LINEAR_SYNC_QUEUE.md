@@ -17,6 +17,36 @@ again, sync each queued item to Linear, then mark the item synced here.
 
 ## Queue
 
+### TUI Approval Card UX
+
+Status: `Done`
+Linear sync: `Needs Linear`
+Target team: `Elgar`
+Linear issue: `Create new issue`
+
+Issue title:
+
+```text
+TUI: boxed approval card with /approve and /deny action hints
+```
+
+Comment:
+
+```text
+Added boxed pending-approval card rendering and footer action hints on top of core pending_approval.
+
+Files:
+- crates/elgar-tui/src/terminal/ui/approval_card.rs
+- crates/elgar-tui/src/terminal/ui/approval.rs
+- crates/elgar-tui/src/terminal/display_context/mod.rs
+- docs/TUI.md
+- bin/install-local (unset CARGO_TARGET_DIR before build)
+
+Tests:
+- cargo test -p elgar-tui approval
+- ./bin/check-local
+```
+
 ### Memory Slice 2: Cross-Turn Session Context
 
 Status: `Done`

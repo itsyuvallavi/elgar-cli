@@ -154,10 +154,12 @@ fn scripted_tui_renders_outside_path_pending_approval_warning() {
     run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider).unwrap();
 
     let rendered = String::from_utf8(output).unwrap();
-    assert!(rendered.contains("Pending approval"));
+    assert!(rendered.contains("Approval required"));
     assert!(rendered.contains("target: /tmp/elgar-outside-warning-test.txt"));
     assert!(rendered.contains("scope: outside_launch_folder"));
     assert!(rendered.contains("WARNING: Approving may modify files outside the launch folder."));
+    assert!(rendered.contains("/approve"));
+    assert!(rendered.contains("/deny"));
 
     let _ = fs::remove_dir_all(root);
 }

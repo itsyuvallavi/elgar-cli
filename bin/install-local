@@ -7,6 +7,8 @@ install_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
 install_path="$install_dir/elgar"
 tmp_path="$install_dir/elgar.new"
 
+# Cursor may set CARGO_TARGET_DIR to a sandbox cache; always install from repo target/.
+unset CARGO_TARGET_DIR
 ELGAR_INSTALL_REPO_ROOT="$repo_root" cargo build -p elgar-cli
 mkdir -p "$install_dir"
 cp "$repo_root/target/debug/elgar" "$tmp_path"

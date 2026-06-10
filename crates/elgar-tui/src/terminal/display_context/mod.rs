@@ -16,7 +16,10 @@ use elgar_core::{
 use crate::theme;
 
 use super::{
-    ui::footer::{align_footer_line, footer_location_label},
+    ui::{
+        approval::render_pending_approval_footer_actions,
+        footer::{align_footer_line, footer_location_label},
+    },
     ANSI_MUTED,
 };
 
@@ -29,6 +32,7 @@ pub struct TerminalShellContext {
     pub provider_metrics: Option<ProviderMetrics>,
     pub context_accounting: ContextAccounting,
     pub context_window_snapshot: Option<ContextWindowSnapshot>,
+    pub approval_actions_line: Option<String>,
 }
 
 impl TerminalShellContext {
@@ -42,6 +46,7 @@ impl TerminalShellContext {
             provider_metrics: None,
             context_accounting: ContextAccounting::unknown(),
             context_window_snapshot: None,
+            approval_actions_line: None,
         }
     }
 
@@ -99,10 +104,14 @@ impl TerminalShellContext {
             (None, false) => model.to_string(),
             (None, true) => String::new(),
         };
-        if right.is_empty() {
+        let base = if right.is_empty() {
             left
         } else {
             align_footer_line(&left, &right, width)
+        };
+        match self.approval_actions_line.as_deref() {
+            Some(actions) => format!("{base}\n{actions}"),
+            None => base,
         }
     }
 
@@ -151,6 +160,9 @@ where
         context.provider = Some(request.provider);
         context.model = request.model;
     }
+    context.approval_actions_line = session
+        .pending_approval()
+        .map(render_pending_approval_footer_actions);
     context
 }
 

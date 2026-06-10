@@ -41,8 +41,9 @@ The current controls are command-based:
 - `/approve` executes the current pending approval through core.
 - `/deny` or `/reject` rejects and clears the current pending approval.
 
-The TUI only displays and submits approval commands. It does not own permission
-policy or execution truth.
+The TUI renders a boxed approval card with action hints and shows a compact
+`/approve` / `/deny` footer line while approval is pending. It only displays and
+submits approval commands; it does not own permission policy or execution truth.
 
 ## Rendering
 
