@@ -38,8 +38,9 @@ Active:
 - Permission policy decisions exist for risky primitives.
 - Core stores one pending approval record when a risky primitive needs approval.
 - Line-based CLI mode supports `/approve`, `/deny`, and `/reject`.
-- Interactive terminal TUI supports `/approve`, `/deny`, and `/reject` while
-  richer approval buttons are still pending.
+- Interactive terminal TUI supports `/approve`, `/deny`, and `/reject` and
+  renders the current pending approval record after provider turns. Richer
+  approval buttons/cards are still pending.
 - Approved `bash`, `write`, and `edit` requests execute from the launch folder
   boundary and return verified execution output.
 - The harness can batch multiple primitive read-only requests in one provider
@@ -124,7 +125,7 @@ Mitigations:
 
 ## Current Next Work
 
-1. Dogfood interactive TUI approval commands with write/edit/bash.
+1. Dogfood interactive TUI approval prompts and commands with write/edit/bash.
 2. Design and add richer TUI approval buttons/cards on top of core approval
    state.
 3. Review loop token/speed logs from `Nextjs-1` manual tests after the

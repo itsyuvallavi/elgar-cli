@@ -30,12 +30,27 @@ Known slash commands are handled locally.
 
 Unknown slash commands show a local error.
 
+## Approval Flow
+
+Risky primitives such as `bash`, `write`, and `edit` are not executed directly
+by the model. Core stores a pending approval record, and the TUI renders that
+record after the provider turn.
+
+The current controls are command-based:
+
+- `/approve` executes the current pending approval through core.
+- `/deny` or `/reject` rejects and clears the current pending approval.
+
+The TUI only displays and submits approval commands. It does not own permission
+policy or execution truth.
+
 ## Rendering
 
 The TUI renders:
 
 - user text
 - provider-authored assistant text
+- pending approval prompts
 - capped reasoning preview
 - response timing/token usage
 - prompt/footer state

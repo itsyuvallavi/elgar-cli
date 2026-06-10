@@ -25,6 +25,7 @@ use crate::{
             provider_worker::{start_harness_turn, ProviderTurnUpdate},
         },
         ui::{
+            approval::print_pending_approval,
             prompt::{InlineWorkingRenderer, LiveProviderOutput},
             render::{
                 print_new_conversation_lines, print_plain_block, print_spacer, print_user_block,
@@ -152,6 +153,7 @@ where
         .push_turn_metrics(turn_duration_millis, turn_usage.as_ref());
     shell.conversation.follow_latest();
     print_new_conversation_lines(shell, before, true, false)?;
+    print_pending_approval(session.pending_approval())?;
     let _ = append_log_event(
         &session.project_root,
         &session.id,

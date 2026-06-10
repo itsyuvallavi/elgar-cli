@@ -14,124 +14,57 @@ use elgar_core::{
     provider::{ControllerProvider, LmStudioProvider, ProviderStub},
     session::Session,
 };
+use elgar_tui::terminal::{
+    parse_terminal_command, render_terminal_help, render_unknown_command, TerminalCommand,
+};
 
 use crate::{load_runtime_provider, runtime_session_id, RuntimeProviderConfigError};
 
 pub fn is_tui_exit_command(input: &str) -> bool {
-    matches!(input.trim(), "/exit" | "/quit" | "/q")
+    matches!(parse_terminal_command(input), TerminalCommand::Exit)
 }
 
 pub fn is_tui_help_command(input: &str) -> bool {
-    matches!(input.trim(), "/help" | "/commands")
+    matches!(parse_terminal_command(input), TerminalCommand::Help)
 }
 
 pub fn is_tui_approval_command(input: &str) -> bool {
-    input.trim() == "/approve"
+    matches!(parse_terminal_command(input), TerminalCommand::Approve)
 }
 
 pub fn is_tui_rejection_command(input: &str) -> bool {
-    matches!(input.trim(), "/deny" | "/reject")
+    matches!(parse_terminal_command(input), TerminalCommand::Deny)
 }
 
 pub fn is_tui_copy_command(input: &str) -> bool {
-    input.trim() == "/copy"
+    matches!(parse_terminal_command(input), TerminalCommand::Copy)
 }
 
 pub fn is_tui_copy_raw_command(input: &str) -> bool {
-    matches!(input.trim(), "/copy raw" | "/copy details")
+    matches!(parse_terminal_command(input), TerminalCommand::CopyRaw)
 }
 
 pub fn is_tui_details_command(input: &str) -> bool {
-    matches!(input.trim(), "/details" | "/details last")
-}
-
-pub fn is_tui_memory_command(input: &str) -> bool {
-    let _ = input;
-    false
-}
-
-pub fn is_tui_state_snapshot_command(input: &str) -> bool {
-    let _ = input;
-    false
-}
-
-pub fn is_tui_status_command(input: &str) -> bool {
-    let _ = input;
-    false
-}
-
-pub fn is_tui_pending_command(input: &str) -> bool {
-    let _ = input;
-    false
-}
-
-pub fn is_tui_created_command(input: &str) -> bool {
-    let _ = input;
-    false
-}
-
-pub fn is_tui_plan_preview_command(input: &str) -> bool {
-    let _ = input;
-    false
-}
-
-pub fn is_tui_reasoning_command(input: &str) -> bool {
-    let _ = input;
-    false
-}
-
-pub fn is_tui_tokens_command(input: &str) -> bool {
-    let _ = input;
-    false
-}
-
-pub fn tui_tool_command_argument(input: &str) -> Option<&str> {
-    let _ = input;
-    None
-}
-
-pub fn tui_permission_command_argument(input: &str) -> Option<Option<&str>> {
-    let _ = input;
-    None
+    matches!(parse_terminal_command(input), TerminalCommand::DetailsLast)
 }
 
 pub fn is_tui_clear_command(input: &str) -> bool {
-    matches!(input.trim(), "/clear" | "/new")
+    matches!(parse_terminal_command(input), TerminalCommand::Clear)
 }
 
 pub fn is_tui_cancel_command(input: &str) -> bool {
-    input.trim() == "/cancel"
+    matches!(parse_terminal_command(input), TerminalCommand::Cancel)
 }
 
 pub fn tui_unknown_command(input: &str) -> Option<&str> {
-    let trimmed = input.trim();
-    if !trimmed.starts_with('/') {
-        return None;
-    }
-    if is_tui_exit_command(trimmed)
-        || is_tui_help_command(trimmed)
-        || is_tui_copy_command(trimmed)
-        || is_tui_copy_raw_command(trimmed)
-        || is_tui_details_command(trimmed)
-        || is_tui_approval_command(trimmed)
-        || is_tui_rejection_command(trimmed)
-        || is_tui_clear_command(trimmed)
-        || is_tui_cancel_command(trimmed)
-    {
-        None
-    } else {
-        Some(trimmed)
+    match parse_terminal_command(input) {
+        TerminalCommand::Unknown(command) => Some(command),
+        _ => None,
     }
 }
 
 pub fn render_tui_unknown_command(command: &str) -> String {
-    format!(
-        "Unknown command: {command}\nUse /commands to see local commands. Plain text without / is sent to the model."
-    )
-}
-
-pub fn render_tui_tool_usage() -> &'static str {
-    "Unknown command: /tool\nPlain text now sends one harness-controlled model turn."
+    render_unknown_command(command)
 }
 
 /// Applies one submitted scripted input to the shell/session.
@@ -143,30 +76,39 @@ fn submit_tui_input<P>(
 ) where
     P: ControllerProvider,
 {
-    if is_tui_cancel_command(input) {
-        shell.push_local_message("No active provider turn to cancel.");
-    } else if is_tui_approval_command(input) {
-        match approve_pending_approval(session) {
+    match parse_terminal_command(input) {
+        TerminalCommand::Cancel => {
+            shell.push_local_message("No active provider turn to cancel.");
+        }
+        TerminalCommand::Approve => match approve_pending_approval(session) {
             Ok(result) => shell.push_local_message(result.message),
             Err(error) => shell.push_local_message(error.to_string()),
-        }
-    } else if is_tui_rejection_command(input) {
-        match deny_pending_approval(session) {
+        },
+        TerminalCommand::Deny => match deny_pending_approval(session) {
             Ok(result) => shell.push_local_message(result.message),
             Err(error) => shell.push_local_message(error.to_string()),
+        },
+        TerminalCommand::DetailsLast => {
+            shell.push_latest_raw_details();
         }
-    } else if is_tui_details_command(input) {
-        shell.push_latest_raw_details();
-    } else if let Some(command) = tui_unknown_command(input) {
-        shell.push_local_message(render_tui_unknown_command(command));
-    } else {
-        shell.submit_harness_input(provider, session, input);
+        TerminalCommand::Unknown(command) => {
+            shell.push_local_message(render_tui_unknown_command(command));
+        }
+        TerminalCommand::Text(text) => {
+            shell.submit_harness_input(provider, session, text);
+        }
+        TerminalCommand::Empty
+        | TerminalCommand::Help
+        | TerminalCommand::Clear
+        | TerminalCommand::Copy
+        | TerminalCommand::CopyRaw
+        | TerminalCommand::Exit => {}
     }
 }
 
 /// Renders the local help text for scripted TUI commands.
 pub fn render_tui_help() -> &'static str {
-    "Commands\nChat\n  plain text           Send one harness-controlled model turn\n  /cancel              Cancel the active provider turn\nApproval\n  /approve             Approve and execute the pending risky primitive\n  /deny                Deny the pending risky primitive\n  /reject              Deny the pending risky primitive\nView\n  /clear               Clear the visible conversation\n  /new                 Clear the visible conversation\n  /details last        Show latest hidden details\n  /copy                Copy the conversation\n  /copy raw            Copy hidden details\n  /help                Show commands\n  /commands            Show commands\nExit\n  /exit                Quit\n  /quit                Quit\n  /q                   Quit"
+    render_terminal_help()
 }
 
 /// Runs scripted inputs against the stub provider and returns the transcript.

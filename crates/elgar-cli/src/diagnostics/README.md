@@ -10,7 +10,9 @@ Diagnostic and scripted CLI surfaces.
 - `logs.rs` reads existing system JSONL logs and renders the latest turn
   summary for humans.
 - `provider_smoke.rs` sends one direct LM Studio smoke-test request.
-- `scripted_tui.rs` runs the line-based stdin/stdout TUI used by tests and scripts.
+- `scripted_tui.rs` runs the line-based stdin/stdout TUI used by tests and
+  scripts. It reuses `elgar-tui` slash-command parsing so scripted and
+  interactive command names stay aligned.
 
 ## Ownership
 

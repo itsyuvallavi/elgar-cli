@@ -21,6 +21,9 @@ mod input;
 mod turn;
 mod ui;
 
+pub use commands::{
+    parse_terminal_command, render_terminal_help, render_unknown_command, TerminalCommand,
+};
 use display_context::terminal_context;
 pub use display_context::TerminalShellContext;
 use inline::print_inline_startup;

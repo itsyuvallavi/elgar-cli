@@ -97,7 +97,7 @@ work named in parentheses. **Defer** = do not schedule yet.
 | 400 | `elgar-tui/src/markdown.rs` | Markdown pipeline | **Defer** |
 | 362 | `elgar-tui/src/code_blocks.rs` | Syntax/block rendering | **Defer** |
 | 361 | `elgar-tui/src/panes/conversation.rs` | Pane + event rendering | **Pair** (approval card) |
-| 352 | `elgar-cli/src/diagnostics/scripted_tui.rs` | Duplicated slash logic | **Now** (slash unification) |
+| 352 | `elgar-cli/src/diagnostics/scripted_tui.rs` | Duplicated slash logic | **Done** (delegates to shared TUI parser/help text) |
 | 351 | `provider/lm_studio/openai.rs` | Provider HTTP + parse | **Defer** |
 | 319 | `harness/context/directory.rs` | Collector + local path helpers | **Pair** (`path.rs` extract) |
 | 316 | `harness/context/grep.rs` | Same | **Pair** (`path.rs` extract) |
@@ -110,7 +110,7 @@ Files in the 230–290 line range (`session.rs`, `event/mod.rs`, `evidence/execu
 
 | Location A | Location B | Overlap | Action |
 |------------|------------|---------|--------|
-| `elgar-cli/.../scripted_tui.rs` (`is_tui_*` predicates, handlers) | `elgar-tui/.../terminal/commands/parse.rs` + `turn/submitted.rs` | Slash command parse/help/approve path | **Now** |
+| `elgar-cli/.../scripted_tui.rs` (`is_tui_*` predicates, handlers) | `elgar-tui/.../terminal/commands/parse.rs` + `turn/submitted.rs` | Slash command parse/help/approve path | **Done** for parse/help/unknown-command contract; handler shape remains CLI-local |
 | `harness/context/{directory,find,grep,project_file}.rs` | Each other | `canonicalize`, `root.join`, walk/noise patterns | **Pair** (`harness/context/path.rs`) |
 | `harness/permissions/approved_paths.rs` | Collector path logic above | Resolve/jail/symlink rules | **Pair** (bash safety + path helpers) |
 | *(missing)* bash cwd/path policy | `approved_paths.rs` | Bash runs any `sh -c` in `session.cwd` | **Pair** (bash safety — product, not dedupe) |
@@ -160,8 +160,10 @@ use only as historical reference.
 **Slash commands**
 
 - Export `parse_terminal_command`, `render_terminal_help`, `render_unknown_command` from `elgar-tui`.
-- Delegate `elgar-cli/.../scripted_tui.rs` to TUI; remove duplicated `is_tui_*` predicates.
-- Resolves: scripted_tui duplication row; shortens `scripted_tui.rs`.
+- Delegate `elgar-cli/.../scripted_tui.rs` to TUI command parsing and command
+  message text.
+- Resolves: scripted_tui parser/help duplication. Compatibility `is_tui_*`
+  wrappers remain, but they no longer own a separate command table.
 
 **Path helpers**
 

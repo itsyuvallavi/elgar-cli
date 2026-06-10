@@ -4,7 +4,7 @@
 
 use super::TerminalCommand;
 
-pub(crate) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
+pub fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
     let trimmed = input.trim();
     match trimmed {
         "" => TerminalCommand::Empty,

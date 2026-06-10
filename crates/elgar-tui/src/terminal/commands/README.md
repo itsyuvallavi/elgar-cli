@@ -4,8 +4,9 @@
 
 Local slash-command support for the terminal UI.
 
-This folder does not talk to the model. It only parses local commands and
-provides helpers for local UI actions like copy, clear, and help text.
+This folder does not talk to the model. It parses the shared terminal
+slash-command contract and provides helpers for local UI actions like copy,
+clear, and help text.
 
 ## Files
 
@@ -20,6 +21,8 @@ provides helpers for local UI actions like copy, clear, and help text.
 ## Boundary
 
 Command execution is decided by `terminal/turn/submitted.rs`.
+Scripted diagnostics in `elgar-cli` may reuse this parser, but they should not
+define separate command names.
 
 Example:
 
