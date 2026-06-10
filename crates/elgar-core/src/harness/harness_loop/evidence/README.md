@@ -5,7 +5,11 @@ Turns validated primitive requests into verified evidence for the model.
 ## Files
 
 - `mod.rs` exposes evidence execution modules inside `harness_loop`.
-- `execution.rs` runs read-only primitive collectors and renders evidence.
+- `execution.rs` runs executable primitive collectors.
+- `keys.rs` builds stable duplicate/budget keys for primitive requests.
+- `request_args.rs` reads typed arguments from validated primitive requests.
+- `render.rs` renders verified evidence, permission evidence, and execution
+  errors.
 - `summary.rs` renders compact summaries for fallback decision/repair paths.
 - `state.rs` measures full evidence bytes versus compact prompt bytes.
 

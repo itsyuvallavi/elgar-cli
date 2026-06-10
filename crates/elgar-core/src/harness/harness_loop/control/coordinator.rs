@@ -12,13 +12,16 @@ use crate::{
             control::{
                 choice_from_output::{
                     model_choice_from_provider_output, native_tool_requests_from_provider_output,
-                    NativeToolRequest,
                 },
                 finish::{
                     finish_invalid_model_choice, finish_with_model_message, synthesize_loop_answer,
                 },
-                request_handling::{collect_request_evidence, RequestHandlingOutcome},
+                native_execution::execute_native_tool_request,
                 start::log_loop_started,
+                synthetic_tool_calls::{
+                    synthetic_assistant_tool_call, synthetic_assistant_tool_calls,
+                    synthetic_native_tool_request,
+                },
             },
             provider::repair::request_model_choice_repair,
             provider::{
@@ -37,7 +40,7 @@ use crate::{
         },
         EvidenceDepth, ModelChoice, ModelChoiceTurnError, PrimitiveToolRegistry,
     },
-    provider::{ChatMessage, ChatToolCall, ChatToolCallFunction, ControllerProvider},
+    provider::{ChatMessage, ControllerProvider},
     session::Session,
 };
 
@@ -300,107 +303,6 @@ where
 
         round_index = round_index.saturating_add(1);
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn execute_native_tool_request<P>(
-    provider: &P,
-    session: &mut Session,
-    input: &str,
-    native_request: NativeToolRequest,
-    round_index: usize,
-    registry: &PrimitiveToolRegistry,
-    budget: &PrimitiveLoopBudget,
-    budget_state: &mut PrimitiveLoopBudgetState,
-    memory: &mut HarnessWorkingMemory,
-    rounds: &mut Vec<crate::harness::PrimitiveHarnessLoopRound>,
-    evidence: &mut Vec<crate::harness::harness_loop::state::types::Evidence>,
-    messages: &mut Vec<ChatMessage>,
-    loop_turn_id: u64,
-    loop_started: Instant,
-) -> Result<Option<PrimitiveHarnessLoopResult>, ModelChoiceTurnError>
-where
-    P: ControllerProvider,
-{
-    let evidence_before = evidence.len();
-    match collect_request_evidence(
-        session,
-        registry,
-        &native_request.request,
-        round_index,
-        budget,
-        budget_state,
-        memory,
-        rounds,
-        evidence,
-    ) {
-        Ok(RequestHandlingOutcome::UsefulEvidence | RequestHandlingOutcome::ExecutionFailed) => {
-            let body = evidence
-                .get(evidence_before)
-                .map(|item| item.body.clone())
-                .unwrap_or_else(|| {
-                    "VERIFIED_LOOP_NOTICE\nNo new evidence was collected for this request."
-                        .to_string()
-                });
-            messages.push(ChatMessage::tool(native_request.tool_call_id, body));
-            Ok(None)
-        }
-        Ok(RequestHandlingOutcome::NoProgress) => {
-            messages.push(ChatMessage::tool(
-                native_request.tool_call_id,
-                "VERIFIED_LOOP_NOTICE\nDuplicate or no-op request rejected. Use the existing verified evidence or choose a different tool request.",
-            ));
-            Ok(None)
-        }
-        Err(stop_reason) => synthesize_loop_answer(
-            provider,
-            session,
-            input,
-            evidence,
-            std::mem::take(rounds),
-            stop_reason,
-            EvidenceDepth::Limited,
-            loop_turn_id,
-            loop_started,
-        )
-        .map(Some),
-    }
-}
-
-fn synthetic_native_tool_request(
-    round_index: usize,
-    request_index: usize,
-    request: crate::harness::ValidatedStructuredRequest,
-) -> NativeToolRequest {
-    NativeToolRequest {
-        tool_call_id: format!("json-fallback-{round_index}-{request_index}"),
-        request,
-    }
-}
-
-fn synthetic_assistant_tool_call(request: &NativeToolRequest) -> ChatMessage {
-    synthetic_assistant_tool_calls(std::slice::from_ref(request))
-}
-
-fn synthetic_assistant_tool_calls(requests: &[NativeToolRequest]) -> ChatMessage {
-    let tool_calls = requests
-        .iter()
-        .map(|request| ChatToolCall {
-            id: request.tool_call_id.clone(),
-            tool_type: "function".to_string(),
-            function: ChatToolCallFunction {
-                name: request.request.kind.as_str().to_string(),
-                arguments: request
-                    .request
-                    .arguments
-                    .as_ref()
-                    .map(serde_json::Value::to_string)
-                    .unwrap_or_else(|| "{}".to_string()),
-            },
-        })
-        .collect::<Vec<_>>();
-
-    ChatMessage::assistant("").with_tool_calls(tool_calls)
 }
 
 fn repair_needed_for_choice(choice: &ModelChoice) -> Option<(String, String)> {

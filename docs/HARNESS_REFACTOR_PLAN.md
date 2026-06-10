@@ -15,6 +15,8 @@ slices — not as a checklist to burn down in one pass.
 - Native tool loop is the primary harness route.
 - `bash`, `write`, and `edit` go through pending approval; `/approve`, `/deny`, and
   `/reject` work on scripted and interactive TUI entry points.
+- Core harness cleanup split the largest logging, coordinator-helper, evidence,
+  context-helper, and model-choice parser test files into narrower modules.
 - Broad dogfood passed (~39 tests). Remaining gaps are product/policy, not loop shape:
   - approval UX (cards/buttons, less model-authored “done” prose)
   - bash approval clarity (bash is explicit shell execution, not a sandbox)
@@ -89,16 +91,16 @@ Re-run: `find crates -name '*.rs' ! -path '*_legacy*' -print0 | xargs -0 wc -l |
 
 | Lines | File | Issue | Action |
 |------:|------|-------|--------|
-| 914 | `elgar-core/.../harness/tests/loop_flow/primitive_loop_test.rs` | Harness loop tests in one file | **Defer** (test reorg) |
+| split | `elgar-core/.../harness/tests/loop_flow/*_test.rs` | Harness loop tests split by flow | **Done** |
 | 749 | `elgar-tui/.../terminal/ui/render.rs` | Frame layout + draw paths | **Defer** (pane refactor) |
-| 656 | `elgar-core/.../provider/lm_studio/tests.rs` | Provider integration tests | **Defer** |
+| split | `elgar-core/.../provider/lm_studio/tests/*.rs` | Provider integration tests split by topic | **Done** |
 | 590 | `elgar-cli/tests/smoke.rs` | CLI/TUI smoke integration | **Defer** |
-| 547 | `elgar-core/.../harness/tests/model_choice/parsing_test.rs` | Model-choice parsing tests | **Defer** |
+| split | `elgar-core/.../harness/tests/model_choice/parsing_*.rs` | Model-choice parsing tests split by concern | **Done** |
 | 96 | `elgar-core/.../harness/permissions/approval_flow.rs` | Approve/deny dispatch only after split | **Done** (`approval_logging.rs` + `approval_flow_tests.rs`) |
-| 498 | `elgar-core/.../harness/harness_loop/state/logging.rs` | Harness system-log helpers | **Pair** (logging touch) |
+| split | `elgar-core/.../harness/harness_loop/state/logging/*.rs` | Harness system-log helpers split by event family | **Done** |
 | 461 | `elgar-cli/.../diagnostics/logs.rs` | JSONL parse + human render | **Defer** (logs split) |
 | 440 | `elgar-tui/.../terminal/ui/prompt.rs` | Input chrome + approval affordances | **Pair** (approval card) |
-| 411 | `elgar-core/.../harness/harness_loop/control/coordinator.rs` | Native loop + synthesis entry | **Pair** (coordinator edit) |
+| 313 | `elgar-core/.../harness/harness_loop/control/coordinator.rs` | Native loop order after helper extraction | **Watch** |
 | 400 | `elgar-tui/src/markdown.rs` | Markdown → terminal pipeline | **Defer** |
 
 #### Tier B — 250–399 lines
@@ -108,14 +110,14 @@ Re-run: `find crates -name '*.rs' ! -path '*_legacy*' -print0 | xargs -0 wc -l |
 | 362 | `elgar-tui/src/code_blocks.rs` | Fence detection + highlighting | **Defer** |
 | 361 | `elgar-tui/.../panes/conversation.rs` | Event → visible transcript | **Pair** (approval card) |
 | 351 | `elgar-core/.../provider/lm_studio/openai.rs` | Chat completions request/response | **Defer** |
-| 319 | `elgar-core/.../harness/context/directory.rs` | `ls` collector + local path helpers | **Pair** (`path.rs`) |
-| 316 | `elgar-core/.../harness/context/grep.rs` | `grep` collector + walk helpers | **Pair** (`path.rs`) |
+| 314 | `elgar-core/.../harness/context/directory.rs` | `ls` collector; shared display helper extracted | **Watch** |
+| 287 | `elgar-core/.../harness/context/grep.rs` | `grep` collector; shared path/noise helpers extracted | **Watch** |
 | 294 | `elgar-cli/.../diagnostics/scripted_tui.rs` | Scripted TUI loop + handlers | **Done** (shared parse/help) |
 | 288 | `elgar-tui/.../terminal/turn/submitted.rs` | Submit path + slash dispatch | **Pair** (approval card) |
 | 273 | `elgar-core/src/event/mod.rs` | Session event types + helpers | **Watch** (split only when editing) |
-| 269 | `elgar-core/.../harness_loop/evidence/execution.rs` | Read-only + pending tool execution | **Pair** (permission naming) |
+| 112 | `elgar-core/.../harness_loop/evidence/execution.rs` | Primitive collector dispatch after key/render/arg split | **Done** |
 | 254 | `elgar-core/.../provider/http/transport.rs` | HTTP client + timeouts | **Watch** |
-| 250 | `elgar-core/.../harness/context/find.rs` | `find` collector | **Pair** (`path.rs`) |
+| 221 | `elgar-core/.../harness/context/find.rs` | `find` collector; shared path/noise helpers extracted | **Watch** |
 
 #### Tier C — 150–249 lines (watchlist)
 
@@ -162,7 +164,7 @@ Largest reference files: `agent_loop/tests.rs` (~9.7k), `plan_contract.rs` (~1.9
 | Location A | Location B | Overlap | Action |
 |------------|------------|---------|--------|
 | `elgar-cli/.../scripted_tui.rs` (`is_tui_*` predicates, handlers) | `elgar-tui/.../terminal/commands/parse.rs` + `turn/submitted.rs` | Slash command parse/help/approve path | **Done** for parse/help/unknown-command contract; handler shape remains CLI-local |
-| `harness/context/{directory,find,grep,project_file}.rs` | Each other | `canonicalize`, `root.join`, walk/noise patterns | **Pair** (`harness/context/path.rs`) |
+| `harness/context/{directory,find,grep,project_file}.rs` | Each other | `display_path`, optional path resolution, noise patterns | **Partial done** (`path.rs`, `noise.rs`) |
 | `harness/permissions/approved_paths.rs` | Collector path logic above | Resolve/jail/symlink rules | **Pair** (write/edit or collector path work) |
 | `approved_bash.rs` cwd visibility | `approval_flow.rs` logs | Bash runs exact `sh -c` in resolved cwd after approval | **Done** for cwd validation/visibility; no shell path jail by design |
 | `harness_loop/provider/decision.rs` | `harness_loop/provider/repair.rs` | Provider call + tool schema boilerplate | **Defer** (`call_with_tools.rs`) |
@@ -178,7 +180,7 @@ Largest reference files: `agent_loop/tests.rs` (~9.7k), `plan_contract.rs` (~1.9
 |---------------|-------|----------------------|--------|
 | `read_only_primitive_loop` | `harness/mod.rs` log metadata | `primitive_harness_loop` or `permissioned_primitive_loop` | **Pair** (any harness log touch) |
 | `"mode": "read_only"` | `harness_loop/control/start.rs` | Reflect permissioned executors | **Pair** |
-| `execute_read_only_request` | `evidence/execution.rs` | `execute_safe_primitive` or split read vs pending | **Pair** |
+| `execute_read_only_request` | `evidence/execution.rs` | Renamed to `execute_primitive_request` | **Done** |
 | “executable read-only primitives” | `harness/context/README.md`, `harness_loop/README.md`, `state/README.md` | Read-only **tools** + approval-gated risky tools | **Now** (doc pass with next harness PR) |
 | “Stage 3 read-only” | `permissions/policy.rs` comment | Stage / permission model as implemented | **Pair** |
 | `executable_in_stage` | `primitive_tools.rs`, tool definitions | Rename when schema stable | **Defer** |

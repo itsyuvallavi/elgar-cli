@@ -9,18 +9,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::{
+    noise::is_noisy_directory,
+    path::{display_path, resolve_optional_directory_path},
+};
+
 const DEFAULT_MAX_DEPTH: usize = 6;
 const DEFAULT_MAX_RESULTS: usize = 200;
 const DEFAULT_MAX_RENDERED_BYTES: usize = 16 * 1024;
-const NOISY_DIRECTORIES: [&str; 7] = [
-    ".git",
-    ".elgar",
-    ".next",
-    "target",
-    "node_modules",
-    "dist",
-    "build",
-];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FindOptions {
@@ -133,7 +129,7 @@ pub fn collect_find_matches(
         .as_ref()
         .canonicalize()
         .map_err(|error| FindError::RootUnreadable(error.to_string()))?;
-    let directory = resolve_requested_path(&root, requested_path);
+    let directory = resolve_optional_directory_path(&root, requested_path);
     let metadata = fs::symlink_metadata(&directory).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             FindError::PathNotFound(directory.clone())
@@ -158,14 +154,31 @@ pub fn collect_find_matches(
         truncated: false,
         max_rendered_bytes: options.max_rendered_bytes,
     };
-    collect_directory(&root, &directory, pattern, 0, &options, &mut snapshot)?;
+    let matcher = FindMatcher::new(pattern);
+    collect_directory(&root, &directory, &matcher, 0, &options, &mut snapshot)?;
     Ok(snapshot)
+}
+
+struct FindMatcher {
+    normalized_pattern: String,
+}
+
+impl FindMatcher {
+    fn new(pattern: &str) -> Self {
+        Self {
+            normalized_pattern: pattern.trim_matches('*').to_ascii_lowercase(),
+        }
+    }
+
+    fn matches(&self, path: &str) -> bool {
+        path.to_ascii_lowercase().contains(&self.normalized_pattern)
+    }
 }
 
 fn collect_directory(
     root: &Path,
     directory: &Path,
-    pattern: &str,
+    matcher: &FindMatcher,
     depth: usize,
     options: &FindOptions,
     snapshot: &mut FindSnapshot,
@@ -206,7 +219,7 @@ fn collect_directory(
         }
 
         let display_path = display_path(root, &path);
-        if display_path.contains(pattern) {
+        if matcher.matches(&display_path) {
             snapshot.matches.push(display_path.clone());
         }
 
@@ -217,34 +230,9 @@ fn collect_directory(
                     .push(format!("{display_path}: noise directory skipped"));
                 continue;
             }
-            collect_directory(root, &path, pattern, depth + 1, options, snapshot)?;
+            collect_directory(root, &path, matcher, depth + 1, options, snapshot)?;
         }
     }
 
     Ok(())
-}
-
-fn resolve_requested_path(root: &Path, path: &str) -> PathBuf {
-    let trimmed = path.trim();
-    if trimmed.is_empty() || trimmed == "." {
-        return root.to_path_buf();
-    }
-
-    let path = Path::new(trimmed);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    }
-}
-
-fn display_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .display()
-        .to_string()
-}
-
-fn is_noisy_directory(name: &str) -> bool {
-    NOISY_DIRECTORIES.contains(&name)
 }

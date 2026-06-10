@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Small local scripts for the current raw-chat baseline.
+Small local scripts for the current harness baseline.
 
 ## Active Scripts
 

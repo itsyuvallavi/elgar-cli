@@ -46,8 +46,8 @@
   model for future agent tools.
 - `docs/HARNESS_REFACTOR_PLAN.md` records selective cleanup and the harness debt inventory.
 - `docs/agent/` contains agent instructions.
-- `docs/archive/` contains historical plans.
-- `docs/maps/` contains generated visual maps.
+- `docs/archive/` contains historical plans and stale generated maps.
+- `docs/maps/` contains current visual sketches.
 
 ## Scripts
 

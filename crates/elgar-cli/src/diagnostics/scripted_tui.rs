@@ -15,7 +15,8 @@ use elgar_core::{
     session::Session,
 };
 use elgar_tui::terminal::{
-    parse_terminal_command, render_terminal_help, render_unknown_command, TerminalCommand,
+    parse_terminal_command, render_pending_approval_text, render_terminal_help,
+    render_unknown_command, TerminalCommand,
 };
 
 use crate::{load_runtime_provider, runtime_session_id, RuntimeProviderConfigError};
@@ -166,7 +167,7 @@ where
             rendered_turns.push(shell.render_scripted_transcript());
         } else {
             submit_tui_input(&mut shell, &provider, &mut session, input);
-            rendered_turns.push(render_tui_turn(&shell));
+            rendered_turns.push(render_tui_turn(&shell, &session));
         }
     }
 
@@ -282,13 +283,20 @@ where
             writeln!(writer, "{}", shell.render_scripted_transcript())?;
         } else {
             submit_tui_input(&mut shell, &provider, &mut session, &input);
-            writeln!(writer, "{}", render_tui_turn(&shell))?;
+            writeln!(writer, "{}", render_tui_turn(&shell, &session))?;
         }
     }
 
     Ok(())
 }
 
-fn render_tui_turn(shell: &elgar_tui::TuiShell) -> String {
-    shell.render_scripted_transcript()
+fn render_tui_turn(shell: &elgar_tui::TuiShell, session: &Session) -> String {
+    let mut rendered = shell.render_scripted_transcript();
+    if let Some(approval) = session.pending_approval() {
+        if !rendered.is_empty() {
+            rendered.push('\n');
+        }
+        rendered.push_str(&render_pending_approval_text(approval));
+    }
+    rendered
 }

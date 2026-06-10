@@ -15,6 +15,9 @@ use elgar_core::{
     renderer::render_session,
     session::Session,
 };
+use elgar_tui::terminal::{
+    parse_terminal_command, render_terminal_help, render_unknown_command, TerminalCommand,
+};
 
 mod diagnostics;
 mod startup;
@@ -39,6 +42,14 @@ pub fn render_cli_turn(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> String {
+    if let Some(local_output) = render_cli_local_command(input) {
+        return local_output;
+    }
+    if is_direct_logs_latest_prompt(input) {
+        return render_latest_turn_summary(project_root.as_ref())
+            .unwrap_or_else(|error| error.to_string());
+    }
+
     log::debug!(
         "render_cli_turn stub_provider input_chars={} project_root={} cwd={}",
         input.chars().count(),
@@ -53,6 +64,27 @@ pub fn render_cli_turn(
     render_session(&session)
 }
 
+/// Render a direct CLI slash command locally instead of sending it to a model.
+pub fn render_cli_local_command(input: &str) -> Option<String> {
+    match parse_terminal_command(input) {
+        TerminalCommand::Empty | TerminalCommand::Text(_) => None,
+        TerminalCommand::Help => Some(render_terminal_help().to_string()),
+        TerminalCommand::Approve | TerminalCommand::Deny => {
+            Some("No pending approval.".to_string())
+        }
+        TerminalCommand::Cancel => Some("No active provider turn to cancel.".to_string()),
+        TerminalCommand::DetailsLast | TerminalCommand::CopyRaw => {
+            Some("No raw details are available.".to_string())
+        }
+        TerminalCommand::Copy => Some("No conversation is available to copy.".to_string()),
+        TerminalCommand::Clear => Some("(empty conversation)".to_string()),
+        TerminalCommand::Exit => Some(
+            "Nothing to exit. Run `elgar` with no arguments for the interactive TUI.".to_string(),
+        ),
+        TerminalCommand::Unknown(command) => Some(render_unknown_command(command)),
+    }
+}
+
 /// Runs one CLI prompt using `elgar-provider.json` when live config exists.
 ///
 /// If runtime config is missing or disabled, this falls back to
@@ -64,6 +96,16 @@ pub fn render_cli_turn_from_runtime_config(
 ) -> Result<String, RuntimeProviderConfigError> {
     let project_root_ref = project_root.as_ref();
     let cwd_ref = cwd.as_ref();
+
+    if let Some(local_output) = render_cli_local_command(input) {
+        return Ok(local_output);
+    }
+    if is_direct_logs_latest_prompt(input) {
+        return Ok(
+            render_latest_turn_summary(project_root_ref).unwrap_or_else(|error| error.to_string())
+        );
+    }
+
     let Some(runtime_provider) = load_runtime_provider(project_root_ref)? else {
         log::debug!(
             "runtime provider config missing; using stub provider project_root={}",
@@ -85,6 +127,10 @@ pub fn render_cli_turn_from_runtime_config(
 
     run_harness_turn(&provider, &mut session, input);
     Ok(render_session(&session))
+}
+
+fn is_direct_logs_latest_prompt(input: &str) -> bool {
+    input.split_whitespace().eq(["logs", "latest"])
 }
 
 /// Builds a unique session id for CLI-created sessions.

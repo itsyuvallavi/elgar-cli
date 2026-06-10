@@ -2,15 +2,17 @@
 
 ## Purpose
 
-Generated or visual maps of Elgar runtime/file flow.
+Current visual sketches of Elgar runtime/file flow.
 
 ## Files
 
-- `elgar-core-file-map.html` and `.json` map core files.
-- `runtime-map.html` and `.json` map runtime flow.
 - `elgar-visual-architecture.html` is a visual architecture sketch.
-- `tui-flow-simple.html` is the simple TUI flow map.
+
+Raw-chat-era generated maps were moved to:
+
+- `docs/archive/maps-raw-chat-era/`
 
 ## Ownership
 
 These files help understanding, but written docs remain the source of truth.
+Regenerate maps from current architecture before using them for decisions.

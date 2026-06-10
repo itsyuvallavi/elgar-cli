@@ -12,6 +12,10 @@ Current files:
 - `directory.rs` backs primitive `ls` with bounded one-directory summaries.
 - `find.rs` backs primitive `find` with bounded path matches.
 - `grep.rs` backs primitive `grep` with bounded text matches.
+- `path.rs` contains shared path display and optional directory resolution
+  helpers for collectors.
+- `noise.rs` defines generated/cache/dependency directories skipped by search
+  collectors.
 
 Future files:
 

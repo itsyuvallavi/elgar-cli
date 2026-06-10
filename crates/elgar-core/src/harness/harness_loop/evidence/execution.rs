@@ -3,22 +3,21 @@
 //! Evidence here only comes from Rust collectors. Provider prose is never
 //! promoted into verified evidence.
 
-use std::path::{Component, Path};
-
-use serde_json::Value;
-
 use crate::{
     harness::{
         collect_directory_summary, collect_find_matches, collect_grep_matches,
         collect_project_file, DirectoryOptions, FindOptions, GrepOptions, ModelChoiceTurnError,
-        PermissionDecision, ProjectFileOptions, StructuredRequestKind, ValidatedStructuredRequest,
+        ProjectFileOptions, StructuredRequestKind, ValidatedStructuredRequest,
     },
     session::Session,
 };
 
-use crate::harness::harness_loop::state::{
-    listing_memory::DirectoryListingMemory,
-    types::{Evidence, EvidenceKey},
+use crate::harness::harness_loop::{
+    evidence::{
+        keys::normalize_evidence_path,
+        request_args::{request_path, request_pattern, request_query},
+    },
+    state::{listing_memory::DirectoryListingMemory, types::Evidence},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +27,7 @@ pub(in crate::harness::harness_loop) struct ExecutedEvidence {
 }
 
 /// Execute one validated primitive request and return verified evidence.
-pub(in crate::harness::harness_loop) fn execute_read_only_request(
+pub(in crate::harness::harness_loop) fn execute_primitive_request(
     session: &Session,
     request: &ValidatedStructuredRequest,
 ) -> Result<ExecutedEvidence, ModelChoiceTurnError> {
@@ -109,161 +108,5 @@ pub(in crate::harness::harness_loop) fn execute_read_only_request(
             "permission policy must handle primitive `{}` before execution",
             request.kind.as_str()
         ))),
-    }
-}
-
-/// Build the stable budget key for one validated request.
-pub(in crate::harness::harness_loop) fn evidence_key_for_request(
-    request: &ValidatedStructuredRequest,
-) -> EvidenceKey {
-    match request.kind {
-        StructuredRequestKind::Read => EvidenceKey::Read(normalize_evidence_path(
-            request_path(request).unwrap_or_default(),
-        )),
-        StructuredRequestKind::Ls => EvidenceKey::Ls(normalize_evidence_path(
-            request_path(request).unwrap_or("."),
-        )),
-        StructuredRequestKind::Find => EvidenceKey::Find(
-            normalize_evidence_path(request_path(request).unwrap_or(".")),
-            request_pattern(request).unwrap_or_default().to_string(),
-        ),
-        StructuredRequestKind::Grep => EvidenceKey::Grep(
-            normalize_evidence_path(request_path(request).unwrap_or(".")),
-            request_query(request).unwrap_or_default().to_string(),
-        ),
-        StructuredRequestKind::Bash
-        | StructuredRequestKind::Write
-        | StructuredRequestKind::Edit => EvidenceKey::Primitive(request.kind.as_str().to_string()),
-    }
-}
-
-/// Convert a failed execution into verified error evidence for synthesis.
-pub(in crate::harness::harness_loop) fn error_evidence(label: String, error: &str) -> Evidence {
-    let body = format!(
-        "VERIFIED_EXECUTION_ERROR\nlabel: {label}\nerror: {error}\nfile_contents_read: false\n"
-    );
-    Evidence {
-        label,
-        bytes: body.len(),
-        truncated: false,
-        body,
-    }
-}
-
-/// Convert a blocked permission decision into verified evidence.
-pub(in crate::harness::harness_loop) fn permission_evidence(
-    label: String,
-    request: &ValidatedStructuredRequest,
-    decision: &PermissionDecision,
-    approval_id: Option<&str>,
-) -> Evidence {
-    let approval_line = approval_id
-        .map(|id| format!("approval_id: {id}\n"))
-        .unwrap_or_default();
-    let body = format!(
-        "VERIFIED_PERMISSION_DECISION\ntool: {}\ndecision: {}\n{}reason: {}\nexecution_performed: false\n",
-        request.kind.as_str(),
-        decision.kind.as_str(),
-        approval_line,
-        decision.reason.as_str()
-    );
-    Evidence {
-        label,
-        bytes: body.len(),
-        truncated: false,
-        body,
-    }
-}
-
-/// Render verified evidence blocks for final synthesis.
-pub(in crate::harness::harness_loop) fn render_evidence_for_synthesis(
-    evidence: &[Evidence],
-) -> String {
-    if evidence.is_empty() {
-        return "(none)".to_string();
-    }
-
-    let mut rendered = String::new();
-    for item in evidence {
-        rendered.push_str("\n--- Verified Evidence: ");
-        rendered.push_str(&item.label);
-        rendered.push_str(" ---\n");
-        rendered.push_str("truncated: ");
-        rendered.push_str(if item.truncated { "true" } else { "false" });
-        rendered.push('\n');
-        rendered.push_str(&item.body);
-        rendered.push('\n');
-    }
-    rendered
-}
-
-fn request_path(request: &ValidatedStructuredRequest) -> Option<&str> {
-    request
-        .arguments
-        .as_ref()
-        .and_then(|value: &Value| value.get("path"))
-        .and_then(Value::as_str)
-}
-
-fn request_pattern(request: &ValidatedStructuredRequest) -> Option<&str> {
-    request
-        .arguments
-        .as_ref()
-        .and_then(|value: &Value| value.get("pattern"))
-        .and_then(Value::as_str)
-}
-
-fn request_query(request: &ValidatedStructuredRequest) -> Option<&str> {
-    request
-        .arguments
-        .as_ref()
-        .and_then(|value: &Value| value.get("query"))
-        .and_then(Value::as_str)
-}
-
-fn normalize_evidence_path(path: &str) -> String {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return ".".to_string();
-    }
-
-    let source = Path::new(trimmed);
-    let mut parts = Vec::new();
-    let mut absolute = false;
-    for component in source.components() {
-        match component {
-            Component::Prefix(prefix) => {
-                parts.push(prefix.as_os_str().to_string_lossy().into_owned());
-            }
-            Component::RootDir => {
-                absolute = true;
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(parts.last().map(String::as_str), Some("..")) || parts.is_empty() {
-                    if !absolute {
-                        parts.push("..".to_string());
-                    }
-                } else {
-                    parts.pop();
-                }
-            }
-            Component::Normal(value) => {
-                parts.push(value.to_string_lossy().into_owned());
-            }
-        }
-    }
-
-    let normalized = parts.join("/");
-    if absolute {
-        if normalized.is_empty() {
-            "/".to_string()
-        } else {
-            format!("/{normalized}")
-        }
-    } else if normalized.is_empty() {
-        ".".to_string()
-    } else {
-        normalized
     }
 }

@@ -9,19 +9,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::{
+    noise::is_noisy_directory,
+    path::{display_path, resolve_optional_directory_path},
+};
+
 const DEFAULT_MAX_DEPTH: usize = 6;
 const DEFAULT_MAX_FILE_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_RESULTS: usize = 200;
 const DEFAULT_MAX_RENDERED_BYTES: usize = 16 * 1024;
-const NOISY_DIRECTORIES: [&str; 7] = [
-    ".git",
-    ".elgar",
-    ".next",
-    "target",
-    "node_modules",
-    "dist",
-    "build",
-];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrepOptions {
@@ -147,7 +143,7 @@ pub fn collect_grep_matches(
         .as_ref()
         .canonicalize()
         .map_err(|error| GrepError::RootUnreadable(error.to_string()))?;
-    let directory = resolve_requested_path(&root, requested_path);
+    let directory = resolve_optional_directory_path(&root, requested_path);
     let metadata = fs::symlink_metadata(&directory).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             GrepError::PathNotFound(directory.clone())
@@ -288,29 +284,4 @@ fn search_file(
             });
         }
     }
-}
-
-fn resolve_requested_path(root: &Path, path: &str) -> PathBuf {
-    let trimmed = path.trim();
-    if trimmed.is_empty() || trimmed == "." {
-        return root.to_path_buf();
-    }
-
-    let path = Path::new(trimmed);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    }
-}
-
-fn display_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .display()
-        .to_string()
-}
-
-fn is_noisy_directory(name: &str) -> bool {
-    NOISY_DIRECTORIES.contains(&name)
 }

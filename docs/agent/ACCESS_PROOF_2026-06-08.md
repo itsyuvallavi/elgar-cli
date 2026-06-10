@@ -10,7 +10,7 @@ inside the Elgar workspace.
 - Issue: `ELG-386`
 - Parent: `ELG-371`
 - Team: `Elgar`
-- Project: `Elgar Core Simplification & Raw Chat`
+- Project: `Elgar Harness Rebuild`
 
 ## Workspace
 

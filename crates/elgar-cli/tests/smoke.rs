@@ -1,6 +1,6 @@
 //! End-to-end smoke tests for the compiled `elgar` binary.
 //!
-//! These tests execute the real CLI process and verify raw-chat behavior,
+//! These tests execute the real CLI process and verify harness behavior,
 //! runtime config lookup, and scripted TUI command handling.
 
 use std::{

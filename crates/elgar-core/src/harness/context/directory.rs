@@ -10,6 +10,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::path::display_path;
+
 const DEFAULT_MAX_DEPTH: usize = 2;
 const DEFAULT_MAX_ENTRIES: usize = 200;
 const DEFAULT_MAX_COUNTED_PATHS: usize = 50_000;
@@ -309,11 +311,4 @@ fn resolve_requested_path(root: &Path, path: &str) -> Result<PathBuf, DirectoryE
     }
 
     Ok(root.join(path))
-}
-
-fn display_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .display()
-        .to_string()
 }

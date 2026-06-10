@@ -173,8 +173,8 @@ impl ContextBundle {
 
     /// Build the full prompt shape used by older context-aware paths.
     ///
-    /// Raw chat currently avoids this. When we add full chat, this is one of the
-    /// places we should review carefully before attaching context by default.
+    /// The current harness avoids attaching this by default. If broader
+    /// conversation context returns, review this before enabling it.
     pub fn prompt_for_with_recent_conversation_and_verified_memory(
         &self,
         recent_conversation: Option<&str>,

@@ -7,7 +7,13 @@ Shared loop support code.
 - `mod.rs` exposes state modules.
 - `budget.rs` tracks duplicate evidence and repair-attempt guards.
 - `listing_memory.rs` stores capped visible dirs/files from verified `ls` results.
-- `logging.rs` writes provider, model-choice, evidence, and finish events.
+- `logging.rs` indexes focused logging modules.
+- `logging/provider_events.rs` writes provider-call events.
+- `logging/choice_events.rs` writes model-choice and repair events.
+- `logging/evidence_events.rs` writes verified-evidence events.
+- `logging/permission_events.rs` writes permission and approval events.
+- `logging/memory_events.rs` writes same-turn memory events.
+- `logging/round_events.rs` writes round and loop-finished events.
 - `memory.rs` tracks short-term same-turn harness memory and duplicate counts.
 - `types.rs` defines evidence and loop result types.
 
@@ -23,6 +29,6 @@ directories and files. This helps the model choose a more specific next
 primitive instead of repeating the same directory listing. The listing memory is
 capped and same-turn only.
 
-Useful read-only evidence is not capped here by item count, byte count, or
+Useful read-only tool evidence is not capped here by item count, byte count, or
 primitive type. Duplicate evidence is still tracked because repeating the same
 primitive request does not add new verified information.

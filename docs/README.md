@@ -30,7 +30,8 @@ architecture unless a current doc explicitly points to them.
 
 - `agent/` contains agent instructions and handoff history.
 - `archive/` contains stale or historical plans.
-- `maps/` contains generated HTML/JSON architecture maps.
+- `maps/` contains current visual sketches. Stale generated maps live under
+  `archive/`.
 
 ## Rule
 

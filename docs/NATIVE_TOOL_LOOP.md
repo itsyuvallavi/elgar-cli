@@ -53,7 +53,7 @@ user prompt
 Current strengths:
 
 - one harness route from CLI/TUI to provider
-- no raw-chat bypass
+- no provider bypass around the harness
 - primitive read-only tools only: `read`, `ls`, `find`, `grep`
 - Rust validates tool names and arguments
 - Rust collectors produce verified evidence

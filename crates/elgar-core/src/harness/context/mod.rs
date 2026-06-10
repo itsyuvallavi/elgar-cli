@@ -7,6 +7,8 @@
 mod directory;
 mod find;
 mod grep;
+mod noise;
+mod path;
 mod project_file;
 
 pub use directory::{

@@ -10,6 +10,7 @@ use std::{
 
 use crate::TuiShell;
 use elgar_core::{
+    harness::PendingApproval,
     provider::{ControllerProvider, LmStudioProvider, ProviderConfig, ProviderStub},
     session::Session,
 };
@@ -51,6 +52,11 @@ const ANSI_CODE_COMMENT: &str = "\x1b[38;2;117;126;138m\x1b[48;2;18;22;28m";
 const ANSI_RAW_DETAILS: &str = "\x1b[38;2;180;188;196m";
 const ANSI_CURSOR_HIDE: &str = "\x1b[?25l";
 const ANSI_CURSOR_SHOW: &str = "\x1b[?25h";
+
+/// Render the current pending approval as plain text for non-interactive views.
+pub fn render_pending_approval_text(approval: &PendingApproval) -> String {
+    ui::approval::render_pending_approval_text(approval)
+}
 
 /// Start the terminal shell in the current working directory.
 pub fn run_terminal_shell() -> io::Result<()> {

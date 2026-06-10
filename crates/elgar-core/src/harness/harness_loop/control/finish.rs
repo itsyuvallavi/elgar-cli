@@ -69,7 +69,7 @@ where
     P: ControllerProvider,
 {
     let evidence_text =
-        crate::harness::harness_loop::evidence::execution::render_evidence_for_synthesis(evidence);
+        crate::harness::harness_loop::evidence::render::render_evidence_for_synthesis(evidence);
     let final_text = run_primitive_loop_synthesis(
         provider,
         session,

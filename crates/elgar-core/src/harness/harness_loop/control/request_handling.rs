@@ -7,9 +7,10 @@ use crate::{
     harness::{
         decide_primitive_permission,
         harness_loop::{
-            evidence::execution::{
-                error_evidence, evidence_key_for_request, execute_read_only_request,
-                permission_evidence,
+            evidence::{
+                execution::execute_primitive_request,
+                keys::evidence_key_for_request,
+                render::{error_evidence, permission_evidence},
             },
             state::{
                 budget::{BudgetCheck, PrimitiveLoopBudget, PrimitiveLoopBudgetState},
@@ -101,7 +102,7 @@ pub(super) fn collect_request_evidence(
         return Ok(RequestHandlingOutcome::UsefulEvidence);
     }
 
-    let execution_result = execute_read_only_request(session, request);
+    let execution_result = execute_primitive_request(session, request);
     let execution_failed = execution_result.is_err();
     let (evidence_item, directory_listing) = match execution_result {
         Ok(executed) => (executed.evidence, executed.directory_listing),

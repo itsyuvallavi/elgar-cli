@@ -1,12 +1,23 @@
 //! Tests for the line-based scripted TUI mode.
 
-use std::fs;
+use std::{
+    fs,
+    sync::{Arc, Mutex},
+};
+
+use elgar_core::{
+    event::ProviderOutput,
+    provider::{
+        ChatMessage, ChatToolCall, ChatToolCallFunction, ChatToolDefinition, ControllerProvider,
+        ProviderError, ProviderRequestMetadata,
+    },
+};
 
 use crate::{
     is_tui_cancel_command, is_tui_clear_command, is_tui_copy_command, is_tui_copy_raw_command,
     is_tui_details_command, is_tui_exit_command, is_tui_help_command, render_tui_help,
-    render_tui_script, run_tui_loop, should_launch_terminal_tui_by_default, tui_unknown_command,
-    TUI_COMMAND, TUI_TERMINAL_COMMAND,
+    render_tui_script, run_tui_loop, run_tui_loop_with_runtime,
+    should_launch_terminal_tui_by_default, tui_unknown_command, TUI_COMMAND, TUI_TERMINAL_COMMAND,
 };
 
 #[test]
@@ -128,4 +139,71 @@ fn tui_loop_reads_lines_and_exits_cleanly() {
     assert!(rendered.contains("Elgar TUI. Type /exit, /quit, or /q to leave."));
     assert!(rendered.contains("> what does the harness do?"));
     assert!(rendered.contains("Exiting Elgar TUI."));
+}
+
+#[test]
+fn scripted_tui_renders_outside_path_pending_approval_warning() {
+    let root =
+        std::env::temp_dir().join(format!("elgar-cli-scripted-outside-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let provider = ToolCallProvider::write_file("/tmp/elgar-outside-warning-test.txt", "hello");
+    let input = b"create outside file\n/exit\n";
+    let mut output = Vec::new();
+
+    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider).unwrap();
+
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("Pending approval"));
+    assert!(rendered.contains("target: /tmp/elgar-outside-warning-test.txt"));
+    assert!(rendered.contains("scope: outside_launch_folder"));
+    assert!(rendered.contains("WARNING: Approving may modify files outside the launch folder."));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[derive(Clone)]
+struct ToolCallProvider {
+    outputs: Arc<Mutex<Vec<ProviderOutput>>>,
+}
+
+impl ToolCallProvider {
+    fn write_file(path: &str, content: &str) -> Self {
+        Self {
+            outputs: Arc::new(Mutex::new(vec![
+                ProviderOutput::new("requesting write").with_tool_calls(vec![ChatToolCall {
+                    id: "call-write".to_string(),
+                    tool_type: "function".to_string(),
+                    function: ChatToolCallFunction {
+                        name: "write".to_string(),
+                        arguments: serde_json::json!({
+                            "path": path,
+                            "content": content
+                        })
+                        .to_string(),
+                    },
+                }]),
+                ProviderOutput::new("write requires approval"),
+            ])),
+        }
+    }
+}
+
+impl ControllerProvider for ToolCallProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new("stub", None, "stub-request")
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new("unused"))
+    }
+
+    fn chat_messages_with_tools_with_metadata(
+        &self,
+        _messages: Vec<ChatMessage>,
+        _metadata: &ProviderRequestMetadata,
+        _tools: Vec<ChatToolDefinition>,
+    ) -> Result<ProviderOutput, ProviderError> {
+        Ok(self.outputs.lock().expect("outputs lock").remove(0))
+    }
 }

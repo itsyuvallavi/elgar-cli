@@ -15,10 +15,10 @@ pub(crate) fn print_pending_approval(approval: Option<&PendingApproval>) -> io::
         return Ok(());
     };
 
-    print_plain_block(&render_pending_approval(approval))
+    print_plain_block(&render_pending_approval_text(approval))
 }
 
-fn render_pending_approval(approval: &PendingApproval) -> String {
+pub(in crate::terminal) fn render_pending_approval_text(approval: &PendingApproval) -> String {
     let target = approval
         .target_preview
         .as_ref()
@@ -36,8 +36,14 @@ fn render_pending_approval(approval: &PendingApproval) -> String {
 }
 
 fn render_target_preview(approval: &elgar_core::harness::ApprovalTargetPreview) -> String {
-    let mut rendered = format!(
-        "target: {}\nresolved preview: {}\npath type: {}\nscope: {}\n",
+    let warning = approval
+        .warning
+        .as_ref()
+        .map(|warning| format!("WARNING: {warning}\n"))
+        .unwrap_or_default();
+    format!(
+        "{}target: {}\nresolved preview: {}\npath type: {}\nscope: {}\n",
+        warning,
         approval.requested_path,
         approval.resolved_preview_path,
         if approval.is_absolute {
@@ -46,11 +52,7 @@ fn render_target_preview(approval: &elgar_core::harness::ApprovalTargetPreview) 
             "relative"
         },
         approval.scope.as_str()
-    );
-    if let Some(warning) = approval.warning.as_ref() {
-        rendered.push_str(&format!("warning: {warning}\n"));
-    }
-    rendered
+    )
 }
 
 #[cfg(test)]
@@ -59,7 +61,7 @@ mod tests {
 
     use elgar_core::harness::{PendingApproval, StructuredRequestKind, ValidatedStructuredRequest};
 
-    use super::render_pending_approval;
+    use super::render_pending_approval_text;
 
     #[test]
     fn pending_approval_display_names_commands_and_execution_state() {
@@ -74,7 +76,7 @@ mod tests {
         let approval =
             PendingApproval::from_request("approval-1", &request, "write requires approval");
 
-        let rendered = render_pending_approval(&approval);
+        let rendered = render_pending_approval_text(&approval);
 
         assert!(rendered.contains("Pending approval"));
         assert!(rendered.contains("id: approval-1"));
@@ -102,11 +104,17 @@ mod tests {
             std::path::Path::new("/project"),
         );
 
-        let rendered = render_pending_approval(&approval);
+        let rendered = render_pending_approval_text(&approval);
 
         assert!(rendered.contains("target: /tmp/hello-world"));
         assert!(rendered.contains("path type: absolute"));
         assert!(rendered.contains("scope: outside_launch_folder"));
-        assert!(rendered.contains("warning: Approving may modify files outside the launch folder."));
+        assert!(rendered.contains("WARNING: Approving may modify files outside the launch folder."));
+        assert_eq!(
+            rendered
+                .matches("Approving may modify files outside the launch folder.")
+                .count(),
+            1
+        );
     }
 }

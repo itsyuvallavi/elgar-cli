@@ -103,6 +103,25 @@ fn collect_find_matches_returns_bounded_path_matches() {
 }
 
 #[test]
+fn collect_find_matches_accepts_common_globish_and_case_patterns() {
+    let root = std::env::temp_dir().join(format!("elgar-find-pattern-test-{}", std::process::id()));
+    fs::create_dir_all(root.join("app")).unwrap();
+    fs::write(
+        root.join("app/page.tsx"),
+        "export default function Page() {}",
+    )
+    .unwrap();
+
+    for pattern in ["*page*", "Page", "*Page*"] {
+        let snapshot = collect_find_matches(&root, ".", pattern, FindOptions::default()).unwrap();
+        assert!(
+            snapshot.matches.iter().any(|path| path == "app/page.tsx"),
+            "pattern {pattern} should find app/page.tsx"
+        );
+    }
+}
+
+#[test]
 fn collect_grep_matches_returns_bounded_text_matches() {
     let root = std::env::temp_dir().join(format!("elgar-grep-test-{}", std::process::id()));
     fs::create_dir_all(root.join("app")).unwrap();
