@@ -11,6 +11,8 @@ pub(crate) fn parse_terminal_command(input: &str) -> TerminalCommand<'_> {
         "/help" | "/commands" => TerminalCommand::Help,
         "/clear" | "/new" => TerminalCommand::Clear,
         "/cancel" => TerminalCommand::Cancel,
+        "/approve" => TerminalCommand::Approve,
+        "/deny" | "/reject" => TerminalCommand::Deny,
         "/details" | "/details last" => TerminalCommand::DetailsLast,
         "/copy" => TerminalCommand::Copy,
         "/copy raw" | "/copy details" => TerminalCommand::CopyRaw,

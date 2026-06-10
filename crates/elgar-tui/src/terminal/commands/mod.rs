@@ -24,6 +24,8 @@ pub(super) enum TerminalCommand<'a> {
     Help,
     Clear,
     Cancel,
+    Approve,
+    Deny,
     DetailsLast,
     Copy,
     CopyRaw,

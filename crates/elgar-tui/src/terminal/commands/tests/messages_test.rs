@@ -10,6 +10,9 @@ fn help_lists_active_harness_commands() {
     assert!(help.contains("plain text"));
     assert!(help.contains("harness-controlled"));
     assert!(help.contains("/cancel"));
+    assert!(help.contains("/approve"));
+    assert!(help.contains("/deny"));
+    assert!(help.contains("/reject"));
     assert!(help.contains("/details last"));
     assert!(help.contains("/copy raw"));
     assert!(help.contains("/exit"));

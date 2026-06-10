@@ -15,3 +15,9 @@ This folder owns what happens after the user submits text.
 ## Rule
 
 Turn code can coordinate input, provider calls, session updates, and rendering, but individual responsibilities should stay split across these files.
+
+## Approval Commands
+
+`submitted.rs` handles `/approve`, `/deny`, and `/reject` locally while the
+provider is idle. It delegates to core approval functions so pending approval
+state and execution stay in `elgar-core`.

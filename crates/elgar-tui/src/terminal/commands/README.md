@@ -14,6 +14,8 @@ provides helpers for local UI actions like copy, clear, and help text.
 - `messages.rs` stores help, usage, and unknown-command text.
 - `clipboard.rs` handles `/copy` and `/copy raw`.
 - `clear.rs` handles `/clear` and visible terminal clearing.
+- Approval commands are parsed here and executed by `terminal/turn/submitted.rs`
+  through core approval state.
 
 ## Boundary
 
@@ -26,4 +28,10 @@ Example:
   -> parse.rs returns TerminalCommand::Copy
   -> turn/submitted.rs decides to run copy
   -> clipboard.rs performs the copy
+```
+
+```text
+/approve
+  -> parse.rs returns TerminalCommand::Approve
+  -> turn/submitted.rs calls core approval execution
 ```
