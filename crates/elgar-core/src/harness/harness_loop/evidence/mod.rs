@@ -5,6 +5,7 @@
 
 pub(super) mod execution;
 pub(super) mod keys;
+pub(super) mod mcp;
 pub(super) mod render;
 pub(super) mod request_args;
 pub(super) mod state;

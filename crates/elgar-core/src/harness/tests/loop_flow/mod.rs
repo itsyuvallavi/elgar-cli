@@ -5,6 +5,7 @@ mod direct_primitive_guard_test;
 mod execution_failure_loop_test;
 mod final_text_loop_test;
 mod loop_helpers;
+mod mcp_loop_test;
 mod memory_loop_test;
 mod native_loop_test;
 mod permission_loop_test;

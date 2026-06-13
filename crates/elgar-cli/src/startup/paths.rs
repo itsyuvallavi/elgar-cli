@@ -6,8 +6,10 @@
 use std::path::{Path, PathBuf};
 
 pub const PROVIDER_CONFIG_ENV: &str = "ELGAR_PROVIDER_CONFIG";
+pub const MCP_CONFIG_ENV: &str = "ELGAR_MCP_CONFIG";
 pub const PROJECT_ROOT_ENV: &str = "ELGAR_PROJECT_ROOT";
 pub const PROVIDER_CONFIG_FILE: &str = "elgar-provider.json";
+pub const MCP_CONFIG_FILE: &str = "elgar-mcp.json";
 const AGENTS_FILE: &str = "AGENTS.md";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,9 +48,13 @@ pub fn resolve_runtime_project_root(
 }
 
 pub(crate) fn find_provider_config_file(start: impl AsRef<Path>) -> Option<PathBuf> {
+    find_named_config_file(start, PROVIDER_CONFIG_FILE)
+}
+
+fn find_named_config_file(start: impl AsRef<Path>, file_name: &str) -> Option<PathBuf> {
     let mut current = start.as_ref();
     loop {
-        let candidate = current.join(PROVIDER_CONFIG_FILE);
+        let candidate = current.join(file_name);
         if candidate.exists() {
             return Some(candidate);
         }

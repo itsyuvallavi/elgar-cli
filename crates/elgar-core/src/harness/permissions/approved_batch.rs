@@ -93,7 +93,8 @@ fn execute_batch_step(
         StructuredRequestKind::Read
         | StructuredRequestKind::Ls
         | StructuredRequestKind::Find
-        | StructuredRequestKind::Grep => Err(ApprovalCommandError::UnsupportedApprovedTool(
+        | StructuredRequestKind::Grep
+        | StructuredRequestKind::McpCall => Err(ApprovalCommandError::UnsupportedApprovedTool(
             step.tool.clone(),
         )),
     }

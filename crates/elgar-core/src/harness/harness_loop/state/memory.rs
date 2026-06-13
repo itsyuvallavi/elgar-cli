@@ -17,6 +17,7 @@ pub(in crate::harness::harness_loop) struct HarnessWorkingMemory {
     read_paths: BTreeSet<String>,
     find_patterns: BTreeSet<String>,
     grep_queries: BTreeSet<String>,
+    mcp_calls: BTreeSet<String>,
     duplicate_requests: Vec<String>,
 }
 
@@ -35,6 +36,9 @@ impl HarnessWorkingMemory {
             }
             EvidenceKey::Grep(path, query) => {
                 self.grep_queries.insert(format!("{path}:{query}"));
+            }
+            EvidenceKey::Mcp(server, tool) => {
+                self.mcp_calls.insert(format!("{server}:{tool}"));
             }
             EvidenceKey::Primitive(name) => {
                 self.duplicate_requests

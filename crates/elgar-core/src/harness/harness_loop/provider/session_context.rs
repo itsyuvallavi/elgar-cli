@@ -6,10 +6,13 @@
 
 use crate::{
     event::{AssistantMessageSource, Event},
-    harness::memory::{
-        build_memory_index, read_session_memory_events,
-        render_verified_memory_for_prompt_with_budget, HarnessMemoryIndex, RenderedMemoryPrompt,
-        RenderedMemoryStats,
+    harness::{
+        harness_loop::provider::mcp_context::render_mcp_tool_catalog_for_prompt,
+        memory::{
+            build_memory_index, read_session_memory_events,
+            render_verified_memory_for_prompt_with_budget, HarnessMemoryIndex,
+            RenderedMemoryPrompt, RenderedMemoryStats,
+        },
     },
     provider::{ChatMessage, ChatRole},
     session::Session,
@@ -48,7 +51,12 @@ pub(in crate::harness::harness_loop) fn native_tool_loop_turn_context(
 ) -> TurnPromptContext {
     let rendered_memory = render_verified_memory_for_session(session);
     let history = session_history_messages(session, input);
-    let system = build_system_prompt(system_prompt, &rendered_memory.text);
+    let rendered_mcp_catalog = render_mcp_tool_catalog_for_prompt(session);
+    let system = build_system_prompt(
+        system_prompt,
+        rendered_mcp_catalog.as_deref(),
+        &rendered_memory.text,
+    );
 
     let mut messages = Vec::with_capacity(1 + history.len() + 1);
     messages.push(ChatMessage::system(system));
@@ -84,8 +92,15 @@ pub(in crate::harness::harness_loop) fn load_verified_memory_index(
         .unwrap_or_default()
 }
 
-fn build_system_prompt(base_prompt: &str, verified_facts: &str) -> String {
+fn build_system_prompt(
+    base_prompt: &str,
+    mcp_tool_catalog: Option<&str>,
+    verified_facts: &str,
+) -> String {
     let mut parts = vec![base_prompt.to_string(), HISTORY_DISCLAIMER.to_string()];
+    if let Some(catalog) = mcp_tool_catalog {
+        parts.push(catalog.to_string());
+    }
     if !verified_facts.is_empty() {
         parts.push(VERIFIED_MEMORY_PRECEDENCE_RULE.to_string());
         parts.push(format!("{VERIFIED_MEMORY_HEADER}\n{verified_facts}"));

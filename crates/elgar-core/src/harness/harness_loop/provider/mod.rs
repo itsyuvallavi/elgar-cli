@@ -5,6 +5,7 @@
 
 pub(super) mod context;
 pub(super) mod decision;
+pub(super) mod mcp_context;
 pub(super) mod repair;
 pub(super) mod session_context;
 pub(super) mod synthesis;

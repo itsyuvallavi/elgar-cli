@@ -89,7 +89,8 @@ pub fn approve_pending_approval(
         StructuredRequestKind::Read
         | StructuredRequestKind::Ls
         | StructuredRequestKind::Find
-        | StructuredRequestKind::Grep => {
+        | StructuredRequestKind::Grep
+        | StructuredRequestKind::McpCall => {
             let tool = approved.tool.clone();
             Err(ApprovalCommandError::UnsupportedApprovedTool(tool))
         }

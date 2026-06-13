@@ -56,6 +56,19 @@ fn main() {
         }
         return;
     }
+    if elgar_cli::is_mcp_command(&args) {
+        log::info!("running mcp diagnostic");
+        let paths = elgar_cli::RuntimePaths::from_current_dir();
+        match elgar_cli::render_mcp_from_args(&args, &paths.project_root) {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                log::error!("mcp diagnostic failed: {error}");
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args
         .first()
         .is_some_and(|arg| arg == elgar_cli::TUI_COMMAND)

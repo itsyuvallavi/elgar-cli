@@ -32,6 +32,22 @@ pub(in crate::harness::harness_loop) fn evidence_key_for_request(
         StructuredRequestKind::Bash
         | StructuredRequestKind::Write
         | StructuredRequestKind::Edit => EvidenceKey::Primitive(request.kind.as_str().to_string()),
+        StructuredRequestKind::McpCall => EvidenceKey::Mcp(
+            request
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("server"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            request
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("tool"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+        ),
     }
 }
 

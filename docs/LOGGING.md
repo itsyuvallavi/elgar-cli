@@ -21,6 +21,24 @@ Session logs are model/user/provider event history.
 
 System logs are runtime flow/timing/error diagnostics.
 
+MCP diagnostics also write to system logs. Example summaries:
+
+```text
+mcp_config_loaded
+mcp_http_request_started
+mcp_http_request_finished
+mcp_http_request_failed
+mcp_initialize_finished
+mcp_tools_listed
+mcp_resources_listed
+mcp_tool_call_started
+mcp_tool_call_finished
+mcp_tool_call_failed
+```
+
+MCP logs should include method names, status codes, durations, and counts, but
+not auth headers, environment values, or full response bodies.
+
 ## Rules
 
 - Keep logs local by default.

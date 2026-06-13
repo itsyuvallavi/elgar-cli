@@ -5,6 +5,7 @@
 
 mod local_command_test;
 mod logs_test;
+mod mcp_config_test;
 mod paths_test;
 mod provider_config_test;
 mod provider_smoke_test;

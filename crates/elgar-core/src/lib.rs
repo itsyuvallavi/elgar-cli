@@ -7,6 +7,7 @@ pub mod context;
 pub mod event;
 pub mod harness;
 pub mod logs;
+pub mod mcp;
 pub mod provider;
 mod provider_visible;
 pub use logs::sessions::{session_log_directory, session_log_path};

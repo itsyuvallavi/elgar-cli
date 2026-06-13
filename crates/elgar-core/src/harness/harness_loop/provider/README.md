@@ -8,6 +8,8 @@ Owns model-provider calls made during the primitive harness loop.
 - `context.rs` builds the native loop system prompt and fallback repair prompts.
 - `decision.rs` sends the growing native provider conversation with tool
   schemas attached.
+- `mcp_context.rs` renders a bounded live MCP server tool catalog for the
+  generic `mcp_call` provider tool.
 - `repair.rs` asks the model to repair one invalid decision response.
 - `synthesis.rs` asks for a final answer with no tools exposed.
 

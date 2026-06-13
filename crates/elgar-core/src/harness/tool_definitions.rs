@@ -136,6 +136,27 @@ fn provider_tool_definition(id: PrimitiveToolId) -> Option<ChatToolDefinition> {
                 &["path", "old_text", "new_text"],
             ),
         )),
+        PrimitiveToolId::McpCall => Some(ChatToolDefinition::function(
+            "mcp_call",
+            "Call one configured read-only MCP server tool and return bounded verified evidence.",
+            object_schema(
+                json!({
+                    "server": {
+                        "type": "string",
+                        "description": "Configured MCP server id, such as context7."
+                    },
+                    "tool": {
+                        "type": "string",
+                        "description": "MCP tool name listed by the server, such as query-docs."
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "Exact JSON object arguments for the MCP tool."
+                    }
+                }),
+                &["server", "tool", "arguments"],
+            ),
+        )),
     }
 }
 

@@ -108,5 +108,12 @@ pub(in crate::harness::harness_loop) fn execute_primitive_request(
             "permission policy must handle primitive `{}` before execution",
             request.kind.as_str()
         ))),
+        StructuredRequestKind::McpCall => {
+            let evidence = super::mcp::execute_mcp_call_request(session, request)?;
+            Ok(ExecutedEvidence {
+                evidence,
+                directory_listing: None,
+            })
+        }
     }
 }

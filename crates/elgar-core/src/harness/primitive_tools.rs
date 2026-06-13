@@ -15,6 +15,7 @@ pub enum PrimitiveToolId {
     Bash,
     Write,
     Edit,
+    McpCall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +55,11 @@ impl PrimitiveToolRegistry {
 
     /// Return the current conservative primitive tool manifest.
     pub fn stage_3a() -> Self {
+        Self::stage_3a_with_mcp(false)
+    }
+
+    /// Return the current manifest, optionally enabling configured MCP calls.
+    pub fn stage_3a_with_mcp(mcp_enabled: bool) -> Self {
         Self {
             tools: vec![
                 PrimitiveTool {
@@ -121,6 +127,22 @@ impl PrimitiveToolRegistry {
                         "relative paths resolve from the launch folder",
                         "skips noisy generated/cache/log/dependency folders",
                         "results are bounded and may be truncated",
+                    ],
+                },
+                PrimitiveTool {
+                    id: PrimitiveToolId::McpCall,
+                    display_name: "MCP Call",
+                    description: "Call one configured read-only MCP server tool.",
+                    input_shape: r#"{"type":"structured_request","kind":"mcp_call","reason":"short reason","arguments":{"server":"context7","tool":"query-docs","arguments":{}}}"#,
+                    side_effect_level: PrimitiveToolSideEffectLevel::ReadOnly,
+                    enabled_in_stage: mcp_enabled,
+                    executable_in_stage: true,
+                    requires_permission: false,
+                    limits: &[
+                        "requires configured MCP server",
+                        "currently supports HTTP MCP servers",
+                        "requires arguments.server, arguments.tool, and object arguments.arguments",
+                        "results are bounded before returning to the model",
                     ],
                 },
                 PrimitiveTool {
@@ -199,6 +221,7 @@ impl PrimitiveToolId {
             "bash" => Some(Self::Bash),
             "write" => Some(Self::Write),
             "edit" => Some(Self::Edit),
+            "mcp_call" => Some(Self::McpCall),
             _ => None,
         }
     }
@@ -212,6 +235,7 @@ impl PrimitiveToolId {
             Self::Bash => "bash",
             Self::Write => "write",
             Self::Edit => "edit",
+            Self::McpCall => "mcp_call",
         }
     }
 }

@@ -88,6 +88,7 @@ grep   -> search text inside bounded UTF-8 files
 bash   -> run one shell command after policy approval
 write  -> create or overwrite one file after policy approval
 edit   -> patch one existing file after policy approval
+mcp_call -> call one configured read-only MCP server tool
 ```
 
 There are no active macro tools in the current harness. A project review
@@ -162,11 +163,14 @@ Near term:
 - Add tests that `read`, `ls`, `find`, and `grep` return bounded evidence.
 - Keep permission decisions explicit before enabling side-effect execution.
 - Keep fallback synthesis no-tool and evidence-only.
+- Keep MCP access generic through `mcp_call`, with exact server/tool/argument
+  validation, a live `tools/list` prompt catalog, and bounded verified evidence.
 
 Next primitive tool stages:
 
 - Add write/edit tools as explicit low-level primitive tools.
 - Add shell as an explicit low-level primitive tool with policy gating.
+- Add stdio MCP transport and side-effect MCP approval boundaries.
 - Add a verified action/event ledger for created, edited, read, and executed
   artifacts.
 - Add route-scoped retrieval from that ledger for follow-up questions.

@@ -65,6 +65,7 @@ provider `tool` result messages, then final text as the normal loop end.
 `elgar-core`:
 
 - provider types and requests
+- MCP config/protocol foundations
 - harness turn execution
 - sessions and events
 - token/context accounting
@@ -97,6 +98,19 @@ model.
 Future tools should plug into core as typed capability layers. The model may
 request typed tools, but the runtime must validate, policy must decide, and
 executors must verify before the UI reports success.
+
+MCP follows the same rule. MCP servers provide typed tools and resources, but
+Elgar must validate, bound, log, and treat MCP results as verified evidence
+before adding them to model context.
+
+The first model-facing MCP path is the generic `mcp_call` capability. It takes
+an exact server id, MCP tool name, and JSON argument object. Elgar validates the
+configured server and tool before calling MCP, then returns bounded verified
+evidence to the model.
+
+When MCP is configured, the native loop system prompt includes a bounded live
+catalog of advertised server tools and input schemas. The catalog comes from
+`tools/list`; it is not a hardcoded Context7 or Obsidian trigger table.
 
 ## Approval Boundary
 

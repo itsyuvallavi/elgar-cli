@@ -39,6 +39,7 @@ use crate::{
         },
         ModelChoice, ModelChoiceTurnError, PrimitiveToolRegistry,
     },
+    mcp::config::load_runtime_mcp_config,
     provider::ControllerProvider,
     session::Session,
 };
@@ -54,7 +55,8 @@ where
 {
     let loop_turn_id = session.next_turn_id();
     let loop_started = Instant::now();
-    let registry = PrimitiveToolRegistry::stage_3a();
+    let registry =
+        PrimitiveToolRegistry::stage_3a_with_mcp(mcp_config_is_available(&session.project_root));
     let budget = PrimitiveLoopBudget::default();
     let mut budget_state = PrimitiveLoopBudgetState::default();
     let mut rounds = Vec::new();
@@ -293,4 +295,11 @@ where
 
         round_index = round_index.saturating_add(1);
     }
+}
+
+fn mcp_config_is_available(project_root: &std::path::Path) -> bool {
+    load_runtime_mcp_config(project_root)
+        .ok()
+        .flatten()
+        .is_some()
 }
