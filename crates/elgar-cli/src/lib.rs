@@ -3,17 +3,13 @@
 //! This module re-exports startup and diagnostic helpers and owns the simple
 //! single-turn CLI rendering path.
 
-use std::{
-    path::Path,
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::Path;
 
 use elgar_core::{
     harness::run_harness_turn,
     provider::{LmStudioProvider, ProviderStub},
     renderer::render_session,
-    session::Session,
+    session::{runtime_session_id, Session},
 };
 use elgar_tui::terminal::{
     parse_terminal_command, render_terminal_help, render_unknown_command, TerminalCommand,
@@ -21,8 +17,6 @@ use elgar_tui::terminal::{
 
 mod diagnostics;
 mod startup;
-
-static SESSION_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub use diagnostics::*;
 pub use startup::*;
@@ -131,16 +125,6 @@ pub fn render_cli_turn_from_runtime_config(
 
 fn is_direct_logs_latest_prompt(input: &str) -> bool {
     input.split_whitespace().eq(["logs", "latest"])
-}
-
-/// Builds a unique session id for CLI-created sessions.
-pub(crate) fn runtime_session_id(prefix: &str) -> String {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let counter = SESSION_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{}-{millis}-{counter}", std::process::id())
 }
 
 #[cfg(test)]

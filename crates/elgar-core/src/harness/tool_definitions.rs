@@ -70,12 +70,12 @@ fn provider_tool_definition(id: PrimitiveToolId) -> Option<ChatToolDefinition> {
         )),
         PrimitiveToolId::Grep => Some(ChatToolDefinition::function(
             "grep",
-            "Search text inside bounded UTF-8 files under one directory.",
+            "Search text inside one bounded UTF-8 file or under one directory.",
             object_schema(
                 json!({
                     "path": {
                         "type": "string",
-                        "description": "Directory path to search. Use . for the launch folder."
+                        "description": "File or directory path to search. Use . for the launch folder."
                     },
                     "query": {
                         "type": "string",

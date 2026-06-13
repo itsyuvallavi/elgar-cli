@@ -13,6 +13,7 @@ use crate::{
                 choice_from_output::NativeToolRequest,
                 finish::synthesize_loop_answer,
                 request_handling::{collect_request_evidence, RequestHandlingOutcome},
+                tool_target_fidelity::validate_tool_target,
             },
             state::{
                 budget::{PrimitiveLoopBudget, PrimitiveLoopBudgetState},
@@ -46,6 +47,34 @@ pub(super) fn execute_native_tool_request<P>(
 where
     P: ControllerProvider,
 {
+    if let Some(mismatch) = validate_tool_target(input, &native_request.request) {
+        budget_state.target_mismatches = budget_state.target_mismatches.saturating_add(1);
+        rounds.push(PrimitiveHarnessLoopRound {
+            round_index,
+            tool: Some("notice".to_string()),
+            evidence_label: Some(mismatch.reason.to_string()),
+        });
+        if budget_state.target_mismatches > budget.max_target_mismatches {
+            return synthesize_loop_answer(
+                provider,
+                session,
+                input,
+                evidence,
+                std::mem::take(rounds),
+                mismatch.reason.to_string(),
+                EvidenceDepth::Limited,
+                loop_turn_id,
+                loop_started,
+            )
+            .map(Some);
+        }
+        messages.push(ChatMessage::tool(
+            native_request.tool_call_id,
+            mismatch.notice,
+        ));
+        return Ok(None);
+    }
+
     let evidence_before = evidence.len();
     match collect_request_evidence(
         session,

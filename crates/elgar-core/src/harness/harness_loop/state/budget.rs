@@ -17,12 +17,14 @@ pub(in crate::harness::harness_loop) enum BudgetCheck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::harness::harness_loop) struct PrimitiveLoopBudget {
     pub max_repair_attempts: usize,
+    pub max_target_mismatches: usize,
 }
 
 impl Default for PrimitiveLoopBudget {
     fn default() -> Self {
         Self {
             max_repair_attempts: 1,
+            max_target_mismatches: 2,
         }
     }
 }
@@ -31,6 +33,7 @@ impl Default for PrimitiveLoopBudget {
 pub(in crate::harness::harness_loop) struct PrimitiveLoopBudgetState {
     pub decision_calls: usize,
     pub repair_attempts: usize,
+    pub target_mismatches: usize,
     evidence_keys: HashSet<String>,
 }
 

@@ -3,6 +3,9 @@
 //! A session stores provider/user events, token accounting, and local JSONL
 //! records for later inspection.
 
+mod id;
+mod logging;
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +21,10 @@ use crate::{
     },
     token_accounting::{ContextWindowSnapshot, LastTurnTokenUsage, SessionTokenTotals},
 };
+
+use id::rotate_session_id;
+pub use id::runtime_session_id;
+use logging::{event_log_kind, session_event_metadata};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
@@ -171,7 +178,7 @@ impl Session {
     }
 
     fn log_event(&self, event: &Event) {
-        let metadata = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
+        let metadata = session_event_metadata(event);
         let _ = sessions::append_session_event(
             &self.project_root,
             &self.id,
@@ -215,25 +222,6 @@ impl Session {
     }
 }
 
-fn rotate_session_id(current: &str) -> String {
-    if let Some((base, suffix)) = current.rsplit_once("-clear-") {
-        if let Ok(generation) = suffix.parse::<u32>() {
-            return format!("{base}-clear-{}", generation + 1);
-        }
-    }
-    format!("{current}-clear-1")
-}
-
-fn event_log_kind(event: &Event) -> &'static str {
-    match event {
-        Event::UserMessage(_) => "user_message",
-        Event::AssistantMessage(_) => "assistant_message",
-        Event::ProviderStarted(_) => "provider_started",
-        Event::ProviderFinished(_) => "provider_finished",
-        Event::Error(_) => "error",
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderMetadata {
     pub provider: String,
@@ -257,7 +245,10 @@ impl ProviderMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{AssistantMessage, AssistantMessageSource, Event, UserMessage};
+    use crate::event::{
+        AssistantMessage, AssistantMessageSource, Event, ProviderFinished, ProviderOutput,
+        UserMessage,
+    };
 
     #[test]
     fn reset_conversation_clears_events_and_rotates_session_id() {
@@ -280,5 +271,29 @@ mod tests {
         assert_eq!(session.id, "terminal-tui-session-clear-2");
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_session_id_uses_prefix_and_is_unique() {
+        let first = runtime_session_id("terminal-tui");
+        let second = runtime_session_id("terminal-tui");
+
+        assert!(first.starts_with("terminal-tui-"));
+        assert!(second.starts_with("terminal-tui-"));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn provider_finished_session_metadata_includes_thinking_diagnostics() {
+        let event = Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "request-1",
+            ProviderOutput::new("ok").with_thinking("count me"),
+        ));
+
+        let metadata = session_event_metadata(&event);
+
+        assert_eq!(metadata["provider_response_has_thinking"], true);
+        assert_eq!(metadata["provider_response_thinking_chars"], 8);
     }
 }

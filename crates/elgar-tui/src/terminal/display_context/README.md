@@ -10,6 +10,8 @@ This folder builds the live display context used by the terminal UI.
 
 ## Difference From Startup
 
-`display_context` gathers current display data: project path, cwd, provider name, model name, metrics, and context-window information.
+`display_context` gathers current display data: project path, cwd, provider name,
+model name, metrics, context-window information, and pending approval footer
+state.
 
 `startup` renders the first visible startup text block.

@@ -3,8 +3,12 @@
 //! This file stores visible conversation lines, raw hidden details, scrollback,
 //! and provider loading state.
 
+mod reasoning_visibility;
+mod scrollback;
+mod style;
+
 use elgar_core::{
-    event::{AssistantMessageSource, Event, ProviderFinished, ProviderStarted},
+    event::{AssistantMessageSource, Event, ProviderFinished},
     token_accounting::ProviderTokenUsage,
 };
 
@@ -15,13 +19,18 @@ use super::{
     provider_reasoning::render_provider_reasoning,
 };
 
+use reasoning_visibility::provider_reasoning_should_stay_hidden;
+use scrollback::ConversationScrollback;
+pub(super) use scrollback::ThinkingPulse;
+pub(crate) use style::ConversationLineStyle;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationPane {
     pub lines: Vec<String>,
-    pub(super) line_styles: Vec<ConversationLineStyle>,
-    pub(super) scrollback: ConversationScrollback,
-    pub(super) loading_pulse: ThinkingPulse,
-    pub(super) raw_details: Vec<String>,
+    line_styles: Vec<ConversationLineStyle>,
+    scrollback: ConversationScrollback,
+    loading_pulse: ThinkingPulse,
+    raw_details: Vec<String>,
     hidden_provider_reasoning_request_ids: Vec<String>,
 }
 
@@ -222,140 +231,5 @@ impl ConversationPane {
 
         self.hidden_provider_reasoning_request_ids.remove(index);
         true
-    }
-}
-
-fn provider_reasoning_should_stay_hidden(started: &ProviderStarted) -> bool {
-    matches!(
-        started.request_mode.as_deref(),
-        Some("harness_tool_decision" | "harness_synthesis")
-    )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ConversationLineStyle {
-    #[default]
-    Plain,
-    Model,
-    VerifiedState,
-    User,
-    Loading,
-    Thinking,
-    Metrics,
-    Details,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct ConversationScrollback {
-    lines_from_bottom: usize,
-}
-
-impl ConversationScrollback {
-    fn follow_latest(&mut self) {
-        self.lines_from_bottom = 0;
-    }
-
-    fn offset_for(&self, content_lines: usize, viewport_lines: usize) -> u16 {
-        let max_offset = content_lines.saturating_sub(viewport_lines.max(1));
-        max_offset
-            .saturating_sub(self.lines_from_bottom.min(max_offset))
-            .min(usize::from(u16::MAX)) as u16
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) struct ThinkingPulse {
-    index: usize,
-}
-
-impl ThinkingPulse {
-    const LABELS: [&'static str; 4] = ["working", "working.", "working..", "working..."];
-
-    pub(super) fn label(&self) -> &'static str {
-        Self::LABELS[self.index]
-    }
-
-    pub(super) fn reset(&mut self) {
-        self.index = 0;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use elgar_core::event::{
-        AssistantMessage, AssistantMessageSource, Event, ProviderFinished, ProviderOutput,
-        ProviderStarted,
-    };
-
-    use super::ConversationPane;
-
-    #[test]
-    fn hides_harness_provider_reasoning_from_visible_conversation() {
-        let mut pane = ConversationPane::default();
-        pane.push_event(&Event::ProviderStarted(
-            ProviderStarted::new("lm-studio", "decision-1").with_request_details(
-                Some("qwen".to_string()),
-                "harness_tool_decision",
-                0,
-            ),
-        ));
-        pane.push_event(&Event::ProviderFinished(ProviderFinished::new(
-            "lm-studio",
-            "decision-1",
-            ProviderOutput::new("")
-                .with_thinking(r#"{"type":"structured_requests","requests":[]}"#),
-        )));
-
-        assert!(!pane.render_body().contains("structured_requests"));
-    }
-
-    #[test]
-    fn keeps_final_assistant_message_visible_after_hidden_decision() {
-        let mut pane = ConversationPane::default();
-        pane.push_event(&Event::ProviderStarted(
-            ProviderStarted::new("lm-studio", "decision-1").with_request_details(
-                Some("qwen".to_string()),
-                "harness_tool_decision",
-                0,
-            ),
-        ));
-        pane.push_event(&Event::ProviderFinished(ProviderFinished::new(
-            "lm-studio",
-            "decision-1",
-            ProviderOutput::new("")
-                .with_thinking(r#"{"type":"structured_requests","requests":[]}"#),
-        )));
-        pane.push_event(&Event::AssistantMessage(AssistantMessage::new(
-            "Final answer",
-            AssistantMessageSource::Provider,
-        )));
-
-        assert!(pane.render_body().contains("Final answer"));
-        assert!(!pane.render_body().contains("structured_requests"));
-    }
-
-    #[test]
-    fn hides_harness_synthesis_provider_reasoning_from_visible_conversation() {
-        let mut pane = ConversationPane::default();
-        pane.push_event(&Event::ProviderStarted(
-            ProviderStarted::new("lm-studio", "synthesis-1").with_request_details(
-                Some("qwen".to_string()),
-                "harness_synthesis",
-                0,
-            ),
-        ));
-        pane.push_event(&Event::ProviderFinished(ProviderFinished::new(
-            "lm-studio",
-            "synthesis-1",
-            ProviderOutput::new("Final answer")
-                .with_thinking(r#"{"type":"structured_requests","requests":[]}"#),
-        )));
-        pane.push_event(&Event::AssistantMessage(AssistantMessage::new(
-            "Final answer",
-            AssistantMessageSource::Provider,
-        )));
-
-        assert!(pane.render_body().contains("Final answer"));
-        assert!(!pane.render_body().contains("structured_requests"));
     }
 }

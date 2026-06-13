@@ -12,17 +12,16 @@ use crate::{
                 summary::render_compact_evidence_for_decision,
             },
             provider::session_context::{
-                load_verified_memory_index, native_tool_loop_turn_context, TurnPromptContext,
-                TurnPromptContextStats, HISTORY_DISCLAIMER, VERIFIED_MEMORY_HEADER,
+                native_tool_loop_turn_context, render_verified_memory_for_session,
+                TurnPromptContext, HISTORY_DISCLAIMER, VERIFIED_MEMORY_HEADER,
+                VERIFIED_MEMORY_PRECEDENCE_RULE,
             },
             state::{
                 memory::{render_working_memory_for_prompt, HarnessWorkingMemory},
                 types::Evidence,
             },
         },
-        loop_decision_contract,
-        memory::render_verified_memory_for_prompt,
-        PrimitiveToolRegistry,
+        loop_decision_contract, PrimitiveToolRegistry,
     },
     provider::ChatMessage,
     session::Session,
@@ -31,6 +30,8 @@ use crate::{
 pub(in crate::harness::harness_loop) const NATIVE_TOOL_LOOP_PROMPT: &str = r#"You are Elgar.
 
 Use the attached tools when you need verified local project evidence.
+When the user directly asks to open/show a file, view a folder, search/look for text, inspect, create, write, edit, or run local project state, request the matching tool or permission path instead of answering from prior messages.
+For user requests like "search for X in path" or "look for X in path", use the internal `grep` primitive with that query and path.
 If no tool is needed, answer normally in concise terminal-friendly text.
 If tool results are provided, use them as verified evidence.
 Do not claim files were read, commands ran, or files changed unless tool results prove it.
@@ -42,8 +43,6 @@ pub(in crate::harness::harness_loop) struct ProviderPromptContext {
     pub messages: Vec<ChatMessage>,
     pub evidence_mode: &'static str,
     pub stats: EvidencePromptStats,
-    #[allow(dead_code)]
-    pub turn_stats: TurnPromptContextStats,
 }
 
 /// Build the initial native provider tool-loop conversation.
@@ -73,8 +72,7 @@ pub(in crate::harness::harness_loop) fn repair_prompt_context(
     };
 
     let turn_context = native_tool_loop_turn_context(session, NATIVE_TOOL_LOOP_PROMPT, input);
-    let memory_index = load_verified_memory_index(session);
-    let verified_facts = render_verified_memory_for_prompt(&memory_index);
+    let rendered_memory = render_verified_memory_for_session(session);
     let mut messages = turn_context.messages;
     messages.pop();
 
@@ -82,8 +80,12 @@ pub(in crate::harness::harness_loop) fn repair_prompt_context(
         loop_decision_contract(registry).to_string(),
         HISTORY_DISCLAIMER.to_string(),
     ];
-    if !verified_facts.is_empty() {
-        system_parts.push(format!("{VERIFIED_MEMORY_HEADER}\n{verified_facts}"));
+    if !rendered_memory.text.is_empty() {
+        system_parts.push(VERIFIED_MEMORY_PRECEDENCE_RULE.to_string());
+        system_parts.push(format!(
+            "{VERIFIED_MEMORY_HEADER}\n{}",
+            rendered_memory.text
+        ));
     }
     messages[0] = ChatMessage::system(format!(
         "{}\n\nYour previous response did not match the harness protocol. Repair only the format. Return exactly one valid decision. Do not use markdown, code fences, bullets, or explanatory prose. {} Do not explain the repair.",
@@ -103,7 +105,6 @@ pub(in crate::harness::harness_loop) fn repair_prompt_context(
         messages,
         evidence_mode,
         stats,
-        turn_stats: turn_context.stats,
     }
 }
 

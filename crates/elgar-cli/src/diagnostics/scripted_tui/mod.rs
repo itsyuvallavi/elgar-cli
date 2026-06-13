@@ -12,11 +12,11 @@ use std::{
 use elgar_core::{
     harness::{approve_pending_approval, deny_pending_approval},
     provider::{ControllerProvider, LmStudioProvider, ProviderStub},
-    session::Session,
+    session::{runtime_session_id, Session},
 };
 use elgar_tui::terminal::TerminalCommand;
 
-use crate::{load_runtime_provider, runtime_session_id, RuntimeProviderConfigError};
+use crate::{load_runtime_provider, RuntimeProviderConfigError};
 
 mod commands;
 mod render;

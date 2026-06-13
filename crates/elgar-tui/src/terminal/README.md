@@ -17,6 +17,9 @@ Interactive terminal shell implementation for command handling, prompt input, pr
 
 Keep terminal interaction here, but route model behavior through core harness/provider APIs. UI drawing, input handling, command handling, and provider turns should stay in separate folders.
 
+The interactive terminal uses normal scrollback, not an alternate screen.
+Approval controls must preserve terminal text selection and scrolling.
+
 ## Checks
 
 - `cargo test -p elgar-tui --lib terminal`

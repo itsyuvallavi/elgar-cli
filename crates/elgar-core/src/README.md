@@ -11,6 +11,7 @@ sessions/events, token accounting, context helpers, rendering, and local logs.
 - `provider/` owns LM Studio and provider abstractions.
 - `logs/` owns local JSONL session/system logging.
 - `session.rs` stores in-memory session events and token/accounting snapshots.
+- `session/` contains session id rotation and session event metadata helpers.
 - `event/` defines core event and provider output types.
 - `token_accounting.rs` tracks provider-reported usage and context-window snapshots.
 - `context/` owns bounded context helper types for future use.

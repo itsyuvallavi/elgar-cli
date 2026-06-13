@@ -5,6 +5,8 @@
 
 use elgar_core::harness::{ApprovalTargetPreview, PendingApproval};
 
+use super::approval_action::ApprovalAction;
+
 const CARD_MIN_CONTENT_WIDTH: usize = 28;
 const CARD_MAX_CONTENT_WIDTH: usize = 72;
 
@@ -12,6 +14,7 @@ const CARD_MAX_CONTENT_WIDTH: usize = 72;
 pub(crate) fn render_pending_approval_card(
     approval: &PendingApproval,
     width: usize,
+    selected: ApprovalAction,
 ) -> Vec<String> {
     let mut body = vec![
         format!("tool: {}   id: {}", approval.tool, approval.id),
@@ -25,14 +28,18 @@ pub(crate) fn render_pending_approval_card(
 
     body.push(format!("arguments: {}", approval.arguments_preview));
     body.push(String::new());
-    body.extend(render_action_lines());
+    body.extend(render_action_lines(selected));
 
     render_simple_card("Approval required", &body, width)
 }
 
 /// Compact footer hint while an approval is pending.
-pub(crate) fn render_approval_footer_actions(approval: &PendingApproval) -> String {
-    format!("Approval pending ({}) — /approve   /deny", approval.tool)
+pub(crate) fn render_approval_footer_actions(tool: &str, selected: ApprovalAction) -> String {
+    format!(
+        "Approval pending ({tool}) — {}   {}   Tab switches · Enter selects",
+        action_button("Approve", selected == ApprovalAction::Approve),
+        action_button("Deny", selected == ApprovalAction::Deny)
+    )
 }
 
 fn render_target_lines(target: &ApprovalTargetPreview) -> Vec<String> {
@@ -54,12 +61,27 @@ fn render_target_lines(target: &ApprovalTargetPreview) -> Vec<String> {
     lines
 }
 
-fn render_action_lines() -> Vec<String> {
+fn render_action_lines(selected: ApprovalAction) -> Vec<String> {
     vec![
         "Actions".to_string(),
-        "  /approve   run requested action".to_string(),
-        "  /deny      cancel without executing".to_string(),
+        format!(
+            "  {} run requested action",
+            action_button("Approve", selected == ApprovalAction::Approve)
+        ),
+        format!(
+            "  {} cancel without executing",
+            action_button("Deny", selected == ApprovalAction::Deny)
+        ),
+        "  /approve and /deny still work as command fallback".to_string(),
     ]
+}
+
+fn action_button(label: &str, selected: bool) -> String {
+    if selected {
+        format!("[{label}]")
+    } else {
+        format!(" {label} ")
+    }
 }
 
 fn render_simple_card(title: &str, body_lines: &[String], width: usize) -> Vec<String> {
@@ -175,53 +197,4 @@ fn truncate_to_width(text: &str, width: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use elgar_core::harness::{PendingApproval, StructuredRequestKind, ValidatedStructuredRequest};
-
-    use super::{render_approval_footer_actions, render_pending_approval_card};
-
-    #[test]
-    fn approval_card_renders_box_and_actions() {
-        let request = ValidatedStructuredRequest {
-            kind: StructuredRequestKind::Write,
-            reason: "create requested file".to_string(),
-            arguments: Some(json!({
-                "path": "hello-world",
-                "content": "Hello, world!"
-            })),
-        };
-        let approval =
-            PendingApproval::from_request("approval-1", &request, "write requires approval");
-
-        let lines = render_pending_approval_card(&approval, 100);
-        let rendered = lines.join("\n");
-
-        assert!(rendered.contains('╭'));
-        assert!(rendered.contains('╯'));
-        assert!(rendered.contains("Approval required"));
-        assert!(rendered.contains("/approve"));
-        assert!(rendered.contains("/deny"));
-        assert!(rendered.contains("tool: write"));
-    }
-
-    #[test]
-    fn approval_footer_actions_name_tool_and_commands() {
-        let request = ValidatedStructuredRequest {
-            kind: StructuredRequestKind::Write,
-            reason: "create requested file".to_string(),
-            arguments: Some(json!({
-                "path": "hello-world",
-                "content": "Hello, world!"
-            })),
-        };
-        let approval =
-            PendingApproval::from_request("approval-1", &request, "write requires approval");
-
-        let footer = render_approval_footer_actions(&approval);
-        assert!(footer.contains("write"));
-        assert!(footer.contains("/approve"));
-        assert!(footer.contains("/deny"));
-    }
-}
+mod tests;

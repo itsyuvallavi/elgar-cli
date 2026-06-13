@@ -12,7 +12,7 @@ use crate::TuiShell;
 use elgar_core::{
     harness::PendingApproval,
     provider::{ControllerProvider, LmStudioProvider, ProviderConfig, ProviderStub},
-    session::Session,
+    session::{runtime_session_id, Session},
 };
 
 mod commands;
@@ -28,7 +28,7 @@ pub use commands::{
 use display_context::terminal_context;
 pub use display_context::TerminalShellContext;
 use inline::print_inline_startup;
-use input::read::read_inline_prompt;
+use input::read::{read_inline_prompt, InlinePromptSubmission};
 use turn::submitted::handle_inline_submission;
 pub use ui::render::{default_shell_text, render_default_terminal_shell, render_tui_shell};
 
@@ -94,7 +94,8 @@ fn run_terminal_shell_with_provider<P>(
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
-    let mut session = Session::new("terminal-tui-session", project_root.as_ref(), cwd.as_ref());
+    let session_id = runtime_session_id("terminal-tui");
+    let mut session = Session::new(&session_id, project_root.as_ref(), cwd.as_ref());
     let mut shell = TuiShell::new();
 
     let mut context = terminal_context(&session, &provider);
@@ -107,6 +108,14 @@ where
             break;
         };
         next_prompt_input.clear();
+
+        let input = match input {
+            InlinePromptSubmission::Text(input) => input,
+            InlinePromptSubmission::Approval(action) => match action {
+                ui::approval_action::ApprovalAction::Approve => "/approve".to_string(),
+                ui::approval_action::ApprovalAction::Deny => "/deny".to_string(),
+            },
+        };
 
         let (exit, preserved_input) =
             handle_inline_submission(&input, &provider, &mut session, &mut shell)?;

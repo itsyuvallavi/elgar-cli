@@ -10,6 +10,7 @@ Current files:
 
 - `project_file.rs` backs primitive `read` with bounded single-file content.
 - `directory.rs` backs primitive `ls` with bounded one-directory summaries.
+- `directory/` contains `ls` data types, rendering, and traversal helpers.
 - `find.rs` backs primitive `find` with bounded path matches.
 - `grep.rs` backs primitive `grep` with bounded text matches.
 - `path.rs` contains shared path display and optional directory resolution

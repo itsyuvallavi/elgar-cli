@@ -9,6 +9,13 @@ Small local scripts for the current harness baseline.
 - `install-local` builds and installs the local `elgar` binary into Cargo's bin
   directory.
 - `check-local` runs the current local verification set.
+- `dogfood-memory-recall` runs the live memory slice 2 dogfood in
+  `playground/Nextjs-1` (read → list → write → recall → `/clear` → recall)
+  and checks bounded prompt-memory log stats.
+- `dogfood-memory-stress` runs a longer live session with recall checkpoints
+  and writes a scored report (`MEMORY_STRESS_TURNS` defaults to 12). It reports
+  indexed facts, rendered facts, rendered memory chars, omitted facts, and
+  prompt-memory budget hits.
 
 ## Archived Scripts
 

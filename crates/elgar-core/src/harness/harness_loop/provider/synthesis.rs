@@ -8,7 +8,7 @@ use std::time::Instant;
 use serde_json::json;
 
 use crate::{
-    event::{Event, ProviderFinished, ProviderStarted},
+    event::{Event, ProviderFinished, ProviderOutput, ProviderStarted},
     harness::{provider_route::HARNESS_SYNTHESIS_REQUEST_MODE, EvidenceDepth},
     logs::system::{append_log_event, LogInput, LogPhase},
     provider::{ChatMessage, ControllerProvider},
@@ -84,21 +84,20 @@ where
     match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
         Ok(output) => {
             let final_text = output.text.trim().to_string();
-            let metrics = output.metrics.clone();
             if let Some(metrics) = output.metrics.as_ref() {
                 session.record_provider_metrics(metrics);
             }
             session.push_event(Event::ProviderFinished(ProviderFinished::new(
                 request.provider.clone(),
                 request.request_id.clone(),
-                output,
+                output.clone(),
             )));
             log_synthesis_finished(
                 session,
                 started,
                 &request.request_id,
                 final_text.chars().count(),
-                &metrics,
+                &output,
             );
             Ok(final_text)
         }
@@ -144,10 +143,14 @@ fn log_synthesis_finished(
     started: Instant,
     request_id: &str,
     response_chars: usize,
-    metrics: &Option<crate::event::ProviderMetrics>,
+    output: &ProviderOutput,
 ) {
-    let usage = metrics.as_ref().and_then(|metrics| metrics.usage.as_ref());
-    let backend = metrics
+    let usage = output
+        .metrics
+        .as_ref()
+        .and_then(|metrics| metrics.usage.as_ref());
+    let backend = output
+        .metrics
         .as_ref()
         .and_then(|metrics| metrics.backend)
         .map(|backend| format!("{backend:?}"));
@@ -157,6 +160,8 @@ fn log_synthesis_finished(
         "request_id": request_id,
         "response_chars": response_chars,
         "backend": backend,
+        "provider_response_has_thinking": output.has_thinking(),
+        "provider_response_thinking_chars": output.thinking_chars(),
         "prompt_tokens": usage.and_then(|usage| usage.prompt_tokens),
         "completion_tokens": usage.and_then(|usage| usage.completion_tokens),
         "total_tokens": usage.and_then(|usage| usage.total_tokens)

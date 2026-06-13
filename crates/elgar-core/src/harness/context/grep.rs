@@ -154,6 +154,19 @@ pub fn collect_grep_matches(
     if metadata.file_type().is_symlink() {
         return Err(GrepError::SymlinkRejected);
     }
+    if metadata.is_file() {
+        let mut snapshot = GrepSnapshot {
+            root: root.clone(),
+            display_path: requested_path.trim().to_string(),
+            query: query.to_string(),
+            matches: Vec::new(),
+            omitted: Vec::new(),
+            truncated: false,
+            max_rendered_bytes: options.max_rendered_bytes,
+        };
+        search_file(&root, &directory, query, &options, &mut snapshot);
+        return Ok(snapshot);
+    }
     if !metadata.is_dir() {
         return Err(GrepError::NotDirectory);
     }

@@ -3,15 +3,18 @@
 //! This path sends requests to `/v1/chat/completions`. It supports normal
 //! non-streaming chat, streaming chat, and the old tool-capable request shape.
 
-use std::time::{Duration, Instant};
+mod metrics;
+mod streaming;
+
+use std::time::Instant;
 
 use crate::{
-    event::{ProviderMetrics, ProviderOutput},
+    event::ProviderOutput,
     provider::{
         config::ProviderConfig,
-        http::{post_json, post_json_streaming, HttpEndpoint, HttpTimeouts},
+        http::{post_json, post_json_streaming, HttpEndpoint},
         types::{
-            ChatMessage, ChatRequest, ChatToolDefinition, ProviderBackendKind, ProviderError,
+            ChatMessage, ChatToolDefinition, ProviderBackendKind, ProviderError,
             ProviderRequestProfile, ProviderStreamChunk,
         },
     },
@@ -20,10 +23,17 @@ use crate::{
 use super::{
     format::{format_chat_request_body, format_chat_request_body_with_tools_and_profile},
     parse::{
-        parse_chat_response_json_with_metrics, parse_chat_stream_line, parse_chat_stream_response,
+        parse_chat_response_json_with_metrics, parse_chat_stream_response,
         parse_provider_error_json, provider_output_from_stream_parts,
     },
 };
+
+#[cfg(not(test))]
+use metrics::metrics_for_request;
+#[cfg(test)]
+pub(super) use metrics::metrics_for_request;
+use metrics::{duration_millis, http_timeouts};
+use streaming::{emit_output_chunks, StreamingOutputParts};
 
 pub(super) fn chat_lm_studio_with_request_id(
     config: &ProviderConfig,
@@ -230,122 +240,4 @@ pub(super) fn openai_chat_profile(
         stats: None,
         stateful: None,
     })
-}
-
-fn emit_output_chunks(output: &ProviderOutput, on_chunk: &mut dyn FnMut(ProviderStreamChunk)) {
-    if let Some(thinking) = output.thinking.as_ref() {
-        on_chunk(ProviderStreamChunk::Reasoning(thinking.clone()));
-    }
-    on_chunk(ProviderStreamChunk::Text(output.text.clone()));
-}
-
-fn http_timeouts(config: &ProviderConfig) -> HttpTimeouts {
-    HttpTimeouts::from_millis(
-        config.connect_timeout_millis(),
-        config.read_timeout_millis(),
-        config.write_timeout_millis(),
-        config.request_timeout_millis(),
-    )
-}
-
-#[cfg(test)]
-pub(super) fn metrics_for_request(
-    request_id: &str,
-    request: &ChatRequest,
-    body_len: usize,
-    profile: Option<&ProviderRequestProfile>,
-) -> ProviderMetrics {
-    metrics_for_openai_request(request_id, request, body_len, profile)
-}
-
-#[cfg(not(test))]
-fn metrics_for_request(
-    request_id: &str,
-    request: &ChatRequest,
-    body_len: usize,
-    profile: Option<&ProviderRequestProfile>,
-) -> ProviderMetrics {
-    metrics_for_openai_request(request_id, request, body_len, profile)
-}
-
-fn metrics_for_openai_request(
-    request_id: &str,
-    request: &ChatRequest,
-    body_len: usize,
-    profile: Option<&ProviderRequestProfile>,
-) -> ProviderMetrics {
-    let mut metrics = ProviderMetrics::new(
-        request_id,
-        Some(request.model.clone()),
-        request.stream,
-        request.messages.len(),
-        body_len,
-    );
-    metrics.backend = Some(
-        profile
-            .map(|profile| profile.backend)
-            .unwrap_or(ProviderBackendKind::OpenAiChatCompletions),
-    );
-    if let Some(profile) = profile {
-        metrics.reasoning = profile.reasoning;
-        metrics.context_length = profile.context_length;
-        metrics.stats = profile.stats;
-    }
-    metrics
-}
-
-fn duration_millis(duration: Duration) -> u64 {
-    duration.as_millis().min(u128::from(u64::MAX)) as u64
-}
-
-#[derive(Debug, Default)]
-struct StreamingOutputParts {
-    text: String,
-    thinking: String,
-    pending_line: String,
-}
-
-impl StreamingOutputParts {
-    fn push_body_chunk(
-        &mut self,
-        body_chunk: &str,
-        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
-    ) -> Result<(), ProviderError> {
-        self.pending_line.push_str(body_chunk);
-        while let Some(newline) = self.pending_line.find('\n') {
-            let mut line = self.pending_line[..newline].to_string();
-            if line.ends_with('\r') {
-                line.pop();
-            }
-            self.pending_line.drain(..=newline);
-            self.push_line(&line, on_chunk)?;
-        }
-        Ok(())
-    }
-
-    fn finish(
-        &mut self,
-        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
-    ) -> Result<(), ProviderError> {
-        if !self.pending_line.trim().is_empty() {
-            let line = std::mem::take(&mut self.pending_line);
-            self.push_line(line.trim_end_matches('\r'), on_chunk)?;
-        }
-        Ok(())
-    }
-
-    fn push_line(
-        &mut self,
-        line: &str,
-        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
-    ) -> Result<(), ProviderError> {
-        for chunk in parse_chat_stream_line(line)? {
-            match &chunk {
-                ProviderStreamChunk::Reasoning(value) => self.thinking.push_str(value),
-                ProviderStreamChunk::Text(value) => self.text.push_str(value),
-            }
-            on_chunk(chunk);
-        }
-        Ok(())
-    }
 }

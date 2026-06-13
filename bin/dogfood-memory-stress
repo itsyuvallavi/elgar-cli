@@ -1,0 +1,666 @@
+#!/usr/bin/env bash
+# Live dogfood: long-session memory stress (bounded verified facts + history).
+#
+# Runs many harness turns in one TUI session, probes recall at checkpoints,
+# and reports prompt growth + recall accuracy from logs and transcript.
+#
+# Env:
+#   MEMORY_STRESS_TURNS   action turns before final recall (default: 12)
+#   MEMORY_STRESS_WRITES  approved writes to include (default: 1)
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground/Nextjs-1"
+log_dir="$repo_root/.elgar/log/system"
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+action_turns="${MEMORY_STRESS_TURNS:-12}"
+write_count="${MEMORY_STRESS_WRITES:-1}"
+marker_file="mem-stress-${stamp}.md"
+dogfood_dir="${TMPDIR:-/tmp}/elgar-memory-dogfood-${stamp}"
+input_file="$dogfood_dir/memory-stress.in"
+output_file="$dogfood_dir/memory-stress.out"
+manifest_file="$dogfood_dir/memory-stress.manifest.json"
+report_file="$dogfood_dir/memory-stress.report.txt"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if [[ ! -d "$playground" ]]; then
+  echo "missing playground project: $playground" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+if ! [[ "$action_turns" =~ ^[0-9]+$ ]] || (( action_turns < 4 )); then
+  echo "MEMORY_STRESS_TURNS must be an integer >= 4" >&2
+  exit 1
+fi
+
+# Fixed action pool — all paths stay inside the playground project.
+# Format: prompt|expected_kind|expected_path|expected_query
+ALL_ACTIONS=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && ALL_ACTIONS+=("$line")
+done <<'EOF'
+show me package.json|read|package.json|
+show me tsconfig.json|read|tsconfig.json|
+show me the app folder|list|app|
+show me the components folder|list|components|
+open app/layout.tsx and show me the contents|read|app/layout.tsx|
+open app/page.tsx and show me the contents|read|app/page.tsx|
+search inside the app folder for export|grep|app|export
+search inside tailwind.config.ts for tailwind|grep|tailwind.config.ts|tailwind
+open next.config.mjs and show me the contents|read|next.config.mjs|
+open tailwind.config.ts and show me the contents|read|tailwind.config.ts|
+show me the public folder|list|public|
+open postcss.config.mjs and show me the contents|read|postcss.config.mjs|
+open plan.md and show me the contents|read|plan.md|
+search inside package.json for react|grep|package.json|react
+show me the project root|list|.|
+open app/globals.css and show me the contents|read|app/globals.css|
+EOF
+
+if (( action_turns > ${#ALL_ACTIONS[@]} )); then
+  echo "MEMORY_STRESS_TURNS=$action_turns exceeds action pool (${#ALL_ACTIONS[@]}); increase ACTION_POOL" >&2
+  exit 1
+fi
+
+selected_actions=("${ALL_ACTIONS[@]:0:action_turns}")
+
+# Insert one approved write before the last action when requested.
+if (( write_count > 0 )); then
+  write_prompt="create ${marker_file} with exactly one line: STRESS-${stamp}. do not create any other files."
+  write_entry="${write_prompt}|write|${marker_file}|"
+  if (( action_turns >= 2 )); then
+    selected_actions=("${selected_actions[@]:0:action_turns-1}" "$write_entry" "/approve" "${selected_actions[action_turns-1]}")
+  else
+    selected_actions=("$write_entry" "/approve")
+  fi
+fi
+
+checkpoint_at=(4 8 12)
+if (( action_turns < 8 )); then
+  checkpoint_at=(4)
+elif (( action_turns < 12 )); then
+  checkpoint_at=(4 8)
+fi
+if (( action_turns >= 12 )); then
+  checkpoint_at=(4 8 12)
+fi
+
+mkdir -p "$dogfood_dir"
+
+{
+  action_index=0
+  checkpoint_ptr=0
+  for action in "${selected_actions[@]}"; do
+    if [[ "$action" == /approve ]]; then
+      echo "/approve"
+      continue
+    fi
+    IFS='|' read -r prompt expected_kind _expected_path _expected_query <<<"$action"
+    echo "$prompt"
+    if [[ "$expected_kind" == write ]]; then
+      continue
+    fi
+    action_index=$((action_index + 1))
+    if (( checkpoint_ptr < ${#checkpoint_at[@]} )) && (( action_index == checkpoint_at[checkpoint_ptr] )); then
+      cat <<PROMPT
+MEMORY CHECK ${checkpoint_at[checkpoint_ptr]}: Without tools, list every file path opened or shown, directory viewed, and text search performed in this session so far. Use verified session facts only. One item per line.
+PROMPT
+      checkpoint_ptr=$((checkpoint_ptr + 1))
+    fi
+  done
+  cat <<'FINAL'
+FINAL MEMORY CHECK: Without tools, give a complete inventory from verified session facts only: (1) every file opened or shown (2) every directory viewed (3) every text search performed (4) every file written. If unsure, omit rather than guess.
+Did we read any file under node_modules in this session? Answer yes or no only.
+/exit
+FINAL
+} >"$input_file"
+
+python3 - "$manifest_file" "$stamp" "$marker_file" "$action_turns" "${checkpoint_at[*]}" "${selected_actions[@]}" <<'PY'
+import json, sys
+
+stamp, marker, action_turns = sys.argv[2], sys.argv[3], int(sys.argv[4])
+checkpoint_at = [int(v) for v in sys.argv[5].split()] if sys.argv[5] else []
+raw_actions = sys.argv[6:]
+
+def facts_from_actions(actions):
+    reads, lists, greps, writes = [], [], [], []
+    for action in actions:
+        parts = action.split("|", 3)
+        if len(parts) != 4:
+            continue
+        _prompt, kind, path, query = [part.strip() for part in parts]
+        if kind == "read":
+            reads.append(path)
+        elif kind == "list":
+            lists.append(path)
+        elif kind == "grep":
+            greps.append({"query": query, "path": path})
+        elif kind == "write":
+            writes.append(path or marker)
+    return reads, lists, greps, writes
+
+harness_actions = [
+    a for a in raw_actions if a != "/approve" and not a.startswith("MEMORY CHECK")
+]
+reads, lists, greps, writes = facts_from_actions(harness_actions)
+checkpoints = {}
+running = []
+action_count = 0
+for n in checkpoint_at:
+    checkpoints[str(n)] = {"reads": [], "lists": [], "greps": [], "writes": []}
+for action in harness_actions:
+    parts = action.split("|", 3)
+    if len(parts) != 4:
+        continue
+    running.append(action)
+    if parts[1].strip() != "write":
+        action_count += 1
+    if action_count in checkpoint_at:
+        r, l, g, w = facts_from_actions(running)
+        checkpoints[str(action_count)] = {
+            "reads": r,
+            "lists": l,
+            "greps": g,
+            "writes": w,
+        }
+
+manifest = {
+    "stamp": stamp,
+    "action_turns": action_turns,
+    "marker_file": marker,
+    "reads": reads,
+    "lists": lists,
+    "greps": greps,
+    "writes": writes,
+    "checkpoints": checkpoints,
+    "history_cap_user_turns": 8,
+    "history_token_budget": 2048,
+}
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2)
+PY
+
+start_epoch="$(date +%s)"
+echo "==> memory stress dogfood"
+echo "    action turns: ${action_turns}"
+echo "    marker file:  ${marker_file}"
+echo "    checkpoints:  ${checkpoint_at[*]}"
+echo "    input:        ${input_file}"
+echo "    artifacts:    ${dogfood_dir}"
+(
+  cd "$playground"
+  elgar tui <"$input_file"
+) | tee "$output_file"
+
+fail() {
+  echo "stress dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+
+if (( write_count > 0 )); then
+  [[ -f "$playground/$marker_file" ]] || fail "approved write did not create ${marker_file}"
+fi
+
+python3 - "$output_file" "$manifest_file" "$report_file" "$log_dir" "$start_epoch" <<'PY'
+import json, re, sys
+from pathlib import Path
+
+transcript = Path(sys.argv[1]).read_text(encoding="utf-8")
+manifest = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+report_path = Path(sys.argv[3])
+log_dir = Path(sys.argv[4])
+start_epoch = int(sys.argv[5])
+
+def norm_path(s: str) -> str:
+    return s.strip().strip("`'\"").lower()
+
+def extract_last_answer(lines: list[str], prompt_prefix: str) -> str | None:
+    last_body = None
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith(prompt_prefix):
+            i += 1
+            body = []
+            while i < len(lines) and not lines[i].startswith("response "):
+                if lines[i].startswith("> "):
+                    break
+                if lines[i].strip():
+                    body.append(lines[i])
+                i += 1
+            last_body = "\n".join(body).strip()
+            continue
+        i += 1
+    return last_body
+
+def extract_memory_blocks(text: str) -> list[tuple[str, str]]:
+    lines = text.splitlines()
+    blocks = []
+    for label in sorted(manifest.get("checkpoints", {}), key=int):
+        body = extract_last_answer(lines, f"> MEMORY CHECK {label}:")
+        if body:
+            blocks.append((f"check_{label}", body))
+    final = extract_last_answer(lines, "> FINAL MEMORY CHECK:")
+    if final:
+        blocks.append(("final", final))
+    trap = extract_last_answer(lines, "> Did we read any file under node_modules")
+    if trap:
+        blocks.append(("node_modules_trap", trap))
+    return blocks
+
+def allowed_paths(manifest_slice: dict) -> set[str]:
+    allowed = set()
+    for path in manifest_slice.get("reads", []):
+        allowed.add(norm_path(path))
+    for path in manifest_slice.get("lists", []):
+        allowed.add(norm_path(path))
+    for path in manifest_slice.get("writes", []):
+        allowed.add(norm_path(path))
+    for grep in manifest_slice.get("greps", []):
+        allowed.add(norm_path(grep["path"]))
+    return allowed
+
+def hallucinated_paths(body: str, manifest_slice: dict) -> list[str]:
+    allowed = allowed_paths(manifest_slice)
+    found = []
+    for token in re.findall(r"[\w./-]+\.(?:json|mjs|ts|tsx|css|md|in|out)", body, flags=re.I):
+        key = norm_path(token)
+        if key.startswith(".dogfood-"):
+            found.append(token)
+        elif key.endswith(".md") and "dogfood" in key:
+            found.append(token)
+    return sorted(set(found))
+
+def score_block(label, body: str, manifest_slice: dict) -> dict:
+    body_l = body.lower()
+    hits = {"reads": [], "lists": [], "greps": [], "writes": []}
+    misses = {"reads": [], "lists": [], "greps": [], "writes": []}
+
+    for path in manifest_slice["reads"]:
+        key = norm_path(path)
+        if key in body_l or key.replace("/", ".") in body_l:
+            hits["reads"].append(path)
+        else:
+            misses["reads"].append(path)
+
+    for path in manifest_slice["lists"]:
+        key = norm_path(path)
+        if re.search(rf"\b{re.escape(key)}\b", body_l):
+            hits["lists"].append(path)
+        else:
+            misses["lists"].append(path)
+
+    for grep in manifest_slice["greps"]:
+        q, p = grep["query"].lower(), grep["path"].lower()
+        if q in body_l and p in body_l:
+            hits["greps"].append(grep)
+        else:
+            misses["greps"].append(grep)
+
+    for path in manifest_slice["writes"]:
+        key = norm_path(path)
+        if key in body_l:
+            hits["writes"].append(path)
+        else:
+            misses["writes"].append(path)
+
+    total = (
+        len(manifest_slice["reads"])
+        + len(manifest_slice["lists"])
+        + len(manifest_slice["greps"])
+        + len(manifest_slice["writes"])
+    )
+    got = sum(len(v) for v in hits.values())
+    return {
+        "label": label,
+        "score": got / total if total else 1.0,
+        "got": got,
+        "total": total,
+        "hits": hits,
+        "misses": misses,
+        "hallucinations": hallucinated_paths(body, manifest_slice),
+        "body_preview": body[:400],
+    }
+
+def manifest_for_label(label: str) -> dict:
+    if label.startswith("check_"):
+        key = label.removeprefix("check_")
+        return manifest.get("checkpoints", {}).get(key, manifest)
+    if label == "node_modules_trap":
+        return {"reads": [], "lists": [], "greps": [], "writes": []}
+    return manifest
+
+blocks = extract_memory_blocks(transcript)
+scores = [score_block(label, body, manifest_for_label(label)) for label, body in blocks]
+
+context_rows = []
+provider_rows = []
+evidence_rows = []
+round_rows = []
+write_rows = []
+for path in sorted(log_dir.glob("cli-tui-*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
+    if path.stat().st_mtime < start_epoch:
+        break
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        if row.get("timestamp_unix_ms", 0) < start_epoch * 1000:
+            continue
+        meta = row.get("metadata", {})
+        summary = row.get("summary")
+        if summary == "harness_turn_prompt_context_built":
+            context_rows.append(
+                {
+                    "session_id": row.get("session_id"),
+                    "turn_id": row.get("turn_id"),
+                    "history_turns": meta.get("history_turns"),
+                    "verified_fact_count": meta.get("verified_fact_count"),
+                    "indexed_fact_count": meta.get("indexed_fact_count"),
+                    "rendered_fact_count": meta.get("rendered_fact_count"),
+                    "rendered_memory_chars": meta.get("rendered_memory_chars"),
+                    "omitted_fact_count": meta.get("omitted_fact_count"),
+                    "memory_budget_hit": meta.get("memory_budget_hit"),
+                    "initial_message_count": meta.get("initial_message_count"),
+                    "log": str(path),
+                }
+            )
+        elif summary == "harness_loop_provider_call_finished":
+            provider_rows.append(
+                {
+                    "session_id": row.get("session_id"),
+                    "turn_id": row.get("turn_id"),
+                    "round_index": meta.get("round_index"),
+                    "loop_phase": meta.get("loop_phase"),
+                    "prompt_tokens": meta.get("prompt_tokens"),
+                    "completion_tokens": meta.get("completion_tokens"),
+                    "total_tokens": meta.get("total_tokens"),
+                    "has_thinking": meta.get("provider_response_has_thinking"),
+                    "thinking_chars": meta.get("provider_response_thinking_chars"),
+                    "request_id": meta.get("request_id"),
+                }
+            )
+        elif summary == "harness_loop_evidence_collected":
+            evidence_rows.append(
+                {
+                    "session_id": row.get("session_id"),
+                    "turn_id": row.get("turn_id"),
+                    "round_index": meta.get("round_index"),
+                    "label": meta.get("evidence_label"),
+                    "evidence_bytes": meta.get("evidence_bytes"),
+                    "truncated": meta.get("truncated"),
+                }
+            )
+        elif summary == "harness_loop_round_finished":
+            round_rows.append(
+                {
+                    "session_id": row.get("session_id"),
+                    "turn_id": row.get("turn_id"),
+                    "round_index": meta.get("round_index"),
+                    "result": meta.get("result"),
+                    "duration_ms": row.get("duration_ms"),
+                }
+            )
+        elif summary in {"harness_approval_requested", "harness_write_execution_finished"}:
+            if meta.get("tool") == "write":
+                write_rows.append(
+                    {
+                        "session_id": row.get("session_id"),
+                        "turn_id": row.get("turn_id"),
+                        "round_index": meta.get("round_index"),
+                        "path": meta.get("target_requested_path") or meta.get("path"),
+                        "summary": summary,
+                    }
+                )
+
+def expected_evidence_labels(manifest: dict) -> list[str]:
+    labels = []
+    labels.extend(f"read:{path}" for path in manifest.get("reads", []))
+    labels.extend(f"ls:{path}" for path in manifest.get("lists", []))
+    labels.extend(
+        f"grep:{grep['path']}:{grep['query']}"
+        for grep in manifest.get("greps", [])
+    )
+    labels.extend(f"write:{path}" for path in manifest.get("writes", []))
+    return labels
+
+def round0_affinity(expected: list[str], evidence: list[dict], writes: list[dict]) -> dict:
+    by_label = {}
+    for row in evidence:
+        by_label.setdefault(row["label"], []).append(row)
+    rows = []
+    for label in expected:
+        matches = by_label.get(label, [])
+        if label.startswith("write:"):
+            write_path = label.removeprefix("write:")
+            write_matches = [
+                row for row in writes
+                if row.get("path") == write_path
+            ]
+            matches.extend(write_matches)
+        round0 = [row for row in matches if row.get("round_index") == 0]
+        rows.append(
+            {
+                "label": label,
+                "round0": bool(round0),
+                "first_round": min(
+                    (row.get("round_index") for row in matches if row.get("round_index") is not None),
+                    default=None,
+                ),
+                "turn_id": matches[0].get("turn_id") if matches else None,
+            }
+        )
+    successes = sum(1 for row in rows if row["round0"])
+    return {
+        "rows": rows,
+        "successes": successes,
+        "total": len(rows),
+        "rate": successes / len(rows) if rows else 1.0,
+    }
+
+expected_labels = expected_evidence_labels(manifest)
+affinity = round0_affinity(expected_labels, evidence_rows, write_rows)
+
+guard_counts = {}
+for row in round_rows:
+    result = row.get("result")
+    if result:
+        guard_counts[result] = guard_counts.get(result, 0) + 1
+
+token_rows_from_logs = [
+    row for row in provider_rows
+    if row.get("loop_phase") == "native_tool_loop" and row.get("round_index") == 0
+]
+duration_by_turn_round = {
+    (row.get("turn_id"), row.get("round_index")): row.get("duration_ms")
+    for row in round_rows
+}
+
+token_rows = []
+for match in re.finditer(r"response .*?· ↑([\d.]+k|\d+) ↓([\d.]+k|\d+) · ([\d.]+k|\d+) provider tokens", transcript):
+    token_rows.append(match.group(0))
+
+def parse_token_count(raw: str) -> int:
+    raw = raw.lower().strip()
+    if raw.endswith("k"):
+        return int(float(raw[:-1]) * 1000)
+    return int(raw)
+
+prompt_tokens = []
+for line in token_rows:
+    m = re.search(r"↑([\d.]+k|\d+)", line)
+    if m:
+        prompt_tokens.append(parse_token_count(m.group(1)))
+
+trap = next((b for l, b in blocks if l == "node_modules_trap"), "")
+trap_ok = "no" in trap.lower() and "yes" not in trap.lower().split()[0:3]
+hallucinated_artifacts = [
+    path
+    for row in scores
+    for path in row.get("hallucinations", [])
+    if ".dogfood-" in path or "dogfood" in path
+]
+memory_stats_ok = bool(context_rows) and all(
+    row.get("rendered_memory_chars") is not None
+    and row.get("rendered_fact_count") is not None
+    and row.get("indexed_fact_count") is not None
+    for row in context_rows
+)
+
+lines = []
+lines.append("Memory stress report")
+lines.append("====================")
+lines.append(f"stamp: {manifest['stamp']}")
+lines.append(f"action turns: {manifest['action_turns']}")
+lines.append(f"history cap (user turns): {manifest['history_cap_user_turns']}")
+lines.append(f"history token budget: {manifest['history_token_budget']}")
+lines.append("")
+lines.append("Ground truth")
+lines.append(f"  reads ({len(manifest['reads'])}): {', '.join(manifest['reads'])}")
+lines.append(f"  lists ({len(manifest['lists'])}): {', '.join(manifest['lists'])}")
+lines.append(f"  text searches ({len(manifest['greps'])}): {manifest['greps']}")
+lines.append(f"  writes ({len(manifest['writes'])}): {', '.join(manifest['writes'])}")
+lines.append("")
+lines.append("First-pass tool affinity")
+lines.append(
+    f"  round-0 evidence success: {affinity['successes']}/{affinity['total']} "
+    f"({affinity['rate']:.0%})"
+)
+for row in affinity["rows"]:
+    status = "PASS" if row["round0"] else "LATER_ROUND" if row["first_round"] is not None else "MISS"
+    lines.append(
+        f"  {status}: {row['label']} "
+        f"turn={row['turn_id']} first_round={row['first_round']}"
+    )
+retry_count = sum(
+    count for result, count in guard_counts.items()
+    if "retry" in result or result in {"missing_primitive_evidence_retry", "unverified_claim_retry"}
+)
+target_mismatch_count = sum(
+    count for result, count in guard_counts.items()
+    if "tool_target_mismatch" in result
+)
+lines.append(f"  recovered-after-retry round finishes: {retry_count}")
+lines.append(f"  tool_target_mismatch round finishes: {target_mismatch_count}")
+if guard_counts:
+    lines.append(f"  round result counts: {guard_counts}")
+lines.append("")
+lines.append("Round-0 provider telemetry")
+for row in token_rows_from_logs[:20]:
+    duration = duration_by_turn_round.get((row.get("turn_id"), row.get("round_index")))
+    total_tokens = row.get("total_tokens") or 0
+    tok_per_sec = ""
+    if duration and total_tokens:
+        tok_per_sec = f" tokens_per_sec~{total_tokens / (duration / 1000):.1f}"
+    lines.append(
+        f"  turn {row['turn_id']}: prompt={row['prompt_tokens']} "
+        f"completion={row['completion_tokens']} total={row['total_tokens']} "
+        f"thinking={row['has_thinking']} thinking_chars={row['thinking_chars']} "
+        f"duration_ms={duration}{tok_per_sec}"
+    )
+lines.append("")
+lines.append("Recall scores")
+for row in scores:
+    lines.append(
+        f"  {row['label']}: {row['got']}/{row['total']} ({row['score']:.0%})"
+    )
+    if row["misses"]["reads"]:
+        lines.append(f"    missed reads: {row['misses']['reads']}")
+    if row["misses"]["lists"]:
+        lines.append(f"    missed lists: {row['misses']['lists']}")
+    if row["misses"]["greps"]:
+        lines.append(f"    missed text searches: {row['misses']['greps']}")
+    if row["misses"]["writes"]:
+        lines.append(f"    missed writes: {row['misses']['writes']}")
+    if row.get("hallucinations"):
+        lines.append(f"    hallucinated paths (not in ground truth): {row['hallucinations']}")
+lines.append("")
+lines.append(f"node_modules trap (expect no): {'PASS' if trap_ok else 'FAIL'} — {trap[:120]!r}")
+lines.append("")
+lines.append("Prompt context growth (harness_turn_prompt_context_built)")
+for row in context_rows[:20]:
+    lines.append(
+        f"  turn {row['turn_id']}: history_turns={row['history_turns']} "
+        f"verified_facts={row['verified_fact_count']} "
+        f"rendered_facts={row['rendered_fact_count']} "
+        f"rendered_chars={row['rendered_memory_chars']} "
+        f"omitted={row['omitted_fact_count']} "
+        f"budget_hit={row['memory_budget_hit']} "
+        f"messages={row['initial_message_count']} session={row['session_id']}"
+    )
+if context_rows:
+    peak = max(context_rows, key=lambda r: (r["indexed_fact_count"] or 0, r["history_turns"] or 0))
+    lines.append(
+        f"  peak: turn {peak['turn_id']} history_turns={peak['history_turns']} "
+        f"indexed_facts={peak['indexed_fact_count']} "
+        f"rendered_facts={peak['rendered_fact_count']} "
+        f"rendered_chars={peak['rendered_memory_chars']}"
+    )
+lines.append(f"memory stats logged: {'PASS' if memory_stats_ok else 'FAIL'}")
+lines.append(
+    f"dogfood artifact hallucination check: {'FAIL' if hallucinated_artifacts else 'PASS'}"
+)
+if hallucinated_artifacts:
+    lines.append(f"  hallucinated artifacts: {sorted(set(hallucinated_artifacts))}")
+lines.append("")
+if prompt_tokens:
+    lines.append("Provider prompt tokens per visible response (approx input size)")
+    lines.append(f"  min={min(prompt_tokens)} max={max(prompt_tokens)} last={prompt_tokens[-1]}")
+    if len(prompt_tokens) >= 4:
+        lines.append(f"  first recall-ish bump: {prompt_tokens[3]} (turn ~4)")
+lines.append("")
+lines.append("Interpretation")
+if scores:
+    final = next((s for s in scores if s["label"] == "final"), scores[-1])
+    if final["score"] >= 0.85 and trap_ok:
+        lines.append("  Model stayed coherent at this session length.")
+    elif final["score"] >= 0.6:
+        lines.append("  Partial recall — likely trimming or model drift; inspect misses above.")
+    else:
+        lines.append("  Heavy confusion — context may exceed useful recall for this model.")
+if context_rows:
+    ht = [r["history_turns"] or 0 for r in context_rows]
+    if max(ht) >= manifest["history_cap_user_turns"]:
+        lines.append(
+            f"  History hit user-turn cap ({manifest['history_cap_user_turns']}); "
+            "oldest chat turns drop but verified facts should remain."
+        )
+lines.append("")
+lines.append(f"transcript: {sys.argv[1]}")
+lines.append(f"manifest:   {sys.argv[2]}")
+
+report = "\n".join(lines) + "\n"
+report_path.write_text(report, encoding="utf-8")
+print(report)
+
+if not trap_ok:
+    sys.exit(2)
+if hallucinated_artifacts:
+    sys.exit(3)
+if not memory_stats_ok:
+    sys.exit(4)
+PY
+
+cleanup_status="not-needed"
+if (( write_count > 0 )) && [[ -f "$playground/$marker_file" ]]; then
+  rm -f "$playground/$marker_file"
+  if [[ -f "$playground/$marker_file" ]]; then
+    cleanup_status="failed:${marker_file}"
+  else
+    cleanup_status="removed:${marker_file}"
+  fi
+fi
+
+printf '\nCleanup\n  %s\n' "$cleanup_status" | tee -a "$report_file"
+echo "==> report written: ${report_file}"

@@ -198,6 +198,19 @@ impl ProviderOutput {
         self.metrics = Some(metrics);
         self
     }
+
+    pub fn has_thinking(&self) -> bool {
+        self.thinking
+            .as_ref()
+            .is_some_and(|thinking| !thinking.is_empty())
+    }
+
+    pub fn thinking_chars(&self) -> usize {
+        self.thinking
+            .as_ref()
+            .map(|thinking| thinking.chars().count())
+            .unwrap_or(0)
+    }
 }
 
 /// Provider-owned facts about one provider request.

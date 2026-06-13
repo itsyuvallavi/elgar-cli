@@ -41,9 +41,9 @@ Active:
   relative/absolute path status and warns when the target appears outside the
   launch folder.
 - Line-based CLI mode supports `/approve`, `/deny`, and `/reject`.
-- Interactive terminal TUI supports `/approve`, `/deny`, and `/reject` and
-  renders the current pending approval record after provider turns. Richer
-  approval buttons/cards are still pending.
+- Interactive terminal TUI renders the current pending approval record after
+  provider turns and exposes keyboard-first `[Approve]` / `[Deny]` controls.
+  `/approve`, `/deny`, and `/reject` remain command fallbacks.
 - Approved `bash`, `write`, and `edit` requests execute from the launch folder
   boundary and return verified execution output.
 - Approved `bash` is explicit shell execution, not a sandbox. It reports the
@@ -53,9 +53,22 @@ Active:
 - Native tool results return to the provider as `role:"tool"` messages, and
   normal final text ends the turn.
 - Fallback synthesis remains available for safe-stop paths.
-- Cross-turn harness memory injects compact verified JSONL facts plus bounded
-  prior user/assistant turns into provider prompts. `/clear` and `/new` reset
-  core conversation state and rotate the session id.
+- Cross-turn harness memory keeps full compact JSONL facts as audit truth, but
+  injects only a bounded prompt view plus bounded prior user/assistant turns.
+  `/clear` and `/new` reset core conversation state and rotate the session id.
+- Provider final prose is guarded so local project action claims cannot become
+  visible truth without verified same-turn evidence; the first blocked claim
+  gets one generic corrective retry before the turn stops.
+- Provider prose that asks for approval to use read-only inspection primitives
+  is also guarded and retried once, because `read`, `ls`, `find`, and `grep`
+  execute without approval.
+- Provider prose that asks the user to approve a risky action is guarded unless
+  core has a real pending approval record. Prose alone must not make `/approve`
+  appear actionable.
+- Explicit primitive target fidelity is validated before execution for narrow
+  direct file-open requests and user-language text search requests such as
+  `search for <query> in <file>`; obvious argument mismatches are rejected and
+  retried.
 - `NATIVE_TOOL_LOOP.md` documents the active native provider tool loop and
   remaining transition gaps.
 
@@ -132,8 +145,10 @@ Mitigations:
 
 ## Current Next Work
 
-1. Dogfood cross-turn recall and follow-up edits in `playground/Nextjs-1`
-   (Test 1 sequence).
-2. Design and add richer TUI approval buttons/cards on top of core approval
-   state.
-3. Review loop token/speed logs after memory injection on live LM Studio runs.
+1. Dogfood bounded cross-turn recall and provider-claim guard behavior through
+   Cursor, then inspect the resulting JSONL logs.
+2. Design and add same-turn harness working memory improvements where they are
+   not already covered by duplicate rejection.
+3. Dogfood keyboard-first TUI approval buttons on a live write approval flow,
+   then inspect JSONL approval evidence.
+4. Review loop token/speed logs after memory hardening on live LM Studio runs.

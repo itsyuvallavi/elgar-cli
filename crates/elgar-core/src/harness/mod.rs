@@ -39,8 +39,9 @@ pub use harness_loop::{
     PrimitiveHarnessLoopRound,
 };
 pub use memory::{
-    build_memory_index, read_session_memory_events, HarnessMemoryFact, HarnessMemoryIndex,
-    HarnessMemoryKind, SessionMemoryReadError,
+    build_memory_index, read_session_memory_events, render_verified_memory_for_prompt_with_budget,
+    HarnessMemoryFact, HarnessMemoryIndex, HarnessMemoryKind, HarnessMemoryPromptBudget,
+    RenderedMemoryPrompt, RenderedMemoryStats, SessionMemoryReadError,
 };
 pub use model_choice::{
     loop_decision_contract, model_choice_contract, parse_model_choice,

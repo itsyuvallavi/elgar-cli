@@ -17,7 +17,10 @@ use crate::theme;
 
 use super::{
     ui::{
-        approval::render_pending_approval_footer_actions,
+        approval::{
+            render_approval_footer_actions_for_tool, render_pending_approval_footer_actions,
+        },
+        approval_action::ApprovalAction,
         footer::{align_footer_line, footer_location_label},
     },
     ANSI_MUTED,
@@ -32,6 +35,7 @@ pub struct TerminalShellContext {
     pub provider_metrics: Option<ProviderMetrics>,
     pub context_accounting: ContextAccounting,
     pub context_window_snapshot: Option<ContextWindowSnapshot>,
+    pub approval_tool: Option<String>,
     pub approval_actions_line: Option<String>,
 }
 
@@ -46,6 +50,7 @@ impl TerminalShellContext {
             provider_metrics: None,
             context_accounting: ContextAccounting::unknown(),
             context_window_snapshot: None,
+            approval_tool: None,
             approval_actions_line: None,
         }
     }
@@ -88,6 +93,14 @@ impl TerminalShellContext {
 
     pub(crate) fn footer_body(&self, _status: &str, _copy_hint: &str) -> String {
         self.footer_body_for_width(80)
+    }
+
+    pub(crate) fn with_approval_action_selected(mut self, selected: ApprovalAction) -> Self {
+        self.approval_actions_line = self
+            .approval_tool
+            .as_ref()
+            .map(|tool| render_approval_footer_actions_for_tool(tool, selected));
+        self
     }
 
     pub(super) fn footer_body_for_width(&self, width: usize) -> String {
@@ -160,9 +173,13 @@ where
         context.provider = Some(request.provider);
         context.model = request.model;
     }
-    context.approval_actions_line = session
-        .pending_approval()
-        .map(render_pending_approval_footer_actions);
+    if let Some(approval) = session.pending_approval() {
+        context.approval_tool = Some(approval.tool.clone());
+        context.approval_actions_line = Some(render_pending_approval_footer_actions(
+            approval,
+            ApprovalAction::Approve,
+        ));
+    }
     context
 }
 

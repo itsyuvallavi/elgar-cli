@@ -36,14 +36,27 @@ Risky primitives such as `bash`, `write`, and `edit` are not executed directly
 by the model. Core stores a pending approval record, and the TUI renders that
 record after the provider turn.
 
-The current controls are command-based:
+The primary controls are keyboard-first text buttons rendered in the inline
+terminal prompt:
 
-- `/approve` executes the current pending approval through core.
-- `/deny` or `/reject` rejects and clears the current pending approval.
+- `[Approve]` executes the current pending approval through core.
+- `[Deny]` rejects and clears the current pending approval.
+- `Tab` switches the selected button.
+- `Enter` activates the selected button when the prompt is otherwise empty.
 
-The TUI renders a boxed approval card with action hints and shows a compact
-`/approve` / `/deny` footer line while approval is pending. It only displays and
-submits approval commands; it does not own permission policy or execution truth.
+`/approve`, `/deny`, and `/reject` remain command fallbacks. The TUI renders a
+boxed approval card with action hints and shows a compact selected-button footer
+line while approval is pending. It only displays and submits approval actions; it
+does not own permission policy or execution truth.
+
+If the model asks for approval in prose but core did not create a pending
+approval record, the harness retries the model instead of showing a dead
+approval action. A visible approval card means core has an executable pending
+approval.
+
+The terminal keeps the inline scrollback model. Approval controls must not use
+alternate-screen rendering or mouse capture unless a future plan proves native
+text selection and scrolling remain intact.
 
 ## Rendering
 

@@ -32,6 +32,9 @@ fn primitive_loop_includes_prior_user_and_assistant_messages() {
 
     assert_eq!(calls.len(), 1);
     assert!(calls[0].len() > 2);
+    assert!(calls[0][0]
+        .content
+        .contains("When the user directly asks to open/show a file"));
     assert!(calls[0]
         .iter()
         .any(|message| message.content.contains("read package.json")));

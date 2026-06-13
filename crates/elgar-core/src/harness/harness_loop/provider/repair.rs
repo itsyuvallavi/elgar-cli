@@ -101,7 +101,7 @@ where
                 &request.request_id,
                 request_mode,
                 loop_phase,
-                &output.metrics,
+                &output,
             );
             Ok(output)
         }

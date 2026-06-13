@@ -61,6 +61,8 @@ context. For `list <dir>`, request `ls` on that directory. For `read <dir>`,
 request `ls` on that directory first, then batch-read the visible files if the
 user asked to read the directory contents. For `find README files`, one broad
 `find` pattern such as `README*` is usually enough before answering no matches.
+For user requests like "search for X in path" or "look for X in path", request
+the `grep` primitive with that query and path.
 
 Do not invent macro tools. For project work, compose the primitive tools:
 `ls`, `find`, `grep`, `read`, `bash`, `write`, and `edit`. Elgar validates every

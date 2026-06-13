@@ -7,8 +7,9 @@
 use crate::{
     event::{AssistantMessageSource, Event},
     harness::memory::{
-        build_memory_index, read_session_memory_events, render_verified_memory_for_prompt,
-        HarnessMemoryIndex,
+        build_memory_index, read_session_memory_events,
+        render_verified_memory_for_prompt_with_budget, HarnessMemoryIndex, RenderedMemoryPrompt,
+        RenderedMemoryStats,
     },
     provider::{ChatMessage, ChatRole},
     session::Session,
@@ -22,6 +23,7 @@ pub(in crate::harness::harness_loop) const HISTORY_DISCLAIMER: &str = "Prior ass
 
 pub(in crate::harness::harness_loop) const VERIFIED_MEMORY_HEADER: &str =
     "Verified session facts (advisory; Elgar-recorded, not provider memory):";
+pub(in crate::harness::harness_loop) const VERIFIED_MEMORY_PRECEDENCE_RULE: &str = "When stating which files were read, listed, searched, or written, use only paths listed under \"Verified session facts\". Do not infer file actions from prior assistant messages.";
 
 /// Stats about the initial provider prompt for one harness turn.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -29,6 +31,7 @@ pub(in crate::harness::harness_loop) struct TurnPromptContextStats {
     pub initial_message_count: usize,
     pub history_turns: usize,
     pub verified_fact_count: usize,
+    pub memory: RenderedMemoryStats,
 }
 
 /// Initial native tool-loop messages including cross-turn session context.
@@ -43,10 +46,9 @@ pub(in crate::harness::harness_loop) fn native_tool_loop_turn_context(
     system_prompt: &str,
     input: &str,
 ) -> TurnPromptContext {
-    let memory_index = load_verified_memory_index(session);
-    let verified_facts = render_verified_memory_for_prompt(&memory_index);
+    let rendered_memory = render_verified_memory_for_session(session);
     let history = session_history_messages(session, input);
-    let system = build_system_prompt(system_prompt, &verified_facts);
+    let system = build_system_prompt(system_prompt, &rendered_memory.text);
 
     let mut messages = Vec::with_capacity(1 + history.len() + 1);
     messages.push(ChatMessage::system(system));
@@ -60,10 +62,18 @@ pub(in crate::harness::harness_loop) fn native_tool_loop_turn_context(
                 .iter()
                 .filter(|message| message.role == ChatRole::User)
                 .count(),
-            verified_fact_count: memory_index.facts.len(),
+            verified_fact_count: rendered_memory.stats.indexed_fact_count,
+            memory: rendered_memory.stats,
         },
         messages,
     }
+}
+
+pub(in crate::harness::harness_loop) fn render_verified_memory_for_session(
+    session: &Session,
+) -> RenderedMemoryPrompt {
+    let memory_index = load_verified_memory_index(session);
+    render_verified_memory_for_prompt_with_budget(&memory_index, &Default::default())
 }
 
 pub(in crate::harness::harness_loop) fn load_verified_memory_index(
@@ -77,6 +87,7 @@ pub(in crate::harness::harness_loop) fn load_verified_memory_index(
 fn build_system_prompt(base_prompt: &str, verified_facts: &str) -> String {
     let mut parts = vec![base_prompt.to_string(), HISTORY_DISCLAIMER.to_string()];
     if !verified_facts.is_empty() {
+        parts.push(VERIFIED_MEMORY_PRECEDENCE_RULE.to_string());
         parts.push(format!("{VERIFIED_MEMORY_HEADER}\n{verified_facts}"));
     }
     parts.join("\n\n")

@@ -11,7 +11,9 @@ root.
 - `mod.rs` owns `LmStudioProvider`, public LM Studio helper exports, request id
   generation, and request routing.
 - `openai.rs` sends OpenAI-compatible LM Studio chat requests, tool requests,
-  and streaming requests. It also records OpenAI-compatible request metrics.
+  and streaming requests.
+- `openai/` contains OpenAI-compatible request metrics, timeout helpers, and
+  streaming response assembly.
 - `format.rs` builds OpenAI-compatible chat request structs and JSON bodies.
 - `parse.rs` parses OpenAI-compatible, streaming, and error responses into
   Elgar `ProviderOutput` and `ProviderError` values.
