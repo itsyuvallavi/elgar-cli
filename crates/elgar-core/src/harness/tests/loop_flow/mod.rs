@@ -2,6 +2,7 @@
 
 mod batch_loop_test;
 mod direct_primitive_guard_test;
+mod empty_response_loop_test;
 mod execution_failure_loop_test;
 mod final_text_loop_test;
 mod loop_helpers;

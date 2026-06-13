@@ -11,6 +11,7 @@ mod native_execution;
 mod native_tool_round;
 mod prose_claim_guard;
 mod provider_claim_retry;
+mod provider_error;
 mod request_handling;
 mod start;
 mod structured_choice_round;

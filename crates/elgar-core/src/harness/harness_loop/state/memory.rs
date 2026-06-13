@@ -41,6 +41,9 @@ impl HarnessWorkingMemory {
                 self.mcp_calls
                     .insert(format!("{server}:{tool}:{fingerprint}"));
             }
+            EvidenceKey::InvalidMcp(fingerprint) => {
+                self.mcp_calls.insert(format!("invalid:{fingerprint}"));
+            }
             EvidenceKey::Primitive(name) => {
                 self.duplicate_requests
                     .push(format!("untracked primitive evidence: {name}"));

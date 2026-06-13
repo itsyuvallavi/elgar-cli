@@ -20,6 +20,7 @@ use crate::{
                     finish_provider_claim_block, guard_provider_text_or_retry,
                     ProviderClaimGuardOutcome,
                 },
+                provider_error::{handle_provider_loop_error, ProviderLoopErrorOutcome},
                 start::log_loop_started,
                 structured_choice_round::{
                     handle_structured_request_choice, handle_structured_requests_choice,
@@ -80,13 +81,39 @@ where
         let round_started = Instant::now();
         log_loop_round_started(session, round_index, evidence.len());
 
-        let output = request_native_tool_loop_response(
+        let output = match request_native_tool_loop_response(
             provider,
             session,
             &messages,
             &registry,
             round_index,
-        )?;
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                match handle_provider_loop_error(
+                    provider,
+                    session,
+                    input,
+                    error,
+                    round_index,
+                    round_started,
+                    &budget,
+                    &mut budget_state,
+                    &evidence,
+                    &mut messages,
+                    rounds,
+                    loop_turn_id,
+                    loop_started,
+                )? {
+                    ProviderLoopErrorOutcome::Retry { returned_rounds } => {
+                        rounds = returned_rounds;
+                        round_index = round_index.saturating_add(1);
+                        continue;
+                    }
+                    ProviderLoopErrorOutcome::Finish(result) => return Ok(result),
+                }
+            }
+        };
 
         if !output.tool_calls.is_empty() {
             match handle_native_tool_output(

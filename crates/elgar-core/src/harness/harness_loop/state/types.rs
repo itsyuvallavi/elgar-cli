@@ -33,6 +33,7 @@ pub(in crate::harness::harness_loop) enum EvidenceKey {
     Find(String, String),
     Grep(String, String),
     Mcp(String, String, String),
+    InvalidMcp(String),
     Primitive(String),
 }
 
@@ -44,6 +45,7 @@ impl EvidenceKey {
             Self::Find(path, pattern) => format!("find:{path}:{pattern}"),
             Self::Grep(path, query) => format!("grep:{path}:{query}"),
             Self::Mcp(server, tool, fingerprint) => format!("mcp:{server}:{tool}:{fingerprint}"),
+            Self::InvalidMcp(fingerprint) => format!("invalid_mcp_call:{fingerprint}"),
             Self::Primitive(name) => name.clone(),
         }
     }

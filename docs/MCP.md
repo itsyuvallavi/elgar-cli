@@ -171,3 +171,14 @@ mcp:context7:query-docs:<argument-fingerprint>
 MCP duplicate detection is argument-aware. An exact repeated `mcp_call` is
 blocked as a duplicate, but the same server/tool with a different query or
 argument object is allowed so the model can refine a search.
+
+Malformed `mcp_call` requests are returned as verified feedback with labels
+like:
+
+```text
+invalid_mcp_call:<request-fingerprint>
+```
+
+This means the provider emitted an invalid `mcp_call` shape, not that the MCP
+server or remote tool failed. Valid `mcp_call` requests require top-level
+`server`, top-level `tool`, and a top-level `arguments` object.

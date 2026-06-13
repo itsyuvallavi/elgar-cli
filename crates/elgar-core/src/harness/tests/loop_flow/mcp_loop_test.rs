@@ -100,6 +100,118 @@ fn native_mcp_call_returns_verified_evidence() {
 }
 
 #[test]
+fn native_mcp_missing_server_returns_invalid_mcp_evidence() {
+    let root = temp_root("mcp-missing-server");
+    fs::write(
+        root.join("elgar-mcp.json"),
+        r#"{"servers":{"context7":{"transport":"http","url":"http://127.0.0.1:9/mcp"}}}"#,
+    )
+    .unwrap();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output(
+            "mcp_call",
+            r#"{"tool":"query-docs","arguments":{"libraryId":"/vercel/next.js","query":"middleware auth"}}"#,
+            "call-invalid-mcp",
+        ),
+        ProviderOutput::new("Recovered from invalid MCP shape."),
+    ]);
+    let mut session = Session::new("mcp-missing-server-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "use Context7 docs").unwrap();
+    let calls = provider.calls.lock().expect("calls lock");
+    let tool_results = tool_message_contents(&calls[1]);
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert!(result.rounds[0]
+        .evidence_label
+        .as_deref()
+        .is_some_and(|label| label.starts_with("invalid_mcp_call:")));
+    assert!(tool_results.iter().any(|content| {
+        content.contains("VERIFIED_MCP_CALL_ERROR")
+            && content.contains("missing top-level `server`")
+            && content.contains("required_shape")
+    }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn native_mcp_nested_server_tool_returns_invalid_mcp_evidence() {
+    let root = temp_root("mcp-nested-server-tool");
+    fs::write(
+        root.join("elgar-mcp.json"),
+        r#"{"servers":{"context7":{"transport":"http","url":"http://127.0.0.1:9/mcp"}}}"#,
+    )
+    .unwrap();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output(
+            "mcp_call",
+            r#"{"arguments":{"server":"context7","tool":"query-docs","libraryId":"/vercel/next.js","query":"middleware auth"}}"#,
+            "call-invalid-mcp",
+        ),
+        ProviderOutput::new("Recovered from nested invalid MCP shape."),
+    ]);
+    let mut session = Session::new("mcp-nested-server-tool-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "use Context7 docs").unwrap();
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert!(result.rounds[0]
+        .evidence_label
+        .as_deref()
+        .is_some_and(|label| label.starts_with("invalid_mcp_call:")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn native_mcp_invalid_call_can_recover_with_valid_retry() {
+    let root = temp_root("mcp-invalid-recovery");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake MCP server");
+    let addr = listener.local_addr().expect("fake MCP addr");
+    fs::write(
+        root.join("elgar-mcp.json"),
+        format!(
+            r#"{{"servers":{{"context7":{{"transport":"http","url":"http://{addr}/mcp","timeout_millis":1000}}}}}}"#
+        ),
+    )
+    .unwrap();
+    let handle = spawn_fake_mcp_server(listener, 7);
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output(
+            "mcp_call",
+            r#"{"arguments":{"server":"context7","tool":"query-docs","libraryId":"/vercel/next.js","query":"middleware auth"}}"#,
+            "call-invalid-mcp",
+        ),
+        tool_call_output(
+            "mcp_call",
+            r#"{"server":"context7","tool":"query-docs","arguments":{"libraryId":"/vercel/next.js","query":"middleware auth"}}"#,
+            "call-valid-mcp",
+        ),
+        ProviderOutput::new("Recovered with valid Context7 docs."),
+    ]);
+    let mut session = Session::new("mcp-invalid-recovery-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "use Context7 docs").unwrap();
+    let labels = result
+        .rounds
+        .iter()
+        .filter_map(|round| round.evidence_label.as_deref())
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert!(labels
+        .iter()
+        .any(|label| label.starts_with("invalid_mcp_call:")));
+    assert!(labels
+        .iter()
+        .any(|label| label.starts_with("mcp:context7:query-docs:")));
+
+    handle.join().expect("fake MCP server joins");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn native_mcp_allows_same_tool_with_different_arguments() {
     let root = temp_root("mcp-different-arguments");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake MCP server");

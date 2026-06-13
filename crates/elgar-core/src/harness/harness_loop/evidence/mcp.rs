@@ -7,7 +7,10 @@ use serde_json::Value;
 
 use crate::{
     harness::{
-        harness_loop::{evidence::keys::mcp_evidence_label, state::types::Evidence},
+        harness_loop::{
+            evidence::keys::{invalid_mcp_evidence_label, mcp_evidence_label},
+            state::types::Evidence,
+        },
         ModelChoiceTurnError, ValidatedStructuredRequest,
     },
     mcp::{
@@ -25,19 +28,25 @@ pub(in crate::harness::harness_loop) fn execute_mcp_call_request(
     session: &Session,
     request: &ValidatedStructuredRequest,
 ) -> Result<Evidence, ModelChoiceTurnError> {
-    let arguments = request
-        .arguments
-        .as_ref()
-        .ok_or_else(|| ModelChoiceTurnError::ProjectContext("mcp_call missing arguments".into()))?;
-    let server_id = required_string(arguments, "server")?;
-    let tool_name = required_string(arguments, "tool")?;
+    let Some(arguments) = request.arguments.as_ref() else {
+        return Ok(invalid_mcp_call_evidence(None, "missing request arguments"));
+    };
+    let server_id = match required_string(arguments, "server") {
+        Ok(value) => value,
+        Err(reason) => return Ok(invalid_mcp_call_evidence(Some(arguments), reason)),
+    };
+    let tool_name = match required_string(arguments, "tool") {
+        Ok(value) => value,
+        Err(reason) => return Ok(invalid_mcp_call_evidence(Some(arguments), reason)),
+    };
     let tool_arguments = arguments
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| Value::Object(Default::default()));
     if !tool_arguments.is_object() {
-        return Err(ModelChoiceTurnError::ProjectContext(
-            "mcp_call arguments.arguments must be an object".into(),
+        return Ok(invalid_mcp_call_evidence(
+            Some(arguments),
+            "`arguments` must be an object",
         ));
     }
 
@@ -82,13 +91,30 @@ pub(in crate::harness::harness_loop) fn execute_mcp_call_request(
     }
 }
 
-fn required_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, ModelChoiceTurnError> {
+fn required_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, &'static str> {
     value
         .get(key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| ModelChoiceTurnError::ProjectContext(format!("mcp_call missing {key}")))
+        .ok_or(if key == "server" {
+            "missing top-level `server`"
+        } else {
+            "missing top-level `tool`"
+        })
+}
+
+fn invalid_mcp_call_evidence(arguments: Option<&Value>, reason: &str) -> Evidence {
+    let label = invalid_mcp_evidence_label(arguments);
+    let body = format!(
+        "VERIFIED_MCP_CALL_ERROR\nlabel: {label}\nerror: invalid mcp_call shape: {reason}\nrequired_shape: top-level server string, top-level tool string, top-level arguments object\nexecution_performed: false\n"
+    );
+    Evidence {
+        label,
+        bytes: body.len(),
+        truncated: false,
+        body,
+    }
 }
 
 fn render_mcp_evidence(server_id: &str, tool_name: &str, result: &ToolCallResult) -> String {

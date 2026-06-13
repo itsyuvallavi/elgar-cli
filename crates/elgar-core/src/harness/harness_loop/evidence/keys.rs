@@ -44,21 +44,47 @@ pub(in crate::harness::harness_loop) fn mcp_evidence_label(
     mcp_evidence_key(server_id, tool_name, tool_arguments).as_label()
 }
 
+pub(in crate::harness::harness_loop) fn invalid_mcp_evidence_label(
+    arguments: Option<&serde_json::Value>,
+) -> String {
+    invalid_mcp_evidence_key(arguments).as_label()
+}
+
 fn mcp_evidence_key_from_request(request: &ValidatedStructuredRequest) -> EvidenceKey {
     let arguments = request.arguments.as_ref();
-    let server_id = arguments
+    let Some(server_id) = arguments
         .and_then(|arguments| arguments.get("server"))
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
-    let tool_name = arguments
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return invalid_mcp_evidence_key(arguments);
+    };
+    let Some(tool_name) = arguments
         .and_then(|arguments| arguments.get("tool"))
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return invalid_mcp_evidence_key(arguments);
+    };
     let tool_arguments = arguments
         .and_then(|arguments| arguments.get("arguments"))
         .unwrap_or(&serde_json::Value::Null);
+    if !matches!(
+        tool_arguments,
+        serde_json::Value::Null | serde_json::Value::Object(_)
+    ) {
+        return invalid_mcp_evidence_key(arguments);
+    }
 
     mcp_evidence_key(server_id, tool_name, tool_arguments)
+}
+
+fn invalid_mcp_evidence_key(arguments: Option<&serde_json::Value>) -> EvidenceKey {
+    EvidenceKey::InvalidMcp(stable_json_fingerprint(
+        arguments.unwrap_or(&serde_json::Value::Null),
+    ))
 }
 
 fn mcp_evidence_key(
@@ -165,7 +191,7 @@ pub(in crate::harness::harness_loop) fn normalize_evidence_path(path: &str) -> S
 mod tests {
     use serde_json::json;
 
-    use super::{mcp_evidence_label, stable_json_fingerprint};
+    use super::{invalid_mcp_evidence_label, mcp_evidence_label, stable_json_fingerprint};
 
     #[test]
     fn mcp_fingerprint_is_stable_across_object_field_order() {
@@ -193,5 +219,15 @@ mod tests {
 
         assert_ne!(first, second);
         assert!(first.starts_with("mcp:context7:query-docs:"));
+    }
+
+    #[test]
+    fn invalid_mcp_label_uses_invalid_prefix() {
+        let label = invalid_mcp_evidence_label(Some(
+            &json!({"arguments": {"server": "context7", "tool": "query-docs"}}),
+        ));
+
+        assert!(label.starts_with("invalid_mcp_call:"));
+        assert!(!label.contains("unknown"));
     }
 }
