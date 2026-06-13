@@ -127,6 +127,8 @@ Examples:
 - `ls .` repeated in the same turn is a duplicate.
 - `read package.json` repeated in the same turn is a duplicate.
 - `find . README*` repeated in the same turn is a duplicate.
+- `mcp_call context7 query-docs` repeated with the same argument object is a
+  duplicate; the same server/tool with a different query is not.
 
 This should not apply across turns.
 
@@ -223,11 +225,10 @@ runtime feedback: request a primitive tool if local evidence is needed, or
 answer without local file/project claims. A second blocked claim still stops
 with `unverified_provider_action_claim`.
 
-The same retry path also catches incorrect approval requests for read-only
-inspection. If provider prose asks for approval to read, list, find, grep, or
-inspect local project state, Elgar returns generic runtime feedback that those
-primitives are read-only and do not need approval. A second bad approval claim
-stops with `read_only_approval_claim`.
+Approval is not inferred from provider prose. Approval exists only when core
+creates a pending approval from a real risky tool call or batch. If provider
+text asks for approval without a pending approval, `/approve` still has no
+runtime action to execute.
 
 Explicit primitive target fidelity is guarded before tool execution. For narrow
 requests such as opening a specific file or searching for text in a specific

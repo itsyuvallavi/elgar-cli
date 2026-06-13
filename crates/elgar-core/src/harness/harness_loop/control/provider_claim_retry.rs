@@ -9,7 +9,6 @@ use crate::{
     harness::{
         harness_loop::{
             control::{
-                approval_claim_guard::{validate_approval_claim, ApprovalClaimGuardDecision},
                 finish::finish_with_model_message,
                 prose_claim_guard::{validate_provider_final_text, ProseClaimGuardDecision},
                 tool_target_fidelity::explicit_primitive_request,
@@ -46,35 +45,6 @@ pub(super) fn guard_provider_text_or_retry(
     retry_count: &mut usize,
     messages: &mut Vec<ChatMessage>,
 ) -> ProviderClaimGuardOutcome {
-    if let ApprovalClaimGuardDecision::Block { reason } =
-        validate_approval_claim(content, session.pending_approval().is_some())
-    {
-        if reason == "approval_claim_without_pending_approval" {
-            return retry_or_block(
-                session,
-                round_index,
-                round_started,
-                retry_count,
-                messages,
-                "Approval prose alone does not create a pending approval. If a risky action needs approval, request the matching bash, write, or edit primitive tool so the harness can create the approval record.",
-                "missing_pending_approval_retry",
-                reason,
-                "Approval requires a pending harness action; I need a primitive tool call before the user can approve.",
-            );
-        }
-        return retry_or_block(
-            session,
-            round_index,
-            round_started,
-            retry_count,
-            messages,
-            "Read, list, find, grep, and inspect are read-only primitives and do not need approval. Request the matching primitive tool if local evidence is needed.",
-            "read_only_approval_retry",
-            reason,
-            "Read-only local inspection does not need approval; I need a primitive tool call for verified evidence.",
-        );
-    }
-
     if let ProseClaimGuardDecision::Block { reason } =
         validate_provider_final_text(session, content, evidence)
     {

@@ -3,7 +3,6 @@
 //! Control code decides loop order and finish paths. It does not know how to
 //! talk to providers directly and does not implement primitive tools.
 
-mod approval_claim_guard;
 mod choice_from_output;
 mod choice_repair;
 mod coordinator;

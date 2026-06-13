@@ -7,7 +7,8 @@ use serde_json::Value;
 
 use crate::{
     harness::{
-        harness_loop::state::types::Evidence, ModelChoiceTurnError, ValidatedStructuredRequest,
+        harness_loop::{evidence::keys::mcp_evidence_label, state::types::Evidence},
+        ModelChoiceTurnError, ValidatedStructuredRequest,
     },
     mcp::{
         client::call_http_tool,
@@ -63,13 +64,13 @@ pub(in crate::harness::harness_loop) fn execute_mcp_call_request(
                 headers,
                 env!("CARGO_PKG_VERSION"),
                 tool_name,
-                tool_arguments,
+                tool_arguments.clone(),
                 Some(context),
             )
             .map_err(|error| ModelChoiceTurnError::ProjectContext(error.to_string()))?;
             let body = render_mcp_evidence(server_id, tool_name, &result.result);
             Ok(Evidence {
-                label: format!("mcp:{server_id}:{tool_name}"),
+                label: mcp_evidence_label(server_id, tool_name, &tool_arguments),
                 bytes: body.len(),
                 truncated: body.chars().count() >= MAX_MCP_RESULT_CHARS,
                 body,

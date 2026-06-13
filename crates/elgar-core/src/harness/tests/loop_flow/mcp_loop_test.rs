@@ -100,6 +100,87 @@ fn native_mcp_call_returns_verified_evidence() {
 }
 
 #[test]
+fn native_mcp_allows_same_tool_with_different_arguments() {
+    let root = temp_root("mcp-different-arguments");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake MCP server");
+    let addr = listener.local_addr().expect("fake MCP addr");
+    fs::write(
+        root.join("elgar-mcp.json"),
+        format!(
+            r#"{{"servers":{{"context7":{{"transport":"http","url":"http://{addr}/mcp","timeout_millis":1000}}}}}}"#
+        ),
+    )
+    .unwrap();
+    let handle = spawn_fake_mcp_server(listener, 11);
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output(
+            "mcp_call",
+            r#"{"server":"context7","tool":"query-docs","arguments":{"libraryId":"/vercel/next.js","query":"middleware auth"}}"#,
+            "call-mcp-docs-1",
+        ),
+        tool_call_output(
+            "mcp_call",
+            r#"{"server":"context7","tool":"query-docs","arguments":{"libraryId":"/vercel/next.js","query":"middleware.ts redirect examples"}}"#,
+            "call-mcp-docs-2",
+        ),
+        ProviderOutput::new("Used two Context7 searches."),
+    ]);
+    let mut session = Session::new("mcp-different-arguments-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "use Context7 docs").unwrap();
+    let labels = result
+        .rounds
+        .iter()
+        .filter_map(|round| round.evidence_label.as_deref())
+        .filter(|label| label.starts_with("mcp:context7:query-docs:"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(labels.len(), 2);
+    assert_ne!(labels[0], labels[1]);
+
+    handle.join().expect("fake MCP server joins");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn native_mcp_rejects_exact_repeated_arguments_as_duplicate() {
+    let root = temp_root("mcp-exact-duplicate");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake MCP server");
+    let addr = listener.local_addr().expect("fake MCP addr");
+    fs::write(
+        root.join("elgar-mcp.json"),
+        format!(
+            r#"{{"servers":{{"context7":{{"transport":"http","url":"http://{addr}/mcp","timeout_millis":1000}}}}}}"#
+        ),
+    )
+    .unwrap();
+    let handle = spawn_fake_mcp_server(listener, 7);
+    let repeated_call = r#"{"server":"context7","tool":"query-docs","arguments":{"libraryId":"/vercel/next.js","query":"middleware auth"}}"#;
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output("mcp_call", repeated_call, "call-mcp-docs-1"),
+        tool_call_output("mcp_call", repeated_call, "call-mcp-docs-2"),
+        tool_call_output("mcp_call", repeated_call, "call-mcp-docs-3"),
+        ProviderOutput::new("Stopped exact duplicate MCP loop."),
+    ]);
+    let mut session = Session::new("mcp-exact-duplicate-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "use Context7 docs").unwrap();
+    let duplicate_labels = result
+        .rounds
+        .iter()
+        .filter_map(|round| round.evidence_label.as_deref())
+        .filter(|label| label.starts_with("duplicate:mcp:context7:query-docs:"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.stopped_reason, "duplicate_loop_detected");
+    assert_eq!(duplicate_labels.len(), 2);
+
+    handle.join().expect("fake MCP server joins");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn native_mcp_prompt_includes_active_tool_catalog() {
     let root = temp_root("mcp-prompt-catalog");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake MCP server");
@@ -195,7 +276,7 @@ fn fake_mcp_response_body(request: &str) -> String {
         return r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"resolve-library-id","description":"Resolve a package name into a Context7-compatible library ID.","inputSchema":{"type":"object","properties":{"libraryName":{"type":"string"}},"required":["libraryName"]}},{"name":"query-docs","description":"Retrieve documentation for a resolved library ID.","inputSchema":{"type":"object","properties":{"libraryId":{"type":"string"},"query":{"type":"string"}},"required":["libraryId","query"]}}]}}"#.to_string();
     }
     if request.contains(r#""method":"tools/call""#) {
-        assert!(request.contains("middleware auth"));
+        assert!(request.contains("middleware"));
         return r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Next.js middleware docs: authenticate in middleware before route handling."}],"isError":false}}"#.to_string();
     }
     panic!("unexpected fake MCP request: {request}")

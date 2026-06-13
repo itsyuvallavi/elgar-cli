@@ -91,7 +91,7 @@ fn primitive_loop_retries_unverified_local_file_fact_into_tool_call() {
 }
 
 #[test]
-fn primitive_loop_retries_wrong_read_approval_claim_into_tool_call() {
+fn primitive_loop_retries_direct_read_request_without_approval_prose_scanning() {
     let root = std::env::temp_dir().join(format!(
         "elgar-loop-read-approval-claim-test-{}",
         std::process::id()
@@ -129,7 +129,7 @@ fn primitive_loop_retries_wrong_read_approval_claim_into_tool_call() {
 }
 
 #[test]
-fn primitive_loop_stops_after_second_wrong_read_approval_claim() {
+fn primitive_loop_stops_after_second_direct_read_answer_without_evidence() {
     let root = std::env::temp_dir().join(format!(
         "elgar-loop-second-read-approval-claim-test-{}",
         std::process::id()
@@ -144,35 +144,25 @@ fn primitive_loop_stops_after_second_wrong_read_approval_claim() {
         run_primitive_harness_loop(&provider, &mut session, "read postcss.config.mjs").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
-    assert_eq!(result.stopped_reason, "read_only_approval_claim");
+    assert_eq!(result.stopped_reason, "missing_primitive_evidence");
     assert_eq!(
         result.final_text.as_deref(),
-        Some("Read-only local inspection does not need approval; I need a primitive tool call for verified evidence.")
+        Some("Direct primitive requests need verified tool evidence before answering.")
     );
     assert_eq!(calls.len(), 2);
     assert!(result.rounds.is_empty());
 }
 
 #[test]
-fn primitive_loop_retries_missing_pending_approval_claim_into_tool_call() {
+fn primitive_loop_accepts_fake_approval_prose_without_creating_pending_approval() {
     let root = std::env::temp_dir().join(format!(
         "elgar-loop-missing-pending-approval-test-{}",
         std::process::id()
     ));
     fs::create_dir_all(&root).unwrap();
-    let provider = QueuedProvider::new_outputs(vec![
-        ProviderOutput::new(
-            "Approval is required before executing this command. Please approve `mkdir beta gamma delta` to create the folders.",
-        ),
-        tool_call_output(
-            "bash",
-            r#"{"command":"mkdir beta gamma delta"}"#,
-            "call-mkdir-beta-gamma-delta",
-        ),
-        ProviderOutput::new(
-            "Approval is required before executing this command. Please approve `mkdir beta gamma delta` to create the folders.",
-        ),
-    ]);
+    let approval_text =
+        "Approval is required before executing this command. Please approve `mkdir beta gamma delta` to create the folders.";
+    let provider = QueuedProvider::new(vec![approval_text]);
     let mut session = Session::new("loop-missing-pending-approval-session", &root, &root);
 
     let result = run_primitive_harness_loop(
@@ -183,57 +173,31 @@ fn primitive_loop_retries_missing_pending_approval_claim_into_tool_call() {
     .unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
-    assert_eq!(result.stopped_reason, "native_final_text");
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some(
-            "Approval is required before executing this command. Please approve `mkdir beta gamma delta` to create the folders."
-        )
-    );
-    assert_eq!(calls.len(), 3);
-    assert_eq!(result.rounds.len(), 1);
-    assert_eq!(result.rounds[0].tool.as_deref(), Some("bash"));
-    let pending = session.pending_approval().expect("pending approval");
-    assert_eq!(pending.tool, "bash");
-    assert!(pending.arguments_preview.contains("mkdir beta gamma delta"));
-    assert!(tool_message_contents(&calls[2]).iter().any(|content| {
-        content.contains("VERIFIED_PERMISSION_DECISION")
-            && content.contains("tool: bash")
-            && content.contains("approval_id: approval-1")
-    }));
+    assert_eq!(result.stopped_reason, "model_message");
+    assert_eq!(result.final_text.as_deref(), Some(approval_text));
+    assert_eq!(calls.len(), 1);
+    assert!(result.rounds.is_empty());
+    assert!(session.pending_approval().is_none());
 }
 
 #[test]
-fn primitive_loop_stops_after_second_missing_pending_approval_claim() {
+fn primitive_loop_docs_summary_with_permission_words_is_final_text() {
     let root = std::env::temp_dir().join(format!(
-        "elgar-loop-second-missing-pending-approval-test-{}",
+        "elgar-loop-docs-permission-summary-test-{}",
         std::process::id()
     ));
     fs::create_dir_all(&root).unwrap();
-    let approval_text =
-        "Approval is required before executing this command. Please approve `mkdir beta gamma delta`.";
-    let provider = QueuedProvider::new(vec![approval_text, approval_text]);
-    let mut session = Session::new("loop-second-missing-pending-approval-session", &root, &root);
+    let summary = "Middleware can read a session cookie and enforce authorization permissions before protected routes render.";
+    let provider = QueuedProvider::new(vec![summary]);
+    let mut session = Session::new("loop-docs-permission-summary-session", &root, &root);
 
-    let result = run_primitive_harness_loop(
-        &provider,
-        &mut session,
-        "Create folders beta, gamma, and delta.",
-    )
-    .unwrap();
+    let result =
+        run_primitive_harness_loop(&provider, &mut session, "Summarize auth docs.").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
-    assert_eq!(
-        result.stopped_reason,
-        "approval_claim_without_pending_approval"
-    );
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some(
-            "Approval requires a pending harness action; I need a primitive tool call before the user can approve."
-        )
-    );
-    assert_eq!(calls.len(), 2);
+    assert_eq!(result.stopped_reason, "model_message");
+    assert_eq!(result.final_text.as_deref(), Some(summary));
+    assert_eq!(calls.len(), 1);
     assert!(result.rounds.is_empty());
     assert!(session.pending_approval().is_none());
 }

@@ -37,8 +37,9 @@ impl HarnessWorkingMemory {
             EvidenceKey::Grep(path, query) => {
                 self.grep_queries.insert(format!("{path}:{query}"));
             }
-            EvidenceKey::Mcp(server, tool) => {
-                self.mcp_calls.insert(format!("{server}:{tool}"));
+            EvidenceKey::Mcp(server, tool, fingerprint) => {
+                self.mcp_calls
+                    .insert(format!("{server}:{tool}:{fingerprint}"));
             }
             EvidenceKey::Primitive(name) => {
                 self.duplicate_requests

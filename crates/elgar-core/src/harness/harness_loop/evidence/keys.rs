@@ -32,23 +32,86 @@ pub(in crate::harness::harness_loop) fn evidence_key_for_request(
         StructuredRequestKind::Bash
         | StructuredRequestKind::Write
         | StructuredRequestKind::Edit => EvidenceKey::Primitive(request.kind.as_str().to_string()),
-        StructuredRequestKind::McpCall => EvidenceKey::Mcp(
-            request
-                .arguments
-                .as_ref()
-                .and_then(|arguments| arguments.get("server"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown")
-                .to_string(),
-            request
-                .arguments
-                .as_ref()
-                .and_then(|arguments| arguments.get("tool"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown")
-                .to_string(),
-        ),
+        StructuredRequestKind::McpCall => mcp_evidence_key_from_request(request),
     }
+}
+
+pub(in crate::harness::harness_loop) fn mcp_evidence_label(
+    server_id: &str,
+    tool_name: &str,
+    tool_arguments: &serde_json::Value,
+) -> String {
+    mcp_evidence_key(server_id, tool_name, tool_arguments).as_label()
+}
+
+fn mcp_evidence_key_from_request(request: &ValidatedStructuredRequest) -> EvidenceKey {
+    let arguments = request.arguments.as_ref();
+    let server_id = arguments
+        .and_then(|arguments| arguments.get("server"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let tool_name = arguments
+        .and_then(|arguments| arguments.get("tool"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let tool_arguments = arguments
+        .and_then(|arguments| arguments.get("arguments"))
+        .unwrap_or(&serde_json::Value::Null);
+
+    mcp_evidence_key(server_id, tool_name, tool_arguments)
+}
+
+fn mcp_evidence_key(
+    server_id: &str,
+    tool_name: &str,
+    tool_arguments: &serde_json::Value,
+) -> EvidenceKey {
+    EvidenceKey::Mcp(
+        server_id.trim().to_string(),
+        tool_name.trim().to_string(),
+        stable_json_fingerprint(tool_arguments),
+    )
+}
+
+fn stable_json_fingerprint(value: &serde_json::Value) -> String {
+    let canonical = canonical_json(value);
+    format!("{:016x}", fnv1a64(canonical.as_bytes()))
+}
+
+fn canonical_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => {
+            serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+        }
+        serde_json::Value::Array(items) => {
+            let rendered = items.iter().map(canonical_json).collect::<Vec<_>>();
+            format!("[{}]", rendered.join(","))
+        }
+        serde_json::Value::Object(map) => {
+            let mut entries = map.iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(right.0));
+            let rendered = entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let key = serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
+                    format!("{key}:{}", canonical_json(value))
+                })
+                .collect::<Vec<_>>();
+            format!("{{{}}}", rendered.join(","))
+        }
+    }
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 pub(in crate::harness::harness_loop) fn normalize_evidence_path(path: &str) -> String {
@@ -95,5 +158,40 @@ pub(in crate::harness::harness_loop) fn normalize_evidence_path(path: &str) -> S
         ".".to_string()
     } else {
         normalized
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{mcp_evidence_label, stable_json_fingerprint};
+
+    #[test]
+    fn mcp_fingerprint_is_stable_across_object_field_order() {
+        let left = json!({"libraryId": "/vercel/next.js", "query": "middleware auth"});
+        let right = json!({"query": "middleware auth", "libraryId": "/vercel/next.js"});
+
+        assert_eq!(
+            stable_json_fingerprint(&left),
+            stable_json_fingerprint(&right)
+        );
+    }
+
+    #[test]
+    fn mcp_labels_include_argument_fingerprint() {
+        let first = mcp_evidence_label(
+            "context7",
+            "query-docs",
+            &json!({"libraryId": "/vercel/next.js", "query": "middleware auth"}),
+        );
+        let second = mcp_evidence_label(
+            "context7",
+            "query-docs",
+            &json!({"libraryId": "/vercel/next.js", "query": "middleware.ts"}),
+        );
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("mcp:context7:query-docs:"));
     }
 }

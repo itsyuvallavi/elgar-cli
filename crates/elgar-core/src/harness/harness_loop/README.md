@@ -81,3 +81,7 @@ The loop does not cap useful read-only evidence by item count, byte count, or
 primitive type. It still rejects duplicate evidence inside one turn, and the
 second duplicate stops with `duplicate_loop_detected` so the provider cannot
 spin on the same no-op request forever.
+
+For MCP, duplicate detection includes a stable fingerprint of the MCP argument
+object. This blocks exact repeated calls while allowing refined searches through
+the same server/tool pair.

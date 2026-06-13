@@ -165,5 +165,9 @@ Runtime validation still applies:
 The harness returns successful calls as verified evidence with labels like:
 
 ```text
-mcp:context7:query-docs
+mcp:context7:query-docs:<argument-fingerprint>
 ```
+
+MCP duplicate detection is argument-aware. An exact repeated `mcp_call` is
+blocked as a duplicate, but the same server/tool with a different query or
+argument object is allowed so the model can refine a search.
