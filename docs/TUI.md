@@ -34,7 +34,8 @@ Unknown slash commands show a local error.
 
 Risky primitives such as `bash`, `write`, and `edit` are not executed directly
 by the model. Core stores a pending approval record, and the TUI renders that
-record after the provider turn.
+record after the provider turn. A pending approval may contain one exact action
+or a serial batch of exact actions from one provider response.
 
 The primary controls are keyboard-first text buttons rendered in the inline
 terminal prompt:
@@ -53,6 +54,9 @@ If the model asks for approval in prose but core did not create a pending
 approval record, the harness retries the model instead of showing a dead
 approval action. A visible approval card means core has an executable pending
 approval.
+
+For batch approvals, the card lists the exact typed steps. One approval accepts
+the batch, but core executes and logs the steps serially.
 
 The terminal keeps the inline scrollback model. Approval controls must not use
 alternate-screen rendering or mouse capture unless a future plan proves native

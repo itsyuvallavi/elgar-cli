@@ -7,7 +7,8 @@ sessions/events, token accounting, context helpers, rendering, and local logs.
 
 ## Important Files and Folders
 
-- `harness/` owns the single model route and read-only primitive loop.
+- `harness/` owns the single model route, primitive loop, permissions, and
+  approval execution.
 - `provider/` owns LM Studio and provider abstractions.
 - `logs/` owns local JSONL session/system logging.
 - `session.rs` stores in-memory session events and token/accounting snapshots.

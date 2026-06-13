@@ -42,3 +42,40 @@ fn approval_footer_actions_name_tool_and_selected_button() {
     assert!(footer.contains("Tab switches"));
     assert!(footer.contains("Enter selects"));
 }
+
+#[test]
+fn approval_card_renders_batch_steps() {
+    let requests = vec![
+        ValidatedStructuredRequest {
+            kind: StructuredRequestKind::Write,
+            reason: "create requested file".to_string(),
+            arguments: Some(json!({
+                "path": "a.txt",
+                "content": "A"
+            })),
+        },
+        ValidatedStructuredRequest {
+            kind: StructuredRequestKind::Write,
+            reason: "create requested file".to_string(),
+            arguments: Some(json!({
+                "path": "b.txt",
+                "content": "B"
+            })),
+        },
+    ];
+    let approval = PendingApproval::from_requests_with_launch_cwd(
+        "approval-1",
+        &requests,
+        "batch requires approval",
+        std::path::Path::new("/project"),
+    )
+    .unwrap();
+
+    let lines = render_pending_approval_card(&approval, 100, ApprovalAction::Approve);
+    let rendered = lines.join("\n");
+
+    assert!(rendered.contains("tool: batch"));
+    assert!(rendered.contains("steps: 2"));
+    assert!(rendered.contains("1. write a.txt"));
+    assert!(rendered.contains("2. write b.txt"));
+}

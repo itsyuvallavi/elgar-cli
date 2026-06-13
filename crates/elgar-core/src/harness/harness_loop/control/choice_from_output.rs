@@ -7,7 +7,7 @@ use crate::{
     event::ProviderOutput,
     harness::{
         parse_model_choice_with_registry, ModelChoice, PrimitiveToolId, PrimitiveToolRegistry,
-        StructuredRequestValidationError, ValidatedStructuredRequest,
+        StructuredRequestValidationError, ValidatedStructuredRequest, MAX_TOOL_CALL_BATCH,
     },
     provider::ChatToolCall,
 };
@@ -27,9 +27,9 @@ pub(super) fn model_choice_from_provider_output(
         return parse_model_choice_with_registry(&output.text, registry);
     }
 
-    if output.tool_calls.len() > 4 {
+    if output.tool_calls.len() > MAX_TOOL_CALL_BATCH {
         return ModelChoice::InvalidStructuredRequest {
-            error: StructuredRequestValidationError::TooManyRequests(4),
+            error: StructuredRequestValidationError::TooManyRequests(MAX_TOOL_CALL_BATCH),
             raw: format!("{} provider tool calls", output.tool_calls.len()),
         };
     }
@@ -58,8 +58,10 @@ pub(super) fn native_tool_requests_from_provider_output(
     output: &ProviderOutput,
     registry: &PrimitiveToolRegistry,
 ) -> Result<Vec<NativeToolRequest>, StructuredRequestValidationError> {
-    if output.tool_calls.len() > 4 {
-        return Err(StructuredRequestValidationError::TooManyRequests(4));
+    if output.tool_calls.len() > MAX_TOOL_CALL_BATCH {
+        return Err(StructuredRequestValidationError::TooManyRequests(
+            MAX_TOOL_CALL_BATCH,
+        ));
     }
 
     let mut requests = Vec::with_capacity(output.tool_calls.len());

@@ -10,7 +10,8 @@ This folder owns terminal display and formatting.
 - `approval.rs` renders core-owned pending approval state for risky primitives.
 - `approval_action.rs` defines the selected approval button action for the
   inline prompt.
-- `approval_card.rs` renders the boxed approval card and selected-button footer.
+- `approval_card.rs` renders the boxed approval card, selected-button footer,
+  and exact step list for batch approvals.
 - `prompt.rs` draws the editable prompt and live provider preview.
 - `prompt/` contains prompt frame construction, live-output preview state, and
   wrapping helpers used by the inline prompt renderers.

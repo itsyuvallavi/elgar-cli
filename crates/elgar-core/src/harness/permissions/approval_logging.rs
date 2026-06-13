@@ -100,6 +100,95 @@ pub(super) fn log_approved_execution_finished(
     session.log_harness_event(summary, metadata);
 }
 
+pub(super) fn log_batch_step_started(
+    session: &Session,
+    batch: &PendingApproval,
+    step_index: usize,
+    step_count: usize,
+    tool: &str,
+) {
+    let metadata = json!({
+        "approval_id": batch.id,
+        "batch_step_index": step_index,
+        "batch_step_count": step_count,
+        "tool": tool,
+        "started_unix_ms": unix_millis(),
+    });
+    let _ = append_log_event(
+        &session.project_root,
+        &session.id,
+        LogInput::new(
+            session.next_turn_id(),
+            LogPhase::Runtime,
+            file!(),
+            "log_batch_step_started",
+            "harness_batch_step_started",
+        )
+        .with_metadata(metadata.clone()),
+    );
+    session.log_harness_event("harness_batch_step_started", metadata);
+}
+
+pub(super) fn log_batch_step_finished(
+    session: &Session,
+    batch: &PendingApproval,
+    step_index: usize,
+    step_count: usize,
+    tool: &str,
+    status: &str,
+) {
+    let metadata = json!({
+        "approval_id": batch.id,
+        "batch_step_index": step_index,
+        "batch_step_count": step_count,
+        "tool": tool,
+        "status": status,
+    });
+    let _ = append_log_event(
+        &session.project_root,
+        &session.id,
+        LogInput::new(
+            session.next_turn_id(),
+            LogPhase::Runtime,
+            file!(),
+            "log_batch_step_finished",
+            "harness_batch_step_finished",
+        )
+        .with_metadata(metadata.clone()),
+    );
+    session.log_harness_event("harness_batch_step_finished", metadata);
+}
+
+pub(super) fn log_batch_step_failed(
+    session: &Session,
+    batch: &PendingApproval,
+    step_index: usize,
+    step_count: usize,
+    tool: &str,
+    error: &str,
+) {
+    let metadata = json!({
+        "approval_id": batch.id,
+        "batch_step_index": step_index,
+        "batch_step_count": step_count,
+        "tool": tool,
+        "error": error,
+    });
+    let _ = append_log_event(
+        &session.project_root,
+        &session.id,
+        LogInput::new(
+            session.next_turn_id(),
+            LogPhase::Runtime,
+            file!(),
+            "log_batch_step_failed",
+            "harness_batch_step_failed",
+        )
+        .with_metadata(metadata.clone()),
+    );
+    session.log_harness_event("harness_batch_step_failed", metadata);
+}
+
 fn merge_metadata(metadata: &mut Value, extra_metadata: Value) {
     let (Some(metadata), Some(extra_metadata)) =
         (metadata.as_object_mut(), extra_metadata.as_object())

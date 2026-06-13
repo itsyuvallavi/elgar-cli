@@ -7,12 +7,14 @@
 mod contracts;
 mod json_extract;
 mod parsing;
+mod policy;
 mod prose_guard;
 mod types;
 mod validation;
 
 pub use contracts::{loop_decision_contract, model_choice_contract};
 pub use parsing::{parse_model_choice, parse_model_choice_with_registry};
+pub use policy::MAX_TOOL_CALL_BATCH;
 pub use types::{
     EvidenceDepth, ModelChoice, ModelChoiceTurnError, StructuredRequestKind,
     StructuredRequestValidationError, ValidatedStructuredRequest,

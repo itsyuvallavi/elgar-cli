@@ -26,7 +26,22 @@ pub(crate) fn render_pending_approval_card(
         body.extend(render_target_lines(target));
     }
 
-    body.push(format!("arguments: {}", approval.arguments_preview));
+    if approval.is_batch() {
+        body.push(format!("steps: {}", approval.steps.len()));
+        for (index, step) in approval.steps.iter().enumerate() {
+            body.push(format!(
+                "{}. {} {}",
+                index + 1,
+                step.tool,
+                step.target_preview
+                    .as_ref()
+                    .map(|target| target.requested_path.as_str())
+                    .unwrap_or(step.arguments_preview.as_str())
+            ));
+        }
+    } else {
+        body.push(format!("arguments: {}", approval.arguments_preview));
+    }
     body.push(String::new());
     body.extend(render_action_lines(selected));
 

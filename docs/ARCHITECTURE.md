@@ -31,6 +31,7 @@ terminal input
 -> core harness turn
 -> model either answers or requests native primitive tool calls
 -> runtime validates and executes read-only primitives
+-> risky primitive calls create pending approval records
 -> verified results return as provider tool messages
 -> model final text
 -> session events
@@ -96,3 +97,14 @@ model.
 Future tools should plug into core as typed capability layers. The model may
 request typed tools, but the runtime must validate, policy must decide, and
 executors must verify before the UI reports success.
+
+## Approval Boundary
+
+Core owns approval truth. A pending approval records the exact typed risky
+action, or a small serial batch of exact typed risky actions from one provider
+response. The TUI renders that record but does not interpret model prose.
+
+One user approval can approve a batch, but core still executes the stored steps
+one at a time and logs verified output for each step. If the provider only asks
+for approval in prose, no approval exists until a real typed tool call is
+created.

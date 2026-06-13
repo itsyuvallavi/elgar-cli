@@ -10,7 +10,8 @@ use crate::{harness::StructuredRequestKind, session::Session};
 
 use super::{
     approval_logging::log_approval_decision, approved_bash::execute_approved_bash,
-    approved_edit::execute_approved_edit, approved_write::execute_approved_write,
+    approved_batch::execute_approved_batch, approved_edit::execute_approved_edit,
+    approved_write::execute_approved_write,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +77,10 @@ pub fn approve_pending_approval(
     };
     let approved = approval.approve();
     log_approval_decision(session, &approved);
+
+    if approved.is_batch() {
+        return execute_approved_batch(session, approved);
+    }
 
     match approved.request.kind {
         StructuredRequestKind::Bash => execute_approved_bash(session, approved),

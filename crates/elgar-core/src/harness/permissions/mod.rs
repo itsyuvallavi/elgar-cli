@@ -9,6 +9,7 @@ mod approval_flow;
 mod approval_logging;
 mod approval_preview;
 mod approved_bash;
+mod approved_batch;
 mod approved_edit;
 mod approved_paths;
 mod approved_text;
@@ -19,7 +20,7 @@ mod types;
 #[cfg(test)]
 mod approval_flow_tests;
 
-pub use approval::{PendingApproval, PendingApprovalStatus};
+pub use approval::{PendingApproval, PendingApprovalStatus, PendingApprovalStep};
 pub use approval_flow::{
     approve_pending_approval, deny_pending_approval, ApprovalCommandError, ApprovalCommandResult,
 };

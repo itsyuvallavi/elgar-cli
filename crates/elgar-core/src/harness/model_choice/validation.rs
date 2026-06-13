@@ -5,13 +5,11 @@
 
 use serde_json::Value;
 
-use crate::harness::{PrimitiveToolId, PrimitiveToolRegistry};
+use crate::harness::{model_choice::MAX_TOOL_CALL_BATCH, PrimitiveToolId, PrimitiveToolRegistry};
 
 use super::types::{
     EvidenceDepth, ModelChoice, StructuredRequestValidationError, ValidatedStructuredRequest,
 };
-
-const MAX_STRUCTURED_REQUEST_BATCH: usize = 4;
 
 pub(super) fn validate_model_choice_json(
     value: &Value,
@@ -74,9 +72,9 @@ pub(super) fn validate_model_choice_json(
             if requests.is_empty() {
                 return Err(StructuredRequestValidationError::EmptyRequests);
             }
-            if requests.len() > MAX_STRUCTURED_REQUEST_BATCH {
+            if requests.len() > MAX_TOOL_CALL_BATCH {
                 return Err(StructuredRequestValidationError::TooManyRequests(
-                    MAX_STRUCTURED_REQUEST_BATCH,
+                    MAX_TOOL_CALL_BATCH,
                 ));
             }
 

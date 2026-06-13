@@ -2,6 +2,7 @@
 
 use crate::harness::{
     parse_model_choice, ModelChoice, StructuredRequestKind, StructuredRequestValidationError,
+    MAX_TOOL_CALL_BATCH,
 };
 
 #[test]
@@ -78,15 +79,37 @@ fn parse_model_choice_rejects_unknown_kind_in_batch() {
 }
 
 #[test]
-fn parse_model_choice_rejects_large_structured_request_batch() {
-    let choice = parse_model_choice(
-        r#"{"type":"structured_requests","reason":"Too many.","requests":[{"kind":"ls"},{"kind":"ls"},{"kind":"ls"},{"kind":"ls"},{"kind":"ls"}]}"#,
-    );
+fn parse_model_choice_accepts_max_structured_request_batch() {
+    let requests = (0..MAX_TOOL_CALL_BATCH)
+        .map(|_| r#"{"kind":"ls"}"#)
+        .collect::<Vec<_>>()
+        .join(",");
+    let choice = parse_model_choice(&format!(
+        r#"{{"type":"structured_requests","reason":"Max batch.","requests":[{requests}]}}"#
+    ));
+
+    match choice {
+        ModelChoice::StructuredRequests(requests) => {
+            assert_eq!(requests.len(), MAX_TOOL_CALL_BATCH);
+        }
+        other => panic!("expected max structured request batch, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_model_choice_rejects_over_limit_structured_request_batch() {
+    let requests = (0..=MAX_TOOL_CALL_BATCH)
+        .map(|_| r#"{"kind":"ls"}"#)
+        .collect::<Vec<_>>()
+        .join(",");
+    let choice = parse_model_choice(&format!(
+        r#"{{"type":"structured_requests","reason":"Too many.","requests":[{requests}]}}"#
+    ));
 
     assert!(matches!(
         choice,
         ModelChoice::InvalidStructuredRequest {
-            error: StructuredRequestValidationError::TooManyRequests(4),
+            error: StructuredRequestValidationError::TooManyRequests(MAX_TOOL_CALL_BATCH),
             ..
         }
     ));

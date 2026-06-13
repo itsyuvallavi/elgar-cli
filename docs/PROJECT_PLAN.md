@@ -36,7 +36,9 @@ Active:
 - The active harness exposes primitive read-only tools: `read`, `ls`, `find`,
   and `grep`.
 - Permission policy decisions exist for risky primitives.
-- Core stores one pending approval record when a risky primitive needs approval.
+- Core stores one pending approval record when risky primitive execution needs
+  approval. The record may hold one exact action or a small serial batch of
+  exact risky actions from one provider response.
 - Pending `write` and `edit` approvals include a target preview that shows
   relative/absolute path status and warns when the target appears outside the
   launch folder.
@@ -45,11 +47,15 @@ Active:
   provider turns and exposes keyboard-first `[Approve]` / `[Deny]` controls.
   `/approve`, `/deny`, and `/reject` remain command fallbacks.
 - Approved `bash`, `write`, and `edit` requests execute from the launch folder
-  boundary and return verified execution output.
+  boundary and return verified execution output. Approved batches execute the
+  stored steps serially after one approval and log each step.
 - Approved `bash` is explicit shell execution, not a sandbox. It reports the
   requested and resolved cwd before/after execution.
 - The harness can batch multiple primitive read-only requests in one provider
   response through native tool calls, with JSON fallback still available.
+  Multiple risky native tool calls in one provider response become one pending
+  batch approval instead of duplicate rejection. The current batch policy limit
+  is 8 primitive tool calls per provider response.
 - Native tool results return to the provider as `role:"tool"` messages, and
   normal final text ends the turn.
 - Fallback synthesis remains available for safe-stop paths.
@@ -147,8 +153,9 @@ Mitigations:
 
 1. Dogfood bounded cross-turn recall and provider-claim guard behavior through
    Cursor, then inspect the resulting JSONL logs.
-2. Design and add same-turn harness working memory improvements where they are
-   not already covered by duplicate rejection.
-3. Dogfood keyboard-first TUI approval buttons on a live write approval flow,
-   then inspect JSONL approval evidence.
+2. Dogfood batch approval on compound write/move/folder flows, then inspect
+   JSONL approval and batch-step evidence.
+3. Design stepwise continuation for compound prompts where the model emits only
+   the first risky action, such as `mkdir docs` without the requested file
+   writes.
 4. Review loop token/speed logs after memory hardening on live LM Studio runs.

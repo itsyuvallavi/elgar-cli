@@ -13,6 +13,8 @@ Files:
 - `json_extract.rs` extracts JSON from provider text and fenced blocks.
 - `prose_guard.rs` rejects prose mixed with primitive-shaped protocol JSON.
 - `validation.rs` validates parsed JSON against the primitive registry.
+- `policy.rs` defines shared model-choice safety limits such as the maximum
+  primitive tool-call batch size.
 - `contracts.rs` renders model-facing contracts from the primitive tool registry.
 
 The model owns the choice. The harness validates the choice. Primitive tool

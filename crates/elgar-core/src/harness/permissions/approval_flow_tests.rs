@@ -83,6 +83,39 @@ fn approve_pending_bash_runs_in_resolved_cwd() {
 }
 
 #[test]
+fn approve_pending_batch_executes_write_steps_serially() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-approve-pending-batch-write-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let requests = vec![write_request("a.txt", "A"), write_request("b.txt", "B")];
+    let mut session = Session::new("approve-batch-write-session", &root, &root);
+    session.set_pending_approval(
+        PendingApproval::from_requests_with_launch_cwd(
+            "approval-1",
+            &requests,
+            "batch needs approval",
+            &root,
+        )
+        .unwrap(),
+    );
+
+    let result = approve_pending_approval(&mut session).unwrap();
+
+    assert_eq!(result.approval_id, "approval-1");
+    assert_eq!(result.status, "approved");
+    assert!(result.message.contains("VERIFIED_BATCH_EXECUTION"));
+    assert!(result.message.contains("approval-1-step-1"));
+    assert!(result.message.contains("approval-1-step-2"));
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "A");
+    assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "B");
+    assert!(session.pending_approval().is_none());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn approve_pending_bash_rejects_missing_cwd_before_execution() {
     let root = std::env::temp_dir().join(format!(
         "elgar-approve-pending-bash-missing-cwd-{}",

@@ -3,7 +3,9 @@
 use std::fs;
 
 use crate::{
-    event::ProviderOutput, harness::run_primitive_harness_loop, provider::ChatRole,
+    event::ProviderOutput,
+    harness::{run_primitive_harness_loop, MAX_TOOL_CALL_BATCH},
+    provider::ChatRole,
     session::Session,
 };
 
@@ -87,6 +89,124 @@ fn primitive_loop_native_tool_batch_appends_all_tool_results() {
         message.tool_call_id.as_deref() == Some("call-read-page")
             && message.content.contains("app/page.tsx")
     }));
+}
+
+#[test]
+fn primitive_loop_native_risky_tool_batch_creates_one_batch_approval() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-loop-native-risky-batch-test-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_calls_output(vec![
+            (
+                "write",
+                r#"{"path":"move-a.txt","content":"A"}"#,
+                "call-write-a",
+            ),
+            (
+                "write",
+                r#"{"path":"move-b.txt","content":"B"}"#,
+                "call-write-b",
+            ),
+        ]),
+        ProviderOutput::new("Approval is required for the two writes."),
+    ]);
+    let mut session = Session::new("loop-native-risky-batch-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "create two files").unwrap();
+    let calls = provider.calls.lock().expect("calls lock");
+    let tool_results = tool_message_contents(&calls[1]);
+    let pending = session.pending_approval().expect("pending approval");
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(pending.tool, "batch");
+    assert_eq!(pending.steps.len(), 2);
+    assert_eq!(pending.steps[0].tool, "write");
+    assert_eq!(pending.steps[1].tool, "write");
+    assert!(tool_results
+        .iter()
+        .any(|content| content.contains("approval_id: approval-1")
+            && content.contains("batch_step: 1")));
+    assert!(tool_results
+        .iter()
+        .any(|content| content.contains("approval_id: approval-1")
+            && content.contains("batch_step: 2")));
+    assert!(!root.join("move-a.txt").exists());
+    assert!(!root.join("move-b.txt").exists());
+}
+
+#[test]
+fn primitive_loop_native_five_write_batch_creates_one_batch_approval() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-loop-native-five-write-batch-test-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let tool_calls = (1..=5)
+        .map(|index| {
+            (
+                "write",
+                format!(r#"{{"path":"five-{index}.txt","content":"{index}"}}"#),
+                format!("call-write-five-{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_calls_output(
+            tool_calls
+                .iter()
+                .map(|(tool, arguments, call_id)| (*tool, arguments.as_str(), call_id.as_str()))
+                .collect(),
+        ),
+        ProviderOutput::new("Approval is required for the five writes."),
+    ]);
+    let mut session = Session::new("loop-native-five-write-batch-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "create five files").unwrap();
+    let pending = session.pending_approval().expect("pending approval");
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(pending.tool, "batch");
+    assert_eq!(pending.steps.len(), 5);
+}
+
+#[test]
+fn primitive_loop_native_over_limit_tool_batch_rejects_without_approval() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-loop-native-over-limit-batch-test-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let tool_calls = (1..=(MAX_TOOL_CALL_BATCH + 1))
+        .map(|index| {
+            (
+                "write",
+                format!(r#"{{"path":"over-{index}.txt","content":"{index}"}}"#),
+                format!("call-write-over-{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_calls_output(
+            tool_calls
+                .iter()
+                .map(|(tool, arguments, call_id)| (*tool, arguments.as_str(), call_id.as_str()))
+                .collect(),
+        ),
+        ProviderOutput::new("Rejected over-limit batch without approval."),
+    ]);
+    let mut session = Session::new("loop-native-over-limit-batch-session", &root, &root);
+
+    let result =
+        run_primitive_harness_loop(&provider, &mut session, "create too many files").unwrap();
+
+    assert_eq!(
+        result.stopped_reason,
+        format!("too_many_requests:{MAX_TOOL_CALL_BATCH}")
+    );
+    assert!(session.pending_approval().is_none());
 }
 
 #[test]

@@ -47,11 +47,13 @@ pub use model_choice::{
     loop_decision_contract, model_choice_contract, parse_model_choice,
     parse_model_choice_with_registry, EvidenceDepth, ModelChoice, ModelChoiceTurnError,
     StructuredRequestKind, StructuredRequestValidationError, ValidatedStructuredRequest,
+    MAX_TOOL_CALL_BATCH,
 };
 pub use permissions::{
     approve_pending_approval, decide_primitive_permission, deny_pending_approval,
     ApprovalCommandError, ApprovalCommandResult, ApprovalTargetPreview, ApprovalTargetScope,
-    PendingApproval, PendingApprovalStatus, PermissionDecision, PermissionDecisionKind,
+    PendingApproval, PendingApprovalStatus, PendingApprovalStep, PermissionDecision,
+    PermissionDecisionKind,
 };
 pub use primitive_tools::{
     PrimitiveTool, PrimitiveToolId, PrimitiveToolRegistry, PrimitiveToolSideEffectLevel,

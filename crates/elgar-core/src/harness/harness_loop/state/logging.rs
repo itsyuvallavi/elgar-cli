@@ -18,7 +18,7 @@ pub(in crate::harness::harness_loop) use memory_events::{
     log_harness_duplicate_rejected, log_harness_memory_snapshot,
 };
 pub(in crate::harness::harness_loop) use permission_events::{
-    log_harness_approval_requested, log_permission_decision,
+    log_harness_approval_requested, log_harness_batch_approval_requested, log_permission_decision,
 };
 pub(in crate::harness::harness_loop) use provider_events::{
     log_decision_context, log_provider_call_failed, log_provider_call_finished,
