@@ -21,7 +21,8 @@ Keep argument parsing, config lookup, and process IO here. Model/provider behavi
 
 - `elgar` launches the interactive terminal TUI when stdin/stdout are terminals.
 - `elgar tui-terminal` explicitly launches the interactive terminal TUI.
-- `elgar tui` runs the line-based scripted TUI for tests/scripts.
+- `elgar tui` runs the scripted TUI for tests/scripts. It is line-based by
+  default and supports `/prompt` ... `/end` blocks for one multiline prompt.
 - `elgar provider-smoke` sends one direct provider smoke request.
 - `elgar logs latest` prints the latest system-log turn summary.
 

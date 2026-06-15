@@ -20,7 +20,7 @@ fn pending_approval_display_names_commands_and_execution_state() {
 
     let rendered = render_pending_approval_text(&approval);
 
-    assert!(rendered.contains("Approval required"));
+    assert!(rendered.contains("Action prepared"));
     assert!(rendered.contains("id: approval-1"));
     assert!(rendered.contains("tool: write"));
     assert!(rendered.contains("status: pending"));

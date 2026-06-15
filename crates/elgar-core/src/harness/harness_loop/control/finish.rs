@@ -16,7 +16,7 @@ use crate::{
         },
         EvidenceDepth, ModelChoiceTurnError,
     },
-    provider::ControllerProvider,
+    provider::{ControllerProvider, ProviderCancelToken},
     session::Session,
 };
 
@@ -64,6 +64,7 @@ pub(super) fn synthesize_loop_answer<P>(
     evidence_depth: EvidenceDepth,
     loop_turn_id: u64,
     loop_started: Instant,
+    cancel: &ProviderCancelToken,
 ) -> Result<PrimitiveHarnessLoopResult, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -77,6 +78,7 @@ where
         &evidence_text,
         &stop_reason,
         evidence_depth,
+        cancel,
     )
     .map_err(ModelChoiceTurnError::Provider)?;
     let result = PrimitiveHarnessLoopResult {

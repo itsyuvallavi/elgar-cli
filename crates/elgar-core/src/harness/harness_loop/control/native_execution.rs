@@ -11,19 +11,21 @@ use crate::{
         harness_loop::{
             control::{
                 choice_from_output::NativeToolRequest,
-                finish::synthesize_loop_answer,
+                finish::{finish_with_model_message, synthesize_loop_answer},
                 request_handling::{collect_request_evidence, RequestHandlingOutcome},
                 tool_target_fidelity::validate_tool_target,
             },
+            evidence::timeline::append_verified_action_timeline,
             state::{
                 budget::{PrimitiveLoopBudget, PrimitiveLoopBudgetState},
+                logging::log_verified_action_timeline_appended,
                 memory::HarnessWorkingMemory,
                 types::{Evidence, PrimitiveHarnessLoopResult},
             },
         },
         EvidenceDepth, ModelChoiceTurnError, PrimitiveHarnessLoopRound, PrimitiveToolRegistry,
     },
-    provider::{ChatMessage, ControllerProvider},
+    provider::{ChatMessage, ControllerProvider, ProviderCancelToken},
     session::Session,
 };
 
@@ -43,6 +45,7 @@ pub(super) fn execute_native_tool_request<P>(
     messages: &mut Vec<ChatMessage>,
     loop_turn_id: u64,
     loop_started: Instant,
+    cancel: &ProviderCancelToken,
 ) -> Result<Option<PrimitiveHarnessLoopResult>, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -65,6 +68,7 @@ where
                 EvidenceDepth::Limited,
                 loop_turn_id,
                 loop_started,
+                cancel,
             )
             .map(Some);
         }
@@ -95,8 +99,37 @@ where
                     "VERIFIED_LOOP_NOTICE\nNo new evidence was collected for this request."
                         .to_string()
                 });
-            messages.push(ChatMessage::tool(native_request.tool_call_id, body));
+            if let Some(stats) =
+                crate::harness::harness_loop::evidence::timeline::verified_action_timeline_stats(
+                    evidence,
+                )
+            {
+                log_verified_action_timeline_appended(session, round_index, stats);
+            }
+            messages.push(ChatMessage::tool(
+                native_request.tool_call_id,
+                append_verified_action_timeline(&body, evidence),
+            ));
             Ok(None)
+        }
+        Ok(RequestHandlingOutcome::PendingApproval) => {
+            let body = evidence
+                .get(evidence_before)
+                .map(|item| item.body.clone())
+                .unwrap_or_else(|| {
+                    "VERIFIED_PERMISSION_DECISION\napproval_required: true\nexecution_performed: false\n"
+                        .to_string()
+                });
+            messages.push(ChatMessage::tool(native_request.tool_call_id, body));
+            finish_with_model_message(
+                session,
+                pending_approval_message(session),
+                std::mem::take(rounds),
+                "approval_pending".to_string(),
+                loop_turn_id,
+                loop_started,
+            )
+            .map(Some)
         }
         Ok(RequestHandlingOutcome::NoProgress) => {
             messages.push(ChatMessage::tool(
@@ -115,7 +148,31 @@ where
             EvidenceDepth::Limited,
             loop_turn_id,
             loop_started,
+            cancel,
         )
         .map(Some),
+    }
+}
+
+fn pending_approval_message(session: &Session) -> String {
+    let Some(approval) = session.pending_approval() else {
+        return "Requested action is prepared and waiting for approval before execution."
+            .to_string();
+    };
+    if approval.is_batch() {
+        return format!(
+            "{} requested actions are prepared and waiting for approval before execution.",
+            approval.steps.len()
+        );
+    }
+    match approval.target_preview.as_ref() {
+        Some(target) => format!(
+            "`{}` on `{}` is prepared and waiting for approval before execution.",
+            approval.tool, target.requested_path
+        ),
+        None => format!(
+            "`{}` is prepared and waiting for approval before execution.",
+            approval.tool
+        ),
     }
 }

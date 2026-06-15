@@ -19,7 +19,7 @@ limited to localhost/loopback provider URLs.
 ```text
 LM Studio provider
   -> HttpEndpoint::parse(...)
-  -> post_json(...) or post_json_streaming(...)
+  -> post_json_cancelable(...) or post_json_streaming_cancelable(...)
   -> transport.rs writes/reads TCP
   -> response.rs parses HTTP/chunked body
   -> provider parser turns body into ProviderOutput
@@ -34,5 +34,6 @@ This is intentionally small:
 - supports JSON POST requests
 - supports normal and streaming response reads
 - supports chunked transfer decoding
+- supports cooperative cancellation while waiting on provider reads
 
 It does not try to be a general-purpose HTTP client.

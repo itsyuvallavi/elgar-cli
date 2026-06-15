@@ -11,7 +11,9 @@ use std::{
 use super::super::{
     chat_lm_studio, chat_lm_studio_streaming, ChatMessage, LmStudioProvider, ProviderConfig,
 };
-use crate::provider::{ControllerProvider, ProviderErrorKind, ProviderStreamChunk};
+use crate::provider::{
+    ControllerProvider, ProviderCancelToken, ProviderErrorKind, ProviderStreamChunk,
+};
 
 fn write_chunk(stream: &mut std::net::TcpStream, body: &str) {
     write!(stream, "{:x}\r\n{}\r\n", body.len(), body).unwrap();
@@ -175,6 +177,46 @@ fn live_chat_reports_read_timeout_with_phase_without_external_network() {
     server.join().unwrap();
     assert_eq!(error.kind, ProviderErrorKind::Network);
     assert!(error.message.contains("provider read timed out"));
+}
+
+#[test]
+fn live_chat_cancellation_aborts_blocked_read_before_timeout() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 2048];
+        let _ = stream.read(&mut request).unwrap();
+        thread::sleep(Duration::from_millis(600));
+    });
+
+    let provider = LmStudioProvider::new(ProviderConfig {
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        connect_timeout_millis: Some(1_000),
+        read_timeout_millis: Some(1_000),
+        request_timeout_millis: Some(5_000),
+        ..ProviderConfig::lm_studio("loaded-model")
+    });
+    let metadata = provider.request_metadata();
+    let cancel = ProviderCancelToken::new();
+    let cancel_worker = cancel.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(60));
+        cancel_worker.cancel();
+    });
+
+    let started = std::time::Instant::now();
+    let error = provider
+        .chat_messages_without_streaming_with_metadata_cancelable(
+            vec![ChatMessage::user("hello")],
+            &metadata,
+            &cancel,
+        )
+        .unwrap_err();
+
+    server.join().unwrap();
+    assert_eq!(error.kind, ProviderErrorKind::Canceled);
+    assert!(started.elapsed() < Duration::from_secs(1));
 }
 
 #[test]

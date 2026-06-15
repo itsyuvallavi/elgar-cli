@@ -12,11 +12,12 @@ use crate::{
     event::ProviderOutput,
     provider::{
         config::ProviderConfig,
-        http::{post_json, post_json_streaming, HttpEndpoint},
+        http::{post_json_cancelable, post_json_streaming_cancelable, HttpEndpoint},
         types::{
             ChatMessage, ChatToolDefinition, ProviderBackendKind, ProviderError,
             ProviderRequestProfile, ProviderStreamChunk,
         },
+        ProviderCancelToken,
     },
 };
 
@@ -41,7 +42,24 @@ pub(super) fn chat_lm_studio_with_request_id(
     request_id: &str,
     profile: Option<&ProviderRequestProfile>,
 ) -> Result<ProviderOutput, ProviderError> {
+    chat_lm_studio_with_request_id_cancelable(
+        config,
+        messages,
+        request_id,
+        profile,
+        &ProviderCancelToken::new(),
+    )
+}
+
+pub(super) fn chat_lm_studio_with_request_id_cancelable(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+    request_id: &str,
+    profile: Option<&ProviderRequestProfile>,
+    cancel: &ProviderCancelToken,
+) -> Result<ProviderOutput, ProviderError> {
     let started = Instant::now();
+    cancel.error_if_canceled()?;
     let (request, body) =
         format_chat_request_body_with_tools_and_profile(config, messages, Vec::new(), profile)?;
     let mut metrics = metrics_for_request(request_id, &request, body.len(), profile);
@@ -60,7 +78,7 @@ pub(super) fn chat_lm_studio_with_request_id(
             .unwrap_or_else(|| "n/a".to_string()),
         body.len()
     );
-    let response = post_json(&endpoint, &body, http_timeouts(config))?;
+    let response = post_json_cancelable(&endpoint, &body, http_timeouts(config), cancel)?;
 
     if response.status_code.is_success() {
         metrics.total_duration_millis = Some(duration_millis(started.elapsed()));
@@ -102,7 +120,26 @@ pub(super) fn chat_lm_studio_with_tools_with_request_id(
     tools: Vec<ChatToolDefinition>,
     profile: Option<&ProviderRequestProfile>,
 ) -> Result<ProviderOutput, ProviderError> {
+    chat_lm_studio_with_tools_with_request_id_cancelable(
+        config,
+        messages,
+        request_id,
+        tools,
+        profile,
+        &ProviderCancelToken::new(),
+    )
+}
+
+pub(super) fn chat_lm_studio_with_tools_with_request_id_cancelable(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+    request_id: &str,
+    tools: Vec<ChatToolDefinition>,
+    profile: Option<&ProviderRequestProfile>,
+    cancel: &ProviderCancelToken,
+) -> Result<ProviderOutput, ProviderError> {
     let started = Instant::now();
+    cancel.error_if_canceled()?;
     let mut config = config.clone();
     config.stream = false;
     if matches!(
@@ -132,7 +169,7 @@ pub(super) fn chat_lm_studio_with_tools_with_request_id(
             .unwrap_or_else(|| "n/a".to_string()),
         body.len()
     );
-    let response = post_json(&endpoint, &body, http_timeouts(&config))?;
+    let response = post_json_cancelable(&endpoint, &body, http_timeouts(&config), cancel)?;
 
     if response.status_code.is_success() {
         metrics.total_duration_millis = Some(duration_millis(started.elapsed()));
@@ -166,8 +203,26 @@ pub(super) fn chat_lm_studio_streaming_with_request_id(
     request_id: &str,
     on_chunk: &mut dyn FnMut(ProviderStreamChunk),
 ) -> Result<ProviderOutput, ProviderError> {
+    chat_lm_studio_streaming_with_request_id_cancelable(
+        config,
+        messages,
+        request_id,
+        on_chunk,
+        &ProviderCancelToken::new(),
+    )
+}
+
+pub(super) fn chat_lm_studio_streaming_with_request_id_cancelable(
+    config: &ProviderConfig,
+    messages: Vec<ChatMessage>,
+    request_id: &str,
+    on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+    cancel: &ProviderCancelToken,
+) -> Result<ProviderOutput, ProviderError> {
+    cancel.error_if_canceled()?;
     if !config.stream {
-        let output = chat_lm_studio_with_request_id(config, messages, request_id, None)?;
+        let output =
+            chat_lm_studio_with_request_id_cancelable(config, messages, request_id, None, cancel)?;
         emit_output_chunks(&output, on_chunk);
         return Ok(output);
     }
@@ -186,15 +241,20 @@ pub(super) fn chat_lm_studio_streaming_with_request_id(
         request.tools.len(),
         body.len()
     );
-    let response =
-        post_json_streaming(&endpoint, &body, http_timeouts(config), &mut |body_chunk| {
+    let response = post_json_streaming_cancelable(
+        &endpoint,
+        &body,
+        http_timeouts(config),
+        &mut |body_chunk| {
             parts.push_body_chunk(body_chunk, &mut |chunk| {
                 if metrics.first_chunk_latency_millis.is_none() {
                     metrics.first_chunk_latency_millis = Some(duration_millis(started.elapsed()));
                 }
                 on_chunk(chunk);
             })
-        })?;
+        },
+        cancel,
+    )?;
 
     if response.status_code.is_success() {
         parts.finish(&mut |chunk| {

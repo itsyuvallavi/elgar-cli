@@ -11,7 +11,7 @@ use crate::{
     event::{Event, ProviderFinished, ProviderOutput, ProviderStarted},
     harness::{provider_route::HARNESS_SYNTHESIS_REQUEST_MODE, EvidenceDepth},
     logs::system::{append_log_event, LogInput, LogPhase},
-    provider::{ChatMessage, ControllerProvider},
+    provider::{ChatMessage, ControllerProvider, ProviderCancelToken, ProviderErrorKind},
     session::Session,
 };
 
@@ -25,6 +25,7 @@ Be concise and organized unless the user asked for depth.
 
 When answering from verified evidence:
 - Say what was actually verified.
+- If a verified command failed and later passed after a write or edit, mention both the failure and the recovery.
 - Reference evidence labels or file paths when useful.
 - Separate verified facts from reasonable inferences.
 - If evidence is shallow, say the review is shallow.
@@ -45,6 +46,7 @@ pub(in crate::harness::harness_loop) fn run_primitive_loop_synthesis<P>(
     evidence_text: &str,
     stop_reason: &str,
     evidence_depth: EvidenceDepth,
+    cancel: &ProviderCancelToken,
 ) -> Result<String, crate::provider::ProviderError>
 where
     P: ControllerProvider,
@@ -81,7 +83,9 @@ where
         )),
     ];
 
-    match provider.chat_messages_without_streaming_with_metadata(messages, &request) {
+    match provider
+        .chat_messages_without_streaming_with_metadata_cancelable(messages, &request, cancel)
+    {
         Ok(output) => {
             let final_text = output.text.trim().to_string();
             if let Some(metrics) = output.metrics.as_ref() {
@@ -102,6 +106,9 @@ where
             Ok(final_text)
         }
         Err(error) => {
+            if error.kind == ProviderErrorKind::Canceled {
+                log_synthesis_canceled(session, started, &request.request_id);
+            }
             log_synthesis_failed(session, started, &request.request_id, &error.to_string());
             Err(error)
         }
@@ -212,4 +219,30 @@ fn log_synthesis_failed(session: &Session, started: Instant, request_id: &str, e
         object.insert("duration_ms".to_string(), json!(duration_ms));
     }
     session.log_harness_event("harness_synthesis_failed", session_metadata);
+}
+
+fn log_synthesis_canceled(session: &Session, started: Instant, request_id: &str) {
+    let metadata = json!({
+        "request_mode": HARNESS_SYNTHESIS_REQUEST_MODE,
+        "request_id": request_id
+    });
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let _ = append_log_event(
+        &session.project_root,
+        &session.id,
+        LogInput::new(
+            session.next_turn_id(),
+            LogPhase::Runtime,
+            file!(),
+            "run_primitive_loop_synthesis",
+            "harness_loop_synthesis_canceled",
+        )
+        .with_duration_ms(duration_ms)
+        .with_metadata(metadata.clone()),
+    );
+    let mut session_metadata = metadata;
+    if let Some(object) = session_metadata.as_object_mut() {
+        object.insert("duration_ms".to_string(), json!(duration_ms));
+    }
+    session.log_harness_event("harness_synthesis_canceled", session_metadata);
 }

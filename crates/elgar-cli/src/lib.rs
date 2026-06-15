@@ -63,9 +63,12 @@ pub fn render_cli_local_command(input: &str) -> Option<String> {
     match parse_terminal_command(input) {
         TerminalCommand::Empty | TerminalCommand::Text(_) => None,
         TerminalCommand::Help => Some(render_terminal_help().to_string()),
-        TerminalCommand::Approve | TerminalCommand::Deny => {
+        TerminalCommand::Approve | TerminalCommand::ApproveContinue | TerminalCommand::Deny => {
             Some("No pending approval.".to_string())
         }
+        TerminalCommand::Permissions(_) => Some(
+            "Permission modes are available in an interactive or scripted TUI session.".to_string(),
+        ),
         TerminalCommand::Cancel => Some("No active provider turn to cancel.".to_string()),
         TerminalCommand::DetailsLast | TerminalCommand::CopyRaw => {
             Some("No raw details are available.".to_string())

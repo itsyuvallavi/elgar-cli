@@ -18,12 +18,15 @@ pub(in crate::harness::harness_loop) struct HarnessWorkingMemory {
     find_patterns: BTreeSet<String>,
     grep_queries: BTreeSet<String>,
     mcp_calls: BTreeSet<String>,
+    side_effects: Vec<String>,
     duplicate_requests: Vec<String>,
+    duplicate_rejection_streak: usize,
 }
 
 impl HarnessWorkingMemory {
     /// Record one useful verified primitive request.
     pub fn record_useful_request(&mut self, key: &EvidenceKey) {
+        self.duplicate_rejection_streak = 0;
         match key {
             EvidenceKey::Ls(path) => {
                 self.listed_paths.insert(path.clone());
@@ -44,9 +47,13 @@ impl HarnessWorkingMemory {
             EvidenceKey::InvalidMcp(fingerprint) => {
                 self.mcp_calls.insert(format!("invalid:{fingerprint}"));
             }
-            EvidenceKey::Primitive(name) => {
-                self.duplicate_requests
-                    .push(format!("untracked primitive evidence: {name}"));
+            EvidenceKey::SideEffectVersion(tool, target, fingerprint) => {
+                self.side_effects
+                    .push(format!("side_effect:{tool}:{target}:{fingerprint}"));
+            }
+            EvidenceKey::SideEffectEpoch(tool, target, epoch) => {
+                self.side_effects
+                    .push(format!("side_effect:{tool}:{target}:epoch:{epoch}"));
             }
         }
     }
@@ -54,6 +61,7 @@ impl HarnessWorkingMemory {
     /// Record one exact duplicate request from the current loop.
     pub fn record_duplicate_request(&mut self, label: impl Into<String>) {
         self.duplicate_requests.push(label.into());
+        self.duplicate_rejection_streak += 1;
     }
 
     /// Record compact visible entries from a verified directory listing.
@@ -64,8 +72,8 @@ impl HarnessWorkingMemory {
         }
     }
 
-    pub fn duplicate_count(&self) -> usize {
-        self.duplicate_requests.len()
+    pub fn duplicate_streak(&self) -> usize {
+        self.duplicate_rejection_streak
     }
 
     pub fn listed_paths(&self) -> Vec<&str> {
@@ -92,11 +100,16 @@ impl HarnessWorkingMemory {
         self.duplicate_requests.iter().map(String::as_str).collect()
     }
 
+    pub fn side_effects(&self) -> Vec<&str> {
+        self.side_effects.iter().map(String::as_str).collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.listed_paths.is_empty()
             && self.read_paths.is_empty()
             && self.find_patterns.is_empty()
             && self.grep_queries.is_empty()
+            && self.side_effects.is_empty()
             && self.duplicate_requests.is_empty()
     }
 }
@@ -115,6 +128,7 @@ pub(in crate::harness::harness_loop) fn render_working_memory_for_prompt(
     push_limited_group(&mut lines, "already read", memory.read_paths());
     push_limited_group(&mut lines, "already searched files", memory.find_patterns());
     push_limited_group(&mut lines, "already grepped", memory.grep_queries());
+    push_limited_group(&mut lines, "verified side effects", memory.side_effects());
     push_limited_group(
         &mut lines,
         "duplicate/no-op requests",

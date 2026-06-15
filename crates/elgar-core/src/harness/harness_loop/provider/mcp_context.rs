@@ -7,8 +7,11 @@
 use crate::{
     mcp::{
         client::discover_http_server,
-        config::{load_runtime_mcp_config, resolve_secret_sources, McpServerConfig},
+        config::{
+            load_runtime_mcp_config, resolve_secret_sources, McpInternalServerKind, McpServerConfig,
+        },
         logging::McpLogContext,
+        project_index::project_index_tools,
         protocol::{McpTool, ToolsListResult},
     },
     session::Session,
@@ -73,10 +76,34 @@ pub(in crate::harness::harness_loop) fn render_mcp_tool_catalog_for_prompt(
                 &mut output,
                 format!("- server: {server_id}\n  unavailable: stdio MCP is not implemented yet\n"),
             ),
+            McpServerConfig::Internal(config) => match config.kind {
+                McpInternalServerKind::ProjectIndex => push_bounded(
+                    &mut output,
+                    render_internal_server_tools(
+                        &server_id,
+                        "project_index",
+                        &project_index_tools(),
+                    ),
+                ),
+            },
         }
     }
 
     Some(output)
+}
+
+fn render_internal_server_tools(server_id: &str, kind: &str, tools: &ToolsListResult) -> String {
+    let mut output = format!("- server: {server_id}\n  transport: internal\n  kind: {kind}\n");
+    if tools.tools.is_empty() {
+        output.push_str("  tools: none advertised\n");
+        return output;
+    }
+
+    output.push_str("  tools:\n");
+    for tool in &tools.tools {
+        output.push_str(&render_tool(tool));
+    }
+    output
 }
 
 fn render_http_server_tools(server_id: &str, tools: Option<&ToolsListResult>) -> String {

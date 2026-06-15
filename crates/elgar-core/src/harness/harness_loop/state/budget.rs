@@ -37,6 +37,7 @@ pub(in crate::harness::harness_loop) struct PrimitiveLoopBudgetState {
     pub repair_attempts: usize,
     pub target_mismatches: usize,
     pub empty_provider_response_retries: usize,
+    mutation_epoch: usize,
     evidence_keys: HashSet<String>,
 }
 
@@ -57,5 +58,20 @@ impl PrimitiveLoopBudgetState {
     /// Record one verified evidence item for duplicate detection.
     pub fn record(&mut self, evidence: &Evidence) {
         self.evidence_keys.insert(evidence.label.clone());
+    }
+
+    /// Record the request key that produced verified evidence.
+    pub fn record_key(&mut self, key: &EvidenceKey) {
+        self.evidence_keys.insert(key.as_label());
+    }
+
+    /// Current workspace mutation epoch for state-aware duplicate keys.
+    pub fn mutation_epoch(&self) -> usize {
+        self.mutation_epoch
+    }
+
+    /// Advance the mutation epoch after a verified file mutation.
+    pub fn advance_mutation_epoch(&mut self) {
+        self.mutation_epoch += 1;
     }
 }

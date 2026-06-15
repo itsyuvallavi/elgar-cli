@@ -20,7 +20,10 @@ use crate::provider::{
         types::{HttpResponse, HttpTimeouts},
     },
     types::ProviderError,
+    ProviderCancelToken,
 };
+
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy)]
 struct RequestDeadline {
@@ -47,16 +50,19 @@ impl RequestDeadline {
 }
 
 /// Sends one JSON request and returns the full HTTP response body.
-pub(in crate::provider) fn post_json(
+pub(in crate::provider) fn post_json_cancelable(
     endpoint: &HttpEndpoint,
     body: &str,
     timeouts: HttpTimeouts,
+    cancel: &ProviderCancelToken,
 ) -> Result<HttpResponse, ProviderError> {
+    cancel.error_if_canceled()?;
     let deadline = RequestDeadline::new(timeouts.request);
     let mut stream = connect_with_timeout(
         endpoint,
         timeouts.connect.min(deadline.remaining("connect")?),
     )?;
+    cancel.error_if_canceled()?;
     stream
         .set_read_timeout(Some(timeouts.read.min(deadline.remaining("read")?)))
         .map_err(|error| ProviderError::network(error.to_string()))?;
@@ -64,23 +70,28 @@ pub(in crate::provider) fn post_json(
         .set_write_timeout(Some(timeouts.write.min(deadline.remaining("write")?)))
         .map_err(|error| ProviderError::network(error.to_string()))?;
 
+    cancel.error_if_canceled()?;
     write_json_request(&mut stream, endpoint, body, "application/json")?;
+    cancel.error_if_canceled()?;
 
-    read_http_response(stream, timeouts, deadline)
+    read_http_response(stream, timeouts, deadline, cancel)
 }
 
 /// Sends a JSON request and forwards response-body chunks while reading.
-pub(in crate::provider) fn post_json_streaming(
+pub(in crate::provider) fn post_json_streaming_cancelable(
     endpoint: &HttpEndpoint,
     body: &str,
     timeouts: HttpTimeouts,
     on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
+    cancel: &ProviderCancelToken,
 ) -> Result<HttpResponse, ProviderError> {
+    cancel.error_if_canceled()?;
     let deadline = RequestDeadline::new(timeouts.request);
     let mut stream = connect_with_timeout(
         endpoint,
         timeouts.connect.min(deadline.remaining("connect")?),
     )?;
+    cancel.error_if_canceled()?;
     stream
         .set_read_timeout(Some(timeouts.read.min(deadline.remaining("read")?)))
         .map_err(|error| ProviderError::network(error.to_string()))?;
@@ -94,8 +105,9 @@ pub(in crate::provider) fn post_json_streaming(
         body,
         "text/event-stream, application/json",
     )?;
+    cancel.error_if_canceled()?;
 
-    read_streaming_http_response(stream, timeouts, deadline, on_body_chunk)
+    read_streaming_http_response(stream, timeouts, deadline, on_body_chunk, cancel)
 }
 
 fn write_json_request(
@@ -136,21 +148,39 @@ fn read_http_response(
     mut stream: TcpStream,
     timeouts: HttpTimeouts,
     deadline: RequestDeadline,
+    cancel: &ProviderCancelToken,
 ) -> Result<HttpResponse, ProviderError> {
     let mut bytes = Vec::new();
     let mut read_buffer = [0_u8; 4096];
+    let mut idle_started = Instant::now();
 
     loop {
+        cancel.error_if_canceled()?;
         deadline.remaining("read")?;
         stream
-            .set_read_timeout(Some(timeouts.read.min(deadline.remaining("read")?)))
+            .set_read_timeout(Some(
+                timeouts
+                    .read
+                    .min(deadline.remaining("read")?)
+                    .min(CANCEL_POLL_INTERVAL),
+            ))
             .map_err(|error| ProviderError::network(error.to_string()))?;
-        let read = stream
-            .read(&mut read_buffer)
-            .map_err(|error| read_error(error, "read", timeouts.read))?;
+        let read = match stream.read(&mut read_buffer) {
+            Ok(read) => read,
+            Err(error) if is_read_timeout(&error) => {
+                cancel.error_if_canceled()?;
+                deadline.remaining("read")?;
+                if idle_started.elapsed() >= timeouts.read {
+                    return Err(read_error(error, "read", timeouts.read));
+                }
+                continue;
+            }
+            Err(error) => return Err(read_error(error, "read", timeouts.read)),
+        };
         if read == 0 {
             break;
         }
+        idle_started = Instant::now();
         bytes.extend_from_slice(&read_buffer[..read]);
     }
 
@@ -164,6 +194,7 @@ fn read_streaming_http_response(
     timeouts: HttpTimeouts,
     deadline: RequestDeadline,
     on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
+    cancel: &ProviderCancelToken,
 ) -> Result<HttpResponse, ProviderError> {
     let mut bytes = Vec::new();
     let mut read_buffer = [0_u8; 4096];
@@ -171,18 +202,35 @@ fn read_streaming_http_response(
     let mut body = Vec::new();
     let mut chunk_buffer = Vec::new();
     let mut chunked_complete = false;
+    let mut idle_started = Instant::now();
 
     loop {
+        cancel.error_if_canceled()?;
         deadline.remaining("stream read")?;
         stream
-            .set_read_timeout(Some(timeouts.read.min(deadline.remaining("stream read")?)))
+            .set_read_timeout(Some(
+                timeouts
+                    .read
+                    .min(deadline.remaining("stream read")?)
+                    .min(CANCEL_POLL_INTERVAL),
+            ))
             .map_err(|error| ProviderError::network(error.to_string()))?;
-        let read = stream
-            .read(&mut read_buffer)
-            .map_err(|error| read_error(error, "stream read", timeouts.read))?;
+        let read = match stream.read(&mut read_buffer) {
+            Ok(read) => read,
+            Err(error) if is_read_timeout(&error) => {
+                cancel.error_if_canceled()?;
+                deadline.remaining("stream read")?;
+                if idle_started.elapsed() >= timeouts.read {
+                    return Err(read_error(error, "stream read", timeouts.read));
+                }
+                continue;
+            }
+            Err(error) => return Err(read_error(error, "stream read", timeouts.read)),
+        };
         if read == 0 {
             break;
         }
+        idle_started = Instant::now();
 
         bytes.extend_from_slice(&read_buffer[..read]);
         if header.is_none() {
@@ -244,6 +292,13 @@ fn read_error(error: io::Error, phase: &str, timeout: Duration) -> ProviderError
         )),
         _ => ProviderError::network(error.to_string()),
     }
+}
+
+fn is_read_timeout(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
 }
 
 fn request_timeout_error(phase: &str, timeout: Duration) -> ProviderError {

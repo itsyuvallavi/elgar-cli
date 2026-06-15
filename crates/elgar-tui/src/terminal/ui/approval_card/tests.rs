@@ -24,7 +24,7 @@ fn approval_card_renders_box_and_button_actions() {
 
     assert!(rendered.contains('╭'));
     assert!(rendered.contains('╯'));
-    assert!(rendered.contains("Approval required"));
+    assert!(rendered.contains("Action prepared"));
     assert!(rendered.contains("[Approve]"));
     assert!(rendered.contains(" Deny "));
     assert!(rendered.contains("/approve"));

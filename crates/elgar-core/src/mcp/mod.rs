@@ -8,6 +8,7 @@ pub mod config;
 pub mod error;
 pub mod http;
 pub mod logging;
+pub mod project_index;
 pub mod protocol;
 
 #[cfg(test)]

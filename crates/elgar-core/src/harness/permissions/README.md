@@ -27,13 +27,31 @@ effect themselves.
 ## Current Behavior
 
 - `read`, `ls`, `find`, and `grep` are allowed.
-- `bash`, `write`, and `edit` return `NeedsApproval`.
+- In the default `review_all` mode, `bash`, `write`, and `edit` return
+  `NeedsApproval`.
+- In the explicit `workspace_write` mode, safe relative `write` requests inside
+  the launch folder can execute immediately. `bash`, `edit`, absolute paths,
+  parent paths, symlink paths, and outside-folder writes do not bypass approval
+  or execution checks.
+- In the explicit `full_access` mode, trusted launch-folder `write`, `edit`,
+  and `bash` requests can execute immediately. It is not a shell sandbox; use it
+  only for trusted local dogfoods/project generation.
 - `NeedsApproval` creates a pending approval record with id, tool, reason,
   exact validated request, argument preview, optional target preview, and
   `pending` status.
-- Core stores one pending approval slot. A later risky request can replace the
-  current pending pointer, while older approval ids remain visible in verified
-  evidence and logs.
+- Core stores one pending approval slot. The harness loop stops once a single
+  risky request creates pending approval, so provider prose cannot imply that
+  additional unrequested side effects are also approved.
+- Risky batches emitted in one provider response create one batch approval with
+  multiple approved steps.
+- A `write` request for a safe relative path that already contains the exact
+  requested content is treated as a verified no-op instead of asking for
+  approval again.
+- Auto-executed `workspace_write` writes return `VERIFIED_WRITE_EXECUTION` with
+  `approval_source: workspace_write` and are logged in system/session JSONL.
+- Auto-executed `full_access` writes, edits, and bash return verified execution
+  output with `approval_source: full_access` and are logged in system/session
+  JSONL.
 - Pending `write` and `edit` approvals show whether the requested target is
   relative or absolute and whether it appears inside or outside the launch
   folder. This is a display warning only; final symlink and path checks still

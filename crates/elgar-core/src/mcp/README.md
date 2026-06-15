@@ -9,6 +9,7 @@ Current slice:
 - initialize, initialized, tools/list, and resources/list request builders
 - HTTP discovery for configured remote MCP servers
 - read-only HTTP tool calls through the harness `mcp_call` capability
+- read-only internal Project Index tool calls through `mcp_call`
 - system JSONL diagnostics for MCP config, HTTP, discovery, and tool-call events
 
 Out of scope for this slice:

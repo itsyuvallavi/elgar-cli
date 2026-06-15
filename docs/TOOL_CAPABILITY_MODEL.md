@@ -85,9 +85,12 @@ read   -> read one bounded UTF-8 file
 ls     -> list one bounded directory
 find   -> find file/directory paths by name pattern
 grep   -> search text inside bounded UTF-8 files
-bash   -> run one shell command after policy approval
-write  -> create or overwrite one file after policy approval
-edit   -> patch one existing file after policy approval
+bash   -> run one shell command after policy approval; explicit full_access
+          mode can auto-run trusted launch-folder shell commands
+write  -> create or overwrite one file; approval is required unless explicit
+          workspace_write/full_access mode allows a safe relative launch-folder target
+edit   -> patch one existing file after policy approval; explicit full_access
+          mode can auto-run safe relative launch-folder edits
 mcp_call -> call one configured read-only MCP server tool
 ```
 

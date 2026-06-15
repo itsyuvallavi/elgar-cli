@@ -18,5 +18,5 @@ mod structured_choice_round;
 mod synthetic_tool_calls;
 mod tool_target_fidelity;
 
-pub use coordinator::run_primitive_harness_loop;
+pub use coordinator::{run_primitive_harness_loop, run_primitive_harness_loop_with_cancel};
 pub use finish::render_primitive_harness_loop_result;

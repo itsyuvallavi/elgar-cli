@@ -1,5 +1,31 @@
 //! Permission decision data for harness primitive requests.
 
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    ReviewAll,
+    WorkspaceWrite,
+    FullAccess,
+}
+
+impl PermissionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReviewAll => "review_all",
+            Self::WorkspaceWrite => "workspace_write",
+            Self::FullAccess => "full_access",
+        }
+    }
+}
+
+impl Default for PermissionMode {
+    fn default() -> Self {
+        Self::ReviewAll
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDecisionKind {
     Allow,

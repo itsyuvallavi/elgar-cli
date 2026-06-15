@@ -41,7 +41,7 @@ use crate::{
         ModelChoice, ModelChoiceTurnError, PrimitiveToolRegistry,
     },
     mcp::config::load_runtime_mcp_config,
-    provider::ControllerProvider,
+    provider::{ControllerProvider, ProviderCancelToken},
     session::Session,
 };
 
@@ -50,6 +50,19 @@ pub fn run_primitive_harness_loop<P>(
     provider: &P,
     session: &mut Session,
     input: &str,
+) -> Result<PrimitiveHarnessLoopResult, ModelChoiceTurnError>
+where
+    P: ControllerProvider,
+{
+    run_primitive_harness_loop_with_cancel(provider, session, input, &ProviderCancelToken::new())
+}
+
+/// Run a primitive loop for one harness turn with cooperative cancellation.
+pub fn run_primitive_harness_loop_with_cancel<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+    cancel: &ProviderCancelToken,
 ) -> Result<PrimitiveHarnessLoopResult, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -87,6 +100,7 @@ where
             &messages,
             &registry,
             round_index,
+            cancel,
         ) {
             Ok(output) => output,
             Err(error) => {
@@ -104,6 +118,7 @@ where
                     rounds,
                     loop_turn_id,
                     loop_started,
+                    cancel,
                 )? {
                     ProviderLoopErrorOutcome::Retry { returned_rounds } => {
                         rounds = returned_rounds;
@@ -132,6 +147,7 @@ where
                 &mut messages,
                 loop_turn_id,
                 loop_started,
+                cancel,
             )? {
                 NativeToolRoundOutcome::Continue => {}
                 NativeToolRoundOutcome::Finish(result) => return Ok(result),
@@ -174,6 +190,7 @@ where
             &budget,
             &mut budget_state,
             choice,
+            cancel,
         )?;
 
         match choice {
@@ -228,6 +245,7 @@ where
                     evidence_depth,
                     loop_turn_id,
                     loop_started,
+                    cancel,
                 );
             }
             ModelChoice::StructuredRequest(request) => {
@@ -247,6 +265,7 @@ where
                     &mut messages,
                     loop_turn_id,
                     loop_started,
+                    cancel,
                 )? {
                     return Ok(result);
                 }
@@ -268,6 +287,7 @@ where
                     &mut messages,
                     loop_turn_id,
                     loop_started,
+                    cancel,
                 )? {
                     return Ok(result);
                 }

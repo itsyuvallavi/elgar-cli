@@ -57,6 +57,106 @@ fn mcp_call_schema_is_visible_with_mcp_config() {
 }
 
 #[test]
+fn native_project_index_catalog_is_visible_with_internal_mcp_config() {
+    let root = temp_root("mcp-project-index-catalog");
+    fs::write(
+        root.join("elgar-mcp.json"),
+        r#"{"servers":{"project-index":{"transport":"internal","kind":"project_index"}}}"#,
+    )
+    .unwrap();
+    let provider = QueuedProvider::new_outputs(vec![ProviderOutput::new("No MCP needed.")]);
+    let mut session = Session::new("mcp-project-index-catalog-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "hello").unwrap();
+    let calls = provider.calls.lock().expect("calls lock");
+    let system_prompt = calls[0]
+        .iter()
+        .find(|message| matches!(message.role, ChatRole::System))
+        .map(|message| message.content.as_str())
+        .unwrap_or_default();
+
+    assert_eq!(result.stopped_reason, "model_message");
+    assert!(system_prompt.contains("server: project-index"));
+    assert!(system_prompt.contains("project_tree"));
+    assert!(system_prompt.contains("project_find"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn native_project_index_tree_returns_verified_evidence() {
+    let root = temp_root("mcp-project-index-tree");
+    fs::create_dir_all(root.join("app")).unwrap();
+    fs::write(
+        root.join("app/page.tsx"),
+        "export default function Page() {}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("elgar-mcp.json"),
+        r#"{"servers":{"project-index":{"transport":"internal","kind":"project_index"}}}"#,
+    )
+    .unwrap();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output(
+            "mcp_call",
+            r#"{"server":"project-index","tool":"project_tree","arguments":{"path":"."}}"#,
+            "call-project-tree",
+        ),
+        ProviderOutput::new("Inspected project tree."),
+    ]);
+    let mut session = Session::new("mcp-project-index-tree-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "inspect project").unwrap();
+    let calls = provider.calls.lock().expect("calls lock");
+    let tool_results = tool_message_contents(&calls[1]);
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert!(result.rounds[0]
+        .evidence_label
+        .as_deref()
+        .is_some_and(|label| label.starts_with("mcp:project-index:project_tree:")));
+    assert!(tool_results.iter().any(|content| {
+        content.contains("VERIFIED_MCP_TOOL_RESULT")
+            && content.contains("server: project-index")
+            && content.contains("PROJECT_INDEX_TREE")
+            && content.contains("app/page.tsx")
+    }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn native_project_index_rejects_parent_path_as_verified_error() {
+    let root = temp_root("mcp-project-index-parent");
+    fs::write(
+        root.join("elgar-mcp.json"),
+        r#"{"servers":{"project-index":{"transport":"internal","kind":"project_index"}}}"#,
+    )
+    .unwrap();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output(
+            "mcp_call",
+            r#"{"server":"project-index","tool":"project_read_summary","arguments":{"path":"../secret.txt"}}"#,
+            "call-project-read",
+        ),
+        ProviderOutput::new("Rejected unsafe path."),
+    ]);
+    let mut session = Session::new("mcp-project-index-parent-session", &root, &root);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "inspect parent").unwrap();
+    let calls = provider.calls.lock().expect("calls lock");
+    let tool_results = tool_message_contents(&calls[1]);
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert!(tool_results.iter().any(|content| {
+        content.contains("is_error: true") && content.contains("parent-directory")
+    }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn native_mcp_call_returns_verified_evidence() {
     let root = temp_root("mcp-native-call");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake MCP server");

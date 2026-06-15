@@ -39,10 +39,19 @@ Active:
 - Core stores one pending approval record when risky primitive execution needs
   approval. The record may hold one exact action or a small serial batch of
   exact risky actions from one provider response.
+- `/permissions workspace_write` is an explicit mode for project generation:
+  safe relative `write` requests inside the launch folder can execute without
+  approval, while `bash`, `edit`, absolute paths, parent paths, symlink paths,
+  and outside-folder writes remain approval-gated or rejected by execution
+  checks.
+- `/permissions full_access` is an explicit trusted local mode for dogfoods:
+  launch-folder `write`, `edit`, and `bash` requests can execute without
+  approval, while unsafe paths remain rejected by execution checks.
 - Pending `write` and `edit` approvals include a target preview that shows
   relative/absolute path status and warns when the target appears outside the
   launch folder.
-- Line-based CLI mode supports `/approve`, `/deny`, and `/reject`.
+- Line-based CLI mode supports `/approve`, `/approve continue`, `/deny`, and
+  `/reject`.
 - Interactive terminal TUI renders the current pending approval record after
   provider turns and exposes keyboard-first `[Approve]` / `[Deny]` controls.
   `/approve`, `/deny`, and `/reject` remain command fallbacks.

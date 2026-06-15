@@ -17,7 +17,7 @@ use crate::{
         },
         EvidenceDepth, ModelChoiceTurnError,
     },
-    provider::{ChatMessage, ControllerProvider, ProviderErrorKind},
+    provider::{ChatMessage, ControllerProvider, ProviderCancelToken, ProviderErrorKind},
     session::Session,
 };
 
@@ -42,6 +42,7 @@ pub(super) fn handle_provider_loop_error<P>(
     rounds: Vec<PrimitiveHarnessLoopRound>,
     loop_turn_id: u64,
     loop_started: Instant,
+    cancel: &ProviderCancelToken,
 ) -> Result<ProviderLoopErrorOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -86,6 +87,7 @@ where
             EvidenceDepth::Limited,
             loop_turn_id,
             loop_started,
+            cancel,
         )?;
         return Ok(ProviderLoopErrorOutcome::Finish(result));
     }

@@ -18,7 +18,12 @@ pub fn build_memory_index(events: &[LocalSessionLogEvent]) -> HarnessMemoryIndex
             ),
             "harness_bash_execution_finished"
             | "harness_write_execution_finished"
-            | "harness_edit_execution_finished" => index_approved_execution(&mut index, event),
+            | "harness_edit_execution_finished"
+            | "harness_policy_bash_execution_finished"
+            | "harness_policy_write_execution_finished"
+            | "harness_policy_edit_execution_finished" => {
+                index_approved_execution(&mut index, event)
+            }
             "harness_turn_finished" | "harness_loop_finished" => push_metadata_fact(
                 &mut index,
                 event,
@@ -110,6 +115,9 @@ fn index_approved_execution(index: &mut HarnessMemoryIndex, event: &LocalSession
             "harness_bash_execution_finished" => "bash".to_string(),
             "harness_write_execution_finished" => "write".to_string(),
             "harness_edit_execution_finished" => "edit".to_string(),
+            "harness_policy_bash_execution_finished" => "bash".to_string(),
+            "harness_policy_write_execution_finished" => "write".to_string(),
+            "harness_policy_edit_execution_finished" => "edit".to_string(),
             _ => return,
         }
     };

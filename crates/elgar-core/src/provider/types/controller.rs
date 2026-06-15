@@ -4,6 +4,7 @@
 //! providers small while still supporting message-based and streaming calls.
 
 use crate::event::ProviderOutput;
+use crate::provider::cancel::ProviderCancelToken;
 
 use super::{
     chat::{ChatMessage, ChatRole},
@@ -85,6 +86,17 @@ pub trait ControllerProvider {
         self.chat_with_tools_with_metadata(prompt, metadata, tools)
     }
 
+    fn chat_messages_with_tools_with_metadata_cancelable(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+        tools: Vec<ChatToolDefinition>,
+        cancel: &ProviderCancelToken,
+    ) -> Result<ProviderOutput, ProviderError> {
+        cancel.error_if_canceled()?;
+        self.chat_messages_with_tools_with_metadata(messages, metadata, tools)
+    }
+
     /// Sends a full message list with request metadata.
     fn chat_messages_with_metadata(
         &self,
@@ -107,6 +119,16 @@ pub trait ControllerProvider {
         metadata: &ProviderRequestMetadata,
     ) -> Result<ProviderOutput, ProviderError> {
         self.chat_messages_with_metadata(messages, metadata)
+    }
+
+    fn chat_messages_without_streaming_with_metadata_cancelable(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+        cancel: &ProviderCancelToken,
+    ) -> Result<ProviderOutput, ProviderError> {
+        cancel.error_if_canceled()?;
+        self.chat_messages_without_streaming_with_metadata(messages, metadata)
     }
 
     /// Streams a simple prompt using the provider default behavior.

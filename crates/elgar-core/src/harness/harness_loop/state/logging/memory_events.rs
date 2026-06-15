@@ -17,6 +17,7 @@ pub(in crate::harness::harness_loop) fn log_harness_duplicate_rejected(
     let metadata = json!({
         "round_index": round_index,
         "duplicate_label": label,
+        "duplicate_streak": memory.duplicate_streak(),
         "duplicate_requests": memory.duplicate_requests()
     });
     let _ = append_log_event(
@@ -57,6 +58,8 @@ pub(in crate::harness::harness_loop) fn log_harness_memory_snapshot(
         "read_paths": memory.read_paths(),
         "find_patterns": memory.find_patterns(),
         "grep_queries": memory.grep_queries(),
+        "side_effects": memory.side_effects(),
+        "duplicate_streak": memory.duplicate_streak(),
         "duplicate_requests": memory.duplicate_requests()
     });
     let _ = append_log_event(

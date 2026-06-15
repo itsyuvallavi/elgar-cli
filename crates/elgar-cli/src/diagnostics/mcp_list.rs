@@ -8,9 +8,11 @@ use std::{collections::BTreeMap, path::Path};
 
 use elgar_core::mcp::{
     client::{discover_http_server, McpHttpDiscovery},
-    config::{McpHttpServerConfig, McpSecretSource, McpServerConfig},
+    config::{McpHttpServerConfig, McpInternalServerKind, McpSecretSource, McpServerConfig},
     error::McpError,
     logging::{log_config_loaded, McpLogContext},
+    project_index::project_index_tools,
+    protocol::ToolsListResult,
 };
 use elgar_core::session::runtime_session_id;
 
@@ -108,6 +110,13 @@ pub fn render_mcp_list(project_root: &Path, server_id: &str) -> Result<String, M
     match server {
         McpServerConfig::Http(config) => render_http_mcp_list(server_id, config, context),
         McpServerConfig::Stdio(_) => Err(McpListError::StdioNotSupported(server_id.to_string())),
+        McpServerConfig::Internal(config) => match config.kind {
+            McpInternalServerKind::ProjectIndex => Ok(render_internal_list(
+                server_id,
+                "project_index",
+                &project_index_tools(),
+            )),
+        },
     }
 }
 
@@ -156,7 +165,23 @@ fn server_transport(server: &McpServerConfig) -> &'static str {
     match server {
         McpServerConfig::Http(_) => "http",
         McpServerConfig::Stdio(_) => "stdio",
+        McpServerConfig::Internal(_) => "internal",
     }
+}
+
+fn render_internal_list(server_id: &str, kind: &str, tools: &ToolsListResult) -> String {
+    let mut lines = vec![
+        format!("MCP server: {server_id}"),
+        "server: elgar-internal project-index".to_string(),
+        "protocol: internal".to_string(),
+        format!("kind: {kind}"),
+        format!("tools: {}", tools.tools.len()),
+    ];
+    for tool in &tools.tools {
+        let description = compact_description(tool.description.as_deref());
+        lines.push(format!("- {}: {}", tool.name, description));
+    }
+    lines.join("\n")
 }
 
 fn render_discovery(server_id: &str, discovery: &McpHttpDiscovery) -> String {

@@ -8,13 +8,14 @@ use crate::{
     event::{Event, ProviderFinished, ProviderOutput, ProviderStarted},
     harness::{
         harness_loop::state::logging::{
-            log_provider_call_failed, log_provider_call_finished, log_provider_call_started,
+            log_provider_call_canceled, log_provider_call_failed, log_provider_call_finished,
+            log_provider_call_started,
         },
         provider_route::HARNESS_TOOL_DECISION_REQUEST_MODE,
         tool_definitions::provider_tool_definitions_for_registry,
         ModelChoiceTurnError, PrimitiveToolRegistry,
     },
-    provider::{ChatMessage, ControllerProvider},
+    provider::{ChatMessage, ControllerProvider, ProviderCancelToken, ProviderErrorKind},
     session::Session,
 };
 
@@ -25,6 +26,7 @@ pub(in crate::harness::harness_loop) fn request_native_tool_loop_response<P>(
     messages: &[ChatMessage],
     registry: &PrimitiveToolRegistry,
     round_index: usize,
+    cancel: &ProviderCancelToken,
 ) -> Result<ProviderOutput, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -54,8 +56,12 @@ where
             ),
     ));
 
-    let result =
-        provider.chat_messages_with_tools_with_metadata(messages.to_vec(), &request, tools);
+    let result = provider.chat_messages_with_tools_with_metadata_cancelable(
+        messages.to_vec(),
+        &request,
+        tools,
+        cancel,
+    );
 
     match result {
         Ok(output) => {
@@ -78,6 +84,15 @@ where
             Ok(output)
         }
         Err(error) => {
+            if error.kind == ProviderErrorKind::Canceled {
+                log_provider_call_canceled(
+                    session,
+                    round_index,
+                    &request.request_id,
+                    request_mode,
+                    loop_phase,
+                );
+            }
             log_provider_call_failed(
                 session,
                 round_index,

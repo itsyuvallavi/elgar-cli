@@ -21,8 +21,13 @@ State code should not call providers or execute primitive tools.
 
 Exact duplicate primitive requests are treated as no-op work inside one harness
 turn. The first duplicate is shown back to the model as memory; the second
-duplicate stops the loop with `duplicate_loop_detected` so synthesis can answer
-from verified evidence.
+consecutive duplicate stops the loop with `duplicate_loop_detected` so synthesis
+can answer from verified evidence. Useful evidence resets that duplicate streak.
+
+`PrimitiveLoopBudgetState` also tracks a file-mutation epoch. Successful
+`write` and `edit` executions advance the epoch, and `bash` duplicate keys
+include it. This keeps immediate repeated shell commands blocked while allowing
+commands such as `npm run build` to rerun after a verified file fix.
 
 For verified `ls` results, memory keeps a compact list of visible child
 directories and files. This helps the model choose a more specific next

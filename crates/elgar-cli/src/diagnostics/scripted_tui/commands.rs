@@ -17,7 +17,10 @@ pub fn is_tui_help_command(input: &str) -> bool {
 }
 
 pub fn is_tui_approval_command(input: &str) -> bool {
-    matches!(parse_terminal_command(input), TerminalCommand::Approve)
+    matches!(
+        parse_terminal_command(input),
+        TerminalCommand::Approve | TerminalCommand::ApproveContinue
+    )
 }
 
 pub fn is_tui_rejection_command(input: &str) -> bool {

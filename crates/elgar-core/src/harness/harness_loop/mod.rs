@@ -9,5 +9,8 @@ mod evidence;
 mod provider;
 mod state;
 
-pub use control::{render_primitive_harness_loop_result, run_primitive_harness_loop};
+pub use control::{
+    render_primitive_harness_loop_result, run_primitive_harness_loop,
+    run_primitive_harness_loop_with_cancel,
+};
 pub use state::types::{PrimitiveHarnessLoopResult, PrimitiveHarnessLoopRound};

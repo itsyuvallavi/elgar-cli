@@ -44,7 +44,7 @@ where
     let command = parse_terminal_command(submitted);
     log_input_classified(session, turn_id, submitted, &command);
 
-    if let Some(result) = handle_terminal_command(&command, session, shell)? {
+    if let Some(result) = handle_terminal_command(&command, provider, session, shell)? {
         return Ok(result);
     }
 

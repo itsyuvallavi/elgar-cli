@@ -45,7 +45,7 @@ impl fmt::Display for ApprovedPathError {
     }
 }
 
-pub(in crate::harness::permissions) fn resolve_write_target(
+pub(in crate::harness) fn resolve_write_target(
     launch_cwd: &Path,
     requested_path: &str,
 ) -> Result<PathBuf, ApprovedPathError> {

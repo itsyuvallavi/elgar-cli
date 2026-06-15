@@ -12,9 +12,9 @@ use crate::{
                 summary::render_compact_evidence_for_decision,
             },
             provider::session_context::{
-                native_tool_loop_turn_context, render_verified_memory_for_session,
-                TurnPromptContext, HISTORY_DISCLAIMER, VERIFIED_MEMORY_HEADER,
-                VERIFIED_MEMORY_PRECEDENCE_RULE,
+                native_tool_loop_turn_context, render_permission_mode_for_prompt,
+                render_verified_memory_for_session, TurnPromptContext, HISTORY_DISCLAIMER,
+                VERIFIED_MEMORY_HEADER, VERIFIED_MEMORY_PRECEDENCE_RULE,
             },
             state::{
                 memory::{render_working_memory_for_prompt, HarnessWorkingMemory},
@@ -35,6 +35,7 @@ For user requests like "search for X in path" or "look for X in path", use the i
 If no tool is needed, answer normally in concise terminal-friendly text.
 If tool results are provided, use them as verified evidence.
 Do not claim files were read, commands ran, or files changed unless tool results prove it.
+If verified tool results show a failed command followed by a fix and a passing rerun, mention both the failure and the recovery in the final answer.
 Do not invent tools. Do not request permissions.
 For broad project requests, inspect selectively with the available primitive tools.
 When enough evidence is available, return the final answer as normal text."#;
@@ -78,6 +79,7 @@ pub(in crate::harness::harness_loop) fn repair_prompt_context(
 
     let mut system_parts = vec![
         loop_decision_contract(registry).to_string(),
+        render_permission_mode_for_prompt(session),
         HISTORY_DISCLAIMER.to_string(),
     ];
     if !rendered_memory.text.is_empty() {

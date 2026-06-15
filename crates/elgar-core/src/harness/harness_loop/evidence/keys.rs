@@ -13,6 +13,7 @@ use crate::{
 /// Build the stable budget key for one validated request.
 pub(in crate::harness::harness_loop) fn evidence_key_for_request(
     request: &ValidatedStructuredRequest,
+    mutation_epoch: usize,
 ) -> EvidenceKey {
     match request.kind {
         StructuredRequestKind::Read => EvidenceKey::Read(normalize_evidence_path(
@@ -29,9 +30,28 @@ pub(in crate::harness::harness_loop) fn evidence_key_for_request(
             normalize_evidence_path(request_path(request).unwrap_or(".")),
             request_query(request).unwrap_or_default().to_string(),
         ),
-        StructuredRequestKind::Bash
-        | StructuredRequestKind::Write
-        | StructuredRequestKind::Edit => EvidenceKey::Primitive(request.kind.as_str().to_string()),
+        StructuredRequestKind::Write | StructuredRequestKind::Edit => {
+            EvidenceKey::SideEffectVersion(
+                request.kind.as_str().to_string(),
+                normalize_evidence_path(request_path(request).unwrap_or_default()),
+                stable_json_fingerprint(
+                    request
+                        .arguments
+                        .as_ref()
+                        .unwrap_or(&serde_json::Value::Null),
+                ),
+            )
+        }
+        StructuredRequestKind::Bash => EvidenceKey::SideEffectEpoch(
+            "bash".to_string(),
+            stable_json_fingerprint(
+                request
+                    .arguments
+                    .as_ref()
+                    .unwrap_or(&serde_json::Value::Null),
+            ),
+            mutation_epoch,
+        ),
         StructuredRequestKind::McpCall => mcp_evidence_key_from_request(request),
     }
 }

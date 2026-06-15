@@ -16,6 +16,7 @@ use crate::{
             ChatMessage, ChatToolDefinition, ControllerProvider, ProviderError,
             ProviderRequestMetadata, ProviderStreamChunk,
         },
+        ProviderCancelToken,
     },
 };
 
@@ -26,7 +27,8 @@ mod parse;
 use format::elgar_controller_messages_for_config;
 use openai::{
     chat_lm_studio_streaming_with_request_id, chat_lm_studio_with_request_id,
-    chat_lm_studio_with_tools_with_request_id, openai_chat_profile,
+    chat_lm_studio_with_request_id_cancelable, chat_lm_studio_with_tools_with_request_id,
+    chat_lm_studio_with_tools_with_request_id_cancelable, openai_chat_profile,
 };
 
 #[cfg(test)]
@@ -140,6 +142,23 @@ impl ControllerProvider for LmStudioProvider {
         )
     }
 
+    fn chat_messages_with_tools_with_metadata_cancelable(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+        tools: Vec<ChatToolDefinition>,
+        cancel: &ProviderCancelToken,
+    ) -> Result<ProviderOutput, ProviderError> {
+        chat_lm_studio_with_tools_with_request_id_cancelable(
+            &self.config,
+            messages,
+            &metadata.request_id,
+            tools,
+            metadata.profile.as_ref(),
+            cancel,
+        )
+    }
+
     fn chat_messages_with_metadata(
         &self,
         messages: Vec<ChatMessage>,
@@ -176,6 +195,27 @@ impl ControllerProvider for LmStudioProvider {
             profile.stream = Some(false);
         }
         chat_lm_studio_with_request_id(&config, messages, &metadata.request_id, profile.as_ref())
+    }
+
+    fn chat_messages_without_streaming_with_metadata_cancelable(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+        cancel: &ProviderCancelToken,
+    ) -> Result<ProviderOutput, ProviderError> {
+        let mut config = self.config.clone();
+        config.stream = false;
+        let mut profile = openai_chat_profile(metadata.profile.as_ref());
+        if let Some(profile) = profile.as_mut() {
+            profile.stream = Some(false);
+        }
+        chat_lm_studio_with_request_id_cancelable(
+            &config,
+            messages,
+            &metadata.request_id,
+            profile.as_ref(),
+            cancel,
+        )
     }
 
     fn chat_messages_streaming_with_metadata(

@@ -71,7 +71,8 @@ fn stage_3a_executable_tools_are_read_only_primitives() {
             PrimitiveToolId::Read,
             PrimitiveToolId::Ls,
             PrimitiveToolId::Find,
-            PrimitiveToolId::Grep
+            PrimitiveToolId::Grep,
+            PrimitiveToolId::McpCall,
         ]
     );
 }

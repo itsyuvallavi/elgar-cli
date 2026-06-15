@@ -7,6 +7,7 @@ use std::{
 
 use elgar_core::{
     event::ProviderOutput,
+    harness::PermissionMode,
     provider::{
         ChatMessage, ChatToolCall, ChatToolCallFunction, ChatToolDefinition, ControllerProvider,
         ProviderError, ProviderRequestMetadata,
@@ -101,6 +102,30 @@ fn approve_command_without_pending_request_stays_local() {
     assert!(shell
         .conversation_copy_text()
         .contains("No pending approval."));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn permissions_command_sets_workspace_write_mode() {
+    let root = test_root("permissions-workspace-write");
+    fs::create_dir_all(&root).unwrap();
+    let mut session = Session::new("tui-permissions-workspace-write", &root, &root);
+    let provider = ToolCallProvider::empty();
+    let mut shell = TuiShell::new();
+
+    let result = handle_inline_submission(
+        "/permissions workspace_write",
+        &provider,
+        &mut session,
+        &mut shell,
+    )
+    .expect("permissions command should run");
+
+    assert_eq!(result, (false, String::new()));
+    assert_eq!(session.permission_mode(), PermissionMode::WorkspaceWrite);
+    assert!(shell
+        .conversation_copy_text()
+        .contains("Permission mode set to workspace_write"));
     let _ = fs::remove_dir_all(root);
 }
 

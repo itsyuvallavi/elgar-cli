@@ -3,44 +3,49 @@
 //! The TUI stays responsive while this file owns the background worker thread
 //! that calls the core harness and sends completion updates back to `provider.rs`.
 
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
-    },
-    thread,
-};
+use std::{path::PathBuf, sync::mpsc, thread};
 
 use elgar_core::{
     event::Event,
-    harness::run_harness_turn,
+    harness::run_harness_turn_with_cancel,
     logs::system::{append_log_event, LogInput, LogPhase},
-    provider::ControllerProvider,
+    provider::{ControllerProvider, ProviderCancelToken},
     session::Session,
 };
 
 pub(super) struct ProviderTurnTask {
     receiver: mpsc::Receiver<ProviderTurnWorkerMessage>,
-    canceled: Arc<AtomicBool>,
+    cancel: ProviderCancelToken,
+    project_root: PathBuf,
+    session_id: String,
+    turn_id: u64,
 }
 
 impl ProviderTurnTask {
-    /// Cancel at the UI/session boundary.
-    ///
-    /// This suppresses later chunks and final session updates. It does not
-    /// currently abort an already-running provider socket in the worker thread.
+    /// Cancel the active turn and ask the provider transport to abort.
     pub(super) fn cancel(&self) {
-        self.canceled.store(true, Ordering::SeqCst);
+        self.cancel.cancel();
+        let _ = append_log_event(
+            &self.project_root,
+            &self.session_id,
+            LogInput::new(
+                self.turn_id,
+                LogPhase::Worker,
+                file!(),
+                "ProviderTurnTask::cancel",
+                "provider_worker_cancel_requested",
+            ),
+        );
     }
 
     pub(super) fn try_complete(&self) -> Result<Option<ProviderTurnUpdate>, String> {
-        if self.canceled.load(Ordering::SeqCst) {
+        if self.cancel.is_canceled() {
             return Ok(Some(ProviderTurnUpdate::Canceled));
         }
 
         match self.receiver.try_recv() {
             Ok(ProviderTurnWorkerMessage::Complete(result)) => {
-                if self.canceled.load(Ordering::SeqCst) {
+                if self.cancel.is_canceled() {
                     Ok(Some(ProviderTurnUpdate::Canceled))
                 } else {
                     result.map(|completed| Some(ProviderTurnUpdate::Completed(completed)))
@@ -73,9 +78,11 @@ where
     P: ControllerProvider + Send + 'static,
 {
     let (sender, receiver) = mpsc::channel();
-    let canceled = Arc::new(AtomicBool::new(false));
-    let worker_canceled = Arc::clone(&canceled);
+    let cancel = ProviderCancelToken::new();
+    let worker_cancel = cancel.clone();
     let turn_id = session.next_turn_id();
+    let project_root = session.project_root.clone();
+    let session_id = session.id.clone();
     let _ = append_log_event(
         &session.project_root,
         &session.id,
@@ -104,8 +111,8 @@ where
                 "provider_worker_started",
             ),
         );
-        let result = run_harness_turn(&provider, &mut session, &input);
-        if worker_canceled.load(Ordering::SeqCst) {
+        let result = run_harness_turn_with_cancel(&provider, &mut session, &input, &worker_cancel);
+        if worker_cancel.is_canceled() {
             let _ = append_log_event(
                 &session.project_root,
                 &session.id,
@@ -143,7 +150,13 @@ where
         ))));
     });
 
-    ProviderTurnTask { receiver, canceled }
+    ProviderTurnTask {
+        receiver,
+        cancel,
+        project_root,
+        session_id,
+        turn_id,
+    }
 }
 
 enum ProviderTurnWorkerMessage {

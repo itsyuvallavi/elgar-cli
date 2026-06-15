@@ -10,6 +10,7 @@ request, send it, and turn the provider response back into Elgar data?
 ```text
 harness
   -> ControllerProvider trait
+  -> ProviderCancelToken for cooperative cancellation
   -> LmStudioProvider
   -> provider config chooses profile
   -> lm_studio/openai.rs
@@ -20,6 +21,10 @@ harness
 
 Active harness request modes use OpenAI-compatible chat to keep one provider
 route.
+
+Provider calls accept a `ProviderCancelToken` on the cancelable trait methods.
+The TUI uses that token for `/cancel`, and transports must poll it while waiting
+on blocking reads.
 
 ## Folders
 
@@ -52,6 +57,7 @@ reaching into submodules directly.
 ## What Belongs Here
 
 - provider request/response types
+- cooperative provider cancellation
 - provider configuration
 - model backend selection
 - LM Studio request/response handling

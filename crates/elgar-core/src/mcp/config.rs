@@ -31,6 +31,7 @@ pub struct RuntimeMcpConfig {
 pub enum McpServerConfig {
     Http(McpHttpServerConfig),
     Stdio(McpStdioServerConfig),
+    Internal(McpInternalServerConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +50,17 @@ pub struct McpStdioServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, McpSecretSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpInternalServerConfig {
+    pub kind: McpInternalServerKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpInternalServerKind {
+    ProjectIndex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +187,7 @@ pub fn validate_mcp_config(config: &McpConfig) -> Result<(), McpConfigError> {
         match server {
             McpServerConfig::Http(http) => validate_http_server(trimmed_id, http)?,
             McpServerConfig::Stdio(stdio) => validate_stdio_server(trimmed_id, stdio)?,
+            McpServerConfig::Internal(_) => {}
         }
     }
 

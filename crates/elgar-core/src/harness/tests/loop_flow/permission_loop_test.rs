@@ -5,7 +5,7 @@ use std::fs;
 use crate::{event::ProviderOutput, harness::run_primitive_harness_loop, session::Session};
 
 use super::super::support::queued_provider::QueuedProvider;
-use super::loop_helpers::{tool_call_output, tool_message_contents};
+use super::loop_helpers::tool_call_output;
 
 #[test]
 fn primitive_loop_risky_json_fallback_returns_permission_tool_result() {
@@ -22,22 +22,17 @@ fn primitive_loop_risky_json_fallback_returns_permission_tool_result() {
 
     let result = run_primitive_harness_loop(&provider, &mut session, "run echo hello").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
-    let tool_messages = tool_message_contents(&calls[1]);
 
-    assert_eq!(result.stopped_reason, "native_final_text");
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some("Shell execution is not enabled yet.")
-    );
-    assert!(tool_messages.iter().any(|content| {
-        content.contains("VERIFIED_PERMISSION_DECISION")
-            && content.contains("tool: bash")
-            && content.contains("decision: needs_approval")
-            && content.contains("approval_id: approval-1")
-            && content.contains("approval_required: true")
-            && content.contains("execution_performed: false")
-            && content.contains("Do not claim this operation ran")
-    }));
+    assert_eq!(result.stopped_reason, "approval_pending");
+    assert_eq!(calls.len(), 1);
+    assert!(result
+        .final_text
+        .as_deref()
+        .is_some_and(|text| text.contains("bash")));
+    assert!(result.rounds[0]
+        .evidence_label
+        .as_deref()
+        .is_some_and(|label| label.starts_with("bash:")));
     let pending = session.pending_approval().expect("pending approval");
     assert_eq!(pending.id, "approval-1");
     assert_eq!(pending.tool, "bash");
@@ -65,23 +60,16 @@ fn primitive_loop_native_risky_tool_calls_return_permission_tool_results() {
             ProviderOutput::new(format!("{tool} needs approval.")),
         ]);
         let mut session = Session::new(format!("loop-native-permission-{tool}"), &root, &root);
-        let expected_final = format!("{tool} needs approval.");
 
         let result = run_primitive_harness_loop(&provider, &mut session, "do risky work").unwrap();
         let calls = provider.calls.lock().expect("calls lock");
-        let tool_messages = tool_message_contents(&calls[1]);
 
-        assert_eq!(result.stopped_reason, "native_final_text");
-        assert_eq!(result.final_text.as_deref(), Some(expected_final.as_str()));
-        assert!(tool_messages.iter().any(|content| {
-            content.contains("VERIFIED_PERMISSION_DECISION")
-                && content.contains(&format!("tool: {tool}"))
-                && content.contains("decision: needs_approval")
-                && content.contains("approval_id: approval-1")
-                && content.contains("approval_required: true")
-                && content.contains("execution_performed: false")
-                && content.contains("Do not claim this operation ran")
-        }));
+        assert_eq!(result.stopped_reason, "approval_pending");
+        assert_eq!(calls.len(), 1);
+        assert!(result
+            .final_text
+            .as_deref()
+            .is_some_and(|text| text.contains(tool)));
         let pending = session.pending_approval().expect("pending approval");
         assert_eq!(pending.id, "approval-1");
         assert_eq!(pending.tool, tool);

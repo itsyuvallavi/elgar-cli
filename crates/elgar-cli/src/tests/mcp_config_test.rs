@@ -14,7 +14,7 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 #[test]
-fn runtime_mcp_config_loads_http_and_stdio_servers() {
+fn runtime_mcp_config_loads_http_stdio_and_internal_servers() {
     let root = temp_root("runtime-mcp-config");
     fs::write(
         root.join(MCP_CONFIG_FILE),
@@ -31,6 +31,10 @@ fn runtime_mcp_config_loads_http_and_stdio_servers() {
               "transport": "stdio",
               "command": "obsidian-mcp-server",
               "args": []
+            },
+            "project-index": {
+              "transport": "internal",
+              "kind": "project_index"
             }
           }
         }"#,
@@ -47,6 +51,10 @@ fn runtime_mcp_config_loads_http_and_stdio_servers() {
     assert!(matches!(
         runtime.config.servers.get("obsidian"),
         Some(McpServerConfig::Stdio(_))
+    ));
+    assert!(matches!(
+        runtime.config.servers.get("project-index"),
+        Some(McpServerConfig::Internal(_))
     ));
 
     let _ = fs::remove_dir_all(root);

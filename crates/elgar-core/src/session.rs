@@ -14,7 +14,7 @@ use serde_json::json;
 use crate::{
     context::ContextAccounting,
     event::{Event, ProviderMetrics},
-    harness::{PendingApproval, PendingApprovalStatus},
+    harness::{PendingApproval, PendingApprovalStatus, PermissionMode},
     logs::{
         sessions,
         system::{append_log_event, LogInput, LogPhase},
@@ -45,6 +45,8 @@ pub struct Session {
     pending_approval: Option<PendingApproval>,
     #[serde(default)]
     approval_sequence: u64,
+    #[serde(default)]
+    permission_mode: PermissionMode,
 }
 
 impl Session {
@@ -65,6 +67,7 @@ impl Session {
             latest_turn_token_usage: None,
             pending_approval: None,
             approval_sequence: 0,
+            permission_mode: PermissionMode::default(),
         }
     }
 
@@ -102,6 +105,14 @@ impl Session {
 
     pub fn pending_approval(&self) -> Option<&PendingApproval> {
         self.pending_approval.as_ref()
+    }
+
+    pub fn permission_mode(&self) -> PermissionMode {
+        self.permission_mode
+    }
+
+    pub fn set_permission_mode(&mut self, mode: PermissionMode) {
+        self.permission_mode = mode;
     }
 
     pub(crate) fn set_pending_approval(&mut self, mut approval: PendingApproval) {

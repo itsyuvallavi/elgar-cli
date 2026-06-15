@@ -24,7 +24,7 @@ use serde_json::json;
 use crate::{
     event::{AssistantMessage, AssistantMessageSource, ErrorEvent, Event, UserMessage},
     logs::system::{append_log_event, LogInput, LogPhase},
-    provider::ControllerProvider,
+    provider::{ControllerProvider, ProviderCancelToken},
     session::Session,
 };
 
@@ -35,8 +35,8 @@ pub use context::{
     GrepSnapshot, ProjectFileError, ProjectFileOptions, ProjectFileSnapshot,
 };
 pub use harness_loop::{
-    render_primitive_harness_loop_result, run_primitive_harness_loop, PrimitiveHarnessLoopResult,
-    PrimitiveHarnessLoopRound,
+    render_primitive_harness_loop_result, run_primitive_harness_loop,
+    run_primitive_harness_loop_with_cancel, PrimitiveHarnessLoopResult, PrimitiveHarnessLoopRound,
 };
 pub use memory::{
     build_memory_index, read_session_memory_events, render_verified_memory_for_prompt_with_budget,
@@ -49,11 +49,12 @@ pub use model_choice::{
     StructuredRequestKind, StructuredRequestValidationError, ValidatedStructuredRequest,
     MAX_TOOL_CALL_BATCH,
 };
+pub(in crate::harness) use permissions::resolve_write_target;
 pub use permissions::{
     approve_pending_approval, decide_primitive_permission, deny_pending_approval,
     ApprovalCommandError, ApprovalCommandResult, ApprovalTargetPreview, ApprovalTargetScope,
     PendingApproval, PendingApprovalStatus, PendingApprovalStep, PermissionDecision,
-    PermissionDecisionKind,
+    PermissionDecisionKind, PermissionMode,
 };
 pub use primitive_tools::{
     PrimitiveTool, PrimitiveToolId, PrimitiveToolRegistry, PrimitiveToolSideEffectLevel,
@@ -69,6 +70,19 @@ pub struct HarnessTurnResult {
 /// This is the normal CLI/TUI path. There is no direct model bypass here:
 /// model calls go through the primitive harness loop and verified evidence.
 pub fn run_harness_turn<P>(provider: &P, session: &mut Session, input: &str) -> HarnessTurnResult
+where
+    P: ControllerProvider,
+{
+    run_harness_turn_with_cancel(provider, session, input, &ProviderCancelToken::new())
+}
+
+/// Runs one harness-controlled model turn with a cooperative cancellation token.
+pub fn run_harness_turn_with_cancel<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+    cancel: &ProviderCancelToken,
+) -> HarnessTurnResult
 where
     P: ControllerProvider,
 {
@@ -93,7 +107,7 @@ where
 
     session.push_event(Event::UserMessage(UserMessage::new(input)));
 
-    let loop_result = run_primitive_harness_loop(provider, session, input);
+    let loop_result = run_primitive_harness_loop_with_cancel(provider, session, input, cancel);
     match loop_result {
         Ok(result) => {
             let final_text = result

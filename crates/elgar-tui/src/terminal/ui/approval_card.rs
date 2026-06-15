@@ -45,7 +45,7 @@ pub(crate) fn render_pending_approval_card(
     body.push(String::new());
     body.extend(render_action_lines(selected));
 
-    render_simple_card("Approval required", &body, width)
+    render_simple_card("Action prepared", &body, width)
 }
 
 /// Compact footer hint while an approval is pending.
@@ -80,7 +80,7 @@ fn render_action_lines(selected: ApprovalAction) -> Vec<String> {
     vec![
         "Actions".to_string(),
         format!(
-            "  {} run requested action",
+            "  {} execute prepared action",
             action_button("Approve", selected == ApprovalAction::Approve)
         ),
         format!(

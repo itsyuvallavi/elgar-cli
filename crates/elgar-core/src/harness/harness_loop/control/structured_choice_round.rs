@@ -25,7 +25,7 @@ use crate::{
         },
         ModelChoiceTurnError, PrimitiveToolRegistry, ValidatedStructuredRequest,
     },
-    provider::{ChatMessage, ControllerProvider},
+    provider::{ChatMessage, ControllerProvider, ProviderCancelToken},
     session::Session,
 };
 
@@ -45,6 +45,7 @@ pub(super) fn handle_structured_request_choice<P>(
     messages: &mut Vec<ChatMessage>,
     loop_turn_id: u64,
     loop_started: Instant,
+    cancel: &ProviderCancelToken,
 ) -> Result<NativeToolRoundOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -66,6 +67,7 @@ where
         messages,
         loop_turn_id,
         loop_started,
+        cancel,
     )? {
         return Ok(NativeToolRoundOutcome::Finish(result));
     }
@@ -89,6 +91,7 @@ pub(super) fn handle_structured_requests_choice<P>(
     messages: &mut Vec<ChatMessage>,
     loop_turn_id: u64,
     loop_started: Instant,
+    cancel: &ProviderCancelToken,
 ) -> Result<NativeToolRoundOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -115,6 +118,7 @@ where
             messages,
             loop_turn_id,
             loop_started,
+            cancel,
         )? {
             return Ok(NativeToolRoundOutcome::Finish(result));
         }

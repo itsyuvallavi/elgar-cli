@@ -25,5 +25,6 @@ pub use approval_flow::{
     approve_pending_approval, deny_pending_approval, ApprovalCommandError, ApprovalCommandResult,
 };
 pub use approval_preview::{ApprovalTargetPreview, ApprovalTargetScope};
+pub(in crate::harness) use approved_paths::resolve_write_target;
 pub use policy::decide_primitive_permission;
-pub use types::{PermissionDecision, PermissionDecisionKind};
+pub use types::{PermissionDecision, PermissionDecisionKind, PermissionMode};

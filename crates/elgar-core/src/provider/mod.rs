@@ -3,12 +3,14 @@
 //! This module gathers provider configuration, shared provider types, the
 //! LM Studio implementation, and the no-network stub behind one import surface.
 
+mod cancel;
 mod config;
 mod http;
 mod lm_studio;
 mod stub;
 mod types;
 
+pub use cancel::ProviderCancelToken;
 pub use config::{
     ProviderCompatibility, ProviderConfig, ReasoningCompatibility, LM_STUDIO_DEFAULT_BASE_URL,
     LM_STUDIO_DEFAULT_TIMEOUT_MILLIS, LM_STUDIO_PROVIDER_NAME,

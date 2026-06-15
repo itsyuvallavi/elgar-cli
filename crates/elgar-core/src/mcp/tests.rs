@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::{
     client::discover_http_server,
-    config::{parse_mcp_config_json, McpConfigError, McpServerConfig},
+    config::{parse_mcp_config_json, McpConfigError, McpInternalServerKind, McpServerConfig},
     logging::McpLogContext,
     protocol::{
         initialize_request, initialized_notification, resources_list_request, tools_list_request,
@@ -51,6 +51,27 @@ fn parses_http_and_stdio_config() {
     assert!(matches!(
         config.servers.get("obsidian"),
         Some(McpServerConfig::Stdio(_))
+    ));
+}
+
+#[test]
+fn parses_internal_project_index_config() {
+    let config = parse_mcp_config_json(
+        r#"{
+          "servers": {
+            "project-index": {
+              "transport": "internal",
+              "kind": "project_index"
+            }
+          }
+        }"#,
+    )
+    .expect("valid internal MCP config should parse");
+
+    assert!(matches!(
+        config.servers.get("project-index"),
+        Some(McpServerConfig::Internal(config))
+            if config.kind == McpInternalServerKind::ProjectIndex
     ));
 }
 
@@ -196,7 +217,9 @@ fn discovers_http_server_with_fake_mcp_endpoint() {
     .expect("fake server exists")
     {
         McpServerConfig::Http(config) => config,
-        McpServerConfig::Stdio(_) => panic!("expected HTTP config"),
+        McpServerConfig::Stdio(_) | McpServerConfig::Internal(_) => {
+            panic!("expected HTTP config")
+        }
     };
 
     let discovery = discover_http_server(&config, Default::default(), "test", None)
@@ -269,7 +292,9 @@ fn logs_http_mcp_discovery_events_without_header_values() {
     .expect("fake server exists")
     {
         McpServerConfig::Http(config) => config,
-        McpServerConfig::Stdio(_) => panic!("expected HTTP config"),
+        McpServerConfig::Stdio(_) | McpServerConfig::Internal(_) => {
+            panic!("expected HTTP config")
+        }
     };
 
     let mut headers = std::collections::BTreeMap::new();

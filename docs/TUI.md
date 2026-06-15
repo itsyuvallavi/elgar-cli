@@ -37,6 +37,15 @@ by the model. Core stores a pending approval record, and the TUI renders that
 record after the provider turn. A pending approval may contain one exact action
 or a serial batch of exact actions from one provider response.
 
+The local `/permissions` command shows or changes the session permission mode.
+`/permissions workspace_write` allows safe relative writes inside the launch
+folder to run without approval for scaffold-style work. It does not auto-run
+`bash`, `edit`, absolute paths, parent paths, symlink paths, or outside-folder
+writes. `/permissions full_access` is an explicit trusted mode for local
+dogfood/project generation: launch-folder writes, edits, and bash can run
+without approval, while unsafe paths remain rejected by execution checks.
+`/permissions review_all` restores the default approval behavior.
+
 The primary controls are keyboard-first text buttons rendered in the inline
 terminal prompt:
 
@@ -45,10 +54,13 @@ terminal prompt:
 - `Tab` switches the selected button.
 - `Enter` activates the selected button when the prompt is otherwise empty.
 
-`/approve`, `/deny`, and `/reject` remain command fallbacks. The TUI renders a
-boxed approval card with action hints and shows a compact selected-button footer
-line while approval is pending. It only displays and submits approval actions; it
-does not own permission policy or execution truth.
+`/approve`, `/approve continue`, `/deny`, and `/reject` remain command
+fallbacks. `/approve continue` executes the pending approval and then starts one
+generic follow-up harness turn so the model can continue from verified approval
+output. The TUI renders a boxed approval card with action hints and shows a
+compact selected-button footer line while approval is pending. It only displays
+and submits approval actions; it does not own permission policy or execution
+truth.
 
 If the model asks for approval in prose but core did not create a pending
 approval record, the harness retries the model instead of showing a dead
@@ -61,6 +73,13 @@ the batch, but core executes and logs the steps serially.
 The terminal keeps the inline scrollback model. Approval controls must not use
 alternate-screen rendering or mouse capture unless a future plan proves native
 text selection and scrolling remain intact.
+
+## Scripted TUI
+
+`elgar tui` is a diagnostics surface for tests and dogfoods. It is line-based
+by default, but scripts can submit one multiline prompt with `/prompt` and
+`/end` on their own lines. This framing is scripted-only; the interactive TUI
+continues to use normal terminal input behavior.
 
 ## Rendering
 

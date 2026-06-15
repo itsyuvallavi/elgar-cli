@@ -12,11 +12,16 @@ This folder owns what happens after the user submits text.
   helpers.
 - `provider.rs` runs one provider turn and applies completed events to the TUI.
 - `active.rs` handles typing and `/cancel` while a provider request is running.
-- `provider_worker.rs` runs the provider request in a background worker.
+- `provider_worker.rs` runs the provider request in a background worker and
+  propagates cancellation into the core provider transport.
 
 ## Rule
 
 Turn code can coordinate input, provider calls, session updates, and rendering, but individual responsibilities should stay split across these files.
+
+`/cancel` must abort the active provider request, not only hide the result from
+the TUI. Keep cancellation state in the worker task and pass it through the
+harness/provider path.
 
 ## Approval Commands
 

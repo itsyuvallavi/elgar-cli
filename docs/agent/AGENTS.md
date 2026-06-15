@@ -51,8 +51,17 @@ Current harness capabilities:
 - The enabled primitive tools are `read`, `ls`, `find`, `grep`, `bash`,
   `write`, and `edit`.
 - `read`, `ls`, `find`, and `grep` execute without approval.
-- `bash`, `write`, and `edit` require pending user approval.
+- By default, `bash`, `write`, and `edit` require pending user approval.
+- `/permissions workspace_write` allows safe relative `write` requests inside
+  the launch folder to execute without approval; `bash`, `edit`, absolute
+  paths, parent paths, symlink paths, and outside-folder writes still do not
+  bypass approval/safety checks.
+- `/permissions full_access` is explicit trusted local execution for dogfoods:
+  launch-folder `write`, `edit`, and `bash` requests can execute without
+  approval, while unsafe paths remain rejected by execution checks.
 - `/approve` executes the current pending approval through core.
+- `/approve continue` executes the current pending approval and starts one
+  generic follow-up harness turn.
 - `/deny` and `/reject` clear the current pending approval without execution.
 - Raw chat bypass is intentionally removed; `/raw` should stay a local unknown
   command unless a new plan explicitly reintroduces it.

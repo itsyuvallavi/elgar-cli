@@ -21,7 +21,7 @@ use crate::{
         },
         ModelChoice, ModelChoiceTurnError, PrimitiveToolRegistry,
     },
-    provider::ControllerProvider,
+    provider::{ControllerProvider, ProviderCancelToken},
     session::Session,
 };
 
@@ -36,6 +36,7 @@ pub(super) fn repair_model_choice_if_needed<P>(
     budget: &PrimitiveLoopBudget,
     budget_state: &mut PrimitiveLoopBudgetState,
     choice: ModelChoice,
+    cancel: &ProviderCancelToken,
 ) -> Result<ModelChoice, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -64,6 +65,7 @@ where
         round_index,
         &error_text,
         &raw_text,
+        cancel,
     )?;
     budget_state.repair_attempts += 1;
     let repaired_choice = model_choice_from_provider_output(&repair_output, registry);

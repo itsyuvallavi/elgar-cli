@@ -30,7 +30,7 @@ use crate::{
         EvidenceDepth, ModelChoiceTurnError, PendingApproval, PermissionDecisionKind,
         PrimitiveToolRegistry, StructuredRequestKind, ValidatedStructuredRequest,
     },
-    provider::{ChatMessage, ControllerProvider},
+    provider::{ChatMessage, ControllerProvider, ProviderCancelToken},
     session::Session,
 };
 
@@ -55,6 +55,7 @@ pub(super) fn handle_native_tool_output<P>(
     messages: &mut Vec<ChatMessage>,
     loop_turn_id: u64,
     loop_started: Instant,
+    cancel: &ProviderCancelToken,
 ) -> Result<NativeToolRoundOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -72,6 +73,7 @@ where
                 EvidenceDepth::Limited,
                 loop_turn_id,
                 loop_started,
+                cancel,
             )?;
             return Ok(NativeToolRoundOutcome::Finish(result));
         }
@@ -81,7 +83,7 @@ where
         ChatMessage::assistant(output.text.clone()).with_tool_calls(output.tool_calls.clone()),
     );
 
-    if risky_request_count(&native_requests) > 1 {
+    if risky_request_count(session, &native_requests) > 1 {
         return handle_native_risky_batch(
             provider,
             session,
@@ -98,6 +100,7 @@ where
             messages,
             loop_turn_id,
             loop_started,
+            cancel,
         );
     }
 
@@ -117,6 +120,7 @@ where
             messages,
             loop_turn_id,
             loop_started,
+            cancel,
         )? {
             return Ok(NativeToolRoundOutcome::Finish(result));
         }
@@ -150,13 +154,14 @@ fn handle_native_risky_batch<P>(
     messages: &mut Vec<ChatMessage>,
     loop_turn_id: u64,
     loop_started: Instant,
+    cancel: &ProviderCancelToken,
 ) -> Result<NativeToolRoundOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
 {
     let risky_requests = native_requests
         .iter()
-        .filter(|native_request| is_risky_request(&native_request.request))
+        .filter(|native_request| is_risky_request(session, &native_request.request))
         .map(|native_request| native_request.request.clone())
         .collect::<Vec<_>>();
     let approval_id = session.next_approval_id();
@@ -173,7 +178,7 @@ where
 
     let mut batch_step = 0usize;
     for native_request in native_requests {
-        if is_risky_request(&native_request.request) {
+        if is_risky_request(session, &native_request.request) {
             batch_step = batch_step.saturating_add(1);
             collect_batch_permission_evidence(
                 session,
@@ -204,6 +209,7 @@ where
             messages,
             loop_turn_id,
             loop_started,
+            cancel,
         )? {
             return Ok(NativeToolRoundOutcome::Finish(result));
         }
@@ -231,8 +237,11 @@ fn collect_batch_permission_evidence(
     evidence: &mut Vec<Evidence>,
     messages: &mut Vec<ChatMessage>,
 ) {
-    let permission =
-        decide_primitive_permission(&PrimitiveToolRegistry::stage_3a(), &native_request.request);
+    let permission = decide_primitive_permission(
+        &PrimitiveToolRegistry::stage_3a(),
+        &native_request.request,
+        session.permission_mode(),
+    );
     log_permission_decision(session, round_index, &native_request.request, &permission);
     let mut evidence_item = permission_evidence(
         format!(
@@ -261,19 +270,24 @@ fn collect_batch_permission_evidence(
     evidence.push(evidence_item);
 }
 
-fn risky_request_count(native_requests: &[NativeToolRequest]) -> usize {
+fn risky_request_count(session: &Session, native_requests: &[NativeToolRequest]) -> usize {
     native_requests
         .iter()
-        .filter(|native_request| is_risky_request(&native_request.request))
+        .filter(|native_request| is_risky_request(session, &native_request.request))
         .count()
 }
 
-fn is_risky_request(request: &ValidatedStructuredRequest) -> bool {
+fn is_risky_request(session: &Session, request: &ValidatedStructuredRequest) -> bool {
     matches!(
         request.kind,
         StructuredRequestKind::Bash | StructuredRequestKind::Write | StructuredRequestKind::Edit
     ) && matches!(
-        decide_primitive_permission(&PrimitiveToolRegistry::stage_3a(), request).kind,
+        decide_primitive_permission(
+            &PrimitiveToolRegistry::stage_3a(),
+            request,
+            session.permission_mode()
+        )
+        .kind,
         PermissionDecisionKind::NeedsApproval
     )
 }

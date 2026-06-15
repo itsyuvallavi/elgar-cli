@@ -15,8 +15,11 @@ use crate::{
     },
     mcp::{
         client::call_http_tool,
-        config::{load_runtime_mcp_config, resolve_secret_sources, McpServerConfig},
+        config::{
+            load_runtime_mcp_config, resolve_secret_sources, McpInternalServerKind, McpServerConfig,
+        },
         logging::McpLogContext,
+        project_index::call_project_index_tool,
         protocol::ToolCallResult,
     },
     session::Session,
@@ -88,6 +91,20 @@ pub(in crate::harness::harness_loop) fn execute_mcp_call_request(
         McpServerConfig::Stdio(_) => Err(ModelChoiceTurnError::ProjectContext(format!(
             "MCP server `{server_id}` uses stdio, which is not enabled for harness calls yet"
         ))),
+        McpServerConfig::Internal(config) => {
+            let result = match config.kind {
+                McpInternalServerKind::ProjectIndex => {
+                    call_project_index_tool(session, tool_name, &tool_arguments)
+                }
+            };
+            let body = render_mcp_evidence(server_id, tool_name, &result);
+            Ok(Evidence {
+                label: mcp_evidence_label(server_id, tool_name, &tool_arguments),
+                bytes: body.len(),
+                truncated: body.chars().count() >= MAX_MCP_RESULT_CHARS,
+                body,
+            })
+        }
     }
 }
 

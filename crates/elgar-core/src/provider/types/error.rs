@@ -28,6 +28,7 @@ pub enum ProviderErrorKind {
     Provider,
     EmptyResponse,
     Network,
+    Canceled,
 }
 
 /// Error returned by provider formatting, HTTP, or response parsing.
@@ -64,6 +65,10 @@ impl ProviderError {
 
     pub fn network(message: impl Into<String>) -> Self {
         Self::new(ProviderErrorKind::Network, message)
+    }
+
+    pub fn canceled(message: impl Into<String>) -> Self {
+        Self::new(ProviderErrorKind::Canceled, message)
     }
 
     fn new(kind: ProviderErrorKind, message: impl Into<String>) -> Self {

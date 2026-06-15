@@ -127,6 +127,32 @@ pub(in crate::harness::harness_loop) fn log_provider_call_failed(
     );
 }
 
+pub(in crate::harness::harness_loop) fn log_provider_call_canceled(
+    session: &Session,
+    round_index: usize,
+    request_id: &str,
+    request_mode: &str,
+    phase: &str,
+) {
+    let _ = append_log_event(
+        &session.project_root,
+        &session.id,
+        LogInput::new(
+            session.next_turn_id(),
+            LogPhase::Runtime,
+            file!(),
+            "run_primitive_harness_loop",
+            "provider_request_canceled",
+        )
+        .with_metadata(json!({
+            "round_index": round_index,
+            "request_id": request_id,
+            "request_mode": request_mode,
+            "loop_phase": phase
+        })),
+    );
+}
+
 pub(in crate::harness::harness_loop) fn log_turn_prompt_context(
     session: &Session,
     initial_message_count: usize,

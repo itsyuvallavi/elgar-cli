@@ -20,6 +20,13 @@ tool action forever.
 The active read-only primitives are `read`, `ls`, `find`, and `grep`.
 Primitive `bash`, `write`, and `edit` are visible to the model as risky tools.
 Core stores one pending approval record when a risky primitive needs approval.
+The default permission mode requires approval for `bash`, `write`, and `edit`.
+The explicit `workspace_write` mode allows safe relative `write` requests inside
+the launch folder to execute immediately; `bash`, `edit`, absolute paths,
+parent paths, and symlink paths remain gated by policy and execution checks.
+The explicit `full_access` mode is trusted local execution for dogfoods and
+project generation: launch-folder `write`, `edit`, and `bash` requests can run
+without approval, while unsafe paths remain rejected by execution checks.
 Line-based CLI approval can execute approved `bash`, `write`, and `edit`
 requests. `write` creates or overwrites one file; `edit` performs exact
 one-file text replacement.

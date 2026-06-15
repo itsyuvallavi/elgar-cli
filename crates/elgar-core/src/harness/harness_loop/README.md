@@ -60,6 +60,11 @@ Native tool results carry bounded verified evidence back to the provider as
 tool messages. Full evidence is retained locally and remains available for
 synthesis, logs, and later retrieval flows.
 
+When a turn includes side effects or command executions, tool messages also
+carry a compact verified action timeline. The timeline is derived from evidence
+only and keeps failures, fixes, and successful reruns visible for later
+decisions and final answers without adding framework-specific behavior.
+
 Same-turn memory also keeps capped visible dirs/files from verified `ls`
 results. If the model repeats the same listing, Elgar feeds back the known child
 paths so the next decision can inspect a more specific path, read a visible
@@ -79,8 +84,13 @@ Native tool-call output does not need the JSON repair path.
 
 The loop does not cap useful read-only evidence by item count, byte count, or
 primitive type. It still rejects duplicate evidence inside one turn, and the
-second duplicate stops with `duplicate_loop_detected` so the provider cannot
-spin on the same no-op request forever.
+second consecutive duplicate stops with `duplicate_loop_detected` so the
+provider cannot spin on the same no-op request forever. Useful evidence resets
+that duplicate streak.
+
+Side-effect duplicate keys are state-aware. `write` and `edit` include a stable
+argument fingerprint, while `bash` includes the current file-mutation epoch so
+the same verification command can run again after a verified file change.
 
 For MCP, duplicate detection includes a stable fingerprint of the MCP argument
 object. This blocks exact repeated calls while allowing refined searches through

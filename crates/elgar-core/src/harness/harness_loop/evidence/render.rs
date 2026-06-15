@@ -1,13 +1,27 @@
 //! Render verified evidence blocks for harness synthesis and error paths.
 
 use crate::harness::{
-    harness_loop::state::types::Evidence, PermissionDecision, ValidatedStructuredRequest,
+    harness_loop::{evidence::timeline::render_verified_action_timeline, state::types::Evidence},
+    PermissionDecision, ValidatedStructuredRequest,
 };
 
 /// Convert a failed execution into verified error evidence for synthesis.
 pub(in crate::harness::harness_loop) fn error_evidence(label: String, error: &str) -> Evidence {
     let body = format!(
         "VERIFIED_EXECUTION_ERROR\nlabel: {label}\nerror: {error}\nfile_contents_read: false\n"
+    );
+    Evidence {
+        label,
+        bytes: body.len(),
+        truncated: false,
+        body,
+    }
+}
+
+/// Convert a skipped no-op into verified evidence.
+pub(in crate::harness::harness_loop) fn noop_evidence(label: String, reason: &str) -> Evidence {
+    let body = format!(
+        "VERIFIED_NOOP\ntool_target: {label}\nreason: {reason}\nexecution_performed: false\n"
     );
     Evidence {
         label,
@@ -52,6 +66,11 @@ pub(in crate::harness::harness_loop) fn render_evidence_for_synthesis(
     }
 
     let mut rendered = String::new();
+    let timeline = render_verified_action_timeline(evidence);
+    if !timeline.is_empty() {
+        rendered.push_str(&timeline);
+        rendered.push('\n');
+    }
     for item in evidence {
         rendered.push_str("\n--- Verified Evidence: ");
         rendered.push_str(&item.label);

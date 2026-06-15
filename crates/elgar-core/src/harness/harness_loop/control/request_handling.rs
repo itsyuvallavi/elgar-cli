@@ -3,6 +3,11 @@
 //! This module executes already-validated primitive requests and records the
 //! verified evidence they produce.
 
+use std::{
+    fs,
+    path::{Component, Path},
+};
+
 use crate::{
     harness::{
         decide_primitive_permission,
@@ -10,7 +15,7 @@ use crate::{
             evidence::{
                 execution::execute_primitive_request,
                 keys::evidence_key_for_request,
-                render::{error_evidence, permission_evidence},
+                render::{error_evidence, noop_evidence, permission_evidence},
             },
             state::{
                 budget::{BudgetCheck, PrimitiveLoopBudget, PrimitiveLoopBudgetState},
@@ -22,7 +27,8 @@ use crate::{
                 types::{Evidence, PrimitiveHarnessLoopRound},
             },
         },
-        PendingApproval, PermissionDecisionKind, PrimitiveToolRegistry, ValidatedStructuredRequest,
+        PendingApproval, PermissionDecisionKind, PrimitiveToolRegistry, StructuredRequestKind,
+        ValidatedStructuredRequest,
     },
     session::Session,
 };
@@ -30,6 +36,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RequestHandlingOutcome {
     UsefulEvidence,
+    PendingApproval,
     NoProgress,
     ExecutionFailed,
 }
@@ -49,7 +56,7 @@ pub(super) fn collect_request_evidence(
     rounds: &mut Vec<PrimitiveHarnessLoopRound>,
     evidence: &mut Vec<Evidence>,
 ) -> Result<RequestHandlingOutcome, String> {
-    let key = evidence_key_for_request(request);
+    let key = evidence_key_for_request(request, budget_state.mutation_epoch());
     match budget_state.check_request(budget, &key) {
         Err(reason) => return Err(reason),
         Ok(check) => match check {
@@ -63,7 +70,7 @@ pub(super) fn collect_request_evidence(
                     tool: Some("notice".to_string()),
                     evidence_label: Some(format!("duplicate:{label}")),
                 });
-                if memory.duplicate_count() >= 2 {
+                if memory.duplicate_streak() >= 2 {
                     return Err("duplicate_loop_detected".to_string());
                 }
                 return Ok(RequestHandlingOutcome::NoProgress);
@@ -71,7 +78,20 @@ pub(super) fn collect_request_evidence(
         },
     }
 
-    let permission = decide_primitive_permission(registry, request);
+    if let Some(evidence_item) = same_content_write_noop(session, request, key.as_label()) {
+        log_loop_evidence(session, round_index, &evidence_item);
+        budget_state.record(&evidence_item);
+        log_harness_memory_snapshot(session, round_index, "noop_request", memory);
+        rounds.push(PrimitiveHarnessLoopRound {
+            round_index,
+            tool: Some(request.kind.as_str().to_string()),
+            evidence_label: Some(evidence_item.label.clone()),
+        });
+        evidence.push(evidence_item);
+        return Ok(RequestHandlingOutcome::UsefulEvidence);
+    }
+
+    let permission = decide_primitive_permission(registry, request, session.permission_mode());
     log_permission_decision(session, round_index, request, &permission);
     if !permission.allows_execution() {
         let approval_id = if matches!(permission.kind, PermissionDecisionKind::NeedsApproval) {
@@ -99,7 +119,11 @@ pub(super) fn collect_request_evidence(
             evidence_label: Some(evidence_item.label.clone()),
         });
         evidence.push(evidence_item);
-        return Ok(RequestHandlingOutcome::UsefulEvidence);
+        return Ok(if approval_id.is_some() {
+            RequestHandlingOutcome::PendingApproval
+        } else {
+            RequestHandlingOutcome::UsefulEvidence
+        });
     }
 
     let execution_result = execute_primitive_request(session, request);
@@ -110,8 +134,16 @@ pub(super) fn collect_request_evidence(
     };
 
     log_loop_evidence(session, round_index, &evidence_item);
-    budget_state.record(&evidence_item);
+    budget_state.record_key(&key);
     memory.record_useful_request(&key);
+    if !execution_failed
+        && matches!(
+            request.kind,
+            StructuredRequestKind::Write | StructuredRequestKind::Edit
+        )
+    {
+        budget_state.advance_mutation_epoch();
+    }
     if let Some(listing) = directory_listing {
         memory.record_directory_listing(listing);
     }
@@ -128,4 +160,43 @@ pub(super) fn collect_request_evidence(
     } else {
         Ok(RequestHandlingOutcome::UsefulEvidence)
     }
+}
+
+fn same_content_write_noop(
+    session: &Session,
+    request: &ValidatedStructuredRequest,
+    label: String,
+) -> Option<Evidence> {
+    if request.kind != StructuredRequestKind::Write {
+        return None;
+    }
+    let arguments = request.arguments.as_ref()?;
+    let path = arguments.get("path")?.as_str()?.trim();
+    let content = arguments.get("content")?.as_str()?;
+    if !is_safe_relative_path(path) {
+        return None;
+    }
+
+    let target = session.cwd.join(path);
+    let metadata = fs::symlink_metadata(&target).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
+    let existing = fs::read_to_string(&target).ok()?;
+    if existing != content {
+        return None;
+    }
+
+    Some(noop_evidence(
+        label,
+        "target file already contains the requested content; choose a different missing output if work remains",
+    ))
+}
+
+fn is_safe_relative_path(path: &str) -> bool {
+    let path = Path::new(path);
+    !path.is_absolute()
+        && path
+            .components()
+            .all(|component| !matches!(component, Component::ParentDir))
 }

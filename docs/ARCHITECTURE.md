@@ -93,6 +93,9 @@ Current local commands include:
 Unknown slash commands are local errors. Plain text without `/` goes to the
 model.
 
+`/cancel` is a runtime cancellation command: it signals the active provider
+request through the harness/provider path and drops any canceled turn output.
+
 ## Future Agent Path
 
 Future tools should plug into core as typed capability layers. The model may
@@ -118,7 +121,17 @@ Core owns approval truth. A pending approval records the exact typed risky
 action, or a small serial batch of exact typed risky actions from one provider
 response. The TUI renders that record but does not interpret model prose.
 
+The default permission mode requires approval for `bash`, `write`, and `edit`.
+The explicit `workspace_write` mode can auto-execute safe relative `write`
+requests inside the launch folder. This mode does not auto-run `bash`, `edit`,
+absolute paths, parent paths, symlink paths, or outside-folder writes.
+The explicit `full_access` mode is trusted local execution: launch-folder
+`write`, `edit`, and `bash` requests can run without approval, while unsafe
+paths remain rejected by execution checks.
+
 One user approval can approve a batch, but core still executes the stored steps
 one at a time and logs verified output for each step. If the provider only asks
 for approval in prose, no approval exists until a real typed tool call is
 created.
+`/approve continue` is an opt-in approval command that executes the pending
+approval and then starts one generic follow-up harness turn.

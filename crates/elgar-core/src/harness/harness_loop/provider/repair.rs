@@ -11,8 +11,8 @@ use crate::{
             provider::context::repair_prompt_context,
             state::{
                 logging::{
-                    log_decision_context, log_provider_call_failed, log_provider_call_finished,
-                    log_provider_call_started,
+                    log_decision_context, log_provider_call_canceled, log_provider_call_failed,
+                    log_provider_call_finished, log_provider_call_started,
                 },
                 memory::HarnessWorkingMemory,
                 types::Evidence,
@@ -22,7 +22,7 @@ use crate::{
         tool_definitions::provider_tool_definitions_for_registry,
         ModelChoiceTurnError, PrimitiveToolRegistry,
     },
-    provider::ControllerProvider,
+    provider::{ControllerProvider, ProviderCancelToken, ProviderErrorKind},
     session::Session,
 };
 
@@ -37,6 +37,7 @@ pub(in crate::harness::harness_loop) fn request_model_choice_repair<P>(
     round_index: usize,
     validation_error: &str,
     raw_response: &str,
+    cancel: &ProviderCancelToken,
 ) -> Result<ProviderOutput, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -82,8 +83,12 @@ where
         &prompt_context.stats,
         loop_phase,
     );
-    let result =
-        provider.chat_messages_with_tools_with_metadata(prompt_context.messages, &request, tools);
+    let result = provider.chat_messages_with_tools_with_metadata_cancelable(
+        prompt_context.messages,
+        &request,
+        tools,
+        cancel,
+    );
 
     match result {
         Ok(output) => {
@@ -106,6 +111,15 @@ where
             Ok(output)
         }
         Err(error) => {
+            if error.kind == ProviderErrorKind::Canceled {
+                log_provider_call_canceled(
+                    session,
+                    round_index,
+                    &request.request_id,
+                    request_mode,
+                    loop_phase,
+                );
+            }
             log_provider_call_failed(
                 session,
                 round_index,

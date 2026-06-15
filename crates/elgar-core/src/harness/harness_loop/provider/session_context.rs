@@ -53,6 +53,7 @@ pub(in crate::harness::harness_loop) fn native_tool_loop_turn_context(
     let history = session_history_messages(session, input);
     let rendered_mcp_catalog = render_mcp_tool_catalog_for_prompt(session);
     let system = build_system_prompt(
+        session,
         system_prompt,
         rendered_mcp_catalog.as_deref(),
         &rendered_memory.text,
@@ -93,11 +94,16 @@ pub(in crate::harness::harness_loop) fn load_verified_memory_index(
 }
 
 fn build_system_prompt(
+    session: &Session,
     base_prompt: &str,
     mcp_tool_catalog: Option<&str>,
     verified_facts: &str,
 ) -> String {
-    let mut parts = vec![base_prompt.to_string(), HISTORY_DISCLAIMER.to_string()];
+    let mut parts = vec![
+        base_prompt.to_string(),
+        render_permission_mode_for_prompt(session),
+        HISTORY_DISCLAIMER.to_string(),
+    ];
     if let Some(catalog) = mcp_tool_catalog {
         parts.push(catalog.to_string());
     }
@@ -106,6 +112,16 @@ fn build_system_prompt(
         parts.push(format!("{VERIFIED_MEMORY_HEADER}\n{verified_facts}"));
     }
     parts.join("\n\n")
+}
+
+pub(in crate::harness::harness_loop) fn render_permission_mode_for_prompt(
+    session: &Session,
+) -> String {
+    match session.permission_mode().as_str() {
+        "workspace_write" => "Permission mode: workspace_write. Safe relative `write` requests inside the launch folder may execute without approval. `bash`, `edit`, absolute paths, parent paths, symlink paths, and outside-folder writes still require approval or are rejected by execution checks.".to_string(),
+        "full_access" => "Permission mode: full_access. Trusted launch-folder `write`, `edit`, and `bash` requests may execute without approval. Unsafe paths remain rejected by execution checks. Keep using verified tools and inspect before claiming completion.".to_string(),
+        _ => "Permission mode: review_all. `bash`, `write`, and `edit` require user approval before execution.".to_string(),
+    }
 }
 
 fn session_history_messages(session: &Session, current_input: &str) -> Vec<ChatMessage> {
@@ -199,5 +215,35 @@ fn trim_history_to_token_budget(messages: &mut Vec<ChatMessage>) {
         {
             messages.remove(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{harness::PermissionMode, provider::ChatRole, session::Session};
+
+    use super::native_tool_loop_turn_context;
+
+    #[test]
+    fn native_tool_loop_context_renders_workspace_write_permission_mode() {
+        let root = std::env::temp_dir().join(format!(
+            "elgar-session-context-workspace-write-{}",
+            std::process::id()
+        ));
+        let mut session = Session::new("session-context-workspace-write", &root, &root);
+        session.set_permission_mode(PermissionMode::WorkspaceWrite);
+
+        let context = native_tool_loop_turn_context(&session, "Base prompt.", "create files");
+        let system = context
+            .messages
+            .iter()
+            .find(|message| message.role == ChatRole::System)
+            .expect("system message");
+
+        assert!(system.content.contains("Permission mode: workspace_write"));
+        assert!(system
+            .content
+            .contains("Safe relative `write` requests inside the launch folder"));
+        assert!(system.content.contains("absolute paths"));
     }
 }

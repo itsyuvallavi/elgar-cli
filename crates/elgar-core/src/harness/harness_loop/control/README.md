@@ -25,3 +25,11 @@ The coordinator handles provider `EmptyResponse` as a recoverable loop event:
 retry once with generic runtime feedback, then synthesize from verified evidence
 if the provider is still empty. If no evidence exists after the retry, the
 provider error remains fatal.
+
+## Approval Stops
+
+When one risky request needs approval, the loop records the pending approval and
+stops immediately with `approval_pending`. This prevents later provider prose
+from implying that more actions are approved than the runtime actually queued.
+Risky batches remain supported when the provider emits multiple risky tool calls
+in the same response.

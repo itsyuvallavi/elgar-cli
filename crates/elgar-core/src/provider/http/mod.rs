@@ -10,7 +10,7 @@ mod transport;
 mod types;
 
 pub(super) use endpoint::HttpEndpoint;
-pub(super) use transport::{post_json, post_json_streaming};
+pub(super) use transport::{post_json_cancelable, post_json_streaming_cancelable};
 pub(super) use types::HttpTimeouts;
 
 #[cfg(test)]
