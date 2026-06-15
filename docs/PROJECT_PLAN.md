@@ -160,11 +160,9 @@ Mitigations:
 
 ## Current Next Work
 
-1. Dogfood bounded cross-turn recall and provider-claim guard behavior through
-   Cursor, then inspect the resulting JSONL logs.
-2. Dogfood batch approval on compound write/move/folder flows, then inspect
-   JSONL approval and batch-step evidence.
-3. Design stepwise continuation for compound prompts where the model emits only
-   the first risky action, such as `mkdir docs` without the requested file
-   writes.
-4. Review loop token/speed logs after memory hardening on live LM Studio runs.
+1. Execute the clean terminal UI redesign plan in
+   `docs/TUI_CLEAN_REDESIGN_PLAN.md`.
+2. Keep native scrollback and text selection intact while improving response,
+   reasoning, command, file-tree, approval, and footer rendering.
+3. Verify each TUI slice with focused tests, then run Cursor dogfood for
+   project generation, approval, `/cancel`, and `/details last`.
