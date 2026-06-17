@@ -5,11 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    chat::ChatMessage,
-    profile::ProviderReasoningLevel,
-    tools::{ChatToolChoice, ChatToolDefinition},
-};
+use super::{chat::ChatMessage, profile::ProviderReasoningLevel, tools::ChatToolDefinition};
 
 /// JSON body shape for OpenAI-compatible chat-completions requests.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -17,6 +13,8 @@ pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<ChatStreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -27,8 +25,11 @@ pub struct ChatRequest {
     pub stats: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ChatToolDefinition>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<ChatToolChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatStreamOptions {
+    pub include_usage: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

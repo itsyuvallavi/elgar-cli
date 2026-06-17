@@ -1,5 +1,6 @@
 //! LM Studio response and streaming parse tests.
 
+use super::super::parse::parse_chat_stream_usage_line;
 use super::super::{
     parse_chat_response_json, parse_chat_stream_chunks, parse_chat_stream_response,
     parse_provider_error_json,
@@ -97,6 +98,39 @@ data: [DONE]
             ProviderStreamChunk::Reasoning("Need greet.".to_string()),
             ProviderStreamChunk::Text("Hello".to_string())
         ]
+    );
+}
+
+#[test]
+fn streaming_usage_parser_exposes_provider_token_counts() {
+    let usage = parse_chat_stream_usage_line(
+        r#"data: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":106,"total_tokens":1306}}"#,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(usage.prompt_tokens, Some(1200));
+    assert_eq!(usage.completion_tokens, Some(106));
+    assert_eq!(usage.total_tokens, Some(1306));
+}
+
+#[test]
+fn streaming_parser_reassembles_tool_call_deltas() {
+    let output = parse_chat_stream_response(
+        r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read","arguments":"{\"path\""}}]}}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"package.json\"}"}}]}}]}
+data: [DONE]
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(output.text, "");
+    assert_eq!(output.tool_calls.len(), 1);
+    assert_eq!(output.tool_calls[0].id, "call-1");
+    assert_eq!(output.tool_calls[0].function.name, "read");
+    assert_eq!(
+        output.tool_calls[0].function.arguments,
+        r#"{"path":"package.json"}"#
     );
 }
 

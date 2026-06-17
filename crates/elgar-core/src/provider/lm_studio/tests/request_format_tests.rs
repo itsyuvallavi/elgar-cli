@@ -9,7 +9,8 @@ use super::super::{
 };
 use crate::event::ProviderMetrics;
 use crate::provider::{
-    ControllerProvider, ProviderBackendKind, ProviderReasoningLevel, ProviderRequestProfile,
+    ChatToolDefinition, ControllerProvider, ProviderBackendKind, ProviderReasoningLevel,
+    ProviderRequestProfile,
 };
 
 #[test]
@@ -64,7 +65,7 @@ fn formats_opt_in_streaming_openai_compatible_chat_request() {
 }
 
 #[test]
-fn openai_compatible_request_omits_non_openai_profile_fields() {
+fn openai_compatible_request_keeps_stats_and_omits_non_openai_profile_fields() {
     let config = ProviderConfig::lm_studio("loaded-model");
     let profile = ProviderRequestProfile {
         backend: ProviderBackendKind::OpenAiChatCompletions,
@@ -85,10 +86,81 @@ fn openai_compatible_request_omits_non_openai_profile_fields() {
     let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
 
     assert_eq!(request.reasoning, None);
+    assert_eq!(request.stats, Some(true));
     assert!(value.get("reasoning").is_none());
     assert!(value.get("context_length").is_none());
-    assert!(value.get("stats").is_none());
+    assert_eq!(value["stats"], true);
     assert!(value.get("tools").is_none());
+    assert!(value.get("tool_choice").is_none());
+}
+
+#[test]
+fn openai_compatible_request_omits_stats_without_profile_opt_in() {
+    let config = ProviderConfig::lm_studio("loaded-model");
+
+    let (_request, body) = super::super::format_chat_request_body_with_tools_and_profile(
+        &config,
+        vec![ChatMessage::user("hello")],
+        Vec::new(),
+        None,
+    )
+    .unwrap();
+    let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+
+    assert!(value.get("stats").is_none());
+}
+
+#[test]
+fn streaming_stats_request_includes_openai_usage_stream_options() {
+    let config = ProviderConfig::lm_studio("loaded-model");
+    let profile = ProviderRequestProfile {
+        backend: ProviderBackendKind::OpenAiChatCompletions,
+        stream: Some(true),
+        reasoning: None,
+        context_length: None,
+        stats: Some(true),
+        stateful: None,
+    };
+
+    let (request, body) = super::super::format_chat_request_body_with_tools_and_profile(
+        &config,
+        vec![ChatMessage::user("hello")],
+        Vec::new(),
+        Some(&profile),
+    )
+    .unwrap();
+    let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+
+    assert!(request.stream);
+    assert_eq!(value["stats"], true);
+    assert_eq!(value["stream_options"]["include_usage"], true);
+}
+
+#[test]
+fn tool_enabled_openai_request_sends_tools_without_tool_choice() {
+    let config = ProviderConfig::lm_studio("loaded-model");
+    let tool = ChatToolDefinition::function(
+        "read",
+        "Read a project file.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            },
+            "required": ["path"]
+        }),
+    );
+
+    let (_request, body) = super::super::format_chat_request_body_with_tools_and_profile(
+        &config,
+        vec![ChatMessage::user("show me package.json")],
+        vec![tool],
+        None,
+    )
+    .unwrap();
+    let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+
+    assert_eq!(value["tools"][0]["function"]["name"], "read");
     assert!(value.get("tool_choice").is_none());
 }
 

@@ -8,8 +8,9 @@ root.
 
 ## Files
 
-- `mod.rs` owns `LmStudioProvider`, public LM Studio helper exports, request id
-  generation, and request routing.
+- `mod.rs` owns public LM Studio helper exports and request id generation.
+- `backend.rs` owns `LmStudioProvider` and its `ControllerProvider`
+  implementation.
 - `openai.rs` sends OpenAI-compatible LM Studio chat requests, tool requests,
   and streaming requests.
 - `openai/` contains OpenAI-compatible request metrics, timeout helpers, and
@@ -22,7 +23,8 @@ root.
 
 ## Ownership
 
-- Keep provider selection in `mod.rs`.
+- Keep provider selection and trait implementation in `backend.rs`.
+- Keep public helper exports and request ids in `mod.rs`.
 - Keep active harness HTTP execution in `openai.rs`.
 - Keep request JSON construction in `format.rs`.
 - Keep response JSON parsing in `parse.rs`.

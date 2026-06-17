@@ -4,7 +4,7 @@
 //! owns status parsing, header detection, and chunked-transfer decoding.
 
 use crate::provider::{
-    http::types::{HttpResponse, HttpStatusCode},
+    http::types::{HttpResponse, HttpStatusCode, StreamingBodyAction},
     types::ProviderError,
 };
 
@@ -68,15 +68,15 @@ pub(super) fn process_streaming_body_bytes(
     body: &mut Vec<u8>,
     chunk_buffer: &mut Vec<u8>,
     chunked_complete: &mut bool,
-    on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
-) -> Result<(), ProviderError> {
+    on_body_chunk: &mut dyn FnMut(&str) -> Result<StreamingBodyAction, ProviderError>,
+) -> Result<StreamingBodyAction, ProviderError> {
     if bytes.is_empty() {
-        return Ok(());
+        return Ok(StreamingBodyAction::Continue);
     }
 
     if header.is_chunked {
         if *chunked_complete {
-            return Ok(());
+            return Ok(StreamingBodyAction::Continue);
         }
         chunk_buffer.extend_from_slice(bytes);
         drain_complete_chunked_chunks(
@@ -90,9 +90,9 @@ pub(super) fn process_streaming_body_bytes(
         body.extend_from_slice(bytes);
         if header.status_code.is_success() {
             let text = String::from_utf8_lossy(bytes);
-            on_body_chunk(&text)?;
+            return on_body_chunk(&text);
         }
-        Ok(())
+        Ok(StreamingBodyAction::Continue)
     }
 }
 
@@ -101,11 +101,11 @@ fn drain_complete_chunked_chunks(
     body: &mut Vec<u8>,
     emit_chunks: bool,
     chunked_complete: &mut bool,
-    on_body_chunk: &mut dyn FnMut(&str) -> Result<(), ProviderError>,
-) -> Result<(), ProviderError> {
+    on_body_chunk: &mut dyn FnMut(&str) -> Result<StreamingBodyAction, ProviderError>,
+) -> Result<StreamingBodyAction, ProviderError> {
     loop {
         let Some(size_end) = find_crlf(chunk_buffer, 0) else {
-            return Ok(());
+            return Ok(StreamingBodyAction::Continue);
         };
         let size_line = std::str::from_utf8(&chunk_buffer[..size_end])
             .map_err(|error| ProviderError::response_parse(error.to_string()))?;
@@ -119,13 +119,13 @@ fn drain_complete_chunked_chunks(
         let data_start = size_end + 2;
         let data_end = data_start + size;
         if chunk_buffer.len() < data_end + 2 {
-            return Ok(());
+            return Ok(StreamingBodyAction::Continue);
         }
 
         if size == 0 {
             chunk_buffer.drain(..data_end + 2);
             *chunked_complete = true;
-            return Ok(());
+            return Ok(StreamingBodyAction::Continue);
         }
 
         if &chunk_buffer[data_end..data_end + 2] != b"\r\n" {
@@ -138,7 +138,9 @@ fn drain_complete_chunked_chunks(
         body.extend_from_slice(&data);
         if emit_chunks {
             let text = String::from_utf8_lossy(&data);
-            on_body_chunk(&text)?;
+            if on_body_chunk(&text)? == StreamingBodyAction::Stop {
+                return Ok(StreamingBodyAction::Stop);
+            }
         }
         chunk_buffer.drain(..data_end + 2);
     }

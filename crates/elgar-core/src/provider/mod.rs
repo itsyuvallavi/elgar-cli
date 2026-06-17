@@ -23,9 +23,9 @@ pub use lm_studio::{
 };
 pub use stub::{ProviderStub, ProviderStubResponse};
 pub use types::{
-    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatToolCall,
-    ChatToolCallFunction, ChatToolChoice, ChatToolDefinition, ChatToolFunctionDefinition,
-    ChatToolType, ChatUsage, ControllerProvider, ProviderBackendKind, ProviderError,
-    ProviderErrorBody, ProviderErrorKind, ProviderErrorResponse, ProviderReasoningLevel,
-    ProviderRequestMetadata, ProviderRequestProfile, ProviderStreamChunk,
+    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatToolCall, ChatToolCallDelta,
+    ChatToolCallFunction, ChatToolDefinition, ChatToolFunctionDefinition, ChatToolType, ChatUsage,
+    ControllerProvider, ProviderBackendKind, ProviderError, ProviderErrorBody, ProviderErrorKind,
+    ProviderErrorResponse, ProviderReasoningLevel, ProviderRequestMetadata, ProviderRequestProfile,
+    ProviderStreamChunk,
 };

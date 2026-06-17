@@ -6,12 +6,13 @@
 
 mod endpoint;
 mod response;
+mod stream_transport;
 mod transport;
 mod types;
 
 pub(super) use endpoint::HttpEndpoint;
 pub(super) use transport::{post_json_cancelable, post_json_streaming_cancelable};
-pub(super) use types::HttpTimeouts;
+pub(super) use types::{HttpTimeouts, StreamingBodyAction};
 
 #[cfg(test)]
 pub(super) use response::parse_http_response;

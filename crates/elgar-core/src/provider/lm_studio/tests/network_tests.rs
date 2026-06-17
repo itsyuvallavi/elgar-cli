@@ -83,6 +83,12 @@ fn live_streaming_chat_emits_reasoning_and_response_chunks() {
 
 "#,
         );
+        write_chunk(
+            &mut stream,
+            r#"data: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":106,"total_tokens":1306}}
+
+"#,
+        );
         write_chunk(&mut stream, "data: [DONE]\n\n");
         stream.write_all(b"0\r\n\r\n").unwrap();
     });
@@ -103,12 +109,71 @@ fn live_streaming_chat_emits_reasoning_and_response_chunks() {
     server.join().unwrap();
     assert_eq!(output.text, "Hello");
     assert_eq!(output.thinking.as_deref(), Some("Need greet."));
+    let usage = output.metrics.unwrap().usage.unwrap();
+    assert_eq!(usage.prompt_tokens, Some(1200));
+    assert_eq!(usage.completion_tokens, Some(106));
+    assert_eq!(usage.total_tokens, Some(1306));
     assert_eq!(
         chunks,
         vec![
             ProviderStreamChunk::Reasoning("Need greet.".to_string()),
             ProviderStreamChunk::Text("Hello".to_string())
         ]
+    );
+}
+
+#[test]
+fn live_streaming_chat_finishes_on_sse_done_before_socket_close() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 2048];
+        let _ = stream.read(&mut request).unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+            )
+            .unwrap();
+        write_chunk(
+            &mut stream,
+            r#"data: {"choices":[{"delta":{"content":"Done now"}}]}
+
+"#,
+        );
+        write_chunk(&mut stream, "data: [DONE]\n\n");
+        thread::sleep(Duration::from_millis(350));
+    });
+
+    let config = ProviderConfig {
+        base_url: format!("http://127.0.0.1:{port}/v1"),
+        stream: true,
+        timeout_millis: 2_000,
+        ..ProviderConfig::lm_studio("loaded-model")
+    };
+    let mut chunks = Vec::new();
+    let started = std::time::Instant::now();
+    let output =
+        chat_lm_studio_streaming(&config, vec![ChatMessage::user("hello")], &mut |chunk| {
+            chunks.push(chunk);
+        })
+        .unwrap();
+    let elapsed = started.elapsed();
+
+    server.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "stream waited for socket close instead of SSE [DONE]: {elapsed:?}"
+    );
+    assert_eq!(output.text, "Done now");
+    assert!(output
+        .metrics
+        .as_ref()
+        .and_then(|metrics| metrics.stream_done_millis)
+        .is_some());
+    assert_eq!(
+        chunks,
+        vec![ProviderStreamChunk::Text("Done now".to_string())]
     );
 }
 

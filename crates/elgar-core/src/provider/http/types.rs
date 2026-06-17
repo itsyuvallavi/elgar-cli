@@ -25,6 +25,12 @@ pub(in crate::provider) struct HttpResponse {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::provider) enum StreamingBodyAction {
+    Continue,
+    Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::provider) struct HttpTimeouts {
     pub(in crate::provider) connect: Duration,
     pub(in crate::provider) read: Duration,

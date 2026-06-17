@@ -5,7 +5,7 @@
 
 use crate::provider::{
     config::ProviderConfig,
-    types::{ChatMessage, ChatRequest, ChatToolChoice, ChatToolDefinition, ProviderError},
+    types::{ChatMessage, ChatRequest, ChatStreamOptions, ChatToolDefinition, ProviderError},
     ProviderRequestProfile,
 };
 
@@ -54,20 +54,24 @@ pub fn format_chat_request_with_tools_and_profile(
         ));
     }
 
-    let tool_choice = (!tools.is_empty()).then_some(ChatToolChoice::Auto);
+    let stream = profile
+        .and_then(|profile| profile.stream)
+        .unwrap_or(config.stream);
+    let stats = profile.and_then(|profile| profile.stats);
+    let stream_options = (stream && stats == Some(true)).then_some(ChatStreamOptions {
+        include_usage: true,
+    });
 
     Ok(ChatRequest {
         model: model.clone(),
         messages,
-        stream: profile
-            .and_then(|profile| profile.stream)
-            .unwrap_or(config.stream),
+        stream,
+        stream_options,
         temperature: None,
         reasoning: None,
         context_length: None,
-        stats: None,
+        stats,
         tools,
-        tool_choice,
     })
 }
 

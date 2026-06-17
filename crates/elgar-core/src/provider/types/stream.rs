@@ -4,9 +4,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::tools::ChatToolCallDelta;
+
 /// A live streaming update from the provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderStreamChunk {
     Reasoning(String),
     Text(String),
+    ToolCallDelta(ChatToolCallDelta),
 }

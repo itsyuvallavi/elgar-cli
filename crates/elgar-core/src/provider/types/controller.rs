@@ -45,6 +45,17 @@ pub trait ControllerProvider {
         Ok(output)
     }
 
+    fn chat_messages_streaming_with_metadata_cancelable(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+        cancel: &ProviderCancelToken,
+    ) -> Result<ProviderOutput, ProviderError> {
+        cancel.error_if_canceled()?;
+        self.chat_messages_streaming_with_metadata(messages, metadata, on_chunk)
+    }
+
     /// Sends a simple prompt using the provider's default message handling.
     fn chat(&self, prompt: &str) -> Result<ProviderOutput, ProviderError>;
 
@@ -95,6 +106,28 @@ pub trait ControllerProvider {
     ) -> Result<ProviderOutput, ProviderError> {
         cancel.error_if_canceled()?;
         self.chat_messages_with_tools_with_metadata(messages, metadata, tools)
+    }
+
+    fn chat_messages_with_tools_streaming_with_metadata_cancelable(
+        &self,
+        messages: Vec<ChatMessage>,
+        metadata: &ProviderRequestMetadata,
+        tools: Vec<ChatToolDefinition>,
+        on_chunk: &mut dyn FnMut(ProviderStreamChunk),
+        cancel: &ProviderCancelToken,
+    ) -> Result<ProviderOutput, ProviderError> {
+        let output = self
+            .chat_messages_with_tools_with_metadata_cancelable(messages, metadata, tools, cancel)?;
+
+        if let Some(thinking) = output.thinking.as_ref() {
+            on_chunk(ProviderStreamChunk::Reasoning(thinking.clone()));
+        }
+
+        if !output.text.is_empty() {
+            on_chunk(ProviderStreamChunk::Text(output.text.clone()));
+        }
+
+        Ok(output)
     }
 
     /// Sends a full message list with request metadata.
