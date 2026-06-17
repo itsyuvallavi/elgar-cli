@@ -13,6 +13,7 @@ mod permissions;
 mod primitive_tools;
 mod provider_route;
 mod tool_definitions;
+mod write_outcome;
 
 #[cfg(test)]
 mod tests;
@@ -59,6 +60,7 @@ pub use permissions::{
 pub use primitive_tools::{
     PrimitiveTool, PrimitiveToolId, PrimitiveToolRegistry, PrimitiveToolSideEffectLevel,
 };
+pub(in crate::harness) use write_outcome::WriteOutcome;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessTurnResult {

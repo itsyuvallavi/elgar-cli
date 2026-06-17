@@ -18,10 +18,13 @@ pub(in crate::harness::harness_loop) fn error_evidence(label: String, error: &st
     }
 }
 
-/// Convert a skipped no-op into verified evidence.
-pub(in crate::harness::harness_loop) fn noop_evidence(label: String, reason: &str) -> Evidence {
+/// Convert a same-content write skip into verified no-op evidence.
+pub(in crate::harness::harness_loop) fn write_noop_evidence(
+    label: String,
+    reason: &str,
+) -> Evidence {
     let body = format!(
-        "VERIFIED_NOOP\ntool_target: {label}\nreason: {reason}\nexecution_performed: false\n"
+        "VERIFIED_NOOP\ntool_target: {label}\nreason: {reason}\nexecution_performed: false\nexisted_before: true\ncontent_changed: false\nwrite_outcome: unchanged\n"
     );
     Evidence {
         label,

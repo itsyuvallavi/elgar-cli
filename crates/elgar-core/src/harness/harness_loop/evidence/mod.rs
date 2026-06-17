@@ -8,6 +8,8 @@ pub(super) mod keys;
 pub(super) mod mcp;
 pub(super) mod render;
 pub(super) mod request_args;
+pub(super) mod side_effect_logs;
+pub(super) mod side_effects;
 pub(super) mod state;
 pub(super) mod summary;
 pub(super) mod timeline;

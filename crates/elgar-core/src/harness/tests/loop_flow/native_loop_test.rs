@@ -243,7 +243,47 @@ fn primitive_loop_workspace_write_mode_executes_safe_relative_write() {
         content.contains("VERIFIED_WRITE_EXECUTION")
             && content.contains("approval_source: workspace_write")
             && content.contains("auto_approved: true")
+            && content.contains("write_outcome: created")
     }));
+}
+
+#[test]
+fn primitive_loop_workspace_write_mode_reports_unchanged_existing_file() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-loop-native-workspace-write-unchanged-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("same.txt"), "same").unwrap();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output(
+            "write",
+            r#"{"path":"same.txt","content":"same"}"#,
+            "call-write-same",
+        ),
+        ProviderOutput::new("Wrote same.txt."),
+    ]);
+    let mut session = Session::new(
+        "loop-native-workspace-write-unchanged-session",
+        &root,
+        &root,
+    );
+    session.set_permission_mode(PermissionMode::WorkspaceWrite);
+
+    let result = run_primitive_harness_loop(&provider, &mut session, "write same").unwrap();
+    let calls = provider.calls.lock().expect("calls lock");
+    let tool_results = tool_message_contents(&calls[1]);
+
+    assert_eq!(result.stopped_reason, "native_final_text");
+    assert!(tool_results.iter().any(|content| {
+        content.contains("VERIFIED_NOOP")
+            && content.contains("existed_before: true")
+            && content.contains("content_changed: false")
+            && content.contains("write_outcome: unchanged")
+    }));
+    assert_eq!(fs::read_to_string(root.join("same.txt")).unwrap(), "same");
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

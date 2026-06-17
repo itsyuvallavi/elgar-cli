@@ -44,9 +44,6 @@ effect themselves.
   additional unrequested side effects are also approved.
 - Risky batches emitted in one provider response create one batch approval with
   multiple approved steps.
-- A `write` request for a safe relative path that already contains the exact
-  requested content is treated as a verified no-op instead of asking for
-  approval again.
 - Auto-executed `workspace_write` writes return `VERIFIED_WRITE_EXECUTION` with
   `approval_source: workspace_write` and are logged in system/session JSONL.
 - Auto-executed `full_access` writes, edits, and bash return verified execution
@@ -61,7 +58,11 @@ effect themselves.
 - Approved `bash` runs the exact approved shell command with `sh -c` in the
   resolved current working directory. It is not sandboxed; approval must treat
   it as arbitrary shell execution.
-- Approved `write` writes exact `content` to one file and rejects symlink paths.
+- Approved and auto-executed `write` paths log `existed_before`,
+  `content_changed`, and `write_outcome` (`created`, `updated`, or
+  `unchanged`). Same-content writes may return verified no-op evidence without
+  rewriting the file. Approved writes still reject symlink paths during final
+  execution checks.
 - Approved `edit` replaces exact `old_text` with `new_text` only when the old
   text appears exactly once.
 

@@ -157,6 +157,9 @@ fn approve_pending_write_creates_file() {
 
     assert_eq!(result.status, "approved");
     assert!(result.message.contains("VERIFIED_WRITE_EXECUTION"));
+    assert!(result.message.contains("existed_before: false"));
+    assert!(result.message.contains("content_changed: true"));
+    assert!(result.message.contains("write_outcome: created"));
     assert_eq!(
         fs::read_to_string(root.join("nested/demo.txt")).unwrap(),
         "hello\n"
@@ -181,9 +184,37 @@ fn approve_pending_write_overwrites_file() {
         "needs approval",
     ));
 
-    approve_pending_approval(&mut session).unwrap();
+    let result = approve_pending_approval(&mut session).unwrap();
 
+    assert!(result.message.contains("existed_before: true"));
+    assert!(result.message.contains("content_changed: true"));
+    assert!(result.message.contains("write_outcome: updated"));
     assert_eq!(fs::read_to_string(root.join("demo.txt")).unwrap(), "new");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn approve_pending_write_reports_unchanged_file() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-approve-pending-write-unchanged-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("demo.txt"), "same").unwrap();
+    let mut session = Session::new("write-unchanged-session", &root, &root);
+    session.set_pending_approval(PendingApproval::from_request(
+        "approval-1",
+        &write_request("demo.txt", "same"),
+        "needs approval",
+    ));
+
+    let result = approve_pending_approval(&mut session).unwrap();
+
+    assert!(result.message.contains("existed_before: true"));
+    assert!(result.message.contains("content_changed: false"));
+    assert!(result.message.contains("write_outcome: unchanged"));
+    assert_eq!(fs::read_to_string(root.join("demo.txt")).unwrap(), "same");
     let _ = fs::remove_dir_all(root);
 }
 
