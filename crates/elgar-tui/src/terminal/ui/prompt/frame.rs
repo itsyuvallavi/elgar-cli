@@ -5,6 +5,7 @@ use crossterm::terminal::size as terminal_size;
 use crate::terminal::TerminalShellContext;
 
 use super::{
+    super::approval_card::render_pending_approval_card,
     live_output::LiveProviderOutput,
     wrap::{non_empty_lines, rendered_preview_lines, wrap_preserving_spacing, wrap_words},
 };
@@ -15,10 +16,21 @@ pub(super) fn inline_prompt_frame_lines_with_cursor(
     cursor: usize,
     width: usize,
 ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    let mut top_lines = vec![String::new()];
+    if let Some(approval) = context.pending_approval.as_ref() {
+        top_lines.extend(render_pending_approval_card(
+            approval,
+            width,
+            context.selected_approval_action,
+        ));
+        top_lines.push(String::new());
+    }
+    top_lines.push(prompt_separator_line(width));
+
     (
-        vec![String::new(), frame_separator_line(width)],
+        top_lines,
         prompt_input_lines_with_cursor(input, cursor, width),
-        vec![frame_separator_line(width)],
+        vec![prompt_separator_line(width)],
         context
             .footer_body_for_width(drawable_width(width))
             .lines()
@@ -46,14 +58,20 @@ pub(super) fn active_working_frame_lines_with_cursor(
     live_output: &LiveProviderOutput,
     width: usize,
 ) -> ActiveWorkingFrameLineGroups {
-    let reasoning_lines = live_output
-        .reasoning_summary()
-        .map(|line| with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width)))))
-        .unwrap_or_default();
     let response_lines = live_output
         .response_preview()
         .map(|text| with_leading_spacer(rendered_preview_lines(&text, drawable_width(width))))
         .unwrap_or_default();
+    let reasoning_lines = if response_lines.is_empty() {
+        live_output
+            .reasoning_summary()
+            .map(|line| {
+                with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width))))
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let progress_lines = if reasoning_lines.is_empty() && response_lines.is_empty() {
         with_leading_spacer(vec![provider_progress_line(tick, elapsed_secs)])
     } else {
@@ -138,6 +156,10 @@ pub(crate) fn frame_separator_line(width: usize) -> String {
     "─".repeat(drawable_width(width))
 }
 
+fn prompt_separator_line(width: usize) -> String {
+    frame_separator_line(width)
+}
+
 pub(crate) fn terminal_width() -> usize {
     terminal_size()
         .ok()
@@ -149,3 +171,6 @@ pub(crate) fn terminal_width() -> usize {
 pub(crate) fn drawable_width(width: usize) -> usize {
     width.saturating_sub(1).max(1)
 }
+
+#[cfg(test)]
+mod tests;

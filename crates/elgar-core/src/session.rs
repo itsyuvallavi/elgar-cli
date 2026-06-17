@@ -5,6 +5,8 @@
 
 mod id;
 mod logging;
+#[cfg(test)]
+mod tests;
 
 use std::path::PathBuf;
 
@@ -81,6 +83,11 @@ impl Session {
 
     pub fn context_accounting(&self) -> &ContextAccounting {
         &self.context_accounting
+    }
+
+    pub fn set_context_window_tokens(&mut self, context_window_tokens: Option<u64>) {
+        self.context_accounting.max_window_tokens = context_window_tokens;
+        self.latest_context_window_snapshot = None;
     }
 
     pub fn latest_context_window_snapshot(&self) -> ContextWindowSnapshot {
@@ -214,7 +221,9 @@ impl Session {
             )
             .with_metadata(json!({
                 "event_kind": event_log_kind(event),
-                "event_index": event_count
+                "event_index": event_count,
+                "request_id": event_request_id(event),
+                "provider_stream_total_ms": event_provider_stream_total_ms(event),
             })),
         );
     }
@@ -230,6 +239,25 @@ impl Session {
         } else {
             existing_user_turns.saturating_sub(1)
         }
+    }
+}
+
+fn event_request_id(event: &Event) -> Option<&str> {
+    match event {
+        Event::ProviderStarted(started) => Some(started.request_id.as_str()),
+        Event::ProviderFinished(finished) => Some(finished.request_id.as_str()),
+        Event::ProviderStreamChunk(chunk) => Some(chunk.request_id.as_str()),
+        _ => None,
+    }
+}
+
+fn event_provider_stream_total_ms(event: &Event) -> Option<u64> {
+    match event {
+        Event::ProviderFinished(finished) => finished
+            .stream_timings
+            .as_ref()
+            .map(|timings| timings.total_ms),
+        _ => None,
     }
 }
 
@@ -250,61 +278,5 @@ impl ProviderMetadata {
             request_id: None,
             metrics: None,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::event::{
-        AssistantMessage, AssistantMessageSource, Event, ProviderFinished, ProviderOutput,
-        UserMessage,
-    };
-
-    #[test]
-    fn reset_conversation_clears_events_and_rotates_session_id() {
-        let root = std::env::temp_dir().join(format!("elgar-session-reset-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-
-        let mut session = Session::new("terminal-tui-session", &root, &root);
-        session.push_event(Event::UserMessage(UserMessage::new("hello")));
-        session.push_event(Event::AssistantMessage(AssistantMessage::new(
-            "hi",
-            AssistantMessageSource::Provider,
-        )));
-
-        session.reset_conversation();
-
-        assert!(session.events().is_empty());
-        assert_eq!(session.id, "terminal-tui-session-clear-1");
-
-        session.reset_conversation();
-        assert_eq!(session.id, "terminal-tui-session-clear-2");
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn runtime_session_id_uses_prefix_and_is_unique() {
-        let first = runtime_session_id("terminal-tui");
-        let second = runtime_session_id("terminal-tui");
-
-        assert!(first.starts_with("terminal-tui-"));
-        assert!(second.starts_with("terminal-tui-"));
-        assert_ne!(first, second);
-    }
-
-    #[test]
-    fn provider_finished_session_metadata_includes_thinking_diagnostics() {
-        let event = Event::ProviderFinished(ProviderFinished::new(
-            "lm-studio",
-            "request-1",
-            ProviderOutput::new("ok").with_thinking("count me"),
-        ));
-
-        let metadata = session_event_metadata(&event);
-
-        assert_eq!(metadata["provider_response_has_thinking"], true);
-        assert_eq!(metadata["provider_response_thinking_chars"], 8);
     }
 }

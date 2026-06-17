@@ -1,7 +1,7 @@
 //! Turn timing and token usage helpers.
 //!
-//! This file converts provider events into the compact `response ... tokens`
-//! summary shown after a model turn.
+//! This file converts provider events into the compact timing/token summary
+//! shown after a model turn.
 
 use std::time::Duration;
 

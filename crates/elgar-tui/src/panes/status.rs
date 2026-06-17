@@ -87,6 +87,7 @@ impl StatusLine {
                     self.finish("error");
                 }
             }
+            Event::ProviderStreamChunk(_) => {}
             _ => {
                 self.provider_active = false;
                 self.text = match event {
@@ -94,6 +95,9 @@ impl StatusLine {
                     Event::AssistantMessage(_) => "reply ready".to_string(),
                     Event::ProviderStarted(_) | Event::ProviderFinished(_) | Event::Error(_) => {
                         unreachable!("provider and error events are handled above")
+                    }
+                    Event::ProviderStreamChunk(_) => {
+                        unreachable!("stream chunks are handled above")
                     }
                 };
             }

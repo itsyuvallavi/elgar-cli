@@ -16,6 +16,7 @@ use elgar_core::{
 use crate::{
     layout::{render_section, LayoutRegion},
     panes::{ConversationPane, CopyArea, InputArea, StatusLine},
+    terminal::ui::execution_result::render_execution_result,
     turn_metrics::{aggregate_provider_token_usage, duration_millis},
 };
 
@@ -122,6 +123,10 @@ impl TuiShell {
             .with_duration_ms(duration_millis(started.elapsed()))
             .with_metadata(serde_json::json!({
                 "events_applied": result.events.len(),
+                "provider_started_count": count_events(&result.events, is_provider_started),
+                "provider_finished_count": count_events(&result.events, is_provider_finished),
+                "assistant_message_count": count_events(&result.events, is_assistant_message),
+                "latest_provider_request_id": latest_provider_request_id(&result.events),
                 "conversation_lines": self.conversation.render_lines_with_styles().len()
             })),
         );
@@ -134,6 +139,10 @@ impl TuiShell {
 
     pub fn raw_details_copy_text(&self) -> Option<String> {
         self.conversation.render_raw_copy_body()
+    }
+
+    pub fn push_raw_details(&mut self, details: impl Into<String>) {
+        self.conversation.push_raw_details(details);
     }
 
     pub fn push_latest_raw_details(&mut self) {
@@ -152,6 +161,41 @@ impl TuiShell {
         self.conversation.push_local_message(message);
         self.conversation.follow_latest();
     }
+
+    pub fn push_execution_result_message(&mut self, raw_message: String) -> String {
+        let display = if let Some(display) = render_execution_result(&raw_message) {
+            self.push_raw_details(raw_message);
+            display
+        } else {
+            raw_message
+        };
+        self.push_local_message(display.clone());
+        display
+    }
+}
+
+fn count_events(events: &[Event], predicate: fn(&Event) -> bool) -> usize {
+    events.iter().filter(|event| predicate(event)).count()
+}
+
+fn is_provider_started(event: &Event) -> bool {
+    matches!(event, Event::ProviderStarted(_))
+}
+
+fn is_provider_finished(event: &Event) -> bool {
+    matches!(event, Event::ProviderFinished(_))
+}
+
+fn is_assistant_message(event: &Event) -> bool {
+    matches!(event, Event::AssistantMessage(_))
+}
+
+fn latest_provider_request_id(events: &[Event]) -> Option<&str> {
+    events.iter().rev().find_map(|event| match event {
+        Event::ProviderFinished(finished) => Some(finished.request_id.as_str()),
+        Event::ProviderStarted(started) => Some(started.request_id.as_str()),
+        _ => None,
+    })
 }
 
 impl Default for TuiShell {

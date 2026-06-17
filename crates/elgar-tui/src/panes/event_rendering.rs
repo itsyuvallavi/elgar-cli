@@ -9,19 +9,23 @@ use elgar_core::{
 };
 
 use crate::markdown::render_assistant_markdown;
+use crate::terminal::ui::{
+    section_render::render_response_sections, sections::parse_response_sections,
+};
 
 use super::conversation::{ConversationLineStyle, ThinkingPulse};
 
 /// Render one core event as one visible conversation line, when appropriate.
-pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
+pub(crate) fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
     match event {
         Event::UserMessage(message) => Some((
             render_user_message(&message.content),
             ConversationLineStyle::User,
         )),
         Event::AssistantMessage(message) => {
-            if message.source == AssistantMessageSource::Controller
-                && is_controller_action_boilerplate(&message.content)
+            if (message.source == AssistantMessageSource::Controller
+                && is_controller_action_boilerplate(&message.content))
+                || is_pending_approval_boilerplate(&message.content)
             {
                 return None;
             }
@@ -38,6 +42,7 @@ pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLin
             Some((render_thinking_progress(), ConversationLineStyle::Loading))
         }
         Event::ProviderFinished(_) => None,
+        Event::ProviderStreamChunk(_) => None,
         Event::Error(error) => Some((
             render_error_line(&error.message),
             ConversationLineStyle::Plain,
@@ -45,12 +50,12 @@ pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLin
     }
 }
 
-pub(super) fn render_turn_metrics_summary(
+pub(crate) fn render_turn_metrics_summary(
     total_duration_millis: u64,
     usage: Option<&ProviderTokenUsage>,
 ) -> Option<String> {
     let duration = format_duration(total_duration_millis)?;
-    let mut parts = vec![format!("response {duration}")];
+    let mut parts = vec![duration];
 
     if let Some(usage) = usage {
         let input = usage
@@ -72,7 +77,7 @@ pub(super) fn render_turn_metrics_summary(
             .map(compact_token_count)
             .unwrap_or_else(|| "?".to_string());
         parts.push(format!("↑{input} ↓{output}"));
-        parts.push(format!("{total} provider tokens"));
+        parts.push(total);
     }
 
     Some(parts.join(" · "))
@@ -111,8 +116,11 @@ pub(super) fn render_user_message(content: &str) -> String {
         .join("\n")
 }
 
-fn render_assistant_output(content: &str) -> String {
-    render_assistant_markdown(content)
+pub(crate) fn render_assistant_output(content: &str) -> String {
+    let rendered = render_assistant_markdown(content);
+    parse_response_sections(&rendered)
+        .map(|sections| render_response_sections(&sections))
+        .unwrap_or(rendered)
 }
 
 fn is_controller_action_boilerplate(content: &str) -> bool {
@@ -156,6 +164,17 @@ fn is_controller_action_boilerplate(content: &str) -> bool {
     ]
     .iter()
     .any(|prefix| trimmed.starts_with(prefix))
+}
+
+fn is_pending_approval_boilerplate(content: &str) -> bool {
+    let trimmed = content.trim();
+    trimmed == "Requested action is prepared and waiting for approval before execution."
+        || (trimmed.ends_with("is prepared and waiting for approval before execution.")
+            && (trimmed.starts_with('`')
+                || trimmed
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_digit())))
 }
 
 fn render_thinking_progress() -> String {

@@ -39,6 +39,8 @@ What already works:
 - Scripted `elgar tui` supports `/prompt` and `/end` for one multiline harness
   turn.
 - Provider turns run in a worker and can be canceled through `/cancel`.
+- Provider turns stream reasoning/text chunks into logs and the active prompt
+  preview before final completion.
 - Conversation rendering supports user messages, assistant messages, provider
   reasoning previews, metrics, approval cards, code blocks, and hidden raw
   details.
@@ -60,6 +62,40 @@ Current UX gaps:
 - There is no e2e visual transcript gate for a full project-generation flow.
 
 ## Target Experience
+
+### Rendering Model
+
+The TUI should prefer typed rendering from harness events before falling back to
+markdown formatting:
+
+```text
+verified harness event -> typed display block
+assistant markdown     -> structured response sections
+plain prose            -> plain text
+```
+
+This keeps runtime truth in core while giving the terminal a cleaner view.
+
+Typed containers should be used for:
+
+- file writes, edits, and changed-file summaries
+- bash and shell command results
+- file trees and generated project structures
+- approval requests and batch approval steps
+- MCP/tool results when they are shown to the user
+- verification results, failures, and recovery steps
+
+Inline marking should be used for:
+
+- file paths
+- shell commands
+- statuses such as passed, failed, pending, canceled, skipped
+- diff counts and file counts
+- model/tool timing and token facts when shown
+
+Normal explanation should remain plain text. The TUI must not infer hidden
+truth from prose; it may only improve how visible text and verified events are
+displayed.
 
 ### Conversation
 
@@ -129,15 +165,25 @@ Batch approvals should show the step count and concise step list.
 Footer should stay quiet:
 
 ```text
-elgar/playground/demo                         full_access · qwen3.6 · 12.4k/128k
-Approval pending (write) - [Approve] Deny - Tab switches - Enter selects
+elgar/playground/demo                    full_access · qwen3.6 · 12.4k/128k (9%)
 ```
+
+The context percentage must be provider-backed and should use the latest
+request's prompt/input tokens, not cumulative session spend. If token usage or
+the configured context window is missing, the footer must show an unknown marker
+rather than a computed estimate.
 
 ## Implementation Slices
 
 ### Slice 1: Display Sections
 
 Goal: make final answers visually organized without changing model behavior.
+
+Status: implemented as the first display-only pass.
+
+Follow-up status: loose terminal tables such as `Entry | Description` followed
+by dashed `-----+-----` separator rows are normalized into compact rows, so
+directory summaries do not render as wide ASCII tables.
 
 Add:
 
@@ -154,6 +200,11 @@ Behavior:
 
 - Detect simple heading-like sections from rendered assistant markdown.
 - Normalize common section titles.
+- Render multi-section answers inside one quiet response container when that
+  improves scanning.
+- Render loose two-column terminal tables as compact readable rows.
+- Mark file paths, commands, and status words distinctly without changing their
+  text.
 - Preserve content as selectable plain text.
 - Keep raw details available.
 
@@ -161,11 +212,48 @@ Tests:
 
 - Section parsing does not alter plain answers.
 - Section rendering keeps bullets and code blocks readable.
+- Section rendering keeps file paths and commands visible and copyable.
+- Wrapped list continuations remain aligned inside the section container.
+- Loose table separator rows are removed, and wrapped cells stay attached to
+  their row.
 - Long content remains capped through existing details flow.
 
-### Slice 2: Command Blocks
+### Slice 2: Event Containers
+
+Goal: render verified harness events as clean typed blocks before relying on
+assistant markdown.
+
+Add:
+
+- `crates/elgar-tui/src/terminal/ui/event_blocks.rs`
+
+Edit:
+
+- `crates/elgar-tui/src/panes/event_rendering.rs`
+- `crates/elgar-tui/src/terminal/ui/mod.rs`
+
+Behavior:
+
+- Render writes, edits, bash, approvals, and MCP/tool evidence from typed
+  events when those events are visible in the conversation.
+- Group related file changes into concise file rows with counts or status.
+- Keep command status, exit code, duration, and capped output together.
+- Never let TUI event rendering execute, approve, retry, or synthesize
+  behavior.
+
+Tests:
+
+- Write/edit events render as file rows.
+- Bash success and failure render as command result blocks.
+- MCP/tool evidence stays compact and does not dump raw JSON by default.
+- Raw details remain available.
+
+### Slice 3: Command Blocks
 
 Goal: make shell/build/install output readable and compact.
+
+Status: partially implemented for code block header cleanup; command result
+blocks remain a follow-up.
 
 Add:
 
@@ -182,6 +270,8 @@ Behavior:
   command header.
 - Preserve normal code block rendering for source code.
 - Do not parse or invent exit codes unless the text includes them.
+- Prefer concise code headers. Use filenames when known; otherwise use the
+  language label without noisy line counts for normal-sized blocks.
 
 Tests:
 
@@ -189,7 +279,7 @@ Tests:
 - Source code block remains source-code styled.
 - Long command output is capped and still exposes raw details.
 
-### Slice 3: File Tree Blocks
+### Slice 4: File Tree Blocks
 
 Goal: make generated project structure easy to inspect.
 
@@ -213,18 +303,25 @@ Tests:
 - Non-tree text is unchanged.
 - Long trees are capped.
 
-### Slice 4: Reasoning Display
+### Slice 5: Reasoning Display
 
 Goal: reduce reasoning noise while keeping useful visibility.
+
+Status: partially implemented for live streamed reasoning chunks in active
+provider turns; static reasoning summary cleanup remains a follow-up.
 
 Edit:
 
 - `crates/elgar-tui/src/panes/provider_reasoning.rs`
 - `crates/elgar-tui/src/panes/conversation.rs`
+- `crates/elgar-tui/src/terminal/turn/provider_worker.rs`
+- `crates/elgar-tui/src/terminal/ui/prompt/live_output.rs`
 
 Behavior:
 
 - Use a stable `reasoning · ...` line.
+- Stream reasoning/text chunks from the harness worker while the turn is active.
+- Persist streamed chunks to logs so canceled calls are diagnosable.
 - Prefer action-oriented summaries.
 - Keep raw detail hidden.
 - Avoid showing tool protocol or JSON-like planning.
@@ -234,10 +331,14 @@ Tests:
 - Tool-call reasoning stays hidden.
 - Useful reasoning summary is compact.
 - Long reasoning truncates predictably.
+- Canceled provider calls retain streamed chunk evidence in JSONL.
 
-### Slice 5: Approval Card Cleanup
+### Slice 6: Approval Card Cleanup
 
 Goal: make approvals clear without raw argument noise.
+
+Status: implemented for compact approval cards, in-card approval controls, and
+compact verified execution display.
 
 Edit:
 
@@ -250,15 +351,21 @@ Behavior:
 - Common single-action card shows action, target, scope, and controls.
 - Batch card shows exact steps but avoids raw JSON unless no target preview
   exists.
-- Footer remains keyboard-first.
+- Approval controls render inside the live card, not in the footer.
+- Safe approval cards hide approval ids, resolved paths, raw arguments, and
+  fallback command prose.
+- Unsafe/outside-path approvals keep the warning visible.
+- Verified execution results render as short lines such as
+  `Done · hello-world.md created`, with raw proof retained in details/logs.
 
 Tests:
 
 - Single write approval is compact.
 - Batch approval lists step count and targets.
 - Absolute/outside path warning remains visible.
+- Tab/Arrow selection changes the in-card selected action.
 
-### Slice 6: Footer And Working State
+### Slice 7: Footer And Working State
 
 Goal: calm status without hiding critical state.
 
@@ -272,16 +379,108 @@ Edit:
 Behavior:
 
 - Show cwd, permission mode, model, and context window cleanly.
-- Keep approval state on its own second line only when needed.
+- Show context-window percentage only from provider-reported usage plus a
+  configured window.
+- Keep approval controls out of the footer; pending approvals belong to the live
+  card.
 - Replace `Thinking...` with stable `working · Ns · /cancel`.
+- Cancel stuck interactive provider turns with a configurable watchdog instead
+  of allowing indefinite spinner state.
+- Keep prompt separators full-width while avoiding stale resize artifacts.
 - Avoid layout jumps where possible.
 
 Tests:
 
 - Footer fits common 80-column terminal width.
 - Permission mode is visible.
-- Approval footer remains visible.
+- Footer remains free of approval controls.
 - Working line is stable across ticks.
+- Watchdog timeout logs and shows a safe local cancellation message.
+- Prompt frame separators span the drawable terminal width after resize.
+
+### Slice 8: MCP Config And Visibility
+
+Goal: make MCP availability explicit so the user and model do not have to guess
+whether `mcp_call` exists in the current launch.
+
+Add:
+
+- `elgar-mcp.json`
+
+Edit:
+
+- `crates/elgar-tui/src/startup/`
+- `crates/elgar-tui/src/terminal/display_context/mod.rs`
+- `crates/elgar-tui/src/terminal/ui/footer.rs`
+- `docs/MCP.md`
+- `docs/TUI.md`
+
+Behavior:
+
+- Add a repo-level `elgar-mcp.json` with the default local project-index MCP
+  config and the documented Context7 HTTP server entry.
+- Support launching with `ELGAR_MCP_CONFIG=/path/to/config.json` when a caller
+  wants an explicit alternate config.
+- Startup display shows `MCP active` with configured server ids, or
+  `MCP inactive` when no config is loaded.
+- Footer shows compact MCP status only when useful; it must not crowd out cwd,
+  model, or real context-window usage.
+- The model-facing tool schema remains source-of-truth driven: `mcp_call` is
+  exposed only when the loaded MCP config has available tools.
+- Do not hardcode natural-language MCP triggers.
+
+Tests:
+
+- Startup renders `MCP inactive` when no config is loaded.
+- Startup renders configured server ids when repo-level `elgar-mcp.json` is
+  loaded.
+- `ELGAR_MCP_CONFIG=/path/to/config.json` overrides repo-level config.
+- Model tool schema includes `mcp_call` only when MCP is active.
+- Footer/status display does not claim MCP access when the schema is hidden.
+
+### Slice 9: Command Palette
+
+Goal: make local commands discoverable without replacing normal terminal input.
+
+Add:
+
+- `crates/elgar-tui/src/terminal/ui/command_palette.rs`
+- `crates/elgar-tui/src/terminal/input/command_palette.rs`
+
+Edit:
+
+- `crates/elgar-tui/src/terminal/input/read.rs`
+- `crates/elgar-tui/src/terminal/input/keymap.rs`
+- `crates/elgar-tui/src/terminal/commands/messages.rs`
+- `docs/TUI.md`
+
+Behavior:
+
+- Open an inline palette when the input starts with `/`.
+- Filter local commands as the user types.
+- Show command name and short description in selectable rows.
+- Use `Up`/`Down` or `Tab` to move selection.
+- Use `Enter` to fill or execute the selected command.
+- Use `Esc` to close the palette and return to normal input.
+- Keep `/commands` as a plain text fallback.
+- Do not use alternate-screen rendering or mouse capture.
+- First version lists local commands only.
+
+Later expansion:
+
+- permission modes
+- MCP server status/actions
+- installed skills
+
+Tests:
+
+- Palette opens only for slash input.
+- Filtering narrows command rows.
+- Keyboard selection is deterministic.
+- Enter fills or executes the intended command.
+- Esc closes without submitting.
+- Normal text input, paste, approval buttons, and `/prompt` behavior stay
+  unchanged.
 
 ## E2E Test Plan
 
@@ -315,6 +514,9 @@ Cursor should report:
 - whether scrollback-style transcript remains plain selectable text
 - whether sections, command blocks, file trees, reasoning, footer, and approval
   cards render cleanly
+- whether wrapped bullets align inside section containers
+- whether the command palette opens for `/`, filters commands, and preserves
+  normal input behavior
 - whether `/prompt`, `/cancel`, `/approve`, `/deny`, `/permissions`, and
   `/details last` still work
 
@@ -360,6 +562,11 @@ Failure: animation flickers or shifts layout.
 
 Mitigation: one-line stable pulse; no dynamic cards while provider is active.
 
+Failure: command palette breaks normal typing or approval selection.
+
+Mitigation: enable it only while editing slash input, keep approval selection
+precedence when the prompt is empty, and test paste/submit/escape paths.
+
 ## Completion Criteria
 
 - TUI output is visibly cleaner on a live project-generation dogfood.
@@ -367,6 +574,8 @@ Mitigation: one-line stable pulse; no dynamic cards while provider is active.
 - Bash commands and file trees are readable.
 - Approval card is clear and compact.
 - Footer shows permission mode without clutter.
+- Command palette makes local slash commands discoverable without breaking
+  normal typing.
 - `/prompt`, `/cancel`, `/approve`, `/deny`, `/permissions`, `/details last`,
   `/copy`, and `/copy raw` still work.
 - Text selection and scrollback are preserved.

@@ -3,7 +3,7 @@
 //! Cards display core-owned pending approval state and local action hints.
 //! They do not approve, deny, or execute anything.
 
-use elgar_core::harness::{ApprovalTargetPreview, PendingApproval};
+use elgar_core::harness::{ApprovalTargetPreview, PendingApproval, PendingApprovalStep};
 
 use super::approval_action::ApprovalAction;
 
@@ -16,78 +16,102 @@ pub(crate) fn render_pending_approval_card(
     width: usize,
     selected: ApprovalAction,
 ) -> Vec<String> {
-    let mut body = vec![
-        format!("tool: {}   id: {}", approval.tool, approval.id),
-        format!("status: {}", approval.status.as_str()),
-        format!("reason: {}", approval.reason),
-    ];
+    let mut body = approval_summary_lines(approval);
 
     if let Some(target) = approval.target_preview.as_ref() {
-        body.extend(render_target_lines(target));
+        body.extend(render_warning_lines(target));
     }
 
     if approval.is_batch() {
-        body.push(format!("steps: {}", approval.steps.len()));
+        body.push(format!("{} actions", approval.steps.len()));
         for (index, step) in approval.steps.iter().enumerate() {
-            body.push(format!(
-                "{}. {} {}",
-                index + 1,
-                step.tool,
-                step.target_preview
-                    .as_ref()
-                    .map(|target| target.requested_path.as_str())
-                    .unwrap_or(step.arguments_preview.as_str())
-            ));
+            body.push(format!("{}. {}", index + 1, step_summary(step)));
         }
-    } else {
-        body.push(format!("arguments: {}", approval.arguments_preview));
     }
+
     body.push(String::new());
     body.extend(render_action_lines(selected));
 
-    render_simple_card("Action prepared", &body, width)
+    render_simple_card(action_title(approval), &body, width)
 }
 
-/// Compact footer hint while an approval is pending.
-pub(crate) fn render_approval_footer_actions(tool: &str, selected: ApprovalAction) -> String {
-    format!(
-        "Approval pending ({tool}) — {}   {}   Tab switches · Enter selects",
-        action_button("Approve", selected == ApprovalAction::Approve),
-        action_button("Deny", selected == ApprovalAction::Deny)
-    )
+fn approval_summary_lines(approval: &PendingApproval) -> Vec<String> {
+    if approval.is_batch() {
+        return Vec::new();
+    }
+
+    vec![approval
+        .target_preview
+        .as_ref()
+        .map(|target| target.requested_path.clone())
+        .or_else(|| argument_value(approval, "command"))
+        .or_else(|| argument_value(approval, "path"))
+        .unwrap_or_else(|| approval.tool.clone())]
 }
 
-fn render_target_lines(target: &ApprovalTargetPreview) -> Vec<String> {
+fn action_title(approval: &PendingApproval) -> &'static str {
+    match approval.tool.as_str() {
+        "write" => "Create file",
+        "edit" => "Edit file",
+        "bash" => "Run command",
+        "batch" => "Approve actions",
+        _ => "Approve action",
+    }
+}
+
+fn step_summary(step: &PendingApprovalStep) -> String {
+    let target = step
+        .target_preview
+        .as_ref()
+        .map(|target| target.requested_path.clone())
+        .or_else(|| {
+            step.request
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("command"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            step.request
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("path"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| step.tool.clone());
+    format!("{} · {target}", step.tool)
+}
+
+fn argument_value(approval: &PendingApproval, key: &str) -> Option<String> {
+    approval
+        .request
+        .arguments
+        .as_ref()?
+        .get(key)?
+        .as_str()
+        .map(ToString::to_string)
+}
+
+fn render_warning_lines(target: &ApprovalTargetPreview) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(warning) = target.warning.as_ref() {
         lines.push(format!("WARNING: {warning}"));
     }
-    lines.push(format!("target: {}", target.requested_path));
-    lines.push(format!("resolved: {}", target.resolved_preview_path));
-    lines.push(format!(
-        "path type: {}",
-        if target.is_absolute {
-            "absolute"
-        } else {
-            "relative"
-        }
-    ));
-    lines.push(format!("scope: {}", target.scope.as_str()));
     lines
 }
 
 fn render_action_lines(selected: ApprovalAction) -> Vec<String> {
     vec![
-        "Actions".to_string(),
         format!(
-            "  {} execute prepared action",
+            "{} execute",
             action_button("Approve", selected == ApprovalAction::Approve)
         ),
         format!(
-            "  {} cancel without executing",
+            "{} cancel",
             action_button("Deny", selected == ApprovalAction::Deny)
         ),
-        "  /approve and /deny still work as command fallback".to_string(),
     ]
 }
 

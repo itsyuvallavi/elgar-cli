@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use elgar_core::{
     context::ContextAccounting,
     event::ProviderMetrics,
+    harness::PendingApproval,
     provider::ControllerProvider,
     session::Session,
     token_accounting::{ContextWindowSnapshot, ContextWindowSource},
@@ -17,9 +18,6 @@ use crate::theme;
 
 use super::{
     ui::{
-        approval::{
-            render_approval_footer_actions_for_tool, render_pending_approval_footer_actions,
-        },
         approval_action::ApprovalAction,
         footer::{align_footer_line, footer_location_label},
     },
@@ -36,7 +34,8 @@ pub struct TerminalShellContext {
     pub context_accounting: ContextAccounting,
     pub context_window_snapshot: Option<ContextWindowSnapshot>,
     pub approval_tool: Option<String>,
-    pub approval_actions_line: Option<String>,
+    pub pending_approval: Option<PendingApproval>,
+    pub(crate) selected_approval_action: ApprovalAction,
 }
 
 impl TerminalShellContext {
@@ -51,7 +50,8 @@ impl TerminalShellContext {
             context_accounting: ContextAccounting::unknown(),
             context_window_snapshot: None,
             approval_tool: None,
-            approval_actions_line: None,
+            pending_approval: None,
+            selected_approval_action: ApprovalAction::Approve,
         }
     }
 
@@ -96,10 +96,7 @@ impl TerminalShellContext {
     }
 
     pub(crate) fn with_approval_action_selected(mut self, selected: ApprovalAction) -> Self {
-        self.approval_actions_line = self
-            .approval_tool
-            .as_ref()
-            .map(|tool| render_approval_footer_actions_for_tool(tool, selected));
+        self.selected_approval_action = selected;
         self
     }
 
@@ -122,10 +119,7 @@ impl TerminalShellContext {
         } else {
             align_footer_line(&left, &right, width)
         };
-        match self.approval_actions_line.as_deref() {
-            Some(actions) => format!("{base}\n{actions}"),
-            None => base,
-        }
+        base
     }
 
     pub(super) fn footer_ansi(&self) -> &'static str {
@@ -140,14 +134,21 @@ impl TerminalShellContext {
 fn footer_context_window_label(snapshot: Option<&ContextWindowSnapshot>) -> Option<String> {
     let snapshot = snapshot?;
     let window = snapshot.context_window_tokens?;
-    let current = match snapshot.source {
-        ContextWindowSource::Provider => snapshot
-            .current_tokens
-            .map(format_compact_tokens)
-            .unwrap_or_else(|| "?".to_string()),
-        ContextWindowSource::Estimate | ContextWindowSource::Unknown => "?".to_string(),
-    };
-    Some(format!("{current}/{}", format_compact_tokens(window)))
+    let window = format_compact_tokens(window);
+    match snapshot.source {
+        ContextWindowSource::Provider => {
+            let current = snapshot
+                .current_tokens
+                .map(format_compact_tokens)
+                .unwrap_or_else(|| "?".to_string());
+            let base = format!("{current}/{window}");
+            Some(match snapshot.used_percent {
+                Some(percent) => format!("{base} ({percent}%)"),
+                None => base,
+            })
+        }
+        ContextWindowSource::Estimate | ContextWindowSource::Unknown => Some(format!("?/{window}")),
+    }
 }
 
 fn format_compact_tokens(tokens: u64) -> String {
@@ -175,10 +176,7 @@ where
     }
     if let Some(approval) = session.pending_approval() {
         context.approval_tool = Some(approval.tool.clone());
-        context.approval_actions_line = Some(render_pending_approval_footer_actions(
-            approval,
-            ApprovalAction::Approve,
-        ));
+        context.pending_approval = Some(approval.clone());
     }
     context
 }
@@ -186,3 +184,6 @@ where
 pub(super) fn default_no_network_line() -> &'static str {
     "default no-network stub"
 }
+
+#[cfg(test)]
+mod tests;

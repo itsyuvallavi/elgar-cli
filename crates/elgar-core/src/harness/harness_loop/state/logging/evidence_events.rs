@@ -15,12 +15,13 @@ pub(in crate::harness::harness_loop) fn log_loop_evidence(
     round_index: usize,
     evidence: &Evidence,
 ) {
-    let metadata = json!({
+    let mut metadata = json!({
         "round_index": round_index,
         "evidence_label": evidence.label,
         "evidence_bytes": evidence.bytes,
         "truncated": evidence.truncated
     });
+    add_write_outcome_metadata(&mut metadata, evidence);
     let _ = append_log_event(
         &session.project_root,
         &session.id,
@@ -34,6 +35,35 @@ pub(in crate::harness::harness_loop) fn log_loop_evidence(
         .with_metadata(metadata.clone()),
     );
     session.log_harness_event("harness_tool_result_verified", metadata);
+}
+
+fn add_write_outcome_metadata(metadata: &mut serde_json::Value, evidence: &Evidence) {
+    if let Some(value) = evidence_field(&evidence.body, "existed_before").and_then(parse_bool) {
+        metadata["existed_before"] = json!(value);
+    }
+    if let Some(value) = evidence_field(&evidence.body, "content_changed") {
+        metadata["content_changed"] = parse_bool(value)
+            .map(serde_json::Value::Bool)
+            .unwrap_or_else(|| json!(value));
+    }
+    if let Some(value) = evidence_field(&evidence.body, "write_outcome") {
+        metadata["write_outcome"] = json!(value);
+    }
+}
+
+fn evidence_field<'a>(body: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}: ");
+    body.lines()
+        .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 pub(in crate::harness::harness_loop) fn log_verified_action_timeline_appended(
@@ -72,9 +102,11 @@ fn verified_action_timeline_metadata(
 
 #[cfg(test)]
 mod tests {
-    use crate::harness::harness_loop::evidence::timeline::VerifiedActionTimelineStats;
+    use crate::harness::harness_loop::{
+        evidence::timeline::VerifiedActionTimelineStats, state::types::Evidence,
+    };
 
-    use super::verified_action_timeline_metadata;
+    use super::{add_write_outcome_metadata, verified_action_timeline_metadata};
 
     #[test]
     fn timeline_log_metadata_is_compact() {
@@ -93,5 +125,22 @@ mod tests {
         assert_eq!(metadata["timeline_rendered_action_count"], 4);
         assert_eq!(metadata["timeline_failed_command_count"], 1);
         assert!(metadata.get("timeline_body").is_none());
+    }
+
+    #[test]
+    fn evidence_log_metadata_includes_write_outcome_fields() {
+        let evidence = Evidence {
+            label: "write:demo.txt".to_string(),
+            bytes: 128,
+            truncated: false,
+            body: "VERIFIED_WRITE_EXECUTION\nexisted_before: true\ncontent_changed: false\nwrite_outcome: unchanged\n".to_string(),
+        };
+        let mut metadata = serde_json::json!({});
+
+        add_write_outcome_metadata(&mut metadata, &evidence);
+
+        assert_eq!(metadata["existed_before"], true);
+        assert_eq!(metadata["content_changed"], false);
+        assert_eq!(metadata["write_outcome"], "unchanged");
     }
 }

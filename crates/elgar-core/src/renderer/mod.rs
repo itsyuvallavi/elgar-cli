@@ -51,6 +51,7 @@ pub fn render_event(event: &Event) -> String {
                 finished.provider, finished.request_id
             )
         }
+        Event::ProviderStreamChunk(_) => String::new(),
         Event::Error(error) => format!("error: {}", error.message),
     }
 }

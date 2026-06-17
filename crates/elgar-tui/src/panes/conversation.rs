@@ -138,6 +138,10 @@ impl ConversationPane {
         self.raw_details.last().map(String::as_str)
     }
 
+    pub(crate) fn push_raw_details(&mut self, details: impl Into<String>) {
+        self.raw_details.push(details.into());
+    }
+
     pub(crate) fn push_latest_raw_details(&mut self) -> bool {
         let Some(details) = self.latest_raw_details().map(str::to_string) else {
             return false;

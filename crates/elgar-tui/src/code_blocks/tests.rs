@@ -10,7 +10,7 @@ fn renders_code_block_metadata() {
     ));
 
     assert_eq!(rendered.lines.len(), 3);
-    assert!(rendered.lines[0].starts_with(" ╭─ code (tsx) · app/page.tsx · 1 line "));
+    assert!(rendered.lines[0].starts_with(" ╭─ app/page.tsx "));
     assert!(rendered.lines[0].ends_with('╮'));
     assert!(rendered.lines[1].starts_with(" │ export default function Page() {}"));
     assert!(rendered.lines[1].ends_with(" │"));
@@ -31,7 +31,7 @@ fn infers_language_from_path_label() {
         vec!["export default function Page() {}".to_string()],
     ));
 
-    assert!(rendered.lines[0].starts_with(" ╭─ code (tsx) · app/page.tsx · 1 line "));
+    assert!(rendered.lines[0].starts_with(" ╭─ app/page.tsx "));
 }
 
 #[test]

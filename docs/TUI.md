@@ -30,6 +30,28 @@ Known slash commands are handled locally.
 
 Unknown slash commands show a local error.
 
+While a provider turn is active, the TUI stays responsive and `/cancel` aborts
+the request. Interactive provider turns also have a watchdog timeout so a stuck
+model call returns a local message instead of leaving the terminal spinning
+indefinitely. The watchdog can be overridden with
+`ELGAR_TUI_PROVIDER_WATCHDOG_MILLIS`.
+
+When the provider streams reasoning or text, the active inline prompt can show a
+larger bounded live reasoning preview while the request is still running.
+Streamed chunks are recorded in session/system logs before `provider_finished`,
+so a canceled request can still be diagnosed from whatever Elgar received.
+Finished provider events log first-reasoning, first-text, reasoning-to-text,
+and total stream timings.
+
+When visible answer text has already streamed, the TUI treats that preview as
+the visible answer. On provider close, it compares the rendered live preview
+with the rendered final provider message. If they match exactly, the prompt
+chrome is cleared while the streamed answer stays in place. It must not append
+a late `response ...` metrics line under the answer, because that makes the
+conversation visibly change several seconds after the answer appeared. If the
+final rendered content differs, the TUI falls back to the full final render
+path.
+
 ## Approval Flow
 
 Risky primitives such as `bash`, `write`, and `edit` are not executed directly
@@ -57,9 +79,10 @@ terminal prompt:
 `/approve`, `/approve continue`, `/deny`, and `/reject` remain command
 fallbacks. `/approve continue` executes the pending approval and then starts one
 generic follow-up harness turn so the model can continue from verified approval
-output. The TUI renders a boxed approval card with action hints and shows a
-compact selected-button footer line while approval is pending. It only displays
-and submits approval actions; it does not own permission policy or execution
+output. The TUI renders a boxed approval card with action hints inside the live
+prompt frame while approval is pending. The footer stays reserved for stable
+status such as cwd/model/context. The TUI only displays and submits approval
+actions; it does not own permission policy or execution
 truth.
 
 If the model asks for approval in prose but core did not create a pending
@@ -87,11 +110,44 @@ The TUI renders:
 
 - user text
 - provider-authored assistant text
-- pending approval prompts
-- capped reasoning preview
+- simple structured assistant sections as quiet selectable containers
+- compact pending approval prompts
+- compact verified execution results (`created`, `updated`, or `unchanged` for
+  writes) with raw proof available through details
+- larger capped reasoning preview
+- live streamed reasoning preview during active provider turns
+- quiet live-answer finalization when streamed and final rendered text match
 - response timing/token usage
 - prompt/footer state
 - copy/details views
+
+Prompt frame separators should span the drawable terminal width. Resize cleanup
+must not leave stale line fragments above the prompt, but the steady-state frame
+should still look full-width.
+
+Structured rendering is display-only. The TUI may format visible assistant text
+and verified event data, but core remains the source of truth for tools,
+approvals, permissions, and execution.
+
+Approval and execution displays should stay concise by default. The screen
+should show the action, target, status, and warning when needed; raw approval
+ids, resolved paths, arguments, and `VERIFIED_*` proof blocks belong in logs or
+raw details.
+
+## Footer Context Window
+
+The footer may show context-window pressure as:
+
+```text
+1.2k/16k (7%)
+```
+
+The left number is the provider-reported prompt/input tokens for the latest
+request, so it reflects current context-window pressure rather than cumulative
+session spend. The percentage is shown only when it comes from provider token
+usage and a configured context window. Estimated or unknown context snapshots
+must not display a percentage; they render as `?/16k` so the TUI never presents
+an inferred value as real.
 
 ## Current Folders
 

@@ -54,18 +54,20 @@ pub(super) fn render_code_header(
     line_count: usize,
     collapsed_shown_lines: Option<usize>,
 ) -> String {
-    let mut parts = vec![match info.language.as_deref() {
-        Some(language) => format!("code ({language})"),
-        None => "code".to_string(),
-    }];
-    if let Some(label) = info.label.as_deref() {
-        parts.push(label.to_string());
-    }
-    parts.push(line_count_label(line_count));
+    let mut parts = vec![primary_header_label(info)];
     if let Some(shown_lines) = collapsed_shown_lines {
+        parts.push(line_count_label(line_count));
         parts.push(format!("collapsed, showing {shown_lines}"));
     }
     parts.join(" · ")
+}
+
+fn primary_header_label(info: &CodeFenceInfo) -> String {
+    info.label
+        .as_deref()
+        .or(info.language.as_deref())
+        .unwrap_or("code")
+        .to_string()
 }
 
 fn line_count_label(line_count: usize) -> String {

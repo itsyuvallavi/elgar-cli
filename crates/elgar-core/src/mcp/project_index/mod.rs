@@ -112,6 +112,7 @@ fn project_status(session: &Session) -> ToolCallResult {
             Event::AssistantMessage(_) => assistant_messages += 1,
             Event::ProviderStarted(_) => provider_started += 1,
             Event::ProviderFinished(_) => provider_finished += 1,
+            Event::ProviderStreamChunk(_) => {}
             Event::Error(_) => errors += 1,
         }
     }

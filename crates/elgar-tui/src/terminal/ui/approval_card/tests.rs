@@ -4,7 +4,7 @@ use serde_json::json;
 
 use elgar_core::harness::{PendingApproval, StructuredRequestKind, ValidatedStructuredRequest};
 
-use super::{render_approval_footer_actions, render_pending_approval_card};
+use super::render_pending_approval_card;
 use crate::terminal::ui::approval_action::ApprovalAction;
 
 #[test]
@@ -24,23 +24,15 @@ fn approval_card_renders_box_and_button_actions() {
 
     assert!(rendered.contains('╭'));
     assert!(rendered.contains('╯'));
-    assert!(rendered.contains("Action prepared"));
+    assert!(rendered.contains("Create file"));
+    assert!(rendered.contains("hello-world"));
     assert!(rendered.contains("[Approve]"));
     assert!(rendered.contains(" Deny "));
-    assert!(rendered.contains("/approve"));
-    assert!(rendered.contains("/deny"));
-    assert!(rendered.contains("tool: write"));
-}
-
-#[test]
-fn approval_footer_actions_name_tool_and_selected_button() {
-    let footer = render_approval_footer_actions("write", ApprovalAction::Deny);
-
-    assert!(footer.contains("write"));
-    assert!(footer.contains(" Approve "));
-    assert!(footer.contains("[Deny]"));
-    assert!(footer.contains("Tab switches"));
-    assert!(footer.contains("Enter selects"));
+    assert!(!rendered.contains("/approve"));
+    assert!(!rendered.contains("/deny"));
+    assert!(!rendered.contains("tool: write"));
+    assert!(!rendered.contains("approval-1"));
+    assert!(!rendered.contains("arguments:"));
 }
 
 #[test]
@@ -74,8 +66,9 @@ fn approval_card_renders_batch_steps() {
     let lines = render_pending_approval_card(&approval, 100, ApprovalAction::Approve);
     let rendered = lines.join("\n");
 
-    assert!(rendered.contains("tool: batch"));
-    assert!(rendered.contains("steps: 2"));
-    assert!(rendered.contains("1. write a.txt"));
-    assert!(rendered.contains("2. write b.txt"));
+    assert!(rendered.contains("Approve actions"));
+    assert!(rendered.contains("2 actions"));
+    assert!(rendered.contains("1. write · a.txt"));
+    assert!(rendered.contains("2. write · b.txt"));
+    assert!(!rendered.contains("arguments:"));
 }

@@ -25,7 +25,7 @@ fn renders_paths_with_double_underscores_without_stripping_them() {
 fn renders_code_blocks_without_fences() {
     let rendered = render_assistant_markdown("Use this:\n```rust\nfn main() {}\n```");
 
-    assert!(rendered.starts_with("Use this:\n ╭─ code (rust) · 1 line"));
+    assert!(rendered.starts_with("Use this:\n ╭─ rust "));
     assert!(rendered.contains("│ fn main() {}"));
     assert!(rendered.contains("╰"));
     assert!(!rendered.contains("```"));
@@ -38,9 +38,7 @@ fn renders_code_blocks_with_compact_fence_spacing() {
 
     let lines = rendered.lines().collect::<Vec<_>>();
     assert_eq!(lines.first(), Some(&"Use this:"));
-    assert!(lines
-        .iter()
-        .any(|line| line.starts_with(" ╭─ code (rust) · 1 line")));
+    assert!(lines.iter().any(|line| line.starts_with(" ╭─ rust ")));
     assert!(lines.iter().any(|line| line.contains("│ fn main() {}")));
     assert_eq!(lines.last(), Some(&"Done."));
     assert!(!rendered.contains("\n\n"));
@@ -52,7 +50,7 @@ fn keeps_code_blocks_readable_with_line_count() {
         "code:\n```python\nimport json\n\n\ndef main():\n\n    print(\"ok\")\n\n\nmain()\n```",
     );
 
-    assert!(rendered.starts_with("code:\n ╭─ code (python) · 4 lines"));
+    assert!(rendered.starts_with("code:\n ╭─ python "));
     assert!(rendered.contains("│ import json"));
     assert!(rendered.contains("│ def main():"));
     assert!(rendered.contains("print(\"ok\")"));
@@ -77,7 +75,7 @@ fn expands_inline_fenced_code_blocks_into_readable_blocks() {
         "Use this: ```bash # 1. Start lm-studio --port 1234 # 2. Check curl http://127.0.0.1:1234/v1/health ``` Done.",
     );
 
-    assert!(rendered.starts_with("Use this:\n ╭─ code (bash) · 2 lines"));
+    assert!(rendered.starts_with("Use this:\n ╭─ bash "));
     assert!(rendered.contains("│ # 1. Start lm-studio --port 1234"));
     assert!(rendered.contains("│ # 2. Check curl http://127.0.0.1:1234/v1/health"));
     assert!(rendered.ends_with("\nDone."));
@@ -99,7 +97,7 @@ fn collapses_long_code_blocks_with_raw_details_hint() {
     let markdown = format!("Large block:\n```text\n{lines}\n```");
     let rendered = render_assistant_markdown(&markdown);
 
-    assert!(rendered.contains("╭─ code (text) · 90 lines · collapsed, showing 40"));
+    assert!(rendered.contains("╭─ text · 90 lines · collapsed, showing 40"));
     assert!(rendered.contains("│ line-001"));
     assert!(rendered.contains("│ line-040"));
     assert!(rendered.contains("│ ... 50 lines hidden; use /details last or /copy raw"));
@@ -137,6 +135,31 @@ fn renders_tables_without_markdown_separator_rows() {
 
     assert_eq!(rendered, "  File | State\n  -----+------\n  a.rs | ok   ");
     assert!(!rendered.contains("| --- |"));
+}
+
+#[test]
+fn renders_loose_terminal_tables_as_compact_rows() {
+    let rendered = render_assistant_markdown(
+        "Entry | Description\n-----+------------\n`.DS_Store` | macOS metadata file\n`Nextjs-1/` | A Next.js project\n`hello-world.md` | A markdown file",
+    );
+
+    assert_eq!(
+        rendered,
+        "Entry\n  `.DS_Store` - macOS metadata file\n  `Nextjs-1/` - A Next.js project\n  `hello-world.md` - A markdown file"
+    );
+    assert!(!rendered.contains("-----+"));
+}
+
+#[test]
+fn keeps_loose_table_wrapped_cells_with_their_row() {
+    let rendered = render_assistant_markdown(
+        "Entry | Description\n-----+------------\n`Nextjs-1/` | A Next.js project (app, components, configs,\nnode_modules)\n\nDone.",
+    );
+
+    assert_eq!(
+        rendered,
+        "Entry\n  `Nextjs-1/` - A Next.js project (app, components, configs, node_modules)\nDone."
+    );
 }
 
 #[test]

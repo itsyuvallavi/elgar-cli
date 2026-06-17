@@ -179,10 +179,11 @@ fn tui_script_prompt_block_can_be_followed_by_approval_command() {
     let rendered = String::from_utf8(output).unwrap();
     assert!(rendered.contains("> create approved file"));
     assert!(rendered.contains("with exact content"));
-    assert!(rendered.contains("tool: bash"));
-    assert!(rendered.contains("VERIFIED_BASH_EXECUTION"));
-    assert!(rendered.contains("stdout:"));
-    assert!(rendered.contains("hello"));
+    assert!(rendered.contains("Run command"));
+    assert!(rendered.contains("printf hello"));
+    assert!(rendered.contains("Done · `printf hello` exited 0"));
+    assert!(!rendered.contains("VERIFIED_BASH_EXECUTION"));
+    assert!(!rendered.contains("stdout:"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -202,8 +203,7 @@ fn tui_script_approve_continue_executes_then_runs_followup_turn() {
     run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider).unwrap();
 
     let rendered = String::from_utf8(output).unwrap();
-    assert!(rendered.contains("VERIFIED_BASH_EXECUTION"));
-    assert!(rendered.contains("continued"));
+    assert!(rendered.contains("Done · `printf continued` exited 0"));
     assert!(rendered.contains("bash requires approval"));
 
     let _ = fs::remove_dir_all(root);
@@ -252,11 +252,10 @@ fn scripted_tui_renders_outside_path_pending_approval_warning() {
     run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider).unwrap();
 
     let rendered = String::from_utf8(output).unwrap();
-    assert!(rendered.contains("target: /tmp/elgar-outside-warning-test.txt"));
-    assert!(rendered.contains("scope: outside_launch_folder"));
+    assert!(rendered.contains("/tmp/elgar-outside-warning-test.txt"));
     assert!(rendered.contains("WARNING: Approving may modify files outside the launch folder."));
-    assert!(rendered.contains("/approve"));
-    assert!(rendered.contains("/deny"));
+    assert!(rendered.contains("[Approve]"));
+    assert!(rendered.contains(" Deny "));
 
     let _ = fs::remove_dir_all(root);
 }

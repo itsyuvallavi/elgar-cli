@@ -42,6 +42,13 @@ fn approve_command_executes_pending_write_request() {
     assert!(session.pending_approval().is_none());
     assert!(shell
         .conversation_copy_text()
+        .contains("Done · demo.txt created"));
+    assert!(!shell
+        .conversation_copy_text()
+        .contains("VERIFIED_WRITE_EXECUTION"));
+    assert!(shell
+        .raw_details_copy_text()
+        .expect("raw details")
         .contains("VERIFIED_WRITE_EXECUTION"));
     let _ = fs::remove_dir_all(root);
 }

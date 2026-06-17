@@ -20,14 +20,14 @@ fn pending_approval_display_names_commands_and_execution_state() {
 
     let rendered = render_pending_approval_text(&approval);
 
-    assert!(rendered.contains("Action prepared"));
-    assert!(rendered.contains("id: approval-1"));
-    assert!(rendered.contains("tool: write"));
-    assert!(rendered.contains("status: pending"));
+    assert!(rendered.contains("Create file"));
+    assert!(rendered.contains("hello-world"));
     assert!(rendered.contains("[Approve]"));
     assert!(rendered.contains(" Deny "));
-    assert!(rendered.contains("/approve"));
-    assert!(rendered.contains("/deny"));
+    assert!(!rendered.contains("id: approval-1"));
+    assert!(!rendered.contains("tool: write"));
+    assert!(!rendered.contains("status: pending"));
+    assert!(!rendered.contains("arguments:"));
 }
 
 #[test]
@@ -49,9 +49,7 @@ fn pending_approval_display_warns_for_outside_target() {
 
     let rendered = render_pending_approval_text(&approval);
 
-    assert!(rendered.contains("target: /tmp/hello-world"));
-    assert!(rendered.contains("path type: absolute"));
-    assert!(rendered.contains("scope: outside_launch_folder"));
+    assert!(rendered.contains("/tmp/hello-world"));
     assert!(rendered.contains("WARNING: Approving may modify files outside the launch folder."));
     assert_eq!(
         rendered

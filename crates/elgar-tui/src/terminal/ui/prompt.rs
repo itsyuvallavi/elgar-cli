@@ -77,11 +77,18 @@ impl Drop for InlinePromptRenderer {
 pub(crate) struct InlineWorkingRenderer {
     context: TerminalShellContext,
     rows: usize,
+    last_preview_rows: usize,
+    last_chrome_rows: usize,
 }
 
 impl InlineWorkingRenderer {
     pub(crate) fn new(context: TerminalShellContext) -> Self {
-        Self { context, rows: 0 }
+        Self {
+            context,
+            rows: 0,
+            last_preview_rows: 0,
+            last_chrome_rows: 0,
+        }
     }
 
     pub(crate) fn render_with_cursor(
@@ -136,20 +143,36 @@ impl InlineWorkingRenderer {
             write!(io::stdout(), "{footer_ansi}{line}{ANSI_RESET}\r\n")?;
         }
 
-        self.rows = thinking_lines.len()
+        self.last_preview_rows = response_lines.len();
+        self.last_chrome_rows = thinking_lines.len()
             + reasoning_lines.len()
-            + response_lines.len()
             + top_lines.len()
             + input_lines.len()
             + bottom_lines.len()
             + footer_lines.len();
+        self.rows = self.last_preview_rows + self.last_chrome_rows;
         io::stdout().flush()
+    }
+
+    pub(crate) fn clear_chrome_preserving_response(&mut self) -> io::Result<bool> {
+        if self.rows == 0 || self.last_preview_rows == 0 || self.last_chrome_rows == 0 {
+            return Ok(false);
+        }
+
+        write!(io::stdout(), "\x1b[{}A\r\x1b[J", self.last_chrome_rows)?;
+        self.rows = 0;
+        self.last_preview_rows = 0;
+        self.last_chrome_rows = 0;
+        io::stdout().flush()?;
+        Ok(true)
     }
 
     pub(crate) fn clear(&mut self) -> io::Result<()> {
         if self.rows > 0 {
             write!(io::stdout(), "\x1b[{}A\r\x1b[J", self.rows)?;
             self.rows = 0;
+            self.last_preview_rows = 0;
+            self.last_chrome_rows = 0;
         }
         io::stdout().flush()
     }

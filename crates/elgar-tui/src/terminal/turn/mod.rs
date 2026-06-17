@@ -4,6 +4,9 @@
 //! and background provider worker tasks.
 
 pub(super) mod active;
+pub(super) mod finalize;
 pub(super) mod provider;
+pub(super) mod provider_logging;
+pub(super) mod provider_watchdog;
 pub(super) mod provider_worker;
 pub(super) mod submitted;

@@ -42,12 +42,7 @@ impl ContextWindowSnapshot {
         context_window_tokens: Option<u64>,
         request_id: impl Into<String>,
     ) -> Self {
-        let current_tokens = usage.total_tokens.or_else(|| {
-            usage
-                .prompt_tokens
-                .unwrap_or_default()
-                .checked_add(usage.completion_tokens.unwrap_or_default())
-        });
+        let current_tokens = usage.prompt_tokens.or(usage.total_tokens);
         Self::new(
             current_tokens,
             context_window_tokens,
@@ -149,4 +144,39 @@ fn unix_seconds() -> Option<u64> {
         .ok()?
         .as_secs()
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContextWindowSnapshot, ProviderTokenUsage};
+
+    #[test]
+    fn provider_snapshot_keeps_missing_usage_unknown() {
+        let usage = ProviderTokenUsage {
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+        };
+
+        let snapshot =
+            ContextWindowSnapshot::from_provider_usage(&usage, Some(16_000), "request-1");
+
+        assert_eq!(snapshot.current_tokens, None);
+        assert_eq!(snapshot.used_percent, None);
+    }
+
+    #[test]
+    fn provider_snapshot_uses_prompt_tokens_for_window_percentage() {
+        let usage = ProviderTokenUsage {
+            prompt_tokens: Some(3_200),
+            completion_tokens: Some(800),
+            total_tokens: Some(4_000),
+        };
+
+        let snapshot =
+            ContextWindowSnapshot::from_provider_usage(&usage, Some(16_000), "request-1");
+
+        assert_eq!(snapshot.current_tokens, Some(3_200));
+        assert_eq!(snapshot.used_percent, Some(20));
+    }
 }

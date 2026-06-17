@@ -66,11 +66,10 @@ where
             (false, String::new())
         }
         TerminalCommand::Approve => {
-            let message = match approve_pending_approval(session) {
-                Ok(result) => result.message,
-                Err(error) => error.to_string(),
+            match approve_pending_approval(session) {
+                Ok(result) => print_approval_result(shell, result.message)?,
+                Err(error) => print_and_record_local(shell, error.to_string())?,
             };
-            print_and_record_local(shell, message)?;
             (false, String::new())
         }
         TerminalCommand::ApproveContinue => {
@@ -81,7 +80,7 @@ where
                     return Ok(Some((false, String::new())));
                 }
             };
-            print_and_record_local(shell, message)?;
+            print_approval_result(shell, message)?;
             let preserved = run_inline_provider_text_turn(
                 APPROVAL_CONTINUATION_PROMPT,
                 provider,
@@ -116,6 +115,11 @@ where
         TerminalCommand::Text(_) => return Ok(None),
     };
     Ok(Some(handled))
+}
+
+fn print_approval_result(shell: &mut TuiShell, raw_message: String) -> io::Result<()> {
+    let display = shell.push_execution_result_message(raw_message);
+    print_plain_block(&display)
 }
 
 fn handle_permissions_command(session: &mut Session, mode: &str) -> String {

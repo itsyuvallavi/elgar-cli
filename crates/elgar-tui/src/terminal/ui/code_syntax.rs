@@ -110,7 +110,13 @@ pub(crate) fn write_code_line_ansi(
 }
 
 fn code_header_language(header: &str) -> Option<String> {
-    let language = header.strip_prefix("code (")?.split_once(')')?.0.trim();
+    let language = header
+        .strip_prefix("code (")
+        .and_then(|rest| {
+            rest.split_once(')')
+                .map(|(language, _rest)| language.trim())
+        })
+        .or_else(|| simplified_header_language(header))?;
     if language.is_empty() {
         None
     } else {
@@ -118,15 +124,38 @@ fn code_header_language(header: &str) -> Option<String> {
     }
 }
 
+fn simplified_header_language(header: &str) -> Option<&str> {
+    let label = header
+        .split_once(" · ")
+        .map_or(header, |(label, _rest)| label);
+    match label {
+        "bash" | "sh" | "shell" | "zsh" | "json" | "javascript" | "js" | "jsx" | "markdown"
+        | "md" | "python" | "py" | "rust" | "rs" | "toml" | "typescript" | "ts" | "tsx"
+        | "yaml" | "yml" => Some(label),
+        _ => extension_language(label),
+    }
+}
+
+fn extension_language(label: &str) -> Option<&str> {
+    let extension = label.rsplit_once('.')?.1;
+    let extension = extension
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric())
+        .trim();
+    if extension.is_empty() {
+        None
+    } else {
+        Some(extension)
+    }
+}
+
 use super::code_tokens::code_syntax_segments;
 
 fn split_code_header_line(line: &str) -> Option<(String, String, String)> {
     let body = line.strip_prefix(" ╭─ ")?.strip_suffix('╮')?;
-    if !body.starts_with("code") {
+    let header = body.trim_end_matches('─').trim_end();
+    if !header.starts_with("code") && simplified_header_language(header).is_none() {
         return None;
     }
-
-    let header = body.trim_end_matches('─').trim_end();
     let suffix = &body[header.len()..];
     Some((" ╭─ ".to_string(), header.to_string(), format!("{suffix}╮")))
 }

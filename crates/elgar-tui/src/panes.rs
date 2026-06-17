@@ -4,7 +4,7 @@
 //! status, copy buffer, and provider reasoning display.
 
 mod conversation;
-mod event_rendering;
+pub(crate) mod event_rendering;
 pub(crate) mod provider_reasoning;
 mod status;
 

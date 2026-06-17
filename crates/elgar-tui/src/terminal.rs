@@ -20,7 +20,7 @@ mod display_context;
 mod inline;
 mod input;
 mod turn;
-mod ui;
+pub(crate) mod ui;
 
 pub use commands::{
     parse_terminal_command, render_terminal_help, render_unknown_command, TerminalCommand,
@@ -67,7 +67,12 @@ pub fn run_terminal_shell() -> io::Result<()> {
 /// Start the terminal shell with an LM Studio provider config.
 pub fn run_terminal_shell_with_lm_studio_provider(config: ProviderConfig) -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    run_terminal_shell_with_provider(&cwd, &cwd, LmStudioProvider::new(config))
+    run_terminal_shell_with_provider_and_context_window(
+        &cwd,
+        &cwd,
+        LmStudioProvider::new(config.clone()),
+        config.configured_context_window_tokens(),
+    )
 }
 
 pub fn run_terminal_shell_with_lm_studio_provider_at(
@@ -75,7 +80,12 @@ pub fn run_terminal_shell_with_lm_studio_provider_at(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> io::Result<()> {
-    run_terminal_shell_with_provider(project_root, cwd, LmStudioProvider::new(config))
+    run_terminal_shell_with_provider_and_context_window(
+        project_root,
+        cwd,
+        LmStudioProvider::new(config.clone()),
+        config.configured_context_window_tokens(),
+    )
 }
 
 pub fn run_terminal_shell_at(
@@ -94,8 +104,21 @@ fn run_terminal_shell_with_provider<P>(
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
+    run_terminal_shell_with_provider_and_context_window(project_root, cwd, provider, None)
+}
+
+fn run_terminal_shell_with_provider_and_context_window<P>(
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    provider: P,
+    context_window_tokens: Option<u64>,
+) -> io::Result<()>
+where
+    P: ControllerProvider + Clone + Send + 'static,
+{
     let session_id = runtime_session_id("terminal-tui");
     let mut session = Session::new(&session_id, project_root.as_ref(), cwd.as_ref());
+    session.set_context_window_tokens(context_window_tokens);
     let mut shell = TuiShell::new();
 
     let mut context = terminal_context(&session, &provider);
