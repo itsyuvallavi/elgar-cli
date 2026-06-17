@@ -58,7 +58,7 @@ Owns test cleanup and verification strategy.
 
 Use for:
 
-- stale tests
+- test cleanup
 - boundary tests
 - smoke tests
 - dogfood scripts
