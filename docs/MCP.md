@@ -56,6 +56,18 @@ MCP config lives in `elgar-mcp.json`:
 Secrets must be referenced by environment variable name. They must not be
 stored directly in config or logs.
 
+Elgar should load the repo-level `elgar-mcp.json` by default when present. A
+caller may override that path with:
+
+```text
+ELGAR_MCP_CONFIG=/path/to/config.json elgar
+```
+
+The startup display and TUI status must make this obvious: show `MCP active`
+with configured server ids when a config is loaded, and `MCP inactive` when no
+config is loaded. The model-facing `mcp_call` tool must only be exposed when
+MCP is active and tools are available.
+
 ## Phases
 
 1. Config and protocol types for `http` and `stdio`.
