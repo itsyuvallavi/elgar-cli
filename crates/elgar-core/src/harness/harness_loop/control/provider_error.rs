@@ -6,6 +6,7 @@
 use std::time::Instant;
 
 use crate::{
+    event::Event,
     harness::{
         harness_loop::{
             control::finish::synthesize_loop_answer,
@@ -43,6 +44,7 @@ pub(super) fn handle_provider_loop_error<P>(
     loop_turn_id: u64,
     loop_started: Instant,
     cancel: &ProviderCancelToken,
+    stream_events: &mut dyn FnMut(Event),
 ) -> Result<ProviderLoopErrorOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -88,6 +90,7 @@ where
             loop_turn_id,
             loop_started,
             cancel,
+            stream_events,
         )?;
         return Ok(ProviderLoopErrorOutcome::Finish(result));
     }

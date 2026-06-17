@@ -6,6 +6,7 @@
 use std::time::Instant;
 
 use crate::{
+    event::Event,
     harness::{
         harness_loop::{
             provider::synthesis::run_primitive_loop_synthesis,
@@ -65,6 +66,7 @@ pub(super) fn synthesize_loop_answer<P>(
     loop_turn_id: u64,
     loop_started: Instant,
     cancel: &ProviderCancelToken,
+    stream_events: &mut dyn FnMut(Event),
 ) -> Result<PrimitiveHarnessLoopResult, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -79,6 +81,7 @@ where
         &stop_reason,
         evidence_depth,
         cancel,
+        stream_events,
     )
     .map_err(ModelChoiceTurnError::Provider)?;
     let result = PrimitiveHarnessLoopResult {

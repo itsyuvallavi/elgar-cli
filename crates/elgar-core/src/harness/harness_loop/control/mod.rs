@@ -6,7 +6,10 @@
 mod choice_from_output;
 mod choice_repair;
 mod coordinator;
+mod entrypoint;
 mod finish;
+mod loop_setup;
+mod model_text_round;
 mod native_execution;
 mod native_tool_round;
 mod prose_claim_guard;
@@ -18,5 +21,6 @@ mod structured_choice_round;
 mod synthetic_tool_calls;
 mod tool_target_fidelity;
 
-pub use coordinator::{run_primitive_harness_loop, run_primitive_harness_loop_with_cancel};
+pub use coordinator::run_primitive_harness_loop_with_cancel_and_stream;
+pub use entrypoint::{run_primitive_harness_loop, run_primitive_harness_loop_with_cancel};
 pub use finish::render_primitive_harness_loop_result;

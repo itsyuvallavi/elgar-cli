@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use crate::{
-    event::ProviderOutput,
+    event::{Event, ProviderOutput},
     harness::{
         decide_primitive_permission,
         harness_loop::{
@@ -56,6 +56,7 @@ pub(super) fn handle_native_tool_output<P>(
     loop_turn_id: u64,
     loop_started: Instant,
     cancel: &ProviderCancelToken,
+    stream_events: &mut dyn FnMut(Event),
 ) -> Result<NativeToolRoundOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -74,6 +75,7 @@ where
                 loop_turn_id,
                 loop_started,
                 cancel,
+                stream_events,
             )?;
             return Ok(NativeToolRoundOutcome::Finish(result));
         }
@@ -101,6 +103,7 @@ where
             loop_turn_id,
             loop_started,
             cancel,
+            stream_events,
         );
     }
 
@@ -121,6 +124,7 @@ where
             loop_turn_id,
             loop_started,
             cancel,
+            stream_events,
         )? {
             return Ok(NativeToolRoundOutcome::Finish(result));
         }
@@ -155,6 +159,7 @@ fn handle_native_risky_batch<P>(
     loop_turn_id: u64,
     loop_started: Instant,
     cancel: &ProviderCancelToken,
+    stream_events: &mut dyn FnMut(Event),
 ) -> Result<NativeToolRoundOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -210,6 +215,7 @@ where
             loop_turn_id,
             loop_started,
             cancel,
+            stream_events,
         )? {
             return Ok(NativeToolRoundOutcome::Finish(result));
         }

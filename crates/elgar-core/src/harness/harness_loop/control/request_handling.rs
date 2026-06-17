@@ -15,7 +15,7 @@ use crate::{
             evidence::{
                 execution::execute_primitive_request,
                 keys::evidence_key_for_request,
-                render::{error_evidence, noop_evidence, permission_evidence},
+                render::{error_evidence, permission_evidence, write_noop_evidence},
             },
             state::{
                 budget::{BudgetCheck, PrimitiveLoopBudget, PrimitiveLoopBudgetState},
@@ -187,7 +187,7 @@ fn same_content_write_noop(
         return None;
     }
 
-    Some(noop_evidence(
+    Some(write_noop_evidence(
         label,
         "target file already contains the requested content; choose a different missing output if work remains",
     ))

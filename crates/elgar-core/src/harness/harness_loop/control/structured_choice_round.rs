@@ -6,6 +6,7 @@
 use std::time::Instant;
 
 use crate::{
+    event::Event,
     harness::{
         harness_loop::{
             control::{
@@ -46,6 +47,7 @@ pub(super) fn handle_structured_request_choice<P>(
     loop_turn_id: u64,
     loop_started: Instant,
     cancel: &ProviderCancelToken,
+    stream_events: &mut dyn FnMut(Event),
 ) -> Result<NativeToolRoundOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -68,6 +70,7 @@ where
         loop_turn_id,
         loop_started,
         cancel,
+        stream_events,
     )? {
         return Ok(NativeToolRoundOutcome::Finish(result));
     }
@@ -92,6 +95,7 @@ pub(super) fn handle_structured_requests_choice<P>(
     loop_turn_id: u64,
     loop_started: Instant,
     cancel: &ProviderCancelToken,
+    stream_events: &mut dyn FnMut(Event),
 ) -> Result<NativeToolRoundOutcome, ModelChoiceTurnError>
 where
     P: ControllerProvider,
@@ -119,6 +123,7 @@ where
             loop_turn_id,
             loop_started,
             cancel,
+            stream_events,
         )? {
             return Ok(NativeToolRoundOutcome::Finish(result));
         }

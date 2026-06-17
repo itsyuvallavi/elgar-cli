@@ -5,7 +5,13 @@ Coordinates one bounded harness loop.
 ## Files
 
 - `mod.rs` exposes the loop entry point.
+- `entrypoint.rs` owns public wrapper functions for cancellation/no-stream
+  callers.
 - `coordinator.rs` owns loop order only.
+- `loop_setup.rs` initializes one loop's registry, budget, memory, and initial
+  messages.
+- `model_text_round.rs` handles provider prose claim checks and final text
+  stops.
 - `choice_from_output.rs` converts provider text/tool calls into `ModelChoice`.
 - `request_handling.rs` executes validated primitive requests.
 - `native_execution.rs` bridges one native tool request into verified evidence
@@ -21,7 +27,7 @@ this folder.
 
 ## Provider Recovery
 
-The coordinator handles provider `EmptyResponse` as a recoverable loop event:
+`provider_error.rs` handles provider `EmptyResponse` as a recoverable loop event:
 retry once with generic runtime feedback, then synthesize from verified evidence
 if the provider is still empty. If no evidence exists after the retry, the
 provider error remains fatal.
