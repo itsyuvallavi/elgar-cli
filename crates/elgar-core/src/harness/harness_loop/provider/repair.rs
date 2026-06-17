@@ -4,8 +4,10 @@
 //! They do not choose a tool for the model; they only restate the accepted
 //! response shapes and include the invalid response as evidence.
 
+use std::time::Instant;
+
 use crate::{
-    event::{Event, ProviderFinished, ProviderOutput, ProviderStarted},
+    event::{Event, ProviderFinished, ProviderOutput, ProviderStarted, ProviderStreamTimings},
     harness::{
         harness_loop::{
             provider::context::repair_prompt_context,
@@ -42,6 +44,7 @@ pub(in crate::harness::harness_loop) fn request_model_choice_repair<P>(
 where
     P: ControllerProvider,
 {
+    let started = Instant::now();
     let request_mode = HARNESS_TOOL_DECISION_REQUEST_MODE;
     let loop_phase = "tool_decision_repair";
     let request = provider.request_metadata_for_mode(request_mode);
@@ -95,11 +98,18 @@ where
             if let Some(metrics) = output.metrics.as_ref() {
                 session.record_provider_metrics(metrics);
             }
-            session.push_event(Event::ProviderFinished(ProviderFinished::new(
-                request.provider.clone(),
-                request.request_id.clone(),
-                output.clone(),
-            )));
+            session.push_event(Event::ProviderFinished(
+                ProviderFinished::new(
+                    request.provider.clone(),
+                    request.request_id.clone(),
+                    output.clone(),
+                )
+                .with_stream_timings(ProviderStreamTimings::new(
+                    None,
+                    None,
+                    started.elapsed().as_millis() as u64,
+                )),
+            ));
             log_provider_call_finished(
                 session,
                 round_index,
@@ -107,6 +117,7 @@ where
                 request_mode,
                 loop_phase,
                 &output,
+                &ProviderStreamTimings::new(None, None, started.elapsed().as_millis() as u64),
             );
             Ok(output)
         }

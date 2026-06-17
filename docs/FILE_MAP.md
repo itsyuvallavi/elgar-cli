@@ -21,6 +21,32 @@
 - logs
 - current harness path
 
+Key provider/harness streaming files:
+
+- `crates/elgar-core/src/provider/http/transport.rs` sends local HTTP requests
+  and owns connection/request setup.
+- `crates/elgar-core/src/provider/http/stream_transport.rs` reads streaming
+  HTTP responses and can stop on protocol completion.
+- `crates/elgar-core/src/provider/lm_studio/openai/chat_streaming.rs` sends
+  normal OpenAI-compatible streaming chat requests.
+- `crates/elgar-core/src/provider/lm_studio/openai/streaming.rs` assembles
+  streamed reasoning/text/tool-call chunks.
+- `crates/elgar-core/src/provider/lm_studio/openai/tool_streaming.rs` sends
+  tool-enabled streaming requests.
+- `crates/elgar-core/src/harness/harness_loop/provider/synthesis_stream.rs`
+  logs streamed synthesis chunks.
+
+Key harness loop control files:
+
+- `crates/elgar-core/src/harness/harness_loop/control/entrypoint.rs` exposes
+  public loop wrapper functions.
+- `crates/elgar-core/src/harness/harness_loop/control/coordinator.rs` sequences
+  one bounded primitive loop.
+- `crates/elgar-core/src/harness/harness_loop/control/loop_setup.rs` builds
+  loop-local registry, budget, memory, and initial messages.
+- `crates/elgar-core/src/harness/harness_loop/control/model_text_round.rs`
+  handles provider prose claim checks and text finish paths.
+
 `crates/elgar-tui/`:
 
 - interactive terminal UI

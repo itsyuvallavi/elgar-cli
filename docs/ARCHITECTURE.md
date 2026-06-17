@@ -30,6 +30,7 @@ terminal input
 -> TUI input handling
 -> core harness turn
 -> model either answers or requests native primitive tool calls
+-> provider stream chunks are recorded and may update active TUI preview
 -> runtime validates and executes read-only primitives
 -> risky primitive calls create pending approval records
 -> verified results return as provider tool messages

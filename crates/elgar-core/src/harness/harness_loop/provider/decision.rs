@@ -5,17 +5,23 @@
 //! have one consistent execution path.
 
 use crate::{
-    event::{Event, ProviderFinished, ProviderOutput, ProviderStarted},
+    event::{
+        Event, ProviderFinished, ProviderOutput, ProviderStarted, ProviderStreamChunkReceived,
+        ProviderStreamTimings,
+    },
     harness::{
         harness_loop::state::logging::{
             log_provider_call_canceled, log_provider_call_failed, log_provider_call_finished,
-            log_provider_call_started,
+            log_provider_call_started, log_provider_stream_chunk,
         },
         provider_route::HARNESS_TOOL_DECISION_REQUEST_MODE,
         tool_definitions::provider_tool_definitions_for_registry,
         ModelChoiceTurnError, PrimitiveToolRegistry,
     },
-    provider::{ChatMessage, ControllerProvider, ProviderCancelToken, ProviderErrorKind},
+    provider::{
+        ChatMessage, ControllerProvider, ProviderCancelToken, ProviderErrorKind,
+        ProviderStreamChunk,
+    },
     session::Session,
 };
 
@@ -27,10 +33,12 @@ pub(in crate::harness::harness_loop) fn request_native_tool_loop_response<P>(
     registry: &PrimitiveToolRegistry,
     round_index: usize,
     cancel: &ProviderCancelToken,
+    stream_events: &mut dyn FnMut(Event),
 ) -> Result<ProviderOutput, ModelChoiceTurnError>
 where
     P: ControllerProvider,
 {
+    let started = std::time::Instant::now();
     let request_mode = HARNESS_TOOL_DECISION_REQUEST_MODE;
     let loop_phase = "native_tool_loop";
     let request = provider.request_metadata_for_mode(request_mode);
@@ -56,10 +64,48 @@ where
             ),
     ));
 
-    let result = provider.chat_messages_with_tools_with_metadata_cancelable(
+    let mut sequence = 0_u64;
+    let mut first_reasoning_ms = None;
+    let mut first_text_ms = None;
+    let mut last_reasoning_ms = None;
+    let mut last_text_ms = None;
+    let mut last_chunk_ms = None;
+    let result = provider.chat_messages_with_tools_streaming_with_metadata_cancelable(
         messages.to_vec(),
         &request,
         tools,
+        &mut |chunk| {
+            sequence = sequence.saturating_add(1);
+            record_stream_timing(
+                &chunk,
+                started.elapsed().as_millis() as u64,
+                &mut first_reasoning_ms,
+                &mut first_text_ms,
+                &mut last_reasoning_ms,
+                &mut last_text_ms,
+                &mut last_chunk_ms,
+            );
+            let event = Event::ProviderStreamChunk(
+                ProviderStreamChunkReceived::new(
+                    request.provider.clone(),
+                    request.request_id.clone(),
+                    sequence,
+                    chunk.clone(),
+                )
+                .with_context(request_mode, loop_phase, round_index),
+            );
+            session.push_event(event.clone());
+            stream_events(event);
+            log_provider_stream_chunk(
+                session,
+                round_index,
+                &request.request_id,
+                request_mode,
+                loop_phase,
+                sequence,
+                &chunk,
+            );
+        },
         cancel,
     );
 
@@ -68,11 +114,22 @@ where
             if let Some(metrics) = output.metrics.as_ref() {
                 session.record_provider_metrics(metrics);
             }
-            session.push_event(Event::ProviderFinished(ProviderFinished::new(
-                request.provider.clone(),
-                request.request_id.clone(),
-                output.clone(),
-            )));
+            let stream_timings = ProviderStreamTimings::from_stream_marks(
+                first_reasoning_ms,
+                first_text_ms,
+                last_reasoning_ms,
+                last_text_ms,
+                last_chunk_ms,
+                started.elapsed().as_millis() as u64,
+            );
+            session.push_event(Event::ProviderFinished(
+                ProviderFinished::new(
+                    request.provider.clone(),
+                    request.request_id.clone(),
+                    output.clone(),
+                )
+                .with_stream_timings(stream_timings.clone()),
+            ));
             log_provider_call_finished(
                 session,
                 round_index,
@@ -80,6 +137,7 @@ where
                 request_mode,
                 loop_phase,
                 &output,
+                &stream_timings,
             );
             Ok(output)
         }
@@ -103,5 +161,32 @@ where
             );
             Err(ModelChoiceTurnError::Provider(error))
         }
+    }
+}
+
+fn record_stream_timing(
+    chunk: &ProviderStreamChunk,
+    elapsed_ms: u64,
+    first_reasoning_ms: &mut Option<u64>,
+    first_text_ms: &mut Option<u64>,
+    last_reasoning_ms: &mut Option<u64>,
+    last_text_ms: &mut Option<u64>,
+    last_chunk_ms: &mut Option<u64>,
+) {
+    *last_chunk_ms = Some(elapsed_ms);
+    match chunk {
+        ProviderStreamChunk::Reasoning(_) => {
+            if first_reasoning_ms.is_none() {
+                *first_reasoning_ms = Some(elapsed_ms);
+            }
+            *last_reasoning_ms = Some(elapsed_ms);
+        }
+        ProviderStreamChunk::Text(_) => {
+            if first_text_ms.is_none() {
+                *first_text_ms = Some(elapsed_ms);
+            }
+            *last_text_ms = Some(elapsed_ms);
+        }
+        _ => {}
     }
 }

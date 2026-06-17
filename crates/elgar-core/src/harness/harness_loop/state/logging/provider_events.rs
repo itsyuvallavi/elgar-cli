@@ -1,13 +1,17 @@
 //! Provider-call system-log events for the primitive harness loop.
 
 use serde_json::json;
-use serde_json::Value;
 
 use crate::{
-    event::ProviderOutput,
+    event::{ProviderOutput, ProviderStreamTimings},
     harness::{harness_loop::evidence::state::EvidencePromptStats, memory::RenderedMemoryStats},
     logs::system::{append_log_event, LogInput, LogPhase},
+    provider::ProviderStreamChunk,
     session::Session,
+};
+
+use super::provider_event_metadata::{
+    provider_call_finished_metadata, provider_stream_chunk_metadata,
 };
 
 pub(in crate::harness::harness_loop) fn log_provider_call_started(
@@ -43,6 +47,7 @@ pub(in crate::harness::harness_loop) fn log_provider_call_finished(
     request_mode: &str,
     phase: &str,
     output: &ProviderOutput,
+    stream_timings: &ProviderStreamTimings,
 ) {
     let backend = output
         .metrics
@@ -56,6 +61,7 @@ pub(in crate::harness::harness_loop) fn log_provider_call_finished(
         phase,
         backend,
         output,
+        stream_timings,
     );
 
     let _ = append_log_event(
@@ -70,33 +76,6 @@ pub(in crate::harness::harness_loop) fn log_provider_call_finished(
         )
         .with_metadata(metadata),
     );
-}
-
-fn provider_call_finished_metadata(
-    round_index: usize,
-    request_id: &str,
-    request_mode: &str,
-    phase: &str,
-    backend: Option<String>,
-    output: &ProviderOutput,
-) -> Value {
-    let usage = output
-        .metrics
-        .as_ref()
-        .and_then(|metrics| metrics.usage.as_ref());
-
-    json!({
-        "round_index": round_index,
-        "request_id": request_id,
-        "request_mode": request_mode,
-        "loop_phase": phase,
-        "backend": backend,
-        "provider_response_has_thinking": output.has_thinking(),
-        "provider_response_thinking_chars": output.thinking_chars(),
-        "prompt_tokens": usage.and_then(|usage| usage.prompt_tokens),
-        "completion_tokens": usage.and_then(|usage| usage.completion_tokens),
-        "total_tokens": usage.and_then(|usage| usage.total_tokens)
-    })
 }
 
 pub(in crate::harness::harness_loop) fn log_provider_call_failed(
@@ -150,6 +129,36 @@ pub(in crate::harness::harness_loop) fn log_provider_call_canceled(
             "request_mode": request_mode,
             "loop_phase": phase
         })),
+    );
+}
+
+pub(in crate::harness::harness_loop) fn log_provider_stream_chunk(
+    session: &Session,
+    round_index: usize,
+    request_id: &str,
+    request_mode: &str,
+    phase: &str,
+    sequence: u64,
+    chunk: &ProviderStreamChunk,
+) {
+    let _ = append_log_event(
+        &session.project_root,
+        &session.id,
+        LogInput::new(
+            session.next_turn_id(),
+            LogPhase::Runtime,
+            file!(),
+            "run_primitive_harness_loop",
+            "harness_loop_provider_stream_chunk",
+        )
+        .with_metadata(provider_stream_chunk_metadata(
+            round_index,
+            request_id,
+            request_mode,
+            phase,
+            sequence,
+            chunk,
+        )),
     );
 }
 
@@ -208,28 +217,4 @@ pub(in crate::harness::harness_loop) fn log_decision_context(
             "prompt_evidence_bytes": stats.compact_bytes
         })),
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::event::ProviderOutput;
-
-    use super::provider_call_finished_metadata;
-
-    #[test]
-    fn provider_call_finished_metadata_includes_thinking_diagnostics() {
-        let output = ProviderOutput::new("ok").with_thinking("one two");
-
-        let metadata = provider_call_finished_metadata(
-            1,
-            "request-1",
-            "harness_tool_decision",
-            "native_tool_loop",
-            None,
-            &output,
-        );
-
-        assert_eq!(metadata["provider_response_has_thinking"], true);
-        assert_eq!(metadata["provider_response_thinking_chars"], 7);
-    }
 }

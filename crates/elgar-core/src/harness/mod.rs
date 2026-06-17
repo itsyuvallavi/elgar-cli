@@ -37,7 +37,8 @@ pub use context::{
 };
 pub use harness_loop::{
     render_primitive_harness_loop_result, run_primitive_harness_loop,
-    run_primitive_harness_loop_with_cancel, PrimitiveHarnessLoopResult, PrimitiveHarnessLoopRound,
+    run_primitive_harness_loop_with_cancel, run_primitive_harness_loop_with_cancel_and_stream,
+    PrimitiveHarnessLoopResult, PrimitiveHarnessLoopRound,
 };
 pub use memory::{
     build_memory_index, read_session_memory_events, render_verified_memory_for_prompt_with_budget,
@@ -88,6 +89,26 @@ pub fn run_harness_turn_with_cancel<P>(
 where
     P: ControllerProvider,
 {
+    let mut ignore_stream_event = |_event: Event| {};
+    run_harness_turn_with_cancel_and_stream(
+        provider,
+        session,
+        input,
+        cancel,
+        &mut ignore_stream_event,
+    )
+}
+
+pub fn run_harness_turn_with_cancel_and_stream<P>(
+    provider: &P,
+    session: &mut Session,
+    input: &str,
+    cancel: &ProviderCancelToken,
+    stream_events: &mut dyn FnMut(Event),
+) -> HarnessTurnResult
+where
+    P: ControllerProvider,
+{
     let start_index = session.events().len();
     let turn_id = session.next_turn_id();
     let started = Instant::now();
@@ -109,7 +130,13 @@ where
 
     session.push_event(Event::UserMessage(UserMessage::new(input)));
 
-    let loop_result = run_primitive_harness_loop_with_cancel(provider, session, input, cancel);
+    let loop_result = run_primitive_harness_loop_with_cancel_and_stream(
+        provider,
+        session,
+        input,
+        cancel,
+        stream_events,
+    );
     match loop_result {
         Ok(result) => {
             let final_text = result

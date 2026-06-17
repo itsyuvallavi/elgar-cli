@@ -7,6 +7,7 @@ mod choice_events;
 mod evidence_events;
 mod memory_events;
 mod permission_events;
+mod provider_event_metadata;
 mod provider_events;
 mod round_events;
 
@@ -24,7 +25,8 @@ pub(in crate::harness::harness_loop) use permission_events::{
 };
 pub(in crate::harness::harness_loop) use provider_events::{
     log_decision_context, log_provider_call_canceled, log_provider_call_failed,
-    log_provider_call_finished, log_provider_call_started, log_turn_prompt_context,
+    log_provider_call_finished, log_provider_call_started, log_provider_stream_chunk,
+    log_turn_prompt_context,
 };
 pub(in crate::harness::harness_loop) use round_events::{
     log_loop_finished, log_loop_round_finished, log_loop_round_started,

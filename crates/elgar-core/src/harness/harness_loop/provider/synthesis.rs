@@ -5,13 +5,23 @@
 
 use std::time::Instant;
 
-use serde_json::json;
-
 use crate::{
-    event::{Event, ProviderFinished, ProviderOutput, ProviderStarted},
+    event::{
+        Event, ProviderFinished, ProviderStarted, ProviderStreamChunkReceived,
+        ProviderStreamTimings,
+    },
+    harness::harness_loop::provider::{
+        synthesis_logs::{
+            log_synthesis_canceled, log_synthesis_failed, log_synthesis_finished,
+            log_synthesis_started,
+        },
+        synthesis_stream::log_synthesis_stream_chunk,
+    },
     harness::{provider_route::HARNESS_SYNTHESIS_REQUEST_MODE, EvidenceDepth},
-    logs::system::{append_log_event, LogInput, LogPhase},
-    provider::{ChatMessage, ControllerProvider, ProviderCancelToken, ProviderErrorKind},
+    provider::{
+        ChatMessage, ControllerProvider, ProviderCancelToken, ProviderErrorKind,
+        ProviderStreamChunk,
+    },
     session::Session,
 };
 
@@ -47,6 +57,7 @@ pub(in crate::harness::harness_loop) fn run_primitive_loop_synthesis<P>(
     stop_reason: &str,
     evidence_depth: EvidenceDepth,
     cancel: &ProviderCancelToken,
+    stream_events: &mut dyn FnMut(Event),
 ) -> Result<String, crate::provider::ProviderError>
 where
     P: ControllerProvider,
@@ -83,25 +94,69 @@ where
         )),
     ];
 
-    match provider
-        .chat_messages_without_streaming_with_metadata_cancelable(messages, &request, cancel)
-    {
+    let mut sequence = 0_u64;
+    let mut first_reasoning_ms = None;
+    let mut first_text_ms = None;
+    let mut last_reasoning_ms = None;
+    let mut last_text_ms = None;
+    let mut last_chunk_ms = None;
+    match provider.chat_messages_streaming_with_metadata_cancelable(
+        messages,
+        &request,
+        &mut |chunk| {
+            sequence = sequence.saturating_add(1);
+            record_stream_timing(
+                &chunk,
+                started.elapsed().as_millis() as u64,
+                &mut first_reasoning_ms,
+                &mut first_text_ms,
+                &mut last_reasoning_ms,
+                &mut last_text_ms,
+                &mut last_chunk_ms,
+            );
+            let event = Event::ProviderStreamChunk(
+                ProviderStreamChunkReceived::new(
+                    request.provider.clone(),
+                    request.request_id.clone(),
+                    sequence,
+                    chunk.clone(),
+                )
+                .with_context(HARNESS_SYNTHESIS_REQUEST_MODE, "synthesis", 0),
+            );
+            session.push_event(event.clone());
+            stream_events(event);
+            log_synthesis_stream_chunk(session, &request.request_id, sequence, &chunk);
+        },
+        cancel,
+    ) {
         Ok(output) => {
             let final_text = output.text.trim().to_string();
             if let Some(metrics) = output.metrics.as_ref() {
                 session.record_provider_metrics(metrics);
             }
-            session.push_event(Event::ProviderFinished(ProviderFinished::new(
-                request.provider.clone(),
-                request.request_id.clone(),
-                output.clone(),
-            )));
+            let stream_timings = ProviderStreamTimings::from_stream_marks(
+                first_reasoning_ms,
+                first_text_ms,
+                last_reasoning_ms,
+                last_text_ms,
+                last_chunk_ms,
+                started.elapsed().as_millis() as u64,
+            );
+            session.push_event(Event::ProviderFinished(
+                ProviderFinished::new(
+                    request.provider.clone(),
+                    request.request_id.clone(),
+                    output.clone(),
+                )
+                .with_stream_timings(stream_timings.clone()),
+            ));
             log_synthesis_finished(
                 session,
                 started,
                 &request.request_id,
                 final_text.chars().count(),
                 &output,
+                &stream_timings,
             );
             Ok(final_text)
         }
@@ -115,134 +170,29 @@ where
     }
 }
 
-fn log_synthesis_started(
-    session: &Session,
-    request_id: &str,
-    stop_reason: &str,
-    evidence_depth: EvidenceDepth,
-    evidence_bytes: usize,
+fn record_stream_timing(
+    chunk: &ProviderStreamChunk,
+    elapsed_ms: u64,
+    first_reasoning_ms: &mut Option<u64>,
+    first_text_ms: &mut Option<u64>,
+    last_reasoning_ms: &mut Option<u64>,
+    last_text_ms: &mut Option<u64>,
+    last_chunk_ms: &mut Option<u64>,
 ) {
-    let metadata = json!({
-        "request_mode": HARNESS_SYNTHESIS_REQUEST_MODE,
-        "request_id": request_id,
-        "stop_reason": stop_reason,
-        "evidence_depth": evidence_depth.as_str(),
-        "evidence_mode": "full_verified",
-        "evidence_bytes": evidence_bytes
-    });
-    let _ = append_log_event(
-        &session.project_root,
-        &session.id,
-        LogInput::new(
-            session.next_turn_id(),
-            LogPhase::Runtime,
-            file!(),
-            "run_primitive_loop_synthesis",
-            "harness_loop_synthesis_started",
-        )
-        .with_metadata(metadata.clone()),
-    );
-    session.log_harness_event("harness_synthesis_started", metadata);
-}
-
-fn log_synthesis_finished(
-    session: &Session,
-    started: Instant,
-    request_id: &str,
-    response_chars: usize,
-    output: &ProviderOutput,
-) {
-    let usage = output
-        .metrics
-        .as_ref()
-        .and_then(|metrics| metrics.usage.as_ref());
-    let backend = output
-        .metrics
-        .as_ref()
-        .and_then(|metrics| metrics.backend)
-        .map(|backend| format!("{backend:?}"));
-
-    let metadata = json!({
-        "request_mode": HARNESS_SYNTHESIS_REQUEST_MODE,
-        "request_id": request_id,
-        "response_chars": response_chars,
-        "backend": backend,
-        "provider_response_has_thinking": output.has_thinking(),
-        "provider_response_thinking_chars": output.thinking_chars(),
-        "prompt_tokens": usage.and_then(|usage| usage.prompt_tokens),
-        "completion_tokens": usage.and_then(|usage| usage.completion_tokens),
-        "total_tokens": usage.and_then(|usage| usage.total_tokens)
-    });
-    let duration_ms = started.elapsed().as_millis() as u64;
-    let _ = append_log_event(
-        &session.project_root,
-        &session.id,
-        LogInput::new(
-            session.next_turn_id(),
-            LogPhase::Runtime,
-            file!(),
-            "run_primitive_loop_synthesis",
-            "harness_loop_synthesis_finished",
-        )
-        .with_duration_ms(duration_ms)
-        .with_metadata(metadata.clone()),
-    );
-    let mut session_metadata = metadata;
-    if let Some(object) = session_metadata.as_object_mut() {
-        object.insert("duration_ms".to_string(), json!(duration_ms));
+    *last_chunk_ms = Some(elapsed_ms);
+    match chunk {
+        ProviderStreamChunk::Reasoning(_) => {
+            if first_reasoning_ms.is_none() {
+                *first_reasoning_ms = Some(elapsed_ms);
+            }
+            *last_reasoning_ms = Some(elapsed_ms);
+        }
+        ProviderStreamChunk::Text(_) => {
+            if first_text_ms.is_none() {
+                *first_text_ms = Some(elapsed_ms);
+            }
+            *last_text_ms = Some(elapsed_ms);
+        }
+        _ => {}
     }
-    session.log_harness_event("harness_synthesis_finished", session_metadata);
-}
-
-fn log_synthesis_failed(session: &Session, started: Instant, request_id: &str, error: &str) {
-    let metadata = json!({
-        "request_mode": HARNESS_SYNTHESIS_REQUEST_MODE,
-        "request_id": request_id,
-        "error": error
-    });
-    let duration_ms = started.elapsed().as_millis() as u64;
-    let _ = append_log_event(
-        &session.project_root,
-        &session.id,
-        LogInput::new(
-            session.next_turn_id(),
-            LogPhase::Runtime,
-            file!(),
-            "run_primitive_loop_synthesis",
-            "harness_loop_synthesis_failed",
-        )
-        .with_duration_ms(duration_ms)
-        .with_metadata(metadata.clone()),
-    );
-    let mut session_metadata = metadata;
-    if let Some(object) = session_metadata.as_object_mut() {
-        object.insert("duration_ms".to_string(), json!(duration_ms));
-    }
-    session.log_harness_event("harness_synthesis_failed", session_metadata);
-}
-
-fn log_synthesis_canceled(session: &Session, started: Instant, request_id: &str) {
-    let metadata = json!({
-        "request_mode": HARNESS_SYNTHESIS_REQUEST_MODE,
-        "request_id": request_id
-    });
-    let duration_ms = started.elapsed().as_millis() as u64;
-    let _ = append_log_event(
-        &session.project_root,
-        &session.id,
-        LogInput::new(
-            session.next_turn_id(),
-            LogPhase::Runtime,
-            file!(),
-            "run_primitive_loop_synthesis",
-            "harness_loop_synthesis_canceled",
-        )
-        .with_duration_ms(duration_ms)
-        .with_metadata(metadata.clone()),
-    );
-    let mut session_metadata = metadata;
-    if let Some(object) = session_metadata.as_object_mut() {
-        object.insert("duration_ms".to_string(), json!(duration_ms));
-    }
-    session.log_harness_event("harness_synthesis_canceled", session_metadata);
 }

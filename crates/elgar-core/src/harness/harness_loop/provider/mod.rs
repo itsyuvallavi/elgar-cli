@@ -9,3 +9,5 @@ pub(super) mod mcp_context;
 pub(super) mod repair;
 pub(super) mod session_context;
 pub(super) mod synthesis;
+pub(super) mod synthesis_logs;
+pub(super) mod synthesis_stream;
