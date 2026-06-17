@@ -9,12 +9,15 @@ pub enum LogsDiagnosticError {
     NoSystemLogs(PathBuf),
     NoTurnPerfSummary(PathBuf),
     ReadFailed(String),
+    WriteFailed(String),
 }
 
 impl fmt::Display for LogsDiagnosticError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedCommand => write!(formatter, "usage: elgar logs latest"),
+            Self::UnsupportedCommand => {
+                write!(formatter, "usage: elgar logs latest | elgar logs --follow")
+            }
             Self::LogDirectoryMissing(path) => {
                 write!(
                     formatter,
@@ -37,6 +40,7 @@ impl fmt::Display for LogsDiagnosticError {
                 )
             }
             Self::ReadFailed(message) => write!(formatter, "{message}"),
+            Self::WriteFailed(message) => write!(formatter, "{message}"),
         }
     }
 }

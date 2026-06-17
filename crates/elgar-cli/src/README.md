@@ -25,6 +25,8 @@ Keep argument parsing, config lookup, and process IO here. Model/provider behavi
   default and supports `/prompt` ... `/end` blocks for one multiline prompt.
 - `elgar provider-smoke` sends one direct provider smoke request.
 - `elgar logs latest` prints the latest system-log turn summary.
+- `elgar logs --follow` tails system JSONL logs and prints compact request
+  lifecycle timing while another terminal runs Elgar.
 
 ## Checks
 

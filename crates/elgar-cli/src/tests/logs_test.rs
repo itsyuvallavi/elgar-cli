@@ -7,18 +7,15 @@ use std::{
 };
 
 use crate::{
-    is_logs_latest_command, render_latest_turn_summary, render_logs_latest_from_args,
+    is_logs_command, render_latest_turn_summary, render_logs_latest_from_args, run_logs_from_args,
     LogsDiagnosticError,
 };
 
 #[test]
-fn logs_latest_command_is_explicit() {
-    assert!(is_logs_latest_command(&[
-        "logs".to_string(),
-        "latest".to_string()
-    ]));
-    assert!(is_logs_latest_command(&["logs".to_string()]));
-    assert!(!is_logs_latest_command(&["hello".to_string()]));
+fn logs_command_is_explicit() {
+    assert!(is_logs_command(&["logs".to_string(), "latest".to_string()]));
+    assert!(is_logs_command(&["logs".to_string()]));
+    assert!(!is_logs_command(&["hello".to_string()]));
 }
 
 #[test]
@@ -27,7 +24,34 @@ fn logs_latest_args_require_latest_subcommand() {
         .unwrap_err();
 
     assert_eq!(error, LogsDiagnosticError::UnsupportedCommand);
-    assert_eq!(error.to_string(), "usage: elgar logs latest");
+    assert_eq!(
+        error.to_string(),
+        "usage: elgar logs latest | elgar logs --follow"
+    );
+}
+
+#[test]
+fn logs_latest_dispatch_writes_summary() {
+    let root = test_root("logs-dispatch-latest");
+    let log_dir = root.join(".elgar/log/system");
+    fs::create_dir_all(&log_dir).unwrap();
+    fs::write(
+        log_dir.join("terminal-tui-session.jsonl"),
+        r#"{"session_id":"terminal-tui-session","turn_id":0,"summary":"turn_perf_summary","duration_ms":4382,"metadata":{"backend":"OpenAiChatCompletions","api_call_count":1,"unknown_provider_call_count":0,"provider_request_count":1,"loop_round_count":0,"tool_request_count":0,"tool_execution_count":0,"permission_prompt_count":0,"permission_approved_count":0,"permission_denied_count":0,"synthesis_count":0,"prompt_tokens":12,"completion_tokens":196,"total_tokens":208,"total_provider_duration_millis":4378,"stream":false,"error":false}}"#,
+    )
+    .unwrap();
+    let mut output = Vec::new();
+
+    run_logs_from_args(
+        &["logs".to_string(), "latest".to_string()],
+        &root,
+        &mut output,
+    )
+    .unwrap();
+    let rendered = String::from_utf8(output).unwrap();
+
+    assert!(rendered.contains("Latest turn summary"));
+    assert!(rendered.contains("session: terminal-tui-session"));
 }
 
 #[test]

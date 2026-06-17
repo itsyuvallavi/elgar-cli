@@ -43,13 +43,14 @@ fn main() {
         }
         return;
     }
-    if elgar_cli::is_logs_latest_command(&args) {
-        log::info!("running logs latest diagnostic");
+    if elgar_cli::is_logs_command(&args) {
+        log::info!("running logs diagnostic");
         let paths = elgar_cli::RuntimePaths::from_current_dir();
-        match elgar_cli::render_logs_latest_from_args(&args, &paths.project_root) {
-            Ok(output) => println!("{output}"),
+        let stdout = std::io::stdout();
+        match elgar_cli::run_logs_from_args(&args, &paths.project_root, &mut stdout.lock()) {
+            Ok(()) => {}
             Err(error) => {
-                log::error!("logs latest failed: {error}");
+                log::error!("logs diagnostic failed: {error}");
                 eprintln!("{error}");
                 std::process::exit(1);
             }
