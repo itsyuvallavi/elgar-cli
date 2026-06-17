@@ -94,7 +94,16 @@ impl Session {
         self.latest_context_window_snapshot
             .clone()
             .unwrap_or_else(|| {
-                if self.context_accounting.estimated_tokens.is_some() {
+                if self.session_token_totals.total_tokens > 0 {
+                    ContextWindowSnapshot::from_session_totals(
+                        &self.session_token_totals,
+                        self.context_accounting.max_window_tokens,
+                        self.provider_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.request_id.clone())
+                            .unwrap_or_default(),
+                    )
+                } else if self.context_accounting.estimated_tokens.is_some() {
                     ContextWindowSnapshot::from_context_estimate(&self.context_accounting)
                 } else {
                     ContextWindowSnapshot::unknown(self.context_accounting.max_window_tokens)
@@ -186,12 +195,12 @@ impl Session {
             return;
         };
 
-        self.latest_context_window_snapshot = Some(ContextWindowSnapshot::from_provider_usage(
-            usage,
+        self.session_token_totals.add_provider_usage(usage);
+        self.latest_context_window_snapshot = Some(ContextWindowSnapshot::from_session_totals(
+            &self.session_token_totals,
             self.context_accounting.max_window_tokens,
             metrics.request_id.clone(),
         ));
-        self.session_token_totals.add_provider_usage(usage);
         self.latest_turn_token_usage = LastTurnTokenUsage::from_provider_metrics(metrics);
     }
 

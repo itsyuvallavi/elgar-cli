@@ -21,12 +21,15 @@ pub(crate) use wrap::{non_empty_lines, wrap_words};
 #[derive(Debug, Clone)]
 pub(crate) struct InlinePromptRenderer {
     context: TerminalShellContext,
-    rows: usize,
+    rendered_lines: Vec<String>,
 }
 
 impl InlinePromptRenderer {
     pub(crate) fn new(context: TerminalShellContext) -> Self {
-        Self { context, rows: 0 }
+        Self {
+            context,
+            rendered_lines: Vec::new(),
+        }
     }
 
     pub(crate) fn set_context(&mut self, context: TerminalShellContext) {
@@ -54,14 +57,16 @@ impl InlinePromptRenderer {
             write!(io::stdout(), "{footer_ansi}{line}{ANSI_RESET}\r\n")?;
         }
 
-        self.rows = top_lines.len() + input_lines.len() + bottom_lines.len() + footer_lines.len();
+        self.rendered_lines =
+            rendered_frame_lines(&[&top_lines, &input_lines, &bottom_lines, &footer_lines]);
         io::stdout().flush()
     }
 
     pub(crate) fn clear(&mut self) -> io::Result<()> {
-        if self.rows > 0 {
-            write!(io::stdout(), "\x1b[{}A\r\x1b[J", self.rows)?;
-            self.rows = 0;
+        if !self.rendered_lines.is_empty() {
+            let rows = visual_rows_for_lines(&self.rendered_lines, terminal_width());
+            write!(io::stdout(), "\x1b[{}A\r\x1b[J", rows)?;
+            self.rendered_lines.clear();
         }
         io::stdout().flush()
     }
@@ -76,18 +81,18 @@ impl Drop for InlinePromptRenderer {
 #[derive(Debug)]
 pub(crate) struct InlineWorkingRenderer {
     context: TerminalShellContext,
-    rows: usize,
-    last_preview_rows: usize,
-    last_chrome_rows: usize,
+    rendered_lines: Vec<String>,
+    last_preview_lines: Vec<String>,
+    last_chrome_lines: Vec<String>,
 }
 
 impl InlineWorkingRenderer {
     pub(crate) fn new(context: TerminalShellContext) -> Self {
         Self {
             context,
-            rows: 0,
-            last_preview_rows: 0,
-            last_chrome_rows: 0,
+            rendered_lines: Vec::new(),
+            last_preview_lines: Vec::new(),
+            last_chrome_lines: Vec::new(),
         }
     }
 
@@ -143,36 +148,44 @@ impl InlineWorkingRenderer {
             write!(io::stdout(), "{footer_ansi}{line}{ANSI_RESET}\r\n")?;
         }
 
-        self.last_preview_rows = response_lines.len();
-        self.last_chrome_rows = thinking_lines.len()
-            + reasoning_lines.len()
-            + top_lines.len()
-            + input_lines.len()
-            + bottom_lines.len()
-            + footer_lines.len();
-        self.rows = self.last_preview_rows + self.last_chrome_rows;
+        self.last_preview_lines = response_lines.clone();
+        self.last_chrome_lines = rendered_frame_lines(&[
+            &thinking_lines,
+            &reasoning_lines,
+            &top_lines,
+            &input_lines,
+            &bottom_lines,
+            &footer_lines,
+        ]);
+        self.rendered_lines =
+            rendered_frame_lines(&[&self.last_preview_lines, &self.last_chrome_lines]);
         io::stdout().flush()
     }
 
     pub(crate) fn clear_chrome_preserving_response(&mut self) -> io::Result<bool> {
-        if self.rows == 0 || self.last_preview_rows == 0 || self.last_chrome_rows == 0 {
+        if self.rendered_lines.is_empty()
+            || self.last_preview_lines.is_empty()
+            || self.last_chrome_lines.is_empty()
+        {
             return Ok(false);
         }
 
-        write!(io::stdout(), "\x1b[{}A\r\x1b[J", self.last_chrome_rows)?;
-        self.rows = 0;
-        self.last_preview_rows = 0;
-        self.last_chrome_rows = 0;
+        let rows = visual_rows_for_lines(&self.last_chrome_lines, terminal_width());
+        write!(io::stdout(), "\x1b[{}A\r\x1b[J", rows)?;
+        self.rendered_lines.clear();
+        self.last_preview_lines.clear();
+        self.last_chrome_lines.clear();
         io::stdout().flush()?;
         Ok(true)
     }
 
     pub(crate) fn clear(&mut self) -> io::Result<()> {
-        if self.rows > 0 {
-            write!(io::stdout(), "\x1b[{}A\r\x1b[J", self.rows)?;
-            self.rows = 0;
-            self.last_preview_rows = 0;
-            self.last_chrome_rows = 0;
+        if !self.rendered_lines.is_empty() {
+            let rows = visual_rows_for_lines(&self.rendered_lines, terminal_width());
+            write!(io::stdout(), "\x1b[{}A\r\x1b[J", rows)?;
+            self.rendered_lines.clear();
+            self.last_preview_lines.clear();
+            self.last_chrome_lines.clear();
         }
         io::stdout().flush()
     }
@@ -181,5 +194,37 @@ impl InlineWorkingRenderer {
 impl Drop for InlineWorkingRenderer {
     fn drop(&mut self) {
         let _ = self.clear();
+    }
+}
+
+fn rendered_frame_lines(groups: &[&Vec<String>]) -> Vec<String> {
+    groups
+        .iter()
+        .flat_map(|group| group.iter().cloned())
+        .collect()
+}
+
+fn visual_rows_for_lines(lines: &[String], width: usize) -> usize {
+    let width = width.max(1);
+    lines
+        .iter()
+        .map(|line| {
+            let cells = line.chars().count().max(1);
+            cells.div_ceil(width)
+        })
+        .sum::<usize>()
+        .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visual_rows_for_lines;
+
+    #[test]
+    fn visual_rows_recompute_after_resize() {
+        let lines = vec!["x".repeat(20), "short".to_string()];
+
+        assert_eq!(visual_rows_for_lines(&lines, 80), 2);
+        assert_eq!(visual_rows_for_lines(&lines, 10), 3);
     }
 }

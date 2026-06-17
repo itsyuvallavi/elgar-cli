@@ -5,7 +5,7 @@
 
 use elgar_core::{
     context::ContextAccounting,
-    token_accounting::{ContextWindowSnapshot, ProviderTokenUsage},
+    token_accounting::{ContextWindowSnapshot, ProviderTokenUsage, SessionTokenTotals},
 };
 
 use super::footer_context_window_label;
@@ -50,5 +50,23 @@ fn footer_omits_percentage_without_provider_current_tokens() {
     assert_eq!(
         footer_context_window_label(Some(&snapshot)),
         Some("?/16k".to_string())
+    );
+}
+
+#[test]
+fn footer_can_show_cumulative_session_context_usage() {
+    let totals = SessionTokenTotals {
+        input_tokens: 2_000,
+        output_tokens: 500,
+        reasoning_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        total_tokens: 2_500,
+    };
+    let snapshot = ContextWindowSnapshot::from_session_totals(&totals, Some(16_000), "request-2");
+
+    assert_eq!(
+        footer_context_window_label(Some(&snapshot)),
+        Some("2.5k/16k (15%)".to_string())
     );
 }

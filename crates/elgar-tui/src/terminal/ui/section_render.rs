@@ -6,7 +6,7 @@
 use super::sections::ResponseSection;
 
 const MIN_CONTENT_WIDTH: usize = 36;
-const MAX_CONTENT_WIDTH: usize = 84;
+const MAX_CONTENT_WIDTH: usize = 56;
 
 /// Render assistant sections inside one compact response container.
 pub(crate) fn render_response_sections(sections: &[ResponseSection]) -> String {
@@ -185,6 +185,28 @@ mod tests {
 
         assert_eq!(wrapped.len(), 2, "{wrapped:#?}");
         assert!(wrapped[0].contains("│   - Run `npm start`"), "{wrapped:#?}");
-        assert!(wrapped[1].contains("│     the browser."), "{wrapped:#?}");
+        assert!(wrapped[1].contains("│     and deleting"), "{wrapped:#?}");
+    }
+
+    #[test]
+    fn section_container_fits_common_narrow_terminal_width() {
+        let rendered = render_response_sections(&[
+            ResponseSection {
+                title: "Summary".to_string(),
+                lines: vec!["I have access to tools that interact with your local project files and environment.".to_string()],
+            },
+            ResponseSection {
+                title: "File System & Inspection".to_string(),
+                lines: vec![
+                    "- `find`: Search for files or folders by name pattern like `*.py` or `README`."
+                        .to_string(),
+                ],
+            },
+        ]);
+
+        assert!(
+            rendered.lines().all(|line| line.chars().count() <= 63),
+            "{rendered}"
+        );
     }
 }

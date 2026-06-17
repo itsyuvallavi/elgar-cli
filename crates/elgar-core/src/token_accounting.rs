@@ -51,6 +51,20 @@ impl ContextWindowSnapshot {
         )
     }
 
+    pub fn from_session_totals(
+        totals: &SessionTokenTotals,
+        context_window_tokens: Option<u64>,
+        request_id: impl Into<String>,
+    ) -> Self {
+        let current_tokens = (totals.total_tokens > 0).then_some(totals.total_tokens);
+        Self::new(
+            current_tokens,
+            context_window_tokens,
+            ContextWindowSource::Provider,
+            Some(request_id.into()),
+        )
+    }
+
     pub fn from_context_estimate(context: &ContextAccounting) -> Self {
         Self::new(
             context.estimated_tokens,

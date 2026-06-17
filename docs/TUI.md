@@ -139,15 +139,16 @@ raw details.
 The footer may show context-window pressure as:
 
 ```text
-1.2k/16k (7%)
+2.5k/16k (15%)
 ```
 
-The left number is the provider-reported prompt/input tokens for the latest
-request, so it reflects current context-window pressure rather than cumulative
-session spend. The percentage is shown only when it comes from provider token
-usage and a configured context window. Estimated or unknown context snapshots
-must not display a percentage; they render as `?/16k` so the TUI never presents
-an inferred value as real.
+The left number is cumulative provider-reported token usage for the active
+session. This mirrors the running session context indicator used by comparable
+CLI tools; it is not a claim that every historical token is still inside the
+next provider prompt. The percentage is shown only when the value comes from
+provider token usage and a configured context window. Estimated or unknown
+context snapshots must not display a percentage; they render as `?/16k` so the
+TUI never presents an inferred value as real.
 
 ## Current Folders
 

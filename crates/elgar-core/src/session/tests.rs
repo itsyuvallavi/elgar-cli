@@ -116,8 +116,43 @@ fn provider_metrics_use_configured_context_window_for_snapshot() {
 
     let snapshot = session.latest_context_window_snapshot();
     assert_eq!(snapshot.context_window_tokens, Some(16_000));
-    assert_eq!(snapshot.current_tokens, Some(1_280));
+    assert_eq!(snapshot.current_tokens, Some(1_392));
     assert_eq!(snapshot.used_percent, Some(8));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn provider_context_window_snapshot_accumulates_session_tokens() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-session-context-window-total-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut session = Session::new("session-context-window-total", &root, &root);
+    session.set_context_window_tokens(Some(16_000));
+
+    let mut first = ProviderMetrics::new("request-1", Some("model".to_string()), false, 1, 1000);
+    first.usage = Some(ProviderTokenUsage {
+        prompt_tokens: Some(1_000),
+        completion_tokens: Some(250),
+        total_tokens: Some(1_250),
+    });
+    session.record_provider_metrics(&first);
+
+    let mut second = ProviderMetrics::new("request-2", Some("model".to_string()), false, 1, 1000);
+    second.usage = Some(ProviderTokenUsage {
+        prompt_tokens: Some(1_500),
+        completion_tokens: Some(500),
+        total_tokens: Some(2_000),
+    });
+    session.record_provider_metrics(&second);
+
+    let snapshot = session.latest_context_window_snapshot();
+    assert_eq!(snapshot.current_tokens, Some(3_250));
+    assert_eq!(snapshot.context_window_tokens, Some(16_000));
+    assert_eq!(snapshot.used_percent, Some(20));
+    assert_eq!(session.session_token_totals().total_tokens, 3_250);
 
     let _ = std::fs::remove_dir_all(root);
 }
