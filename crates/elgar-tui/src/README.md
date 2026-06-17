@@ -17,7 +17,7 @@ Source modules for the terminal UI shell and renderable TUI surfaces.
 - `panes/` stores conversation, status, copy, event-rendering, and provider-reasoning panes.
 - `startup/` builds the opening startup text block.
 - `terminal.rs` and `terminal/` own the interactive terminal loop.
-- `_legacy/` stores archived old tool/action UI files and stale tests.
+- `_legacy/` stores archived historical tool/action UI files and tests.
 
 ## Ownership
 

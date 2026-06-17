@@ -39,9 +39,11 @@ cargo fmt --check
 cargo check -p elgar-core
 cargo check -p elgar-tui
 cargo check -p elgar-cli
+cargo test -p elgar-core harness
 cargo test -p elgar-tui
 cargo test -p elgar-cli
 ```
 
-Core tests are intentionally not part of this script yet because the core suite
-still needs stale-test cleanup.
+The script runs the focused core harness suite plus the current TUI and CLI
+test suites. Broader ad hoc core tests may still be useful for feature-specific
+changes.

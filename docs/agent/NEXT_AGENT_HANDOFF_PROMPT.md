@@ -61,7 +61,10 @@ Memory state:
 - Same-turn memory exists in `crates/elgar-core/src/harness/harness_loop/state/`.
 - Durable memory slice 1 exists in `crates/elgar-core/src/harness/memory/`.
 - Durable memory currently reads session JSONL and builds compact verified facts.
-- Durable memory does not inject into prompts yet.
+- Durable memory injects a bounded, verified prompt-memory view into provider
+  calls.
+- Prompt memory logs indexed/rendered counts, rendered chars, omitted facts, and
+  budget-hit status.
 - Memory must never trust provider prose.
 - Raw JSONL should not be dumped into prompts.
 
@@ -69,6 +72,8 @@ Recent important commits:
 - Split CLI diagnostics and TUI render modules.
 - Remove stale pending approval restore path.
 - Add durable harness memory index.
+- Split provider stream event logging.
+- Clean TUI live rendering and compact approval/result displays.
 
 Testing baseline:
 Run these before and after meaningful changes:
@@ -93,11 +98,13 @@ For approval dogfood:
 - `/deny` should not execute.
 
 Known priorities:
-1. Verify memory behavior with 20 checks.
-2. Plan the next memory slice only after verifying slice 1.
-3. If injecting memory later, inject only compact verified facts and keep it
-   advisory.
-4. Keep cleanup paused unless it directly supports active feature work.
+1. Keep active implementation files small and split when they approach 300
+   lines.
+2. Keep TUI rendering clean, scrollback-safe, and evidence-backed.
+3. Add repo-level MCP startup visibility and keep MCP docs aligned with the
+   active tool surface.
+4. Keep cleanup focused on active files; treat `_legacy/`, `docs/archive/`, and
+   `docs/agent/history/` as historical references.
 
 Rules:
 - Inspect logs before guessing.
