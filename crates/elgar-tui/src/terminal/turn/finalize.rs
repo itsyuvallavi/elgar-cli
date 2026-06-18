@@ -9,7 +9,10 @@ use elgar_core::{
 };
 
 use crate::{
-    panes::{event_rendering::render_assistant_output, ConversationLineStyle},
+    panes::{
+        event_rendering::render_assistant_output,
+        provider_reasoning::render_provider_reasoning_compact, ConversationLineStyle,
+    },
     terminal::ui::prompt::LiveProviderOutput,
     turn_metrics::aggregate_provider_token_usage,
 };
@@ -33,13 +36,15 @@ pub(super) fn decide_finalization(
     events: &[Event],
     live_output: &LiveProviderOutput,
 ) -> FinalizeDecision {
-    let live_preview = live_output.response_preview();
+    let live_preview = live_output.transcript_preview();
     let assistant = latest_provider_assistant(events);
-    let final_rendered = assistant.map(|(_index, content)| render_assistant_output(content));
-    let preserve_live_preview = live_preview
-        .as_deref()
-        .zip(final_rendered.as_deref())
-        .is_some_and(|(live, final_text)| normalized(live) == normalized(final_text));
+    let final_rendered =
+        assistant.map(|(_index, content)| render_final_transcript(events, content));
+    let preserve_live_preview = !live_output.has_reasoning_preview()
+        && live_preview
+            .as_deref()
+            .zip(final_rendered.as_deref())
+            .is_some_and(|(live, final_text)| normalized(live) == normalized(final_text));
 
     FinalizeDecision {
         preserve_live_preview,
@@ -100,6 +105,24 @@ fn latest_provider_assistant(events: &[Event]) -> Option<(usize, &str)> {
         })
 }
 
+fn render_final_transcript(events: &[Event], assistant_content: &str) -> String {
+    let mut parts = Vec::new();
+    if let Some(reasoning) = latest_provider_reasoning(events) {
+        parts.push(reasoning);
+    }
+    parts.push(render_assistant_output(assistant_content));
+    parts.join("\n")
+}
+
+fn latest_provider_reasoning(events: &[Event]) -> Option<String> {
+    events.iter().rev().find_map(|event| match event {
+        Event::ProviderFinished(finished) => {
+            render_provider_reasoning_compact(finished.output.thinking.as_deref())
+        }
+        _ => None,
+    })
+}
+
 fn normalized(text: &str) -> String {
     text.lines()
         .map(str::trim_end)
@@ -112,7 +135,10 @@ fn normalized(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use elgar_core::{
-        event::{AssistantMessage, AssistantMessageSource, Event, ProviderStreamChunkReceived},
+        event::{
+            AssistantMessage, AssistantMessageSource, Event, ProviderFinished, ProviderOutput,
+            ProviderStreamChunkReceived,
+        },
         provider::ProviderStreamChunk,
     };
 
@@ -152,6 +178,38 @@ mod tests {
             "Different answer.",
             AssistantMessageSource::Provider,
         ))];
+
+        let decision = decide_finalization(&events, &live);
+
+        assert!(!decision.should_preserve());
+    }
+
+    #[test]
+    fn rerenders_final_message_when_reasoning_is_present() {
+        let mut live = LiveProviderOutput::default();
+        live.push_stream_chunk(&ProviderStreamChunkReceived::new(
+            "provider",
+            "request-1",
+            1,
+            ProviderStreamChunk::Reasoning("Need greet.".to_string()),
+        ));
+        live.push_stream_chunk(&ProviderStreamChunkReceived::new(
+            "provider",
+            "request-1",
+            2,
+            ProviderStreamChunk::Text("Hello there.".to_string()),
+        ));
+        let events = vec![
+            Event::ProviderFinished(ProviderFinished::new(
+                "provider",
+                "request-1",
+                ProviderOutput::new("Hello there.").with_thinking("Need greet."),
+            )),
+            Event::AssistantMessage(AssistantMessage::new(
+                "Hello there.",
+                AssistantMessageSource::Provider,
+            )),
+        ];
 
         let decision = decide_finalization(&events, &live);
 

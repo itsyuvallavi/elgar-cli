@@ -7,9 +7,15 @@ use super::sections::ResponseSection;
 
 const MIN_CONTENT_WIDTH: usize = 36;
 const MAX_CONTENT_WIDTH: usize = 56;
+const MAX_BOXED_CONTENT_LINES: usize = 10;
+const MAX_BOXED_CONTENT_CHARS: usize = 700;
 
 /// Render assistant sections inside one compact response container.
 pub(crate) fn render_response_sections(sections: &[ResponseSection]) -> String {
+    if !should_box_sections(sections) {
+        return render_plain_sections(sections);
+    }
+
     let content_width = content_width(sections);
     let mut lines = vec![top_line(content_width)];
 
@@ -30,6 +36,46 @@ pub(crate) fn render_response_sections(sections: &[ResponseSection]) -> String {
     }
 
     lines.push(bottom_line(content_width));
+    lines.join("\n")
+}
+
+fn should_box_sections(sections: &[ResponseSection]) -> bool {
+    let content_lines = sections
+        .iter()
+        .map(|section| {
+            1 + section
+                .lines
+                .iter()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+        })
+        .sum::<usize>();
+    let content_chars = sections
+        .iter()
+        .map(|section| {
+            section.title.chars().count()
+                + section
+                    .lines
+                    .iter()
+                    .map(|line| line.chars().count())
+                    .sum::<usize>()
+        })
+        .sum::<usize>();
+
+    content_lines <= MAX_BOXED_CONTENT_LINES && content_chars <= MAX_BOXED_CONTENT_CHARS
+}
+
+fn render_plain_sections(sections: &[ResponseSection]) -> String {
+    let mut lines = Vec::new();
+    for (index, section) in sections.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.push(section.title.clone());
+        for line in section.lines.iter().filter(|line| !line.trim().is_empty()) {
+            lines.push(indent_content(line));
+        }
+    }
     lines.join("\n")
 }
 
@@ -144,69 +190,4 @@ fn hard_split(word: &str, width: usize) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{render_response_sections, ResponseSection};
-
-    #[test]
-    fn renders_sections_in_one_container() {
-        let rendered = render_response_sections(&[
-            ResponseSection {
-                title: "Summary".to_string(),
-                lines: vec!["Todo app created.".to_string()],
-            },
-            ResponseSection {
-                title: "Files".to_string(),
-                lines: vec!["- `app/page.tsx`".to_string()],
-            },
-        ]);
-
-        assert!(rendered.starts_with(" ╭─ response "));
-        assert!(rendered.contains("│ Summary"));
-        assert!(rendered.contains("│   Todo app created."));
-        assert!(rendered.contains("│ Files"));
-        assert!(rendered.contains("`app/page.tsx`"));
-        assert!(rendered.ends_with('╯'));
-    }
-
-    #[test]
-    fn aligns_wrapped_bullet_continuations() {
-        let rendered = render_response_sections(&[ResponseSection {
-            title: "Verification".to_string(),
-            lines: vec![
-                "- Run `npm start` and manually test adding completing and deleting a todo item in the browser."
-                    .to_string(),
-            ],
-        }]);
-
-        let wrapped = rendered
-            .lines()
-            .filter(|line| line.contains("Run `npm start`") || line.contains("the browser"))
-            .collect::<Vec<_>>();
-
-        assert_eq!(wrapped.len(), 2, "{wrapped:#?}");
-        assert!(wrapped[0].contains("│   - Run `npm start`"), "{wrapped:#?}");
-        assert!(wrapped[1].contains("│     and deleting"), "{wrapped:#?}");
-    }
-
-    #[test]
-    fn section_container_fits_common_narrow_terminal_width() {
-        let rendered = render_response_sections(&[
-            ResponseSection {
-                title: "Summary".to_string(),
-                lines: vec!["I have access to tools that interact with your local project files and environment.".to_string()],
-            },
-            ResponseSection {
-                title: "File System & Inspection".to_string(),
-                lines: vec![
-                    "- `find`: Search for files or folders by name pattern like `*.py` or `README`."
-                        .to_string(),
-                ],
-            },
-        ]);
-
-        assert!(
-            rendered.lines().all(|line| line.chars().count() <= 63),
-            "{rendered}"
-        );
-    }
-}
+mod tests;

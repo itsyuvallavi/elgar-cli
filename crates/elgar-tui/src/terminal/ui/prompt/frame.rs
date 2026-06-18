@@ -10,6 +10,8 @@ use super::{
     wrap::{non_empty_lines, rendered_preview_lines, wrap_preserving_spacing, wrap_words},
 };
 
+const LIVE_REASONING_PREVIEW_LINES: usize = 4;
+
 pub(super) fn inline_prompt_frame_lines_with_cursor(
     context: &TerminalShellContext,
     input: &str,
@@ -62,16 +64,15 @@ pub(super) fn active_working_frame_lines_with_cursor(
         .response_preview()
         .map(|text| with_leading_spacer(rendered_preview_lines(&text, drawable_width(width))))
         .unwrap_or_default();
-    let reasoning_lines = if response_lines.is_empty() {
-        live_output
-            .reasoning_summary()
-            .map(|line| {
-                with_leading_spacer(non_empty_lines(wrap_words(&line, drawable_width(width))))
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let reasoning_lines = live_output
+        .reasoning_preview()
+        .map(|line| {
+            with_leading_spacer(capped_reasoning_lines(non_empty_lines(wrap_words(
+                &line,
+                drawable_width(width),
+            ))))
+        })
+        .unwrap_or_default();
     let progress_lines = if reasoning_lines.is_empty() && response_lines.is_empty() {
         with_leading_spacer(vec![provider_progress_line(tick, elapsed_secs)])
     } else {
@@ -110,6 +111,18 @@ fn with_leading_spacer(mut lines: Vec<String>) -> Vec<String> {
     spaced.push(String::new());
     spaced.append(&mut lines);
     spaced
+}
+
+fn capped_reasoning_lines(mut lines: Vec<String>) -> Vec<String> {
+    if lines.len() <= LIVE_REASONING_PREVIEW_LINES {
+        return lines;
+    }
+
+    lines.truncate(LIVE_REASONING_PREVIEW_LINES);
+    if let Some(last) = lines.last_mut() {
+        last.push_str("...");
+    }
+    lines
 }
 
 fn prompt_input_lines_with_cursor(input: &str, cursor: usize, width: usize) -> Vec<String> {

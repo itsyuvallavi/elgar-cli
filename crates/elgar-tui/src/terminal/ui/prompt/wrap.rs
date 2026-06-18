@@ -48,15 +48,6 @@ pub(super) fn wrap_preserving_spacing(line: &str, width: usize) -> Vec<String> {
     lines
 }
 
-pub(super) fn compact_streaming_text(text: &str) -> Option<String> {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
-}
-
 pub(crate) fn wrap_words(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();

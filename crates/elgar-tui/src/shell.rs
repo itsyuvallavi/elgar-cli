@@ -51,7 +51,7 @@ impl TuiShell {
     }
 
     pub fn render_scripted_transcript(&self) -> String {
-        self.render_with_conversation_body(&self.conversation.render_copy_body())
+        self.render_with_conversation_body(&self.conversation.render_body())
     }
 
     fn render_with_conversation_body(&self, conversation_body: &str) -> String {
@@ -201,5 +201,30 @@ fn latest_provider_request_id(events: &[Event]) -> Option<&str> {
 impl Default for TuiShell {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use elgar_core::event::{Event, ProviderFinished, ProviderOutput};
+
+    use super::TuiShell;
+
+    #[test]
+    fn scripted_transcript_includes_visible_reasoning() {
+        let mut shell = TuiShell::new();
+        shell.consume_event(&Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "request-1",
+            ProviderOutput::new("").with_thinking("Need to answer briefly."),
+        )));
+
+        let transcript = shell.render_scripted_transcript();
+
+        assert!(transcript.contains("Need to answer briefly."));
+        assert!(!transcript.contains("reasoning · "));
+        assert!(!shell
+            .conversation_copy_text()
+            .contains("Need to answer briefly."));
     }
 }

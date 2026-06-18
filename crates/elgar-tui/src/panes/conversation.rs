@@ -3,7 +3,6 @@
 //! This file stores visible conversation lines, raw hidden details, scrollback,
 //! and provider loading state.
 
-mod reasoning_visibility;
 mod scrollback;
 mod style;
 
@@ -16,10 +15,9 @@ use crate::markdown::{assistant_markdown_has_hidden_details, render_assistant_ma
 
 use super::{
     event_rendering::{render_tui_event, render_turn_metrics_summary},
-    provider_reasoning::render_provider_reasoning,
+    provider_reasoning::{render_provider_reasoning_compact, render_provider_reasoning_details},
 };
 
-use reasoning_visibility::provider_reasoning_should_stay_hidden;
 use scrollback::ConversationScrollback;
 pub(super) use scrollback::ThinkingPulse;
 pub(crate) use style::ConversationLineStyle;
@@ -31,25 +29,17 @@ pub struct ConversationPane {
     scrollback: ConversationScrollback,
     loading_pulse: ThinkingPulse,
     raw_details: Vec<String>,
-    hidden_provider_reasoning_request_ids: Vec<String>,
 }
 
 impl ConversationPane {
     /// Apply one core event to the visible conversation pane.
     pub fn push_event(&mut self, event: &Event) {
         match event {
-            Event::ProviderStarted(started) => {
+            Event::ProviderStarted(_started) => {
                 self.loading_pulse.reset();
-                if provider_reasoning_should_stay_hidden(started) {
-                    self.hidden_provider_reasoning_request_ids
-                        .push(started.request_id.clone());
-                }
             }
-            Event::ProviderFinished(finished) => {
+            Event::ProviderFinished(_) => {
                 self.remove_loading_pulse();
-                if self.should_hide_provider_reasoning(finished) {
-                    return;
-                }
             }
             Event::Error(_) => self.remove_loading_pulse(),
             _ => {}
@@ -94,7 +84,6 @@ impl ConversationPane {
         self.scrollback.follow_latest();
         self.loading_pulse.reset();
         self.raw_details.clear();
-        self.hidden_provider_reasoning_request_ids.clear();
     }
 
     pub(crate) fn scroll_offset_for_lines(
@@ -209,9 +198,15 @@ impl ConversationPane {
 
     /// Render provider completion, reasoning, and usage summary.
     fn push_provider_finished(&mut self, finished: &ProviderFinished) {
-        if let Some(line) = render_provider_reasoning(finished.output.thinking.as_deref()) {
+        let Some(reasoning) = finished.output.thinking.as_deref() else {
+            return;
+        };
+
+        if let Some(line) = render_provider_reasoning_compact(Some(reasoning)) {
             self.push_line(line, ConversationLineStyle::Thinking);
         }
+        self.raw_details
+            .push(render_provider_reasoning_details(reasoning));
     }
 
     pub(crate) fn push_turn_metrics(
@@ -222,18 +217,5 @@ impl ConversationPane {
         if let Some(line) = render_turn_metrics_summary(total_duration_millis, usage) {
             self.push_line(line, ConversationLineStyle::Metrics);
         }
-    }
-
-    fn should_hide_provider_reasoning(&mut self, finished: &ProviderFinished) -> bool {
-        let Some(index) = self
-            .hidden_provider_reasoning_request_ids
-            .iter()
-            .position(|request_id| request_id == &finished.request_id)
-        else {
-            return false;
-        };
-
-        self.hidden_provider_reasoning_request_ids.remove(index);
-        true
     }
 }

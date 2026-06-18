@@ -80,9 +80,9 @@ fn active_frame_renders_streamed_answer_without_close_wait_noise() {
 }
 
 #[test]
-fn active_frame_hides_reasoning_after_answer_preview_exists() {
+fn active_frame_keeps_reasoning_after_answer_preview_exists() {
     let root = std::env::temp_dir().join(format!(
-        "elgar-active-frame-hide-reasoning-{}",
+        "elgar-active-frame-keep-reasoning-{}",
         std::process::id()
     ));
     let context = TerminalShellContext::new(&root, &root);
@@ -103,9 +103,39 @@ fn active_frame_hides_reasoning_after_answer_preview_exists() {
     let (_, reasoning_lines, response_lines, _, _, _, _) =
         active_working_frame_lines_with_cursor(&context, 0, 2, "", 0, &live_output, 100);
     let response = response_lines.join("\n");
+    let reasoning = reasoning_lines.join("\n");
 
     assert!(response.contains("Visible answer."));
-    assert!(reasoning_lines.is_empty());
+    assert!(reasoning.contains("Internal reasoning"));
+    assert!(!reasoning.contains("reasoning · streaming"));
+}
+
+#[test]
+fn active_frame_summarizes_live_reasoning_without_cropping_text() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-active-frame-cap-reasoning-{}",
+        std::process::id()
+    ));
+    let context = TerminalShellContext::new(&root, &root);
+    let mut live_output = LiveProviderOutput::default();
+    live_output.push_stream_chunk(&ProviderStreamChunkReceived::new(
+        "provider",
+        "request-1",
+        1,
+        ProviderStreamChunk::Reasoning(
+            "Need answer from tools. Keep it concise. Extra detail follows.".to_string(),
+        ),
+    ));
+
+    let (_, reasoning_lines, _, _, _, _, _) =
+        active_working_frame_lines_with_cursor(&context, 0, 2, "", 0, &live_output, 32);
+
+    let reasoning = reasoning_lines.join("\n");
+
+    assert!(reasoning.contains("Need answer from tools."));
+    assert!(!reasoning.contains("Extra detail follows."));
+    assert!(!reasoning.contains("reasoning · streaming"));
+    assert!(!reasoning.ends_with("..."));
 }
 
 #[test]

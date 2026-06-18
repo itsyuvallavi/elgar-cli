@@ -115,13 +115,16 @@ and core logs remain the source of truth.
 
 ### Reasoning
 
-Default visible reasoning should be compact:
+Default visible reasoning should stay quiet but present:
 
 ```text
-reasoning · planning files and verification
+The user is asking what I can do; answer from the available local tools.
 ```
 
-Long reasoning stays hidden and available through details/copy commands.
+Completed provider reasoning remains in normal chat scrollback before the final
+assistant answer, but normal chat shows only compact readable reasoning text.
+Full raw reasoning stays available through `/details last` and raw diagnostic
+logs. Do not replace visible reasoning with diagnostic metadata counts.
 
 ### Commands
 
@@ -168,10 +171,12 @@ Footer should stay quiet:
 elgar/playground/demo                    full_access · qwen3.6 · 12.4k/128k (9%)
 ```
 
-The context percentage must be provider-backed and should use the latest
-request's prompt/input tokens, not cumulative session spend. If token usage or
-the configured context window is missing, the footer must show an unknown marker
-rather than a computed estimate.
+The context percentage must be provider-backed and should use cumulative
+provider-reported token usage for the active session. It is a running session
+usage indicator, not a guarantee that every historical token is still inside the
+next provider prompt. If token usage or the configured context window is
+missing, the footer must show an unknown marker rather than a computed
+estimate.
 
 ## Implementation Slices
 
@@ -184,6 +189,10 @@ Status: implemented as the first display-only pass.
 Follow-up status: loose terminal tables such as `Entry | Description` followed
 by dashed `-----+-----` separator rows are normalized into compact rows, so
 directory summaries do not render as wide ASCII tables.
+
+Follow-up status: long multi-section answers now render as plain sections
+instead of bordered response boxes, avoiding broken borders after resize or in
+narrow terminals. Short structured summaries still use the quiet response box.
 
 Add:
 
@@ -305,10 +314,12 @@ Tests:
 
 ### Slice 5: Reasoning Display
 
-Goal: reduce reasoning noise while keeping useful visibility.
+Goal: keep provider reasoning visible in the chat without turning the TUI into
+a raw log console.
 
-Status: partially implemented for live streamed reasoning chunks in active
-provider turns; static reasoning summary cleanup remains a follow-up.
+Status: live streamed reasoning is shown as compact status while a turn is
+active, and completed provider reasoning is visible as compact status in the
+conversation transcript.
 
 Edit:
 
@@ -319,18 +330,19 @@ Edit:
 
 Behavior:
 
-- Use a stable `reasoning · ...` line.
+- Render completed reasoning as quiet status before the assistant answer.
 - Stream reasoning/text chunks from the harness worker while the turn is active.
 - Persist streamed chunks to logs so canceled calls are diagnosable.
-- Prefer action-oriented summaries.
-- Keep raw detail hidden.
-- Avoid showing tool protocol or JSON-like planning.
+- Keep raw reasoning out of normal chat and preserve it in details/logs.
+- Keep raw event detail available through `/details last`.
+- Do not hide reasoning solely because the request mode is tool decision or
+  synthesis.
 
 Tests:
 
-- Tool-call reasoning stays hidden.
-- Useful reasoning summary is compact.
-- Long reasoning truncates predictably.
+- Completed tool-decision and synthesis reasoning status remains visible.
+- Assistant answer still appears after reasoning.
+- Copy output can omit reasoning when using normal copy.
 - Canceled provider calls retain streamed chunk evidence in JSONL.
 
 ### Slice 6: Approval Card Cleanup
@@ -438,7 +450,50 @@ Tests:
 - Model tool schema includes `mcp_call` only when MCP is active.
 - Footer/status display does not claim MCP access when the schema is hidden.
 
-### Slice 9: Command Palette
+### Slice 9: Logs-Only Memory, Context, And MCP Diagnostics
+
+Goal: make memory, session context, and MCP availability easy to inspect from
+JSONL and `elgar logs --follow`, without adding another TUI command surface.
+
+Add:
+
+- `crates/elgar-core/src/session/status_logging.rs`
+- `crates/elgar-cli/src/diagnostics/logs/follow_render.rs`
+
+Edit:
+
+- `crates/elgar-core/src/session.rs`
+- `crates/elgar-core/src/harness/harness_loop/control/loop_setup.rs`
+- `crates/elgar-cli/src/diagnostics/logs/follow.rs`
+- `crates/elgar-cli/src/diagnostics/logs/summary.rs`
+- `crates/elgar-cli/src/diagnostics/logs/render.rs`
+- `docs/LOGGING.md`
+- `crates/elgar-cli/src/diagnostics/logs/README.md`
+
+Behavior:
+
+- Log `harness_session_context_status` after provider metrics are recorded.
+- Include latest-turn tokens, cumulative session tokens, context window,
+  percent used when known, permission mode, and compact pending approval status.
+- Keep exact memory prompt stats in `harness_turn_prompt_context_built`.
+- Log `harness_mcp_status` once per harness loop setup with active/inactive
+  state, config source, server ids, and exposed tool count.
+- Extend `elgar logs --follow` to print memory/context/MCP state in compact
+  lines.
+- Extend `elgar logs latest` to summarize memory/context/MCP state when present.
+- Do not add `/context`; diagnostics remain logs-only.
+
+Tests:
+
+- A normal turn writes `harness_session_context_status`.
+- A harness turn writes `harness_mcp_status` even when MCP is inactive.
+- `elgar logs --follow` shows memory, session token context, MCP, approvals,
+  provider timing, and render handoff lines.
+- `elgar logs latest` includes context/memory/MCP summary lines.
+- Normal follow output does not add raw prompt, raw response, full reasoning,
+  tool arguments, or secrets.
+
+### Slice 10: Command Palette
 
 Goal: make local commands discoverable without replacing normal terminal input.
 
@@ -496,9 +551,9 @@ cargo test -p elgar-core harness::tests::loop_flow -- --nocapture
 ./bin/install-local
 ```
 
-### Cursor Dogfood
+### Dogfood
 
-Ask Cursor to run:
+Run these scripted or manual dogfoods:
 
 1. `elgar tui` scripted `/prompt` project-generation flow with
    `/permissions full_access`.
@@ -506,7 +561,7 @@ Ask Cursor to run:
 3. `/cancel` during a long generation.
 4. `/details last` after a collapsed long block.
 
-Cursor should report:
+The dogfood report should include:
 
 - transcript path
 - session/system JSONL paths

@@ -148,10 +148,9 @@ impl InlineWorkingRenderer {
             write!(io::stdout(), "{footer_ansi}{line}{ANSI_RESET}\r\n")?;
         }
 
-        self.last_preview_lines = response_lines.clone();
+        self.last_preview_lines = rendered_frame_lines(&[&reasoning_lines, &response_lines]);
         self.last_chrome_lines = rendered_frame_lines(&[
             &thinking_lines,
-            &reasoning_lines,
             &top_lines,
             &input_lines,
             &bottom_lines,

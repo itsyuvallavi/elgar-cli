@@ -96,6 +96,7 @@ where
     );
     tick = tick.wrapping_add(1);
     let mut last_render = Instant::now();
+    let mut live_preview_dirty = false;
     let mut logged_unchanged_preview_idle = false;
     let watchdog = interactive_provider_watchdog_timeout();
 
@@ -108,27 +109,31 @@ where
                 if let elgar_core::event::Event::ProviderStreamChunk(chunk) = &event {
                     let chunk_received_at = Instant::now();
                     live_output.push_stream_chunk(chunk);
-                    let render_started = Instant::now();
-                    working.render_with_cursor(
-                        tick,
-                        turn_started.elapsed().as_secs(),
-                        input.text(),
-                        input.cursor(),
-                        &live_output,
-                    )?;
-                    log_live_preview_render(
-                        session,
-                        turn_id,
-                        turn_started,
-                        "stream_chunk",
-                        &live_output,
-                        Some(chunk),
-                        Some(duration_millis(render_started.elapsed())),
-                        Some(duration_millis(chunk_received_at.elapsed())),
-                    );
-                    logged_unchanged_preview_idle = false;
-                    tick = tick.wrapping_add(1);
-                    last_render = Instant::now();
+                    live_preview_dirty = true;
+                    if should_render_stream_chunk(last_render) {
+                        let render_started = Instant::now();
+                        working.render_with_cursor(
+                            tick,
+                            turn_started.elapsed().as_secs(),
+                            input.text(),
+                            input.cursor(),
+                            &live_output,
+                        )?;
+                        log_live_preview_render(
+                            session,
+                            turn_id,
+                            turn_started,
+                            "stream_chunk",
+                            &live_output,
+                            Some(chunk),
+                            Some(duration_millis(render_started.elapsed())),
+                            Some(duration_millis(chunk_received_at.elapsed())),
+                        );
+                        live_preview_dirty = false;
+                        logged_unchanged_preview_idle = false;
+                        tick = tick.wrapping_add(1);
+                        last_render = Instant::now();
+                    }
                 }
             }
             Ok(Some(ProviderTurnUpdate::Canceled)) => {
@@ -147,21 +152,7 @@ where
                 }
 
                 if last_render.elapsed() >= IDLE_RENDER_INTERVAL {
-                    if should_skip_idle_repaint(&live_output) {
-                        if !logged_unchanged_preview_idle {
-                            log_live_preview_render(
-                                session,
-                                turn_id,
-                                turn_started,
-                                "preview_unchanged_idle",
-                                &live_output,
-                                None,
-                                None,
-                                None,
-                            );
-                            logged_unchanged_preview_idle = true;
-                        }
-                    } else {
+                    if should_render_idle_frame(&live_output, live_preview_dirty) {
                         let render_started = Instant::now();
                         working.render_with_cursor(
                             tick,
@@ -180,7 +171,23 @@ where
                             Some(duration_millis(render_started.elapsed())),
                             None,
                         );
+                        live_preview_dirty = false;
+                        logged_unchanged_preview_idle = false;
                         tick = tick.wrapping_add(1);
+                    } else {
+                        if !logged_unchanged_preview_idle {
+                            log_live_preview_render(
+                                session,
+                                turn_id,
+                                turn_started,
+                                "preview_unchanged_idle",
+                                &live_output,
+                                None,
+                                None,
+                                None,
+                            );
+                            logged_unchanged_preview_idle = true;
+                        }
                     }
                     last_render = Instant::now();
                 }
@@ -263,8 +270,12 @@ where
     Ok(preserved_input)
 }
 
-fn should_skip_idle_repaint(live_output: &LiveProviderOutput) -> bool {
-    live_output.response_preview_stats().has_preview
+fn should_render_idle_frame(live_output: &LiveProviderOutput, live_preview_dirty: bool) -> bool {
+    !live_output.has_visible_preview() || live_preview_dirty
+}
+
+fn should_render_stream_chunk(last_render: Instant) -> bool {
+    last_render.elapsed() >= IDLE_RENDER_INTERVAL
 }
 
 fn include_metrics_after_preserved_preview() -> bool {

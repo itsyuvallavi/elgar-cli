@@ -6,13 +6,8 @@ use elgar_core::{
 };
 
 use crate::{
-    markdown::render_assistant_markdown,
-    panes::provider_reasoning::format_provider_reasoning_summary,
+    markdown::render_assistant_markdown, panes::provider_reasoning::render_live_reasoning_compact,
 };
-
-use super::wrap::compact_streaming_text;
-
-const LIVE_REASONING_SUMMARY_CHARS: usize = 1200;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LiveProviderOutput {
@@ -37,9 +32,8 @@ impl LiveProviderOutput {
         }
     }
 
-    pub(super) fn reasoning_summary(&self) -> Option<String> {
-        compact_streaming_text(&self.reasoning)
-            .and_then(|text| format_provider_reasoning_summary(&text, LIVE_REASONING_SUMMARY_CHARS))
+    pub(crate) fn reasoning_preview(&self) -> Option<String> {
+        render_live_reasoning_compact(&self.reasoning)
     }
 
     pub(crate) fn response_preview(&self) -> Option<String> {
@@ -52,8 +46,28 @@ impl LiveProviderOutput {
         }
     }
 
+    pub(crate) fn transcript_preview(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(reasoning) = self.reasoning_preview() {
+            parts.push(reasoning);
+        }
+        if let Some(response) = self.response_preview() {
+            parts.push(response);
+        }
+
+        (!parts.is_empty()).then(|| parts.join("\n"))
+    }
+
     pub(crate) fn reasoning_chars(&self) -> usize {
         self.reasoning.chars().count()
+    }
+
+    pub(crate) fn has_reasoning_preview(&self) -> bool {
+        !self.reasoning.trim().is_empty()
+    }
+
+    pub(crate) fn has_visible_preview(&self) -> bool {
+        self.reasoning_preview().is_some() || self.response_preview().is_some()
     }
 
     pub(crate) fn response_preview_stats(&self) -> LiveResponsePreviewStats {
@@ -90,23 +104,27 @@ mod tests {
         ));
 
         assert!(output
-            .reasoning_summary()
-            .is_some_and(|summary| summary.contains("Need answer")));
+            .reasoning_preview()
+            .is_some_and(|summary| summary == "Need answer."));
     }
 
     #[test]
-    fn live_output_keeps_longer_reasoning_preview() {
+    fn live_output_summarizes_long_reasoning_without_cropping_text() {
         let mut output = LiveProviderOutput::default();
         output.push_stream_chunk(&ProviderStreamChunkReceived::new(
             "provider",
             "request-1",
             1,
-            ProviderStreamChunk::Reasoning("a ".repeat(300)),
+            ProviderStreamChunk::Reasoning(
+                "Need answer from tools. Keep it concise. Extra detailed planning follows."
+                    .to_string(),
+            ),
         ));
 
-        let summary = output.reasoning_summary().expect("reasoning summary");
+        let summary = output.reasoning_preview().expect("reasoning summary");
 
-        assert!(summary.chars().count() > 160);
+        assert_eq!(summary, "Need answer from tools. Keep it concise.");
+        assert!(!summary.ends_with("..."));
     }
 
     #[test]

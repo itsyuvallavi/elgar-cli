@@ -36,21 +36,29 @@ model call returns a local message instead of leaving the terminal spinning
 indefinitely. The watchdog can be overridden with
 `ELGAR_TUI_PROVIDER_WATCHDOG_MILLIS`.
 
-When the provider streams reasoning or text, the active inline prompt can show a
-larger bounded live reasoning preview while the request is still running.
+When the provider streams reasoning or text, the active inline prompt shows a
+compact readable reasoning while the request is still running. The TUI stores
+the full reasoning for diagnostics, but normal chat must not dump raw reasoning
+text. Idle redraws keep the progress animation alive before
+any provider text arrives, but they must not reprint unchanged reasoning or
+answer previews into scrollback.
 Streamed chunks are recorded in session/system logs before `provider_finished`,
 so a canceled request can still be diagnosed from whatever Elgar received.
 Finished provider events log first-reasoning, first-text, reasoning-to-text,
-and total stream timings.
+stream-done, and total stream timings.
 
-When visible answer text has already streamed, the TUI treats that preview as
-the visible answer. On provider close, it compares the rendered live preview
-with the rendered final provider message. If they match exactly, the prompt
-chrome is cleared while the streamed answer stays in place. It must not append
-a late `response ...` metrics line under the answer, because that makes the
-conversation visibly change several seconds after the answer appeared. If the
-final rendered content differs, the TUI falls back to the full final render
-path.
+When the provider returns thinking/reasoning, the completed conversation shows
+a compact readable reasoning note before the assistant answer. Full raw
+reasoning stays available through `/details last` and JSONL diagnostics. The
+TUI must not hide harness reasoning solely because the request was a
+tool-decision or synthesis turn, and it must not replace visible reasoning with
+metadata such as character counts.
+
+When visible answer text has already streamed without reasoning, the TUI can
+treat the live preview as the visible answer. If reasoning streamed before the
+answer, the live compact reasoning stays visible while the answer streams, then
+the completed provider reasoning is rendered once from the final
+provider event.
 
 ## Approval Flow
 
@@ -114,7 +122,8 @@ The TUI renders:
 - compact pending approval prompts
 - compact verified execution results (`created`, `updated`, or `unchanged` for
   writes) with raw proof available through details
-- larger capped reasoning preview
+- live reasoning preview while a provider request is active
+- completed provider reasoning in the chat transcript
 - live streamed reasoning preview during active provider turns
 - quiet live-answer finalization when streamed and final rendered text match
 - response timing/token usage
