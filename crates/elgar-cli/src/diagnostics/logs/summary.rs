@@ -24,6 +24,32 @@ pub(super) struct HarnessDiagnosticSummary {
     pub(super) permission_denied: u64,
     pub(super) synthesis_calls: u64,
     pub(super) error: bool,
+    pub(super) memory: Option<MemoryDiagnosticSummary>,
+    pub(super) context: Option<ContextDiagnosticSummary>,
+    pub(super) mcp: Option<McpDiagnosticSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MemoryDiagnosticSummary {
+    pub(super) indexed_facts: u64,
+    pub(super) rendered_facts: u64,
+    pub(super) omitted_facts: u64,
+    pub(super) rendered_chars: u64,
+    pub(super) budget_hit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ContextDiagnosticSummary {
+    pub(super) total_tokens: Option<u64>,
+    pub(super) window_tokens: Option<u64>,
+    pub(super) used_percent: Option<u64>,
+    pub(super) permission_mode: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct McpDiagnosticSummary {
+    pub(super) active: bool,
+    pub(super) server_ids: Vec<String>,
 }
 
 pub(super) fn latest_harness_summary(
@@ -74,6 +100,9 @@ pub(super) fn latest_harness_summary(
         permission_denied: 0,
         synthesis_calls: 0,
         error: false,
+        memory: None,
+        context: None,
+        mcp: None,
     };
 
     for event in turn_events {
@@ -123,6 +152,31 @@ fn observe_event(summary: &mut HarnessDiagnosticSummary, event: &Value) {
             }
         }
         "harness_loop_repair_finished" => summary.repair_attempts += 1,
+        "harness_turn_prompt_context_built" => {
+            summary.memory = Some(MemoryDiagnosticSummary {
+                indexed_facts: metadata_count(metadata, "indexed_fact_count"),
+                rendered_facts: metadata_count(metadata, "rendered_fact_count"),
+                omitted_facts: metadata_count(metadata, "omitted_fact_count"),
+                rendered_chars: metadata_count(metadata, "rendered_memory_chars"),
+                budget_hit: metadata_bool(metadata, "memory_budget_hit"),
+            });
+        }
+        "harness_session_context_status" => {
+            summary.context = Some(ContextDiagnosticSummary {
+                total_tokens: metadata.get("session_total_tokens").and_then(Value::as_u64),
+                window_tokens: metadata
+                    .get("context_window_tokens")
+                    .and_then(Value::as_u64),
+                used_percent: metadata.get("context_used_percent").and_then(Value::as_u64),
+                permission_mode: metadata_text(metadata, "permission_mode"),
+            });
+        }
+        "harness_mcp_status" => {
+            summary.mcp = Some(McpDiagnosticSummary {
+                active: metadata_bool(metadata, "mcp_active"),
+                server_ids: metadata_text_array(metadata, "server_ids"),
+            });
+        }
         "harness_permission_decision" => {
             collect_unique_text(&mut summary.tools, metadata, "tool");
             if metadata.get("decision").and_then(Value::as_str) == Some("deny") {
@@ -182,4 +236,22 @@ fn metadata_text(metadata: &Value, key: &str) -> String {
 
 fn metadata_count(metadata: &Value, key: &str) -> u64 {
     metadata.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn metadata_bool(metadata: &Value, key: &str) -> bool {
+    metadata.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn metadata_text_array(metadata: &Value, key: &str) -> Vec<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }

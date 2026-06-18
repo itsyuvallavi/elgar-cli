@@ -6,6 +6,7 @@
 use std::{io::Write, path::Path};
 
 mod follow;
+mod follow_render;
 mod render;
 mod scan;
 mod summary;

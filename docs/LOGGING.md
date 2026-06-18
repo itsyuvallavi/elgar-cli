@@ -113,6 +113,35 @@ attach it starts at the end of the newest existing system log so reopening the
 follower does not replay stale events. If a newer log file appears while the
 follower is already running, it reads that new file from the beginning.
 
+`elgar logs --follow` also prints compact state lines for the diagnostics that
+are hard to see from the TUI alone:
+
+```text
+memory indexed=6 rendered=3 omitted=3 chars=176 budget_hit=false history=2
+tokens turn ↑1.2k ↓43 = 1.2k · session 4.6k/128k (3%) · mode review_all
+mcp active servers=project-index,context7 source=elgar-mcp.json
+mcp inactive
+approval pending write approval-1 target=hello-world.md scope=inside_launch_folder
+```
+
+These lines are derived from JSONL events only. They do not add model context,
+call providers, or create a second source of truth.
+
+Session context events are written as `harness_session_context_status` after
+provider metrics are recorded. They include cumulative provider-reported token
+usage for the active session, the configured context window when known, the
+permission mode, and compact pending-approval status. This is a running session
+usage indicator, not a promise that every historical token is still present in
+the next prompt.
+
+Memory context events are written as `harness_turn_prompt_context_built`. They
+include indexed/rendered/omitted fact counts, rendered memory characters,
+history turn count, and whether the memory budget was hit.
+
+MCP availability is written as `harness_mcp_status` at harness-loop setup. It
+records active/inactive state, config source, server ids, and exposed tool
+count. It must not log secrets or full MCP response bodies.
+
 MCP diagnostics also write to system logs. Example summaries:
 
 ```text

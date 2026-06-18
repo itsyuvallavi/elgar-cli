@@ -17,6 +17,10 @@ pub(super) fn session_event_metadata(event: &Event) -> serde_json::Value {
                     "provider_response_thinking_chars".to_string(),
                     json!(finished.output.thinking_chars()),
                 );
+                object.insert(
+                    "reasoning_output_chars".to_string(),
+                    json!(finished.output.thinking_chars()),
+                );
                 if let Some(timings) = finished.stream_timings.as_ref() {
                     object.insert(
                         "first_reasoning_ms".to_string(),
@@ -40,6 +44,22 @@ pub(super) fn session_event_metadata(event: &Event) -> serde_json::Value {
                     object.insert("total_stream_ms".to_string(), json!(timings.total_ms));
                 }
                 if let Some(metrics) = finished.output.metrics.as_ref() {
+                    object.insert(
+                        "reasoning_level_requested".to_string(),
+                        json!(metrics.reasoning),
+                    );
+                    object.insert(
+                        "reasoning_output_tokens".to_string(),
+                        json!(metrics.reasoning_output_tokens),
+                    );
+                    object.insert(
+                        "reasoning_request_format".to_string(),
+                        json!(metrics.reasoning_request_format),
+                    );
+                    object.insert(
+                        "provider_supports_reasoning_control".to_string(),
+                        json!(metrics.provider_supports_reasoning_control),
+                    );
                     object.insert(
                         "stream_done_ms".to_string(),
                         json!(metrics.stream_done_millis),

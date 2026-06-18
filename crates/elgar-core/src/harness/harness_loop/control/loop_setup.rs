@@ -20,7 +20,8 @@ use crate::{
         },
         PrimitiveToolRegistry,
     },
-    mcp::config::load_runtime_mcp_config,
+    logs::system::{append_log_event, LogInput, LogPhase},
+    mcp::config::{load_runtime_mcp_config, RuntimeMcpConfig},
     provider::ChatMessage,
     session::Session,
 };
@@ -44,8 +45,9 @@ pub(crate) struct PrimitiveLoopState {
 pub(crate) fn initialize_primitive_loop(session: &mut Session, input: &str) -> PrimitiveLoopState {
     let loop_turn_id = session.next_turn_id();
     let loop_started = Instant::now();
-    let registry =
-        PrimitiveToolRegistry::stage_3a_with_mcp(mcp_config_is_available(&session.project_root));
+    let mcp_config = load_runtime_mcp_config(&session.project_root);
+    let mcp_available = matches!(mcp_config.as_ref(), Ok(Some(_)));
+    let registry = PrimitiveToolRegistry::stage_3a_with_mcp(mcp_available);
     let budget = PrimitiveLoopBudget::default();
     let turn_context = native_tool_loop_initial_messages(session, input);
     let TurnPromptContextStats {
@@ -56,6 +58,7 @@ pub(crate) fn initialize_primitive_loop(session: &mut Session, input: &str) -> P
     } = turn_context.stats;
 
     log_loop_started(session, loop_turn_id, input, &budget);
+    log_mcp_status(session, mcp_config.as_ref());
     log_turn_prompt_context(session, initial_message_count, history_turns, &memory_stats);
 
     PrimitiveLoopState {
@@ -73,9 +76,46 @@ pub(crate) fn initialize_primitive_loop(session: &mut Session, input: &str) -> P
     }
 }
 
-fn mcp_config_is_available(project_root: &std::path::Path) -> bool {
-    load_runtime_mcp_config(project_root)
-        .ok()
-        .flatten()
-        .is_some()
+fn log_mcp_status(
+    session: &Session,
+    runtime: Result<&Option<RuntimeMcpConfig>, &crate::mcp::config::McpConfigError>,
+) {
+    let metadata = match runtime {
+        Ok(Some(runtime)) => {
+            let server_ids = runtime.config.servers.keys().cloned().collect::<Vec<_>>();
+            serde_json::json!({
+                "mcp_active": true,
+                "mcp_tool_exposed": true,
+                "source_path": runtime.source_path.display().to_string(),
+                "server_count": server_ids.len(),
+                "server_ids": server_ids
+            })
+        }
+        Ok(None) => serde_json::json!({
+            "mcp_active": false,
+            "mcp_tool_exposed": false,
+            "server_count": 0,
+            "server_ids": []
+        }),
+        Err(error) => serde_json::json!({
+            "mcp_active": false,
+            "mcp_tool_exposed": false,
+            "server_count": 0,
+            "server_ids": [],
+            "error": error.to_string()
+        }),
+    };
+
+    let _ = append_log_event(
+        &session.project_root,
+        &session.id,
+        LogInput::new(
+            session.next_turn_id(),
+            LogPhase::Runtime,
+            file!(),
+            "initialize_primitive_loop",
+            "harness_mcp_status",
+        )
+        .with_metadata(metadata),
+    );
 }

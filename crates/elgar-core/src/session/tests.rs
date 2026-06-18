@@ -5,7 +5,7 @@ use crate::event::{
     AssistantMessage, AssistantMessageSource, Event, ProviderFinished, ProviderOutput,
     ProviderStreamChunkReceived, ProviderStreamTimings, UserMessage,
 };
-use crate::provider::ProviderStreamChunk;
+use crate::provider::{ProviderReasoningLevel, ProviderStreamChunk};
 use crate::token_accounting::ProviderTokenUsage;
 
 #[test]
@@ -79,6 +79,30 @@ fn provider_finished_session_metadata_includes_thinking_diagnostics() {
 
     assert_eq!(metadata["provider_response_has_thinking"], true);
     assert_eq!(metadata["provider_response_thinking_chars"], 8);
+}
+
+#[test]
+fn provider_finished_session_metadata_includes_reasoning_metrics() {
+    let mut metrics = ProviderMetrics::new("request-1", Some("model".to_string()), true, 2, 1000);
+    metrics.reasoning = Some(ProviderReasoningLevel::Minimal);
+    metrics.reasoning_output_tokens = Some(42);
+    metrics.reasoning_request_format = Some("qwen_chat_template".to_string());
+    metrics.provider_supports_reasoning_control = Some(true);
+    let event = Event::ProviderFinished(ProviderFinished::new(
+        "lm-studio",
+        "request-1",
+        ProviderOutput::new("ok")
+            .with_thinking("count me")
+            .with_metrics(metrics),
+    ));
+
+    let metadata = session_event_metadata(&event);
+
+    assert_eq!(metadata["reasoning_output_chars"], 8);
+    assert_eq!(metadata["reasoning_level_requested"], "minimal");
+    assert_eq!(metadata["reasoning_output_tokens"], 42);
+    assert_eq!(metadata["reasoning_request_format"], "qwen_chat_template");
+    assert_eq!(metadata["provider_supports_reasoning_control"], true);
 }
 
 #[test]

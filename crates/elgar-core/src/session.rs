@@ -5,6 +5,7 @@
 
 mod id;
 mod logging;
+mod status_logging;
 #[cfg(test)]
 mod tests;
 
@@ -27,6 +28,7 @@ use crate::{
 use id::rotate_session_id;
 pub use id::runtime_session_id;
 use logging::{event_log_kind, session_event_metadata};
+use status_logging::log_session_context_status;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
@@ -202,6 +204,7 @@ impl Session {
             metrics.request_id.clone(),
         ));
         self.latest_turn_token_usage = LastTurnTokenUsage::from_provider_metrics(metrics);
+        log_session_context_status(self);
     }
 
     fn log_event(&self, event: &Event) {

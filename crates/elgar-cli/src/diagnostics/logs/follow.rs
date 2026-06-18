@@ -11,9 +11,7 @@ use std::{
     time::Duration,
 };
 
-use serde_json::Value;
-
-use super::{scan, LogsDiagnosticError};
+use super::{follow_render::render_follow_line, scan, LogsDiagnosticError};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -105,113 +103,6 @@ fn render_new_lines<W: Write>(
     Ok(current_offset)
 }
 
-pub(super) fn render_follow_line(line: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(line).ok()?;
-    let summary = value.get("summary").and_then(Value::as_str)?;
-    let metadata = value.get("metadata").unwrap_or(&Value::Null);
-
-    match summary {
-        "harness_loop_provider_call_started" => Some(format!(
-            "{} request {} streaming",
-            timestamp(&value),
-            metadata_text(metadata, "request_id")
-        )),
-        "harness_loop_provider_stream_chunk" => render_stream_chunk(&value, metadata),
-        "harness_synthesis_provider_stream_chunk" => render_stream_chunk(&value, metadata),
-        "harness_loop_provider_call_finished" => Some(render_provider_finished(&value, metadata)),
-        "harness_synthesis_finished" => Some(render_provider_finished(&value, metadata)),
-        "provider_worker_completion_received" => Some(format!(
-            "{} request {} worker received",
-            timestamp(&value),
-            metadata_text(metadata, "latest_provider_request_id")
-        )),
-        "ui_render_finished" | "scripted_tui_render_finished" => Some(format!(
-            "{} request {} rendered{}",
-            timestamp(&value),
-            metadata_text(metadata, "latest_provider_request_id"),
-            duration_suffix(metadata, "completion_to_render_ms")
-        )),
-        "harness_loop_provider_call_failed" => Some(format!(
-            "{} request {} failed: {}",
-            timestamp(&value),
-            metadata_text(metadata, "request_id"),
-            metadata_text(metadata, "error_kind")
-        )),
-        "harness_loop_finished" => Some(format!(
-            "{} turn stopped: {}",
-            timestamp(&value),
-            metadata_text(metadata, "stopped_reason")
-        )),
-        _ => None,
-    }
-}
-
-fn render_stream_chunk(value: &Value, metadata: &Value) -> Option<String> {
-    let sequence = metadata.get("sequence").and_then(Value::as_u64)?;
-    (sequence == 1).then(|| {
-        format!(
-            "{} request {} {} streaming",
-            timestamp(value),
-            metadata_text(metadata, "request_id"),
-            metadata_text(metadata, "chunk_kind")
-        )
-    })
-}
-
-fn render_provider_finished(value: &Value, metadata: &Value) -> String {
-    format!(
-        "{} request {} provider closed{}{}{}{}{}{}",
-        timestamp(value),
-        metadata_text(metadata, "request_id"),
-        duration_suffix(metadata, "total_stream_ms"),
-        duration_suffix(metadata, "stream_done_ms"),
-        duration_suffix(metadata, "last_chunk_to_done_ms"),
-        duration_suffix(metadata, "done_to_finish_ms"),
-        duration_suffix(metadata, "last_chunk_to_finish_ms"),
-        token_suffix(metadata)
-    )
-}
-
-fn timestamp(value: &Value) -> String {
-    value
-        .get("timestamp_unix_ms")
-        .and_then(Value::as_u64)
-        .map(|millis| millis.to_string())
-        .unwrap_or_else(|| "?".to_string())
-}
-
-fn metadata_text(metadata: &Value, key: &str) -> String {
-    metadata
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("?")
-        .to_string()
-}
-
-fn duration_suffix(metadata: &Value, key: &str) -> String {
-    metadata
-        .get(key)
-        .and_then(Value::as_u64)
-        .map(|millis| format!(" · {key}={}", format_duration(millis)))
-        .unwrap_or_default()
-}
-
-fn token_suffix(metadata: &Value) -> String {
-    metadata
-        .get("total_tokens")
-        .and_then(Value::as_u64)
-        .map(|tokens| format!(" · tokens={tokens}"))
-        .unwrap_or_default()
-}
-
-fn format_duration(millis: u64) -> String {
-    if millis < 1_000 {
-        format!("{millis}ms")
-    } else {
-        format!("{:.1}s", millis as f64 / 1_000.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -219,39 +110,7 @@ mod tests {
         io::Write,
     };
 
-    use super::{render_follow_line, start_offset_for_file};
-
-    #[test]
-    fn renders_provider_started_line() {
-        let line = r#"{"timestamp_unix_ms":10,"summary":"harness_loop_provider_call_started","metadata":{"request_id":"request-1"}}"#;
-
-        assert_eq!(
-            render_follow_line(line).as_deref(),
-            Some("10 request request-1 streaming")
-        );
-    }
-
-    #[test]
-    fn renders_first_stream_chunk_line_only() {
-        let first = r#"{"timestamp_unix_ms":20,"summary":"harness_loop_provider_stream_chunk","metadata":{"request_id":"request-1","sequence":1,"chunk_kind":"reasoning"}}"#;
-        let later = r#"{"timestamp_unix_ms":21,"summary":"harness_loop_provider_stream_chunk","metadata":{"request_id":"request-1","sequence":2,"chunk_kind":"reasoning"}}"#;
-
-        assert_eq!(
-            render_follow_line(first).as_deref(),
-            Some("20 request request-1 reasoning streaming")
-        );
-        assert_eq!(render_follow_line(later), None);
-    }
-
-    #[test]
-    fn renders_provider_finished_with_close_gap() {
-        let line = r#"{"timestamp_unix_ms":30,"summary":"harness_loop_provider_call_finished","metadata":{"request_id":"request-1","total_stream_ms":26637,"stream_done_ms":20500,"last_chunk_to_done_ms":2,"done_to_finish_ms":1,"last_chunk_to_finish_ms":3,"total_tokens":1200}}"#;
-
-        assert_eq!(
-            render_follow_line(line).as_deref(),
-            Some("30 request request-1 provider closed · total_stream_ms=26.6s · stream_done_ms=20.5s · last_chunk_to_done_ms=2ms · done_to_finish_ms=1ms · last_chunk_to_finish_ms=3ms · tokens=1200")
-        );
-    }
+    use super::start_offset_for_file;
 
     #[test]
     fn first_attach_starts_at_end_of_existing_file() {

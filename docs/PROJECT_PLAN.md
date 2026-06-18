@@ -160,9 +160,9 @@ Mitigations:
 
 ## Current Next Work
 
-1. Execute the clean terminal UI redesign plan in
-   `docs/TUI_CLEAN_REDESIGN_PLAN.md`.
-2. Keep native scrollback and text selection intact while improving response,
-   reasoning, command, file-tree, approval, and footer rendering.
-3. Verify each TUI slice with focused tests, then run Cursor dogfood for
-   project generation, approval, `/cancel`, and `/details last`.
+1. Stabilize logs-only diagnostics for memory, session context, MCP status,
+   approvals, and provider/TUI handoff timing.
+2. Keep `/context` out of the TUI for now; exact memory/context visibility
+   belongs in JSONL plus `elgar logs --follow`.
+3. Verify the diagnostics with focused CLI/core tests, update the local binary,
+   then run a short live smoke to confirm the new log events appear.

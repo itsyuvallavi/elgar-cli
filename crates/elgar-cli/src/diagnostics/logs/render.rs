@@ -4,7 +4,10 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::summary::HarnessDiagnosticSummary;
+use super::summary::{
+    ContextDiagnosticSummary, HarnessDiagnosticSummary, McpDiagnosticSummary,
+    MemoryDiagnosticSummary,
+};
 
 pub(super) fn render_harness_summary(summary: &HarnessDiagnosticSummary, path: &Path) -> String {
     let backend = if summary.backends.is_empty() {
@@ -22,7 +25,7 @@ pub(super) fn render_harness_summary(summary: &HarnessDiagnosticSummary, path: &
         .map(format_duration)
         .unwrap_or_else(|| "?".to_string());
 
-    [
+    let mut lines = vec![
         "Latest harness summary".to_string(),
         format!("file: {}", path.display()),
         format!("session: {}", summary.session),
@@ -36,6 +39,11 @@ pub(super) fn render_harness_summary(summary: &HarnessDiagnosticSummary, path: &
             compact_count(summary.completion_tokens),
             compact_count(summary.total_tokens)
         ),
+    ];
+    lines.push(render_context_line(summary.context.as_ref()));
+    lines.push(render_memory_line(summary.memory.as_ref()));
+    lines.push(render_mcp_line(summary.mcp.as_ref()));
+    lines.extend([
         format!("provider calls: {}", summary.provider_calls),
         format!("tools: {tools}"),
         format!(
@@ -45,8 +53,60 @@ pub(super) fn render_harness_summary(summary: &HarnessDiagnosticSummary, path: &
         format!("repairs: {}", summary.repair_attempts),
         format!("synthesis: {}", summary.synthesis_calls),
         format!("error: {}", summary.error),
-    ]
-    .join("\n")
+    ]);
+    lines.join("\n")
+}
+
+fn render_context_line(context: Option<&ContextDiagnosticSummary>) -> String {
+    let Some(context) = context else {
+        return "context: ?".to_string();
+    };
+    let total = context
+        .total_tokens
+        .map(compact_count)
+        .unwrap_or_else(|| "?".to_string());
+    let window = context
+        .window_tokens
+        .map(compact_count)
+        .unwrap_or_else(|| "?".to_string());
+    let percent = context
+        .used_percent
+        .map(|value| format!(" ({value}%)"))
+        .unwrap_or_default();
+
+    format!(
+        "context: {total}/{window}{percent} · mode {}",
+        context.permission_mode
+    )
+}
+
+fn render_memory_line(memory: Option<&MemoryDiagnosticSummary>) -> String {
+    let Some(memory) = memory else {
+        return "memory: ?".to_string();
+    };
+    format!(
+        "memory: indexed {} · rendered {} · omitted {} · chars {} · budget_hit {}",
+        memory.indexed_facts,
+        memory.rendered_facts,
+        memory.omitted_facts,
+        memory.rendered_chars,
+        memory.budget_hit
+    )
+}
+
+fn render_mcp_line(mcp: Option<&McpDiagnosticSummary>) -> String {
+    let Some(mcp) = mcp else {
+        return "mcp: ?".to_string();
+    };
+    if !mcp.active {
+        return "mcp: inactive".to_string();
+    }
+    let servers = if mcp.server_ids.is_empty() {
+        "?".to_string()
+    } else {
+        mcp.server_ids.join(", ")
+    };
+    format!("mcp: active · servers {servers}")
 }
 
 pub(super) fn render_turn_perf_summary(summary: &Value, path: &Path) -> String {
