@@ -24,6 +24,7 @@ impl Default for ProviderBackendKind {
 #[serde(rename_all = "lowercase")]
 pub enum ProviderReasoningLevel {
     Off,
+    Minimal,
     Low,
     Medium,
     High,

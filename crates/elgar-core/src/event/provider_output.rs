@@ -78,6 +78,10 @@ pub struct ProviderMetrics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_request_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_supports_reasoning_control: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_time_to_first_token_millis: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_tokens_per_second_milli: Option<u64>,
@@ -115,6 +119,8 @@ impl ProviderMetrics {
             reasoning: None,
             context_length: None,
             stats: None,
+            reasoning_request_format: None,
+            provider_supports_reasoning_control: None,
             provider_time_to_first_token_millis: None,
             provider_tokens_per_second_milli: None,
             reasoning_output_tokens: None,

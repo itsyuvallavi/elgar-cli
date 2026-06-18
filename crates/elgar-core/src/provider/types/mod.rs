@@ -17,7 +17,9 @@ pub use controller::ControllerProvider;
 pub use error::{ProviderError, ProviderErrorBody, ProviderErrorKind, ProviderErrorResponse};
 pub use metadata::ProviderRequestMetadata;
 pub use profile::{ProviderBackendKind, ProviderReasoningLevel, ProviderRequestProfile};
-pub use request::{ChatChoice, ChatRequest, ChatResponse, ChatStreamOptions, ChatUsage};
+pub use request::{
+    ChatChoice, ChatRequest, ChatResponse, ChatStreamOptions, ChatTemplateKwargs, ChatUsage,
+};
 pub use stream::ProviderStreamChunk;
 pub use tools::{
     ChatToolCall, ChatToolCallDelta, ChatToolCallFunction, ChatToolDefinition,

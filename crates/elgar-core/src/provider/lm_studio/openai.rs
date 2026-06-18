@@ -67,7 +67,13 @@ pub(super) fn chat_lm_studio_with_request_id_cancelable(
     cancel.error_if_canceled()?;
     let (request, body) =
         format_chat_request_body_with_tools_and_profile(config, messages, Vec::new(), profile)?;
-    let mut metrics = metrics_for_request(request_id, &request, body.len(), profile);
+    let mut metrics = metrics_for_request(
+        request_id,
+        &request,
+        body.len(),
+        profile,
+        config.compatibility.reasoning.request_format,
+    );
     let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
     log::debug!(
         "lm_studio_request_start request_id={} endpoint={} model={} messages={} tools=0 stream={} backend={} bytes={}",
@@ -140,7 +146,13 @@ pub(super) fn chat_lm_studio_with_tools_with_request_id_cancelable(
     }
     let (request, body) =
         format_chat_request_body_with_tools_and_profile(&config, messages, tools, profile)?;
-    let mut metrics = metrics_for_request(request_id, &request, body.len(), profile);
+    let mut metrics = metrics_for_request(
+        request_id,
+        &request,
+        body.len(),
+        profile,
+        config.compatibility.reasoning.request_format,
+    );
     let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
     log::debug!(
         "lm_studio_request_start request_id={} endpoint={} model={} messages={} tools={} stream={} backend={} bytes={}",

@@ -20,11 +20,23 @@ pub struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ProviderReasoningLevel>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ProviderReasoningLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_template_kwargs: Option<ChatTemplateKwargs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ChatToolDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatTemplateKwargs {
+    pub enable_thinking: bool,
+    pub preserve_thinking: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

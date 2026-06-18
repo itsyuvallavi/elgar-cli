@@ -10,7 +10,7 @@ use super::super::{
 use crate::event::ProviderMetrics;
 use crate::provider::{
     ChatToolDefinition, ControllerProvider, ProviderBackendKind, ProviderReasoningLevel,
-    ProviderRequestProfile,
+    ProviderRequestProfile, ReasoningRequestFormat,
 };
 
 #[test]
@@ -86,12 +86,130 @@ fn openai_compatible_request_keeps_stats_and_omits_non_openai_profile_fields() {
     let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
 
     assert_eq!(request.reasoning, None);
+    assert_eq!(request.reasoning_effort, None);
+    assert_eq!(request.enable_thinking, None);
+    assert_eq!(request.chat_template_kwargs, None);
     assert_eq!(request.stats, Some(true));
     assert!(value.get("reasoning").is_none());
+    assert!(value.get("reasoning_effort").is_none());
+    assert!(value.get("enable_thinking").is_none());
+    assert!(value.get("chat_template_kwargs").is_none());
     assert!(value.get("context_length").is_none());
     assert_eq!(value["stats"], true);
     assert!(value.get("tools").is_none());
     assert!(value.get("tool_choice").is_none());
+}
+
+#[test]
+fn openai_compatible_request_can_emit_configured_reasoning_effort() {
+    let config = ProviderConfig {
+        compatibility: crate::provider::ProviderCompatibility {
+            reasoning: crate::provider::ReasoningCompatibility {
+                request_format: Some(ReasoningRequestFormat::ReasoningEffort),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..ProviderConfig::lm_studio("loaded-model")
+    };
+    let profile = ProviderRequestProfile {
+        backend: ProviderBackendKind::OpenAiChatCompletions,
+        reasoning: Some(ProviderReasoningLevel::Minimal),
+        ..Default::default()
+    };
+
+    let (request, body) = super::super::format_chat_request_body_with_tools_and_profile(
+        &config,
+        vec![ChatMessage::user("hello")],
+        Vec::new(),
+        Some(&profile),
+    )
+    .unwrap();
+    let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+
+    assert_eq!(
+        request.reasoning_effort,
+        Some(ProviderReasoningLevel::Minimal)
+    );
+    assert_eq!(value["reasoning_effort"], "minimal");
+    assert!(value.get("reasoning").is_none());
+    assert!(value.get("enable_thinking").is_none());
+    assert!(value.get("chat_template_kwargs").is_none());
+}
+
+#[test]
+fn openai_compatible_request_can_emit_configured_qwen_enable_thinking() {
+    let config = ProviderConfig {
+        compatibility: crate::provider::ProviderCompatibility {
+            reasoning: crate::provider::ReasoningCompatibility {
+                request_format: Some(ReasoningRequestFormat::QwenEnableThinking),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..ProviderConfig::lm_studio("loaded-model")
+    };
+    let profile = ProviderRequestProfile {
+        backend: ProviderBackendKind::OpenAiChatCompletions,
+        reasoning: Some(ProviderReasoningLevel::Off),
+        ..Default::default()
+    };
+
+    let (request, body) = super::super::format_chat_request_body_with_tools_and_profile(
+        &config,
+        vec![ChatMessage::user("hello")],
+        Vec::new(),
+        Some(&profile),
+    )
+    .unwrap();
+    let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+
+    assert_eq!(request.enable_thinking, Some(false));
+    assert_eq!(value["enable_thinking"], false);
+    assert!(value.get("reasoning").is_none());
+    assert!(value.get("reasoning_effort").is_none());
+    assert!(value.get("chat_template_kwargs").is_none());
+}
+
+#[test]
+fn openai_compatible_request_can_emit_configured_qwen_chat_template_kwargs() {
+    let config = ProviderConfig {
+        compatibility: crate::provider::ProviderCompatibility {
+            reasoning: crate::provider::ReasoningCompatibility {
+                request_format: Some(ReasoningRequestFormat::QwenChatTemplate),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..ProviderConfig::lm_studio("loaded-model")
+    };
+    let profile = ProviderRequestProfile {
+        backend: ProviderBackendKind::OpenAiChatCompletions,
+        reasoning: Some(ProviderReasoningLevel::Low),
+        ..Default::default()
+    };
+
+    let (request, body) = super::super::format_chat_request_body_with_tools_and_profile(
+        &config,
+        vec![ChatMessage::user("hello")],
+        Vec::new(),
+        Some(&profile),
+    )
+    .unwrap();
+    let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+
+    assert_eq!(
+        request
+            .chat_template_kwargs
+            .as_ref()
+            .map(|kwargs| kwargs.enable_thinking),
+        Some(true)
+    );
+    assert_eq!(value["chat_template_kwargs"]["enable_thinking"], true);
+    assert_eq!(value["chat_template_kwargs"]["preserve_thinking"], true);
+    assert!(value.get("reasoning").is_none());
+    assert!(value.get("reasoning_effort").is_none());
+    assert!(value.get("enable_thinking").is_none());
 }
 
 #[test]
@@ -176,20 +294,19 @@ fn controller_provider_messages_keep_terminal_answers_short_and_readable() {
     assert!(messages[0].content.contains("Answer briefly"));
     assert!(messages[0].content.contains("terminal-friendly"));
     assert!(messages[0].content.contains("no tables unless asked"));
+    assert!(messages[0].content.contains("Reason briefly"));
     assert!(messages[0].content.contains("Speak as Elgar"));
     assert!(messages[0].content.contains("Suggest content only"));
-    assert!(messages[0]
-        .content
-        .contains("Do not write 'Proposed actions'"));
+    assert!(messages[0].content.contains("Do not ask for /approve"));
     assert!(messages[0]
         .content
         .contains("unless a controller action is pending"));
     assert!(messages[0]
         .content
-        .contains("Never claim you created/edited/ran anything"));
+        .contains("Never claim files changed or commands ran"));
     assert!(messages[0]
         .content
-        .contains("Provider text never proves files changed or commands ran"));
+        .contains("Provider text does not prove changes"));
     assert!(messages[0].content.contains("copy/paste"));
     assert_eq!(messages[1], ChatMessage::user("what can you do?"));
 }
@@ -221,8 +338,13 @@ fn controller_provider_request_for_short_capability_answer_stays_compact() {
     let config = ProviderConfig::lm_studio("loaded-model");
     let (request, body) =
         format_chat_request_body(&config, elgar_controller_messages("what can you do?")).unwrap();
-    let metrics =
-        super::super::openai::metrics_for_request("request-compact", &request, body.len(), None);
+    let metrics = super::super::openai::metrics_for_request(
+        "request-compact",
+        &request,
+        body.len(),
+        None,
+        None,
+    );
 
     assert_eq!(request.messages.len(), 2);
     assert_eq!(metrics.message_count, 2);
@@ -244,14 +366,24 @@ fn serialized_request_byte_count_matches_request_body() {
         ],
     )
     .unwrap();
-    let metrics =
-        super::super::openai::metrics_for_request("request-1", &request, body.len(), None);
+    let metrics = super::super::openai::metrics_for_request(
+        "request-1",
+        &request,
+        body.len(),
+        None,
+        Some(ReasoningRequestFormat::QwenChatTemplate),
+    );
 
     assert_eq!(metrics.request_id, "request-1");
     assert_eq!(metrics.model.as_deref(), Some("loaded-model"));
     assert!(metrics.stream);
     assert_eq!(metrics.message_count, 2);
     assert_eq!(metrics.serialized_request_bytes, body.len());
+    assert_eq!(
+        metrics.reasoning_request_format.as_deref(),
+        Some("qwen_chat_template")
+    );
+    assert_eq!(metrics.provider_supports_reasoning_control, Some(true));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&body).unwrap()["stream"],
         true

@@ -14,6 +14,8 @@ session state.
 
 - `ProviderConfig` stores endpoint, model, timeout, streaming, compatibility,
   and request-mode settings.
-- `ProviderCompatibility` stores optional model/provider capability hints.
+- `ProviderCompatibility` stores optional model/provider capability hints,
+  including whether reasoning controls are supported and which request shape to
+  use for them.
 - `request_profile_for_mode` chooses backend options for a named mode. Active
   harness modes currently use OpenAI-compatible chat.

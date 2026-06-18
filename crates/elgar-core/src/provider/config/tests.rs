@@ -5,7 +5,7 @@
 use serde_json::json;
 
 use super::{
-    ProviderBackendKind, ProviderConfig, LM_STUDIO_DEFAULT_BASE_URL,
+    ProviderBackendKind, ProviderConfig, ReasoningRequestFormat, LM_STUDIO_DEFAULT_BASE_URL,
     LM_STUDIO_DEFAULT_TIMEOUT_MILLIS, LM_STUDIO_PROVIDER_NAME,
 };
 
@@ -124,8 +124,27 @@ fn provider_config_deserializes_optional_compatibility_metadata() {
         config.compatibility.reasoning.stream_fields,
         vec!["reasoning_content", "thinking"]
     );
+    assert_eq!(config.compatibility.reasoning.request_format, None);
     assert_eq!(config.compatibility.supports_streaming_usage, Some(true));
     assert!(config.supports_developer_role());
+}
+
+#[test]
+fn provider_config_deserializes_reasoning_request_format() {
+    let config: ProviderConfig = serde_json::from_value(json!({
+        "model": "local-model",
+        "compatibility": {
+            "reasoning": {
+                "request_format": "qwen_chat_template"
+            }
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(
+        config.compatibility.reasoning.request_format,
+        Some(ReasoningRequestFormat::QwenChatTemplate)
+    );
 }
 
 #[test]

@@ -9,13 +9,20 @@
   "write_timeout_millis": 10000,
   "request_timeout_millis": 120000,
   "stream": true,
+  "compatibility": {
+    "reasoning": {
+      "request_format": "qwen_chat_template"
+    }
+  },
   "request_modes": {
     "harness_tool_decision": {
       "backend": "openai_chat_completions",
+      "reasoning": "minimal",
       "stats": true
     },
     "harness_synthesis": {
       "backend": "openai_chat_completions",
+      "reasoning": "minimal",
       "stats": true
     }
   }

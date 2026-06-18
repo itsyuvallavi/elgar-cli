@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::{
     event::ProviderMetrics,
     provider::{
-        config::ProviderConfig,
+        config::{ProviderConfig, ReasoningRequestFormat},
         http::HttpTimeouts,
         types::{ChatRequest, ProviderBackendKind, ProviderRequestProfile},
     },
@@ -25,6 +25,7 @@ pub(in crate::provider::lm_studio) fn metrics_for_request(
     request: &ChatRequest,
     body_len: usize,
     profile: Option<&ProviderRequestProfile>,
+    reasoning_request_format: Option<ReasoningRequestFormat>,
 ) -> ProviderMetrics {
     let mut metrics = ProviderMetrics::new(
         request_id,
@@ -43,9 +44,20 @@ pub(in crate::provider::lm_studio) fn metrics_for_request(
         metrics.context_length = profile.context_length;
         metrics.stats = profile.stats;
     }
+    metrics.reasoning_request_format = reasoning_request_format.map(reasoning_format_name);
+    metrics.provider_supports_reasoning_control = Some(reasoning_request_format.is_some());
     metrics
 }
 
 pub(super) fn duration_millis(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn reasoning_format_name(format: ReasoningRequestFormat) -> String {
+    match format {
+        ReasoningRequestFormat::ReasoningEffort => "reasoning_effort",
+        ReasoningRequestFormat::QwenEnableThinking => "qwen_enable_thinking",
+        ReasoningRequestFormat::QwenChatTemplate => "qwen_chat_template",
+    }
+    .to_string()
 }

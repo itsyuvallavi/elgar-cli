@@ -59,7 +59,13 @@ pub(in crate::provider::lm_studio) fn chat_lm_studio_streaming_with_request_id_c
     let started = Instant::now();
     let (request, body) =
         format_chat_request_body_with_tools_and_profile(config, messages, Vec::new(), profile)?;
-    let mut metrics = metrics_for_request(request_id, &request, body.len(), profile);
+    let mut metrics = metrics_for_request(
+        request_id,
+        &request,
+        body.len(),
+        profile,
+        config.compatibility.reasoning.request_format,
+    );
     let endpoint = HttpEndpoint::parse(&config.chat_completions_url())?;
     let mut parts = StreamingOutputParts::default();
     log::debug!(

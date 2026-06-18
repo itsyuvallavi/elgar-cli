@@ -4,19 +4,22 @@
 //! live provider.
 
 use crate::provider::{
-    config::ProviderConfig,
-    types::{ChatMessage, ChatRequest, ChatStreamOptions, ChatToolDefinition, ProviderError},
-    ProviderRequestProfile,
+    config::{ProviderConfig, ReasoningRequestFormat},
+    types::{
+        ChatMessage, ChatRequest, ChatStreamOptions, ChatTemplateKwargs, ChatToolDefinition,
+        ProviderError,
+    },
+    ProviderReasoningLevel, ProviderRequestProfile,
 };
 
 const ELGAR_CONTROLLER_SYSTEM_PROMPT: &str = concat!(
-    "Elgar. Answer briefly in terminal-friendly prose: ",
-    "one paragraph or 5 bullets, no tables unless asked. ",
+    "Elgar. Answer briefly: one paragraph or 5 bullets, terminal-friendly, no tables unless asked. ",
+    "Reason briefly: one short thought, no tool dump or history recap. ",
     "Speak as Elgar. ",
     "Suggest content only. ",
-    "Do not write 'Proposed actions', ask for /approve, or imply approval unless a controller action is pending. ",
-    "Never claim you created/edited/ran anything unless verified. ",
-    "Provider text never proves files changed or commands ran. ",
+    "Do not ask for /approve or imply approval unless a controller action is pending. ",
+    "Never claim files changed or commands ran unless verified. ",
+    "Provider text does not prove changes. ",
     "Do not call copy/paste the only path."
 );
 
@@ -62,6 +65,10 @@ pub fn format_chat_request_with_tools_and_profile(
         include_usage: true,
     });
 
+    let reasoning = profile.and_then(|profile| profile.reasoning);
+    let (reasoning_effort, enable_thinking, chat_template_kwargs) =
+        reasoning_request_fields(config, reasoning);
+
     Ok(ChatRequest {
         model: model.clone(),
         messages,
@@ -69,10 +76,52 @@ pub fn format_chat_request_with_tools_and_profile(
         stream_options,
         temperature: None,
         reasoning: None,
+        reasoning_effort,
+        enable_thinking,
+        chat_template_kwargs,
         context_length: None,
         stats,
         tools,
     })
+}
+
+fn reasoning_request_fields(
+    config: &ProviderConfig,
+    reasoning: Option<ProviderReasoningLevel>,
+) -> (
+    Option<ProviderReasoningLevel>,
+    Option<bool>,
+    Option<ChatTemplateKwargs>,
+) {
+    match config.compatibility.reasoning.request_format {
+        Some(ReasoningRequestFormat::ReasoningEffort) => (reasoning_effort(reasoning), None, None),
+        Some(ReasoningRequestFormat::QwenEnableThinking) => {
+            (None, reasoning.map(reasoning_enabled), None)
+        }
+        Some(ReasoningRequestFormat::QwenChatTemplate) => (
+            None,
+            None,
+            reasoning.map(|level| ChatTemplateKwargs {
+                enable_thinking: reasoning_enabled(level),
+                preserve_thinking: true,
+            }),
+        ),
+        None => (None, None, None),
+    }
+}
+
+fn reasoning_effort(reasoning: Option<ProviderReasoningLevel>) -> Option<ProviderReasoningLevel> {
+    match reasoning {
+        Some(ProviderReasoningLevel::Minimal)
+        | Some(ProviderReasoningLevel::Low)
+        | Some(ProviderReasoningLevel::Medium)
+        | Some(ProviderReasoningLevel::High) => reasoning,
+        Some(ProviderReasoningLevel::On) | Some(ProviderReasoningLevel::Off) | None => None,
+    }
+}
+
+fn reasoning_enabled(reasoning: ProviderReasoningLevel) -> bool {
+    !matches!(reasoning, ProviderReasoningLevel::Off)
 }
 
 #[cfg(test)]

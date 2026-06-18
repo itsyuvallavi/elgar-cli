@@ -149,6 +149,16 @@ pub struct ReasoningCompatibility {
     pub response_fields: Vec<String>,
     #[serde(default)]
     pub stream_fields: Vec<String>,
+    #[serde(default)]
+    pub request_format: Option<ReasoningRequestFormat>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningRequestFormat {
+    ReasoningEffort,
+    QwenEnableThinking,
+    QwenChatTemplate,
 }
 
 fn default_provider_name() -> String {

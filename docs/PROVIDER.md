@@ -79,6 +79,42 @@ provider-reported usage when LM Studio includes usage in the final response or
 streaming usage chunk. The TUI uses only those provider-reported token counts
 for response token summaries and real context-window percentages.
 
+Reasoning controls are opt-in provider compatibility settings. Elgar does not
+use TUI truncation as a provider-control substitute: full reasoning is logged
+for diagnostics, while normal chat shows compact readable reasoning text. If
+the local provider/model supports a reasoning request shape, configure it
+explicitly:
+
+```json
+{
+  "compatibility": {
+    "reasoning": {
+      "request_format": "qwen_chat_template"
+    }
+  },
+  "request_modes": {
+    "harness_tool_decision": {
+      "reasoning": "minimal",
+      "stats": true
+    }
+  }
+}
+```
+
+Supported `request_format` values are:
+
+- `reasoning_effort`: sends OpenAI-style `reasoning_effort`.
+- `qwen_enable_thinking`: sends top-level `enable_thinking`.
+- `qwen_chat_template`: sends `chat_template_kwargs.enable_thinking` and
+  `preserve_thinking`.
+
+If `request_format` is omitted, Elgar keeps the current safe behavior and sends
+no reasoning-control field.
+
+Session JSONL records the requested reasoning level, reasoning output tokens
+when the provider reports them, and reasoning output chars. Normal chat should
+render compact reasoning text, not diagnostic metadata counts.
+
 ## Diagnostics
 
 Provider smoke command:
