@@ -417,7 +417,7 @@ whether `mcp_call` exists in the current launch.
 
 Add:
 
-- `elgar-mcp.json`
+- optional repo-level `elgar-mcp.json`
 
 Edit:
 
@@ -429,10 +429,8 @@ Edit:
 
 Behavior:
 
-- Add a repo-level `elgar-mcp.json` with the default local project-index MCP
-  config and the documented Context7 HTTP server entry.
-- Support launching with `ELGAR_MCP_CONFIG=/path/to/config.json` when a caller
-  wants an explicit alternate config.
+- Load MCP config from `ELGAR_MCP_CONFIG`, repo-level `elgar-mcp.json`, or
+  user-level `~/.elgar/config/elgar-mcp.json`.
 - Startup display shows `MCP active` with configured server ids, or
   `MCP inactive` when no config is loaded.
 - Footer shows compact MCP status only when useful; it must not crowd out cwd,
@@ -444,9 +442,8 @@ Behavior:
 Tests:
 
 - Startup renders `MCP inactive` when no config is loaded.
-- Startup renders configured server ids when repo-level `elgar-mcp.json` is
-  loaded.
-- `ELGAR_MCP_CONFIG=/path/to/config.json` overrides repo-level config.
+- Startup renders configured server ids when any MCP config source is loaded.
+- `ELGAR_MCP_CONFIG=/path/to/config.json` overrides repo and user-level config.
 - Model tool schema includes `mcp_call` only when MCP is active.
 - Footer/status display does not claim MCP access when the schema is hidden.
 
@@ -482,6 +479,7 @@ Behavior:
   lines.
 - Extend `elgar logs latest` to summarize memory/context/MCP state when present.
 - Do not add `/context`; diagnostics remain logs-only.
+- Startup now shows MCP active/inactive/error with server ids and config source.
 
 Tests:
 

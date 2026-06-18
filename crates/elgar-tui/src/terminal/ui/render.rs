@@ -225,10 +225,11 @@ pub(super) fn render_terminal_conversation(
 }
 
 pub(crate) fn render_terminal_startup(context: &TerminalShellContext) -> String {
-    let startup = StartupBlock::from_context_accounting(
+    let startup = StartupBlock::from_context_accounting_with_mcp(
         context.provider.clone(),
         context.model.clone(),
         &context.context_accounting,
+        context.mcp_status.clone(),
     );
     startup.render()
 }

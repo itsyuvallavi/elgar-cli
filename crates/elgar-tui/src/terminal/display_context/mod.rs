@@ -14,7 +14,7 @@ use elgar_core::{
     token_accounting::{ContextWindowSnapshot, ContextWindowSource},
 };
 
-use crate::theme;
+use crate::{startup::StartupMcpStatus, theme};
 
 use super::{
     ui::{
@@ -33,6 +33,7 @@ pub struct TerminalShellContext {
     pub provider_metrics: Option<ProviderMetrics>,
     pub context_accounting: ContextAccounting,
     pub context_window_snapshot: Option<ContextWindowSnapshot>,
+    pub mcp_status: StartupMcpStatus,
     pub approval_tool: Option<String>,
     pub pending_approval: Option<PendingApproval>,
     pub(crate) selected_approval_action: ApprovalAction,
@@ -49,6 +50,7 @@ impl TerminalShellContext {
             provider_metrics: None,
             context_accounting: ContextAccounting::unknown(),
             context_window_snapshot: None,
+            mcp_status: StartupMcpStatus::Inactive,
             approval_tool: None,
             pending_approval: None,
             selected_approval_action: ApprovalAction::Approve,
@@ -58,6 +60,11 @@ impl TerminalShellContext {
     pub fn with_provider(mut self, provider: impl Into<String>, model: Option<String>) -> Self {
         self.provider = Some(provider.into());
         self.model = model;
+        self
+    }
+
+    pub fn with_mcp_status(mut self, mcp_status: StartupMcpStatus) -> Self {
+        self.mcp_status = mcp_status;
         self
     }
 

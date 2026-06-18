@@ -10,6 +10,12 @@ Config file:
 elgar-provider.json
 ```
 
+Provider config loads in this order:
+
+1. `ELGAR_PROVIDER_CONFIG=/path/to/config.json`
+2. nearest repo-level `elgar-provider.json`
+3. user-level `~/.elgar/config/elgar-provider.json`
+
 ## Current Shape
 
 Example:

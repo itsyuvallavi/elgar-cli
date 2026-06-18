@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use super::super::StartupBlock;
+use super::super::{StartupBlock, StartupMcpStatus};
 
 #[test]
 fn startup_block_lists_only_real_context_files_and_provider() {
@@ -20,12 +20,12 @@ fn startup_block_lists_only_real_context_files_and_provider() {
 
     assert_eq!(
         rendered,
-        "elgar v0.10\n/commands · /clear · /copy · /exit\n\nElgar uses your local LM Studio model.\n\n[Context]\n  AGENTS.md\n\n[Provider]\n  lm-studio · openai/gpt-oss-20b"
+        "elgar v0.10\n/commands · /clear · /copy · /exit\n\nElgar uses your local LM Studio model.\n\n[Context]\n  AGENTS.md\n\n[Provider]\n  lm-studio · openai/gpt-oss-20b\n\n[MCP]\n  inactive"
     );
     assert!(!rendered.contains("elgar-provider.json"));
     assert!(!rendered.contains("Commands:"));
     assert!(!rendered.contains("Skills"));
-    assert!(!rendered.contains("MCP"));
+    assert!(rendered.contains("[MCP]\n  inactive"));
     assert!(!rendered.contains("Bash"));
     assert!(!rendered.contains("API"));
     assert!(!rendered.contains("settings"));
@@ -42,6 +42,7 @@ fn startup_block_uses_none_for_missing_context_provider_and_model() {
     assert!(!rendered.contains("local LM Studio model"));
     assert!(rendered.contains("[Context]\n  (none)"));
     assert!(rendered.contains("[Provider]\n  none · none"));
+    assert!(rendered.contains("[MCP]\n  inactive"));
     assert!(!rendered.contains("[Policy]"));
 
     let _ = fs::remove_dir_all(root);
@@ -56,7 +57,50 @@ fn startup_block_does_not_claim_lm_studio_for_stub_provider() {
 
     assert!(!rendered.contains("local LM Studio model"));
     assert!(rendered.contains("[Provider]\n  stub-provider · none"));
+    assert!(rendered.contains("[MCP]\n  inactive"));
     assert!(!rendered.contains("[Policy]"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn startup_block_shows_active_mcp_servers_and_source() {
+    let root = temp_root("startup-mcp-active");
+    let context =
+        elgar_core::context::ContextAccounting::from_default_local_files(&root, &root, None);
+
+    let rendered = StartupBlock::from_context_accounting_with_mcp(
+        Some("lm-studio".to_string()),
+        Some("qwen3.6".to_string()),
+        &context,
+        StartupMcpStatus::active(
+            vec!["context7".to_string(), "project-index".to_string()],
+            "~/.elgar/config/elgar-mcp.json",
+        ),
+    )
+    .render();
+
+    assert!(rendered.contains("[MCP]\n  active · context7, project-index"));
+    assert!(rendered.contains("source · ~/.elgar/config/elgar-mcp.json"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn startup_block_shows_mcp_config_errors() {
+    let root = temp_root("startup-mcp-error");
+    let context =
+        elgar_core::context::ContextAccounting::from_default_local_files(&root, &root, None);
+
+    let rendered = StartupBlock::from_context_accounting_with_mcp(
+        None,
+        None,
+        &context,
+        StartupMcpStatus::error("invalid MCP config"),
+    )
+    .render();
+
+    assert!(rendered.contains("[MCP]\n  error · invalid MCP config"));
 
     let _ = fs::remove_dir_all(root);
 }

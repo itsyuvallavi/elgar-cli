@@ -11,6 +11,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::runtime_home::global_config_file;
+
 pub const MCP_CONFIG_ENV: &str = "ELGAR_MCP_CONFIG";
 pub const MCP_CONFIG_FILE: &str = "elgar-mcp.json";
 
@@ -167,7 +169,12 @@ fn runtime_mcp_config_path(project_root: &Path) -> Result<Option<PathBuf>, McpCo
     }
 
     let candidate = project_root.join(MCP_CONFIG_FILE);
-    Ok(candidate.exists().then_some(candidate))
+    if candidate.exists() {
+        return Ok(Some(candidate));
+    }
+
+    let global = global_config_file(MCP_CONFIG_FILE);
+    Ok(global.exists().then_some(global))
 }
 
 pub fn parse_mcp_config_json(contents: &str) -> Result<McpConfig, McpConfigError> {

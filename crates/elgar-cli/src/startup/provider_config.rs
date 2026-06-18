@@ -8,10 +8,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use elgar_core::provider::{ProviderCompatibility, ProviderConfig, ProviderRequestProfile};
+use elgar_core::{
+    provider::{ProviderCompatibility, ProviderConfig, ProviderRequestProfile},
+    runtime_home::global_config_file,
+};
 use serde::Deserialize;
 
-use super::paths::{find_provider_config_file, PROVIDER_CONFIG_ENV};
+use super::paths::{find_provider_config_file, PROVIDER_CONFIG_ENV, PROVIDER_CONFIG_FILE};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeProvider {
@@ -145,7 +148,12 @@ fn runtime_provider_config_path(
         }
     }
 
-    Ok(find_provider_config_file(start))
+    if let Some(path) = find_provider_config_file(start) {
+        return Ok(Some(path));
+    }
+
+    let global = global_config_file(PROVIDER_CONFIG_FILE);
+    Ok(global.exists().then_some(global))
 }
 
 /// Converts the decoded JSON file into the active provider config.

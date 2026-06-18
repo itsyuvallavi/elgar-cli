@@ -99,6 +99,9 @@ fn render_mcp_line(mcp: Option<&McpDiagnosticSummary>) -> String {
         return "mcp: ?".to_string();
     };
     if !mcp.active {
+        if let Some(error) = mcp.error.as_deref() {
+            return format!("mcp: inactive · error {error}");
+        }
         return "mcp: inactive".to_string();
     }
     let servers = if mcp.server_ids.is_empty() {
@@ -106,7 +109,12 @@ fn render_mcp_line(mcp: Option<&McpDiagnosticSummary>) -> String {
     } else {
         mcp.server_ids.join(", ")
     };
-    format!("mcp: active · servers {servers}")
+    let source = mcp
+        .source_path
+        .as_deref()
+        .map(|path| format!(" · source {path}"))
+        .unwrap_or_default();
+    format!("mcp: active · servers {servers}{source}")
 }
 
 pub(super) fn render_turn_perf_summary(summary: &Value, path: &Path) -> String {

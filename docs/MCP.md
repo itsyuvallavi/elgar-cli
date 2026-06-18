@@ -56,12 +56,19 @@ MCP config lives in `elgar-mcp.json`:
 Secrets must be referenced by environment variable name. They must not be
 stored directly in config or logs.
 
-Elgar should load the repo-level `elgar-mcp.json` by default when present. A
-caller may override that path with:
+Elgar loads MCP config in this order:
+
+1. `ELGAR_MCP_CONFIG=/path/to/config.json`
+2. repo-level `elgar-mcp.json`
+3. user-level `~/.elgar/config/elgar-mcp.json`
+
+A caller may force a specific path with:
 
 ```text
 ELGAR_MCP_CONFIG=/path/to/config.json elgar
 ```
+
+Set `ELGAR_MCP_CONFIG=off` to disable MCP config loading for that launch.
 
 The startup display and TUI status must make this obvious: show `MCP active`
 with configured server ids when a config is loaded, and `MCP inactive` when no
@@ -114,6 +121,15 @@ elgar mcp list --server context7
 The command is diagnostic-only. It loads `elgar-mcp.json`, initializes the
 server, sends `notifications/initialized`, lists declared tools/resources, and
 prints a compact summary. It does not call the model.
+
+## Startup Visibility
+
+The terminal startup block always shows MCP status:
+
+- `inactive` when no MCP config is found.
+- `active` with server ids and config source when `elgar-mcp.json`,
+  `~/.elgar/config/elgar-mcp.json`, or `ELGAR_MCP_CONFIG` is loaded.
+- `error` when config discovery finds an invalid MCP config.
 
 ## Local Logs
 

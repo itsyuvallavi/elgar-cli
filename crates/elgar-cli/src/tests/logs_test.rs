@@ -91,6 +91,7 @@ fn latest_turn_summary_prefers_harness_summary() {
             r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_loop_model_choice","metadata":{"choice_type":"structured_requests","tools":["read","ls"]}}"#,
             r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_loop_repair_finished","metadata":{"repaired_choice_type":"structured_request"}}"#,
             r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_loop_synthesis_finished","metadata":{"backend":"OpenAiChatCompletions","prompt_tokens":400,"completion_tokens":100,"total_tokens":500}}"#,
+            r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_mcp_status","metadata":{"mcp_active":true,"server_ids":["project-index","context7"],"source_path":"/Users/yuval/.elgar/config/elgar-mcp.json"}}"#,
             r#"{"session_id":"cli-runtime","turn_id":1,"summary":"harness_loop_finished","duration_ms":2500,"metadata":{"rounds":2,"stopped_reason":"model_message_after_evidence","has_final_text":true}}"#,
         ]
         .join("\n"),
@@ -108,6 +109,9 @@ fn latest_turn_summary_prefers_harness_summary() {
     assert!(rendered.contains("tokens: ↑1.4k ↓150 = 1.6k"));
     assert!(rendered.contains("provider calls: 2"));
     assert!(rendered.contains("tools: read, ls"));
+    assert!(rendered.contains(
+        "mcp: active · servers project-index, context7 · source /Users/yuval/.elgar/config/elgar-mcp.json"
+    ));
     assert!(rendered.contains("repairs: 1"));
     assert!(rendered.contains("synthesis: 1"));
     assert!(rendered.contains("error: false"));

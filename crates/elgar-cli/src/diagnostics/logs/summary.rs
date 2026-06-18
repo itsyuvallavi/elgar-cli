@@ -50,6 +50,8 @@ pub(super) struct ContextDiagnosticSummary {
 pub(super) struct McpDiagnosticSummary {
     pub(super) active: bool,
     pub(super) server_ids: Vec<String>,
+    pub(super) source_path: Option<String>,
+    pub(super) error: Option<String>,
 }
 
 pub(super) fn latest_harness_summary(
@@ -175,6 +177,8 @@ fn observe_event(summary: &mut HarnessDiagnosticSummary, event: &Value) {
             summary.mcp = Some(McpDiagnosticSummary {
                 active: metadata_bool(metadata, "mcp_active"),
                 server_ids: metadata_text_array(metadata, "server_ids"),
+                source_path: metadata_optional_text(metadata, "source_path"),
+                error: metadata_optional_text(metadata, "error"),
             });
         }
         "harness_permission_decision" => {
@@ -232,6 +236,14 @@ fn metadata_text(metadata: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("?")
         .to_string()
+}
+
+fn metadata_optional_text(metadata: &Value, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn metadata_count(metadata: &Value, key: &str) -> u64 {

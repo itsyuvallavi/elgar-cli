@@ -10,6 +10,7 @@ pub mod logs;
 pub mod mcp;
 pub mod provider;
 mod provider_visible;
+pub mod runtime_home;
 pub use logs::sessions::{session_log_directory, session_log_path};
 pub use logs::system::{log_directory, log_path};
 pub use provider_visible::provider_visible_text_from_text_only_output;

@@ -1,12 +1,19 @@
 //! Tests for loading `elgar-provider.json` into runtime provider config.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+};
 
-use elgar_core::provider::ProviderBackendKind;
+use elgar_core::{
+    provider::ProviderBackendKind,
+    runtime_home::{global_config_file, CONFIG_DIR, ELGAR_HOME_DIR, ELGAR_HOME_ENV},
+};
 
 use crate::{
     load_runtime_provider, render_cli_turn_from_runtime_config, RuntimeProviderConfigError,
-    PROVIDER_CONFIG_FILE,
+    PROVIDER_CONFIG_ENV, PROVIDER_CONFIG_FILE,
 };
 
 fn temp_root(name: &str) -> PathBuf {
@@ -14,6 +21,34 @@ fn temp_root(name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     root
+}
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {
+    match previous {
+        Some(value) => std::env::set_var(name, value),
+        None => std::env::remove_var(name),
+    }
+}
+
+fn with_provider_env<T>(home: &Path, run: impl FnOnce() -> T) -> T {
+    let _guard = env_lock();
+    let previous_home = std::env::var_os(ELGAR_HOME_ENV);
+    let previous_provider = std::env::var_os(PROVIDER_CONFIG_ENV);
+
+    std::env::set_var(ELGAR_HOME_ENV, home);
+    std::env::remove_var(PROVIDER_CONFIG_ENV);
+
+    let result = run();
+
+    restore_env(ELGAR_HOME_ENV, previous_home);
+    restore_env(PROVIDER_CONFIG_ENV, previous_provider);
+
+    result
 }
 
 #[test]
@@ -121,15 +156,51 @@ fn runtime_provider_config_loads_compatibility_metadata() {
 #[test]
 fn runtime_provider_config_absent_keeps_stub_fallback() {
     let root = temp_root("runtime-provider-absent");
+    let user_home = temp_root("runtime-provider-absent-home");
+    let elgar_home = user_home.join(ELGAR_HOME_DIR);
 
-    assert_eq!(load_runtime_provider(&root).unwrap(), None);
+    with_provider_env(&elgar_home, || {
+        assert_eq!(load_runtime_provider(&root).unwrap(), None);
 
-    let rendered =
-        render_cli_turn_from_runtime_config("what does the harness do?", &root, &root).unwrap();
-    assert!(rendered.contains("provider started: stub-provider"));
-    assert!(!rendered.contains("lm-studio"));
+        let rendered =
+            render_cli_turn_from_runtime_config("what does the harness do?", &root, &root).unwrap();
+        assert!(rendered.contains("provider started: stub-provider"));
+        assert!(!rendered.contains("lm-studio"));
+    });
 
     let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(user_home);
+}
+
+#[test]
+fn runtime_provider_config_loads_global_user_config() {
+    let root = temp_root("runtime-provider-global-root");
+    let user_home = temp_root("runtime-provider-global-home");
+    let elgar_home = user_home.join(ELGAR_HOME_DIR);
+
+    with_provider_env(&elgar_home, || {
+        fs::create_dir_all(elgar_home.join(CONFIG_DIR)).unwrap();
+        let path = global_config_file(PROVIDER_CONFIG_FILE);
+        fs::write(
+            &path,
+            r#"{
+              "provider": "lm-studio",
+              "default_model": "qwen-global",
+              "mode": "live",
+              "context_window_tokens": 128000
+            }"#,
+        )
+        .unwrap();
+
+        let runtime = load_runtime_provider(&root).unwrap().unwrap();
+
+        assert_eq!(runtime.source_path, path);
+        assert_eq!(runtime.config.model.as_deref(), Some("qwen-global"));
+        assert_eq!(runtime.config.context_window_tokens, Some(128_000));
+    });
+
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(user_home);
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use crate::TuiShell;
+use crate::{startup::StartupMcpStatus, TuiShell};
 use elgar_core::{
     harness::PendingApproval,
     provider::{ControllerProvider, LmStudioProvider, ProviderConfig, ProviderStub},
@@ -72,6 +72,7 @@ pub fn run_terminal_shell_with_lm_studio_provider(config: ProviderConfig) -> io:
         &cwd,
         LmStudioProvider::new(config.clone()),
         config.configured_context_window_tokens(),
+        StartupMcpStatus::Inactive,
     )
 }
 
@@ -80,11 +81,26 @@ pub fn run_terminal_shell_with_lm_studio_provider_at(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
 ) -> io::Result<()> {
+    run_terminal_shell_with_lm_studio_provider_and_mcp_at(
+        config,
+        project_root,
+        cwd,
+        StartupMcpStatus::Inactive,
+    )
+}
+
+pub fn run_terminal_shell_with_lm_studio_provider_and_mcp_at(
+    config: ProviderConfig,
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    mcp_status: StartupMcpStatus,
+) -> io::Result<()> {
     run_terminal_shell_with_provider_and_context_window(
         project_root,
         cwd,
         LmStudioProvider::new(config.clone()),
         config.configured_context_window_tokens(),
+        mcp_status,
     )
 }
 
@@ -93,6 +109,20 @@ pub fn run_terminal_shell_at(
     cwd: impl AsRef<Path>,
 ) -> io::Result<()> {
     run_terminal_shell_with_provider(project_root, cwd, ProviderStub::default())
+}
+
+pub fn run_terminal_shell_at_with_mcp_status(
+    project_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    mcp_status: StartupMcpStatus,
+) -> io::Result<()> {
+    run_terminal_shell_with_provider_and_context_window(
+        project_root,
+        cwd,
+        ProviderStub::default(),
+        None,
+        mcp_status,
+    )
 }
 
 /// Shared terminal-shell launcher for any provider implementation.
@@ -104,7 +134,13 @@ fn run_terminal_shell_with_provider<P>(
 where
     P: ControllerProvider + Clone + Send + 'static,
 {
-    run_terminal_shell_with_provider_and_context_window(project_root, cwd, provider, None)
+    run_terminal_shell_with_provider_and_context_window(
+        project_root,
+        cwd,
+        provider,
+        None,
+        StartupMcpStatus::Inactive,
+    )
 }
 
 fn run_terminal_shell_with_provider_and_context_window<P>(
@@ -112,6 +148,7 @@ fn run_terminal_shell_with_provider_and_context_window<P>(
     cwd: impl AsRef<Path>,
     provider: P,
     context_window_tokens: Option<u64>,
+    mcp_status: StartupMcpStatus,
 ) -> io::Result<()>
 where
     P: ControllerProvider + Clone + Send + 'static,
@@ -121,7 +158,7 @@ where
     session.set_context_window_tokens(context_window_tokens);
     let mut shell = TuiShell::new();
 
-    let mut context = terminal_context(&session, &provider);
+    let mut context = terminal_context(&session, &provider).with_mcp_status(mcp_status);
     print_inline_startup(&context)?;
 
     let mut next_prompt_input = String::new();
