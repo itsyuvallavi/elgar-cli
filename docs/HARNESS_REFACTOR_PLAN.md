@@ -87,71 +87,37 @@ work named in parentheses. **Defer** = do not schedule yet.
 Scanned active `crates/**/*.rs` excluding `_legacy/` (threshold **150+ lines**).
 Re-run: `find crates -name '*.rs' ! -path '*_legacy*' -print0 | xargs -0 wc -l | sort -n`
 
-#### Tier A — 400+ lines
+#### Current Size Audit — 2026-06-18
 
-| Lines | File | Issue | Action |
-|------:|------|-------|--------|
-| split | `elgar-core/.../harness/tests/loop_flow/*_test.rs` | Harness loop tests split by flow | **Done** |
-| 749 | `elgar-tui/.../terminal/ui/render.rs` | Frame layout + draw paths | **Defer** (pane refactor) |
-| split | `elgar-core/.../provider/lm_studio/tests/*.rs` | Provider integration tests split by topic | **Done** |
-| 590 | `elgar-cli/tests/smoke.rs` | CLI/TUI smoke integration | **Defer** |
-| split | `elgar-core/.../harness/tests/model_choice/parsing_*.rs` | Model-choice parsing tests split by concern | **Done** |
-| 96 | `elgar-core/.../harness/permissions/approval_flow.rs` | Approve/deny dispatch only after split | **Done** (`approval_logging.rs` + `approval_flow_tests.rs`) |
-| split | `elgar-core/.../harness/harness_loop/state/logging/*.rs` | Harness system-log helpers split by event family | **Done** |
-| 461 | `elgar-cli/.../diagnostics/logs.rs` | JSONL parse + human render | **Defer** (logs split) |
-| 440 | `elgar-tui/.../terminal/ui/prompt.rs` | Input chrome + approval affordances | **Pair** (approval card) |
-| 313 | `elgar-core/.../harness/harness_loop/control/coordinator.rs` | Native loop order after helper extraction | **Watch** |
-| 400 | `elgar-tui/src/markdown.rs` | Markdown → terminal pipeline | **Defer** |
+Current active runtime files are below the 300-line system-file split threshold.
+The remaining 300+ line Rust files are tests, so they are intentionally not
+split by this cleanup rule.
 
-#### Tier B — 250–399 lines
-
-| Lines | File | Issue | Action |
-|------:|------|-------|--------|
-| 362 | `elgar-tui/src/code_blocks.rs` | Fence detection + highlighting | **Defer** |
-| 361 | `elgar-tui/.../panes/conversation.rs` | Event → visible transcript | **Pair** (approval card) |
-| 351 | `elgar-core/.../provider/lm_studio/openai.rs` | Chat completions request/response | **Defer** |
-| 314 | `elgar-core/.../harness/context/directory.rs` | `ls` collector; shared display helper extracted | **Watch** |
-| 287 | `elgar-core/.../harness/context/grep.rs` | `grep` collector; shared path/noise helpers extracted | **Watch** |
-| 294 | `elgar-cli/.../diagnostics/scripted_tui.rs` | Scripted TUI loop + handlers | **Done** (shared parse/help) |
-| 288 | `elgar-tui/.../terminal/turn/submitted.rs` | Submit path + slash dispatch | **Pair** (approval card) |
-| 273 | `elgar-core/src/event/mod.rs` | Session event types + helpers | **Watch** (split only when editing) |
-| 112 | `elgar-core/.../harness_loop/evidence/execution.rs` | Primitive collector dispatch after key/render/arg split | **Done** |
-| 254 | `elgar-core/.../provider/http/transport.rs` | HTTP client + timeouts | **Watch** |
-| 221 | `elgar-core/.../harness/context/find.rs` | `find` collector; shared path/noise helpers extracted | **Watch** |
-
-#### Tier C — 150–249 lines (watchlist)
-
-Split **only when editing** the file or its neighbor.
+Oversized test files still worth watching:
 
 | Lines | File | Notes |
 |------:|------|-------|
-| 242 | `elgar-core/src/context/bundle.rs` | Prompt context bundle assembly |
-| 239 | `elgar-core/src/session.rs` | Session state + `pending_approval` |
-| 228 | `elgar-core/.../harness/primitive_tools.rs` | Tool registry + stage flags |
-| 228 | `elgar-core/.../provider/lm_studio/mod.rs` | LM Studio provider surface |
-| 218 | `elgar-core/tests/context_accounting.rs` | Integration test file |
-| 217 | `elgar-tui/.../terminal/commands/clipboard.rs` | Copy/paste command path |
-| 210 | `elgar-core/.../harness_loop/provider/synthesis.rs` | Final-answer synthesis call |
-| 209 | `elgar-cli/src/tests/logs_test.rs` | Logs diagnostic tests |
-| 204 | `elgar-tui/.../panes/event_rendering.rs` | Event → display strings (overlaps conversation pane) |
-| 204 | `elgar-cli/.../startup/provider_config.rs` | Provider JSON load + validation |
-| 194 | `elgar-core/.../provider/http/response.rs` | HTTP response parsing |
-| 188 | `elgar-tui/.../panes/provider_reasoning.rs` | Provider reasoning pane |
-| 180 | `elgar-core/.../harness/tests/context/collectors_test.rs` | Collector tests |
-| 175 | `elgar-tui/.../terminal/turn/provider.rs` | Provider turn wiring |
-| 174 | `elgar-core/.../provider/stub/mod.rs` | Stub provider for tests |
-| 173 | `elgar-core/.../provider/config/tests.rs` | Config tests |
-| 170 | `elgar-core/.../provider/lm_studio/parse.rs` | LM Studio response parse |
-| 167 | `elgar-core/.../provider/config/mod.rs` | Provider config types |
-| 164 | `elgar-core/.../harness/context/project_file.rs` | `read` collector | **Pair** (`path.rs`) |
-| 161 | `elgar-tui/src/shell.rs` | TUI shell + harness submit |
-| 159 | `elgar-tui/.../terminal/display_context/mod.rs` | Terminal display context |
-| 157 | `elgar-tui/src/input.rs` | Shared input helpers |
-| 155 | `elgar-core/.../harness_loop/state/memory.rs` | Loop memory / evidence caps |
-| 154 | `elgar-tui/.../markdown/tests/markdown_test.rs` | Markdown tests |
-| 153 | `elgar-cli/.../tests/provider_config_test.rs` | Provider config tests |
-| 152 | `elgar-core/src/token_accounting.rs` | Token usage accounting |
-| 151 | `elgar-tui/.../terminal/turn/provider_worker.rs` | Background provider worker |
+| 566 | `elgar-core/.../harness/tests/loop_flow/native_loop_test.rs` | Harness flow coverage |
+| 495 | `elgar-core/.../harness/tests/loop_flow/mcp_loop_test.rs` | MCP harness coverage |
+| 441 | `elgar-core/.../provider/lm_studio/tests/request_format_tests.rs` | Provider request-shape coverage |
+| 378 | `elgar-core/src/mcp/tests.rs` | MCP config/catalog coverage |
+| 350 | `elgar-core/.../harness/permissions/approval_flow_tests.rs` | Approval policy coverage |
+| 332 | `elgar-cli/src/tests/scripted_tui_test.rs` | Scripted TUI integration coverage |
+| 330 | `elgar-core/.../provider/lm_studio/tests/network_tests.rs` | LM Studio network coverage |
+
+Current runtime watchlist:
+
+| Lines | File | Notes |
+|------:|------|-------|
+| 300 | `elgar-core/.../harness/context/grep.rs` | At threshold; split only when editing this collector again |
+| 298 | `elgar-tui/.../terminal/ui/render.rs` | Near threshold; keep future frame work small |
+| 294 | `elgar-core/src/session.rs` | Near threshold after context-status logging |
+| 288 | `elgar-core/.../provider/lm_studio/parse.rs` | Near threshold; keep parser helpers narrow |
+| 286 | `elgar-tui/.../terminal/turn/provider.rs` | Provider-turn repaint and worker coordination |
+| 285 | `elgar-core/.../harness/harness_loop/control/coordinator.rs` | Native loop order after helper extraction |
+| 258 | `elgar-tui/.../terminal/turn/provider_worker.rs` | Background provider worker |
+| 257 | `elgar-cli/.../diagnostics/logs/summary.rs` | Logs summary rendering |
+| 252 | `elgar-core/.../harness/primitive_tools.rs` | Tool registry and stage flags |
 
 #### `_legacy/` (awareness only — do not clean)
 
