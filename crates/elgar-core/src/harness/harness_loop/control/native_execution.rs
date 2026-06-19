@@ -14,7 +14,7 @@ use crate::{
                 choice_from_output::NativeToolRequest,
                 finish::{finish_with_model_message, synthesize_loop_answer},
                 request_handling::{collect_request_evidence, RequestHandlingOutcome},
-                tool_target_fidelity::validate_tool_target,
+                tool_target_fidelity::{direct_request_satisfied, validate_tool_target},
             },
             evidence::timeline::append_verified_action_timeline,
             state::{
@@ -94,7 +94,44 @@ where
         rounds,
         evidence,
     ) {
-        Ok(RequestHandlingOutcome::UsefulEvidence | RequestHandlingOutcome::ExecutionFailed) => {
+        Ok(RequestHandlingOutcome::UsefulEvidence) => {
+            let body = evidence
+                .get(evidence_before)
+                .map(|item| item.body.clone())
+                .unwrap_or_else(|| {
+                    "VERIFIED_LOOP_NOTICE\nNo new evidence was collected for this request."
+                        .to_string()
+                });
+            if let Some(stats) =
+                crate::harness::harness_loop::evidence::timeline::verified_action_timeline_stats(
+                    evidence,
+                )
+            {
+                log_verified_action_timeline_appended(session, round_index, stats);
+            }
+            messages.push(ChatMessage::tool(
+                native_request.tool_call_id,
+                append_verified_action_timeline(&body, evidence),
+            ));
+            if direct_request_satisfied(input, evidence) {
+                return synthesize_loop_answer(
+                    provider,
+                    session,
+                    input,
+                    evidence,
+                    std::mem::take(rounds),
+                    "direct_evidence_satisfied".to_string(),
+                    EvidenceDepth::Enough,
+                    loop_turn_id,
+                    loop_started,
+                    cancel,
+                    stream_events,
+                )
+                .map(Some);
+            }
+            Ok(None)
+        }
+        Ok(RequestHandlingOutcome::ExecutionFailed) => {
             let body = evidence
                 .get(evidence_before)
                 .map(|item| item.body.clone())

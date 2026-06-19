@@ -52,6 +52,11 @@ impl ConversationPane {
                 self.raw_details
                     .push(render_assistant_markdown_details(&message.content));
             }
+            if message.source != AssistantMessageSource::Provider
+                && message.content.trim_start().starts_with("VERIFIED_")
+            {
+                self.raw_details.push(message.content.clone());
+            }
         }
 
         if let Event::ProviderFinished(finished) = event {

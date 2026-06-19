@@ -30,10 +30,12 @@ pub(crate) fn render_execution_result(raw: &str) -> Option<String> {
     if raw.starts_with("VERIFIED_BASH_EXECUTION") {
         let command = field(raw, "command").unwrap_or("command");
         let exit = field(raw, "exit_code").unwrap_or("?");
-        if exit == "0" {
-            return Some(format!("Done · `{command}` exited 0"));
-        }
-        return Some(format!("Failed · `{command}` exited {exit}"));
+        let duration = field(raw, "duration_ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(format_duration)
+            .map(|value| format!(" · {value}"))
+            .unwrap_or_default();
+        return Some(format!("Command · `{command}` · exit {exit}{duration}"));
     }
 
     None
@@ -44,6 +46,14 @@ fn field<'a>(raw: &'a str, key: &str) -> Option<&'a str> {
     raw.lines()
         .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
         .filter(|value| !value.is_empty())
+}
+
+fn format_duration(millis: u64) -> String {
+    if millis < 1_000 {
+        format!("{millis}ms")
+    } else {
+        format!("{:.1}s", millis as f64 / 1_000.0)
+    }
 }
 
 #[cfg(test)]
@@ -77,6 +87,16 @@ mod tests {
         )
         .expect("bash result");
 
-        assert_eq!(rendered, "Failed · `npm run build` exited 1");
+        assert_eq!(rendered, "Command · `npm run build` · exit 1");
+    }
+
+    #[test]
+    fn renders_bash_duration_when_present() {
+        let rendered = render_execution_result(
+            "VERIFIED_BASH_EXECUTION\ncommand: npm run build\nexit_code: 0\nduration_ms: 2100\nstdout:\nstderr:\n",
+        )
+        .expect("bash result");
+
+        assert_eq!(rendered, "Command · `npm run build` · exit 0 · 2.1s");
     }
 }

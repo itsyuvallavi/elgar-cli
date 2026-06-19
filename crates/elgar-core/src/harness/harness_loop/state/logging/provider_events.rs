@@ -181,12 +181,27 @@ pub(in crate::harness::harness_loop) fn log_turn_prompt_context(
         .with_metadata(json!({
             "initial_message_count": initial_message_count,
             "history_turns": history_turns,
+            "memory_selection_strategy": memory.selection_strategy,
             "verified_fact_count": memory.indexed_fact_count,
             "indexed_fact_count": memory.indexed_fact_count,
             "rendered_fact_count": memory.rendered_fact_count,
             "rendered_memory_chars": memory.rendered_memory_chars,
             "omitted_fact_count": memory.omitted_fact_count,
-            "memory_budget_hit": memory.memory_budget_hit
+            "memory_budget_hit": memory.memory_budget_hit,
+            "rendered_by_kind": {
+                "read": memory.rendered_read_file_facts,
+                "listed": memory.rendered_listed_directory_facts,
+                "find": memory.rendered_find_facts,
+                "grep": memory.rendered_grep_facts,
+                "executed": memory.rendered_approved_execution_facts
+            },
+            "omitted_by_kind": {
+                "read": memory.omitted_read_file_facts,
+                "listed": memory.omitted_listed_directory_facts,
+                "find": memory.omitted_find_facts,
+                "grep": memory.omitted_grep_facts,
+                "executed": memory.omitted_approved_execution_facts
+            }
         })),
     );
 }

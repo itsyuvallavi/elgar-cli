@@ -44,17 +44,21 @@ native provider conversation. When the model returns native `tool_calls`, Elgar
 validates and executes them, then appends matching `role:"tool"` result messages
 before asking the provider again.
 
-Normal final text is the successful loop ending, even after verified evidence
-exists. This matches the Codex/Pi/Claude-style loop: tool calls continue the
-turn, text ends it.
+Normal final text is the successful loop ending for broad review and exploratory
+turns. For direct read/list/search requests, verified matching evidence ends the
+loop through synthesis immediately. This keeps direct file answers anchored to
+the evidence just collected instead of relying on another provider decision
+round to stop cleanly.
 
 Synthesis mode uses provider request mode `harness_synthesis`. It does not
 expose tools. It receives only the original user request, selected verified
 evidence blocks, and a stop reason, then asks the model to answer now.
 
-Synthesis is now a fallback path, not the default successful finish. It remains
-available for duplicate-loop stops, legacy `answer_now` JSON fallback, and other
-explicit safe-stop cases.
+Synthesis is used for duplicate-loop stops, legacy `answer_now` JSON fallback,
+direct evidence satisfaction, and other explicit safe-stop cases. If current
+turn evidence is empty, synthesis also receives bounded verified session memory
+so it can answer from prior Elgar-recorded facts instead of treating the session
+as evidence-free.
 
 Native tool results carry bounded verified evidence back to the provider as
 tool messages. Full evidence is retained locally and remains available for

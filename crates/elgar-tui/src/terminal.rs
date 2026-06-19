@@ -39,6 +39,7 @@ const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_CYAN: &str = "\x1b[38;2;143;207;198m";
 const ANSI_MUTED: &str = "\x1b[38;2;118;126;126m";
 const ANSI_TEXT: &str = "\x1b[38;2;214;219;224m";
+const ANSI_EVENT: &str = "\x1b[38;2;102;220;150m";
 const ANSI_USER_BLOCK: &str = "\x1b[1m\x1b[38;2;143;207;198m\x1b[48;2;8;32;32m";
 const ANSI_CODE_BORDER: &str = "\x1b[38;2;83;94;108m\x1b[48;2;18;22;28m";
 const ANSI_CODE_HEADER: &str = "\x1b[38;2;117;196;187m\x1b[48;2;18;22;28m";

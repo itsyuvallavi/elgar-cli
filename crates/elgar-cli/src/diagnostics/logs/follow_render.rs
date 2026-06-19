@@ -79,14 +79,28 @@ fn render_provider_finished(value: &Value, metadata: &Value) -> String {
 
 fn render_memory_context(value: &Value, metadata: &Value) -> String {
     format!(
-        "{} memory indexed={} rendered={} omitted={} chars={} budget_hit={} history={}",
+        "{} memory strategy={} indexed={} rendered={} omitted={} chars={} budget_hit={} history={} kinds={}",
         timestamp(value),
+        metadata_text(metadata, "memory_selection_strategy"),
         metadata_count(metadata, "indexed_fact_count"),
         metadata_count(metadata, "rendered_fact_count"),
         metadata_count(metadata, "omitted_fact_count"),
         metadata_count(metadata, "rendered_memory_chars"),
         metadata_bool(metadata, "memory_budget_hit"),
-        metadata_count(metadata, "history_turns")
+        metadata_count(metadata, "history_turns"),
+        rendered_kind_summary(metadata)
+    )
+}
+
+fn rendered_kind_summary(metadata: &Value) -> String {
+    let rendered = metadata.get("rendered_by_kind").unwrap_or(&Value::Null);
+    format!(
+        "read:{} listed:{} find:{} grep:{} executed:{}",
+        metadata_count(rendered, "read"),
+        metadata_count(rendered, "listed"),
+        metadata_count(rendered, "find"),
+        metadata_count(rendered, "grep"),
+        metadata_count(rendered, "executed")
     )
 }
 

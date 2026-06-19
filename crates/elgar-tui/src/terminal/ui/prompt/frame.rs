@@ -5,7 +5,7 @@ use crossterm::terminal::size as terminal_size;
 use crate::terminal::TerminalShellContext;
 
 use super::{
-    super::approval_card::render_pending_approval_card,
+    super::approval_card::render_pending_approval_card_ansi,
     live_output::LiveProviderOutput,
     wrap::{non_empty_lines, rendered_preview_lines, wrap_preserving_spacing, wrap_words},
 };
@@ -20,7 +20,7 @@ pub(super) fn inline_prompt_frame_lines_with_cursor(
 ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
     let mut top_lines = vec![String::new()];
     if let Some(approval) = context.pending_approval.as_ref() {
-        top_lines.extend(render_pending_approval_card(
+        top_lines.extend(render_pending_approval_card_ansi(
             approval,
             width,
             context.selected_approval_action,

@@ -117,7 +117,7 @@ follower is already running, it reads that new file from the beginning.
 are hard to see from the TUI alone:
 
 ```text
-memory indexed=6 rendered=3 omitted=3 chars=176 budget_hit=false history=2
+memory strategy=recent_by_kind indexed=6 rendered=3 omitted=3 chars=176 budget_hit=false history=2 kinds=read:1 listed:1 find:0 grep:0 executed:1
 tokens turn ↑1.2k ↓43 = 1.2k · session 4.6k/128k (3%) · mode review_all
 mcp active servers=project-index,context7 source=elgar-mcp.json
 mcp inactive
@@ -136,7 +136,9 @@ the next prompt.
 
 Memory context events are written as `harness_turn_prompt_context_built`. They
 include indexed/rendered/omitted fact counts, rendered memory characters,
-history turn count, and whether the memory budget was hit.
+history turn count, the active memory selection strategy, per-kind rendered and
+omitted counts, and whether the memory budget was hit. Current selection is
+`recent_by_kind`; relevance-based selection is a future memory slice.
 
 MCP availability is written as `harness_mcp_status` at harness-loop setup. It
 records active/inactive state, config source, server ids, and exposed tool

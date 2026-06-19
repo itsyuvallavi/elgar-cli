@@ -85,7 +85,8 @@ fn render_memory_line(memory: Option<&MemoryDiagnosticSummary>) -> String {
         return "memory: ?".to_string();
     };
     format!(
-        "memory: indexed {} · rendered {} · omitted {} · chars {} · budget_hit {}",
+        "memory: strategy {} · indexed {} · rendered {} · omitted {} · chars {} · budget_hit {}",
+        memory.selection_strategy,
         memory.indexed_facts,
         memory.rendered_facts,
         memory.omitted_facts,

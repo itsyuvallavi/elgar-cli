@@ -72,6 +72,47 @@ fn renders_provider_sections_in_response_container() {
 }
 
 #[test]
+fn renders_verified_execution_as_compact_event() {
+    let mut pane = ConversationPane::default();
+    pane.push_event(&Event::AssistantMessage(AssistantMessage::new(
+        "VERIFIED_BASH_EXECUTION\ncommand: npm run build\nexit_code: 0\nduration_ms: 2100\nstdout:\nstderr:\n",
+        AssistantMessageSource::Controller,
+    )));
+
+    let body = pane.render_body();
+    assert_eq!(body, "Command · `npm run build` · exit 0 · 2.1s");
+    assert!(!body.contains("VERIFIED_BASH_EXECUTION"));
+
+    let details = pane.latest_raw_details().expect("raw execution details");
+    assert!(details.contains("VERIFIED_BASH_EXECUTION"));
+}
+
+#[test]
+fn renders_mcp_evidence_as_compact_event() {
+    let mut pane = ConversationPane::default();
+    pane.push_event(&Event::AssistantMessage(AssistantMessage::new(
+        "mcp:context7:query-docs:4da7ba409202bb3e",
+        AssistantMessageSource::VerifiedState,
+    )));
+
+    assert_eq!(
+        pane.render_body(),
+        "MCP · context7/query-docs verified · 4da7ba40"
+    );
+}
+
+#[test]
+fn leaves_provider_prose_uncompacted() {
+    let mut pane = ConversationPane::default();
+    pane.push_event(&Event::AssistantMessage(AssistantMessage::new(
+        "read:package.json",
+        AssistantMessageSource::Provider,
+    )));
+
+    assert_eq!(pane.render_body(), "read:package.json");
+}
+
+#[test]
 fn hides_pending_approval_waiting_boilerplate() {
     let mut pane = ConversationPane::default();
     pane.push_event(&Event::AssistantMessage(AssistantMessage::new(

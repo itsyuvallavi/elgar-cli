@@ -11,4 +11,5 @@ pub(crate) enum ConversationLineStyle {
     Thinking,
     Metrics,
     Details,
+    Event,
 }

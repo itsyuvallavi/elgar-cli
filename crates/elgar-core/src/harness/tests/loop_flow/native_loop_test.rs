@@ -27,7 +27,8 @@ fn primitive_loop_native_tool_call_appends_tool_result_then_accepts_final_text()
     ]);
     let mut session = Session::new("loop-native-session", &root, &root);
 
-    let result = run_primitive_harness_loop(&provider, &mut session, "read package.json").unwrap();
+    let result =
+        run_primitive_harness_loop(&provider, &mut session, "review package metadata").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "native_final_text");

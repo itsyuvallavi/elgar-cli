@@ -5,7 +5,7 @@ use std::fs;
 use crate::{event::ProviderOutput, harness::run_primitive_harness_loop, session::Session};
 
 use super::super::support::queued_provider::QueuedProvider;
-use super::loop_helpers::{tool_call_output, tool_message_contents};
+use super::loop_helpers::tool_call_output;
 
 #[test]
 fn primitive_loop_plain_message_without_evidence_is_final_answer() {
@@ -46,7 +46,7 @@ fn primitive_loop_blocks_unverified_read_claim_without_evidence() {
     let result = run_primitive_harness_loop(&provider, &mut session, "read package.json").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
-    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
     assert_eq!(
         result.final_text.as_deref(),
         Some("package.json is now verified.")
@@ -54,9 +54,9 @@ fn primitive_loop_blocks_unverified_read_claim_without_evidence() {
     assert_eq!(calls.len(), 3);
     assert_eq!(result.rounds.len(), 1);
     assert_eq!(result.rounds[0].tool.as_deref(), Some("read"));
-    assert!(tool_message_contents(&calls[2])
+    assert!(calls[2]
         .iter()
-        .any(|content| content.contains("package.json")));
+        .any(|message| message.content.contains("package.json")));
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn primitive_loop_retries_unverified_local_file_fact_into_tool_call() {
 
     let result = run_primitive_harness_loop(&provider, &mut session, "read app/page.tsx").unwrap();
 
-    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
     assert_eq!(
         result.final_text.as_deref(),
         Some("app/page.tsx is now verified.")
@@ -115,7 +115,7 @@ fn primitive_loop_retries_direct_read_request_without_approval_prose_scanning() 
         run_primitive_harness_loop(&provider, &mut session, "read postcss.config.mjs").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
-    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
     assert_eq!(
         result.final_text.as_deref(),
         Some("postcss.config.mjs is now verified.")
@@ -123,9 +123,9 @@ fn primitive_loop_retries_direct_read_request_without_approval_prose_scanning() 
     assert_eq!(calls.len(), 3);
     assert_eq!(result.rounds.len(), 1);
     assert_eq!(result.rounds[0].tool.as_deref(), Some("read"));
-    assert!(tool_message_contents(&calls[2])
+    assert!(calls[2]
         .iter()
-        .any(|content| content.contains("postcss.config.mjs")));
+        .any(|message| message.content.contains("postcss.config.mjs")));
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn primitive_loop_plain_message_after_evidence_is_final_text() {
     let result = run_primitive_harness_loop(&provider, &mut session, "read package.json").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
-    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
     assert_eq!(
         result.final_text.as_deref(),
         Some("I first need to understand the package metadata.")
@@ -252,9 +252,9 @@ fn primitive_loop_plain_message_after_evidence_is_final_text() {
     assert_eq!(calls.len(), 2);
     assert_eq!(result.rounds.len(), 1);
     assert_eq!(result.rounds[0].tool.as_deref(), Some("read"));
-    assert!(tool_message_contents(&calls[1])
+    assert!(calls[1]
         .iter()
-        .any(|content| content.contains("package.json")));
+        .any(|message| message.content.contains("package.json")));
 }
 
 #[test]

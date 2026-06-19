@@ -35,7 +35,7 @@ fn primitive_loop_rejects_wrong_read_target_then_accepts_retry() {
         run_primitive_harness_loop(&provider, &mut session, "read postcss.config.mjs").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
-    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
     assert_eq!(
         result.final_text.as_deref(),
         Some("postcss.config.mjs was read.")
@@ -51,6 +51,38 @@ fn primitive_loop_rejects_wrong_read_target_then_accepts_retry() {
     assert!(tool_message_contents(&calls[1])
         .iter()
         .any(|content| content.contains("Tool target mismatch rejected")));
+}
+
+#[test]
+fn primitive_loop_accepts_contextual_basename_read_and_stops() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-loop-target-contextual-read-test-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(root.join("Nextjs-1")).unwrap();
+    fs::write(root.join("Nextjs-1/package.json"), r#"{"name":"nextjs-1"}"#).unwrap();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output(
+            "read",
+            r#"{"path":"Nextjs-1/package.json"}"#,
+            "call-read-context-package",
+        ),
+        ProviderOutput::new("Nextjs-1/package.json was read."),
+    ]);
+    let mut session = Session::new("loop-target-contextual-read-session", &root, &root);
+
+    let result =
+        run_primitive_harness_loop(&provider, &mut session, "show me package.json").unwrap();
+
+    assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
+    assert_eq!(
+        result.final_text.as_deref(),
+        Some("Nextjs-1/package.json was read.")
+    );
+    assert_eq!(
+        result.rounds[0].evidence_label.as_deref(),
+        Some("read:Nextjs-1/package.json")
+    );
 }
 
 #[test]
@@ -123,7 +155,7 @@ fn primitive_loop_rejects_wrong_grep_target_then_accepts_file_retry() {
     )
     .unwrap();
 
-    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
     assert_eq!(
         result.rounds[0].evidence_label.as_deref(),
         Some("tool_target_mismatch")
@@ -173,7 +205,7 @@ fn primitive_loop_rejects_find_and_root_grep_then_accepts_file_grep() {
     )
     .unwrap();
 
-    assert_eq!(result.stopped_reason, "native_final_text");
+    assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
     assert_eq!(
         result.rounds[0].evidence_label.as_deref(),
         Some("tool_target_mismatch")

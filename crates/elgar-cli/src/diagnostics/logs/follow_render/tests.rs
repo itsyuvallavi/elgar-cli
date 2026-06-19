@@ -36,11 +36,11 @@ fn renders_provider_finished_with_close_gap() {
 
 #[test]
 fn renders_memory_context_line() {
-    let line = r#"{"timestamp_unix_ms":40,"summary":"harness_turn_prompt_context_built","metadata":{"indexed_fact_count":6,"rendered_fact_count":3,"omitted_fact_count":3,"rendered_memory_chars":176,"memory_budget_hit":false,"history_turns":2}}"#;
+    let line = r#"{"timestamp_unix_ms":40,"summary":"harness_turn_prompt_context_built","metadata":{"memory_selection_strategy":"recent_by_kind","indexed_fact_count":6,"rendered_fact_count":3,"omitted_fact_count":3,"rendered_memory_chars":176,"memory_budget_hit":false,"history_turns":2,"rendered_by_kind":{"read":1,"listed":1,"find":0,"grep":0,"executed":1}}}"#;
 
     assert_eq!(
         render_follow_line(line).as_deref(),
-        Some("40 memory indexed=6 rendered=3 omitted=3 chars=176 budget_hit=false history=2")
+        Some("40 memory strategy=recent_by_kind indexed=6 rendered=3 omitted=3 chars=176 budget_hit=false history=2 kinds=read:1 listed:1 find:0 grep:0 executed:1")
     );
 }
 

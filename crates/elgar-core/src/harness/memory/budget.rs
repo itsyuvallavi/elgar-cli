@@ -5,6 +5,8 @@
 
 use super::types::{HarnessMemoryFact, HarnessMemoryIndex, HarnessMemoryKind};
 
+pub const MEMORY_SELECTION_STRATEGY_RECENT_BY_KIND: &str = "recent_by_kind";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HarnessMemoryPromptBudget {
     pub max_rendered_chars: usize,
@@ -32,13 +34,47 @@ impl Default for HarnessMemoryPromptBudget {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderedMemoryStats {
+    pub selection_strategy: &'static str,
     pub indexed_fact_count: usize,
     pub rendered_fact_count: usize,
     pub omitted_fact_count: usize,
     pub rendered_memory_chars: usize,
     pub memory_budget_hit: bool,
+    pub rendered_read_file_facts: usize,
+    pub rendered_listed_directory_facts: usize,
+    pub rendered_find_facts: usize,
+    pub rendered_grep_facts: usize,
+    pub rendered_approved_execution_facts: usize,
+    pub omitted_read_file_facts: usize,
+    pub omitted_listed_directory_facts: usize,
+    pub omitted_find_facts: usize,
+    pub omitted_grep_facts: usize,
+    pub omitted_approved_execution_facts: usize,
+}
+
+impl Default for RenderedMemoryStats {
+    fn default() -> Self {
+        Self {
+            selection_strategy: MEMORY_SELECTION_STRATEGY_RECENT_BY_KIND,
+            indexed_fact_count: 0,
+            rendered_fact_count: 0,
+            omitted_fact_count: 0,
+            rendered_memory_chars: 0,
+            memory_budget_hit: false,
+            rendered_read_file_facts: 0,
+            rendered_listed_directory_facts: 0,
+            rendered_find_facts: 0,
+            rendered_grep_facts: 0,
+            rendered_approved_execution_facts: 0,
+            omitted_read_file_facts: 0,
+            omitted_listed_directory_facts: 0,
+            omitted_find_facts: 0,
+            omitted_grep_facts: 0,
+            omitted_approved_execution_facts: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

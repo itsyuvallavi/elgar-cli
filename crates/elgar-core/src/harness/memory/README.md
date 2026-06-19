@@ -37,6 +37,11 @@ view:
 - a total rendered character budget
 - an omission line when useful facts are pruned
 
+Prompt selection is currently deterministic `recent_by_kind`: newest verified
+facts are selected under per-kind caps, then pruned to the rendered character
+budget. Logs include the strategy plus per-kind rendered/omitted counts so
+future relevance-based selection can be compared without guessing.
+
 ## Safety
 
 Do not index provider prose as truth. Durable memory is advisory context only;

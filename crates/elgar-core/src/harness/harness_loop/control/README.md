@@ -16,6 +16,8 @@ Coordinates one bounded harness loop.
 - `request_handling.rs` executes validated primitive requests.
 - `native_execution.rs` bridges one native tool request into verified evidence
   plus a matching tool-result message.
+- `tool_target_fidelity/` rejects conflicting direct read/list/search targets
+  and accepts contextual project paths when the user gave only a basename.
 - `provider_error.rs` owns transient provider-error recovery.
 - `synthetic_tool_calls.rs` builds provider-shaped tool calls for JSON fallback
   requests.
@@ -39,3 +41,10 @@ stops immediately with `approval_pending`. This prevents later provider prose
 from implying that more actions are approved than the runtime actually queued.
 Risky batches remain supported when the provider emits multiple risky tool calls
 in the same response.
+
+## Direct Evidence Stops
+
+When the user directly asks to read, list, or search a specific target, the loop
+stops once matching verified evidence is collected and synthesizes the answer
+from that evidence. This prevents a later provider round from drifting away from
+the file or directory that was already verified.

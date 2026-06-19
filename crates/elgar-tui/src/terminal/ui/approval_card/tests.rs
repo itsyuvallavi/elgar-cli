@@ -24,10 +24,13 @@ fn approval_card_renders_box_and_button_actions() {
 
     assert!(rendered.contains('╭'));
     assert!(rendered.contains('╯'));
+    assert!(rendered.contains("Approval required"));
     assert!(rendered.contains("Create file"));
     assert!(rendered.contains("hello-world"));
+    assert!(rendered.contains("Choose one:"));
     assert!(rendered.contains("[Approve]"));
     assert!(rendered.contains(" Deny "));
+    assert!(rendered.contains("Enter selects"));
     assert!(!rendered.contains("/approve"));
     assert!(!rendered.contains("/deny"));
     assert!(!rendered.contains("tool: write"));
@@ -67,6 +70,7 @@ fn approval_card_renders_batch_steps() {
     let rendered = lines.join("\n");
 
     assert!(rendered.contains("Approve actions"));
+    assert!(rendered.contains("Choose one:"));
     assert!(rendered.contains("2 actions"));
     assert!(rendered.contains("1. write · a.txt"));
     assert!(rendered.contains("2. write · b.txt"));

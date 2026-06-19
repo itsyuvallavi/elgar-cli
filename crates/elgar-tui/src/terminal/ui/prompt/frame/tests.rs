@@ -42,6 +42,8 @@ fn pending_approval_actions_render_inside_prompt_card_not_footer() {
 
     assert!(top.contains("Create file"));
     assert!(top.contains("hello-world.md"));
+    assert!(top.contains("Approval required"));
+    assert!(top.contains("\u{1b}["));
     assert!(top.contains(" Approve "));
     assert!(top.contains("[Deny]"));
     assert!(!footer.contains("Approval pending"));

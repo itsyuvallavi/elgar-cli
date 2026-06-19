@@ -10,7 +10,8 @@ use elgar_core::{
 
 use crate::markdown::render_assistant_markdown;
 use crate::terminal::ui::{
-    section_render::render_response_sections, sections::parse_response_sections,
+    event_blocks::render_event_block, section_render::render_response_sections,
+    sections::parse_response_sections,
 };
 
 use super::conversation::{ConversationLineStyle, ThinkingPulse};
@@ -28,6 +29,12 @@ pub(crate) fn render_tui_event(event: &Event) -> Option<(String, ConversationLin
                 || is_pending_approval_boilerplate(&message.content)
             {
                 return None;
+            }
+
+            if message.source != AssistantMessageSource::Provider {
+                if let Some(rendered) = render_event_block(&message.content) {
+                    return Some((rendered, ConversationLineStyle::Event));
+                }
             }
 
             let rendered = render_assistant_output(&message.content);

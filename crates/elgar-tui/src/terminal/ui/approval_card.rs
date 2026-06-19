@@ -5,7 +5,7 @@
 
 use elgar_core::harness::{ApprovalTargetPreview, PendingApproval, PendingApprovalStep};
 
-use super::approval_action::ApprovalAction;
+use super::{approval_action::ApprovalAction, approval_card_style::color_card_line};
 
 const CARD_MIN_CONTENT_WIDTH: usize = 28;
 const CARD_MAX_CONTENT_WIDTH: usize = 72;
@@ -32,24 +32,41 @@ pub(crate) fn render_pending_approval_card(
     body.push(String::new());
     body.extend(render_action_lines(selected));
 
-    render_simple_card(action_title(approval), &body, width)
+    render_simple_card("Approval required", &body, width)
+}
+
+/// Render an ANSI-colored pending approval card for the inline terminal prompt.
+pub(crate) fn render_pending_approval_card_ansi(
+    approval: &PendingApproval,
+    width: usize,
+    selected: ApprovalAction,
+) -> Vec<String> {
+    render_pending_approval_card(approval, width, selected)
+        .into_iter()
+        .map(|line| color_card_line(&line, selected))
+        .collect()
 }
 
 fn approval_summary_lines(approval: &PendingApproval) -> Vec<String> {
     if approval.is_batch() {
-        return Vec::new();
+        return vec![format!(
+            "{}: {} actions",
+            action_label(approval),
+            approval.steps.len()
+        )];
     }
 
-    vec![approval
+    let target = approval
         .target_preview
         .as_ref()
         .map(|target| target.requested_path.clone())
         .or_else(|| argument_value(approval, "command"))
         .or_else(|| argument_value(approval, "path"))
-        .unwrap_or_else(|| approval.tool.clone())]
+        .unwrap_or_else(|| approval.tool.clone());
+    vec![format!("{}: {target}", action_label(approval))]
 }
 
-fn action_title(approval: &PendingApproval) -> &'static str {
+fn action_label(approval: &PendingApproval) -> &'static str {
     match approval.tool.as_str() {
         "write" => "Create file",
         "edit" => "Edit file",
@@ -105,13 +122,11 @@ fn render_warning_lines(target: &ApprovalTargetPreview) -> Vec<String> {
 fn render_action_lines(selected: ApprovalAction) -> Vec<String> {
     vec![
         format!(
-            "{} execute",
-            action_button("Approve", selected == ApprovalAction::Approve)
-        ),
-        format!(
-            "{} cancel",
+            "Choose one: {} execute   {} cancel",
+            action_button("Approve", selected == ApprovalAction::Approve),
             action_button("Deny", selected == ApprovalAction::Deny)
         ),
+        "Enter selects · Tab switches".to_string(),
     ]
 }
 

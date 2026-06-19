@@ -60,7 +60,7 @@ fn primitive_loop_retries_empty_response_after_evidence_then_succeeds() {
     let mut session = Session::new("loop-empty-after-evidence-session", &root, &root);
 
     let result =
-        run_primitive_harness_loop(&provider, &mut session, "show me package.json").unwrap();
+        run_primitive_harness_loop(&provider, &mut session, "review package metadata").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "native_final_text");
@@ -96,7 +96,7 @@ fn primitive_loop_synthesizes_after_repeated_empty_response_with_evidence() {
     let mut session = Session::new("loop-empty-synthesis-session", &root, &root);
 
     let result =
-        run_primitive_harness_loop(&provider, &mut session, "show me package.json").unwrap();
+        run_primitive_harness_loop(&provider, &mut session, "review package metadata").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "empty_provider_response_synthesis");

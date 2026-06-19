@@ -40,6 +40,9 @@ fn bounded_memory_render_caps_per_kind_and_prefers_newer_facts() {
     assert_eq!(rendered.stats.indexed_fact_count, 5);
     assert_eq!(rendered.stats.rendered_fact_count, 2);
     assert_eq!(rendered.stats.omitted_fact_count, 3);
+    assert_eq!(rendered.stats.selection_strategy, "recent_by_kind");
+    assert_eq!(rendered.stats.rendered_read_file_facts, 2);
+    assert_eq!(rendered.stats.omitted_read_file_facts, 3);
     assert!(rendered.stats.memory_budget_hit);
 }
 

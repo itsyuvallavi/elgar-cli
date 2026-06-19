@@ -31,6 +31,7 @@ pub(super) struct HarnessDiagnosticSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MemoryDiagnosticSummary {
+    pub(super) selection_strategy: String,
     pub(super) indexed_facts: u64,
     pub(super) rendered_facts: u64,
     pub(super) omitted_facts: u64,
@@ -156,6 +157,7 @@ fn observe_event(summary: &mut HarnessDiagnosticSummary, event: &Value) {
         "harness_loop_repair_finished" => summary.repair_attempts += 1,
         "harness_turn_prompt_context_built" => {
             summary.memory = Some(MemoryDiagnosticSummary {
+                selection_strategy: metadata_text(metadata, "memory_selection_strategy"),
                 indexed_facts: metadata_count(metadata, "indexed_fact_count"),
                 rendered_facts: metadata_count(metadata, "rendered_fact_count"),
                 omitted_facts: metadata_count(metadata, "omitted_fact_count"),

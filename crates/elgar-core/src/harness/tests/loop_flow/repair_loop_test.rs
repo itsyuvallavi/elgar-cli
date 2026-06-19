@@ -22,7 +22,8 @@ fn primitive_loop_invalid_choice_without_evidence_repairs_to_tool_request() {
     ]);
     let mut session = Session::new("loop-invalid-repair-tool-session", &root, &root);
 
-    let result = run_primitive_harness_loop(&provider, &mut session, "read package.json").unwrap();
+    let result =
+        run_primitive_harness_loop(&provider, &mut session, "review package metadata").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "answer_now");
@@ -68,7 +69,8 @@ fn primitive_loop_second_invalid_choice_fails_safely() {
     ]);
     let mut session = Session::new("loop-invalid-repair-fails-session", &root, &root);
 
-    let result = run_primitive_harness_loop(&provider, &mut session, "read package.json").unwrap();
+    let result =
+        run_primitive_harness_loop(&provider, &mut session, "review package metadata").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "invalid_model_choice");
@@ -93,7 +95,8 @@ fn primitive_loop_invalid_json_after_evidence_is_final_text() {
     ]);
     let mut session = Session::new("loop-invalid-after-evidence-repair-session", &root, &root);
 
-    let result = run_primitive_harness_loop(&provider, &mut session, "read package.json").unwrap();
+    let result =
+        run_primitive_harness_loop(&provider, &mut session, "review package metadata").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "native_final_text");
@@ -123,7 +126,8 @@ fn primitive_loop_answer_now_after_evidence_uses_synthesis() {
         &root,
     );
 
-    let result = run_primitive_harness_loop(&provider, &mut session, "read package.json").unwrap();
+    let result =
+        run_primitive_harness_loop(&provider, &mut session, "review package metadata").unwrap();
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "answer_now");

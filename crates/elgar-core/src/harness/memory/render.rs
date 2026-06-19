@@ -6,7 +6,7 @@
 use super::{
     budget::{
         select_facts_for_prompt, HarnessMemoryPromptBudget, RenderedMemoryStats,
-        SelectedPromptMemory,
+        SelectedPromptMemory, MEMORY_SELECTION_STRATEGY_RECENT_BY_KIND,
     },
     types::{HarnessMemoryFact, HarnessMemoryIndex, HarnessMemoryKind},
 };
@@ -32,16 +32,66 @@ pub fn render_verified_memory_for_prompt_with_budget(
     let mut selected = select_facts_for_prompt(index, budget);
     prune_to_char_budget(&mut selected, budget.max_rendered_chars);
     let text = render_selected_facts(&selected);
-    RenderedMemoryPrompt {
-        stats: RenderedMemoryStats {
-            indexed_fact_count: index.facts.len(),
-            rendered_fact_count: selected.facts.len(),
-            omitted_fact_count: selected.omitted_fact_count,
-            rendered_memory_chars: text.chars().count(),
-            memory_budget_hit: selected.budget_hit,
-        },
-        text,
+    let stats = rendered_memory_stats(index, &selected, text.chars().count());
+    RenderedMemoryPrompt { stats, text }
+}
+
+fn rendered_memory_stats(
+    index: &HarnessMemoryIndex,
+    selected: &SelectedPromptMemory,
+    rendered_memory_chars: usize,
+) -> RenderedMemoryStats {
+    RenderedMemoryStats {
+        selection_strategy: MEMORY_SELECTION_STRATEGY_RECENT_BY_KIND,
+        indexed_fact_count: index.facts.len(),
+        rendered_fact_count: selected.facts.len(),
+        omitted_fact_count: selected.omitted_fact_count,
+        rendered_memory_chars,
+        memory_budget_hit: selected.budget_hit,
+        rendered_read_file_facts: count_selected_kind(selected, HarnessMemoryKind::ReadFile),
+        rendered_listed_directory_facts: count_selected_kind(
+            selected,
+            HarnessMemoryKind::ListedDirectory,
+        ),
+        rendered_find_facts: count_selected_kind(selected, HarnessMemoryKind::FindQuery),
+        rendered_grep_facts: count_selected_kind(selected, HarnessMemoryKind::GrepQuery),
+        rendered_approved_execution_facts: count_selected_kind(
+            selected,
+            HarnessMemoryKind::ApprovedExecution,
+        ),
+        omitted_read_file_facts: omitted_kind_count(index, selected, HarnessMemoryKind::ReadFile),
+        omitted_listed_directory_facts: omitted_kind_count(
+            index,
+            selected,
+            HarnessMemoryKind::ListedDirectory,
+        ),
+        omitted_find_facts: omitted_kind_count(index, selected, HarnessMemoryKind::FindQuery),
+        omitted_grep_facts: omitted_kind_count(index, selected, HarnessMemoryKind::GrepQuery),
+        omitted_approved_execution_facts: omitted_kind_count(
+            index,
+            selected,
+            HarnessMemoryKind::ApprovedExecution,
+        ),
     }
+}
+
+fn count_selected_kind(selected: &SelectedPromptMemory, kind: HarnessMemoryKind) -> usize {
+    selected
+        .facts
+        .iter()
+        .filter(|fact| fact.kind == kind)
+        .count()
+}
+
+fn omitted_kind_count(
+    index: &HarnessMemoryIndex,
+    selected: &SelectedPromptMemory,
+    kind: HarnessMemoryKind,
+) -> usize {
+    index
+        .facts_by_kind(kind)
+        .len()
+        .saturating_sub(count_selected_kind(selected, kind))
 }
 
 fn prune_to_char_budget(selected: &mut SelectedPromptMemory, max_chars: usize) {

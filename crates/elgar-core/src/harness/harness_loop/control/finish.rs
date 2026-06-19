@@ -9,7 +9,10 @@ use crate::{
     event::Event,
     harness::{
         harness_loop::{
-            provider::synthesis::run_primitive_loop_synthesis,
+            provider::{
+                session_context::render_verified_memory_for_session,
+                synthesis::run_primitive_loop_synthesis,
+            },
             state::{
                 logging::log_loop_finished,
                 types::{Evidence, PrimitiveHarnessLoopResult, PrimitiveHarnessLoopRound},
@@ -71,8 +74,7 @@ pub(super) fn synthesize_loop_answer<P>(
 where
     P: ControllerProvider,
 {
-    let evidence_text =
-        crate::harness::harness_loop::evidence::render::render_evidence_for_synthesis(evidence);
+    let evidence_text = render_synthesis_evidence_text(session, evidence);
     let final_text = run_primitive_loop_synthesis(
         provider,
         session,
@@ -91,6 +93,24 @@ where
     };
     log_loop_finished(session, loop_turn_id, &result, loop_started);
     Ok(result)
+}
+
+fn render_synthesis_evidence_text(session: &Session, evidence: &[Evidence]) -> String {
+    let current_evidence =
+        crate::harness::harness_loop::evidence::render::render_evidence_for_synthesis(evidence);
+    if !evidence.is_empty() {
+        return current_evidence;
+    }
+
+    let memory = render_verified_memory_for_session(session);
+    if memory.text.is_empty() {
+        return current_evidence;
+    }
+
+    format!(
+        "{current_evidence}\n\n--- Verified Session Memory Fallback ---\n{}",
+        memory.text
+    )
 }
 
 /// Finish with a validation error before any evidence exists.

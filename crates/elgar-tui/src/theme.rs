@@ -33,6 +33,10 @@ pub(crate) fn model_output() -> Style {
     primary()
 }
 
+pub(crate) fn event() -> Style {
+    Style::default().fg(Color::Rgb(102, 220, 150))
+}
+
 pub(crate) fn context_normal() -> Style {
     muted()
 }

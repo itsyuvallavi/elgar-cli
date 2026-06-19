@@ -229,22 +229,48 @@ Tests:
 
 ### Slice 2: Event Containers
 
+Status: partially implemented.
+
 Goal: render verified harness events as clean typed blocks before relying on
 assistant markdown.
 
 Add:
 
 - `crates/elgar-tui/src/terminal/ui/event_blocks.rs`
+- `crates/elgar-tui/src/terminal/ui/transcript_print.rs`
 
 Edit:
 
 - `crates/elgar-tui/src/panes/event_rendering.rs`
+- `crates/elgar-tui/src/panes/conversation.rs`
+- `crates/elgar-tui/src/panes/conversation/style.rs`
+- `crates/elgar-tui/src/terminal.rs`
 - `crates/elgar-tui/src/terminal/ui/mod.rs`
+- `crates/elgar-tui/src/terminal/ui/render.rs`
+- `crates/elgar-tui/src/terminal/ui/execution_result.rs`
+- `crates/elgar-tui/src/theme.rs`
 
 Behavior:
 
-- Render writes, edits, bash, approvals, and MCP/tool evidence from typed
-  events when those events are visible in the conversation.
+- Implemented: render raw `VERIFIED_*` execution blocks and exact evidence
+  labels such as `mcp:*`, `read:*`, `ls:*`, `find:*`, and `grep:*` as compact
+  event rows when they come from controller or verified-state messages.
+- Implemented: keep raw `VERIFIED_*` proof available through `/details last`
+  when the normal chat view is compacted.
+- Implemented: event rows have a distinct terminal color without changing
+  normal assistant prose.
+- Implemented: bash execution rows include command, exit code, and duration
+  when duration is present.
+- Implemented: split stdout transcript printing out of `render.rs` so active
+  source files remain under the 300-line rule.
+- Implemented: inline approval cards now show an explicit `Approval required`
+  container with the target and `Choose one: [Approve] execute / Deny cancel`
+  actions inside the card.
+- Implemented: approval card ANSI styling lives in
+  `crates/elgar-tui/src/terminal/ui/approval_card_style.rs`, keeping the
+  content renderer small and reusable.
+- Remaining: render approval history and batch approval results as richer typed
+  event blocks after execution.
 - Group related file changes into concise file rows with counts or status.
 - Keep command status, exit code, duration, and capped output together.
 - Never let TUI event rendering execute, approve, retry, or synthesize

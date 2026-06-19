@@ -1,15 +1,18 @@
 //! MCP capability behavior in the native harness loop.
 
 use std::{
+    ffi::OsString,
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    sync::{Mutex, OnceLock},
     thread,
 };
 
+use crate::mcp::config::MCP_CONFIG_ENV;
 use crate::{
     event::ProviderOutput, harness::run_primitive_harness_loop, provider::ChatRole,
-    session::Session,
+    runtime_home::ELGAR_HOME_ENV, session::Session,
 };
 
 use super::{
@@ -20,6 +23,10 @@ use super::{
 #[test]
 fn mcp_call_schema_is_hidden_without_mcp_config() {
     let root = temp_root("mcp-hidden");
+    let home = temp_root("mcp-hidden-home");
+    let _env_lock = env_lock();
+    let _home_env = EnvVarGuard::set(ELGAR_HOME_ENV, home.to_string_lossy().as_ref());
+    let _mcp_env = EnvVarGuard::remove(MCP_CONFIG_ENV);
     let provider = QueuedProvider::new_outputs(vec![ProviderOutput::new("No MCP needed.")]);
     let mut session = Session::new("mcp-hidden-session", &root, &root);
 
@@ -32,6 +39,7 @@ fn mcp_call_schema_is_hidden_without_mcp_config() {
         .all(|tool| tool.function.name != "mcp_call"));
 
     let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(home);
 }
 
 #[test]
@@ -428,6 +436,39 @@ fn temp_root(name: &str) -> std::path::PathBuf {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     root
+}
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+struct EnvVarGuard {
+    name: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self { name, previous }
+    }
+
+    fn remove(name: &'static str) -> Self {
+        let previous = std::env::var_os(name);
+        std::env::remove_var(name);
+        Self { name, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
 }
 
 fn spawn_fake_mcp_server(listener: TcpListener, request_count: usize) -> thread::JoinHandle<()> {
