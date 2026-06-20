@@ -9,9 +9,7 @@ use crate::{
     harness::{
         harness_loop::{
             control::start::log_loop_started,
-            provider::{
-                context::native_tool_loop_initial_messages, session_context::TurnPromptContextStats,
-            },
+            provider::context::native_tool_loop_initial_messages,
             state::{
                 budget::{PrimitiveLoopBudget, PrimitiveLoopBudgetState},
                 memory::HarnessWorkingMemory,
@@ -50,16 +48,10 @@ pub(crate) fn initialize_primitive_loop(session: &mut Session, input: &str) -> P
     let registry = PrimitiveToolRegistry::stage_3a_with_mcp(mcp_available);
     let budget = PrimitiveLoopBudget::default();
     let turn_context = native_tool_loop_initial_messages(session, input);
-    let TurnPromptContextStats {
-        initial_message_count,
-        history_turns,
-        memory: memory_stats,
-        ..
-    } = turn_context.stats;
 
     log_loop_started(session, loop_turn_id, input, &budget);
     log_mcp_status(session, mcp_config.as_ref());
-    log_turn_prompt_context(session, initial_message_count, history_turns, &memory_stats);
+    log_turn_prompt_context(session, &turn_context.stats);
 
     PrimitiveLoopState {
         loop_turn_id,

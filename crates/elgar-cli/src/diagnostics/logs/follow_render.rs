@@ -79,7 +79,17 @@ fn render_provider_finished(value: &Value, metadata: &Value) -> String {
 
 fn render_memory_context(value: &Value, metadata: &Value) -> String {
     format!(
-        "{} memory strategy={} indexed={} rendered={} omitted={} chars={} budget_hit={} history={} kinds={}",
+        "{} prompt chars system={} history={} memory={} mcp={} total={} · history_budget={}/{} hit={} assistant_replay={}\n{} memory strategy={} indexed={} rendered={} omitted={} chars={} budget_hit={} history={} kinds={}",
+        timestamp(value),
+        metadata_count(metadata, "system_prompt_chars"),
+        metadata_count(metadata, "history_prompt_chars"),
+        metadata_count(metadata, "memory_prompt_chars"),
+        metadata_count(metadata, "mcp_catalog_chars"),
+        metadata_count(metadata, "total_initial_prompt_chars"),
+        estimated_history_tokens(metadata),
+        metadata_count(metadata, "history_token_budget"),
+        metadata_bool(metadata, "history_budget_hit"),
+        metadata_count(metadata, "assistant_replay_chars"),
         timestamp(value),
         metadata_text(metadata, "memory_selection_strategy"),
         metadata_count(metadata, "indexed_fact_count"),
@@ -90,6 +100,10 @@ fn render_memory_context(value: &Value, metadata: &Value) -> String {
         metadata_count(metadata, "history_turns"),
         rendered_kind_summary(metadata)
     )
+}
+
+fn estimated_history_tokens(metadata: &Value) -> u64 {
+    metadata_count(metadata, "history_prompt_chars") / 4
 }
 
 fn rendered_kind_summary(metadata: &Value) -> String {
@@ -106,10 +120,11 @@ fn rendered_kind_summary(metadata: &Value) -> String {
 
 fn render_session_context_status(value: &Value, metadata: &Value) -> String {
     format!(
-        "{} tokens turn {} · session {} · mode {}{}",
+        "{} tokens turn {} · session {} · source {} · mode {}{}",
         timestamp(value),
         turn_token_summary(metadata),
         session_context_summary(metadata),
+        metadata_text(metadata, "context_source"),
         metadata_text(metadata, "permission_mode"),
         pending_approval_suffix(metadata)
     )
@@ -161,12 +176,14 @@ fn turn_token_summary(metadata: &Value) -> String {
 fn session_context_summary(metadata: &Value) -> String {
     let current = compact_optional_count(metadata, "session_total_tokens", "");
     let window = compact_optional_count(metadata, "context_window_tokens", "");
+    let input = compact_optional_count(metadata, "session_input_tokens", "↑");
+    let output = compact_optional_count(metadata, "session_output_tokens", "↓");
     let percent = metadata
         .get("context_used_percent")
         .and_then(Value::as_u64)
         .map(|value| format!(" ({value}%)"))
         .unwrap_or_default();
-    format!("{current}/{window}{percent}")
+    format!("{input} {output} = {current}/{window}{percent}")
 }
 
 fn pending_approval_suffix(metadata: &Value) -> String {

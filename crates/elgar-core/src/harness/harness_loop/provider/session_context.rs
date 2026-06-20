@@ -35,6 +35,14 @@ pub(in crate::harness::harness_loop) struct TurnPromptContextStats {
     pub history_turns: usize,
     pub verified_fact_count: usize,
     pub memory: RenderedMemoryStats,
+    pub system_prompt_chars: usize,
+    pub history_prompt_chars: usize,
+    pub memory_prompt_chars: usize,
+    pub mcp_catalog_chars: usize,
+    pub total_initial_prompt_chars: usize,
+    pub history_token_budget: u64,
+    pub history_budget_hit: bool,
+    pub assistant_replay_chars: usize,
 }
 
 /// Initial native tool-loop messages including cross-turn session context.
@@ -58,21 +66,38 @@ pub(in crate::harness::harness_loop) fn native_tool_loop_turn_context(
         rendered_mcp_catalog.as_deref(),
         &rendered_memory.text,
     );
+    let system_prompt_chars = system.chars().count();
 
-    let mut messages = Vec::with_capacity(1 + history.len() + 1);
+    let mut messages = Vec::with_capacity(1 + history.messages.len() + 1);
     messages.push(ChatMessage::system(system));
-    messages.extend(history.iter().cloned());
+    messages.extend(history.messages.iter().cloned());
     messages.push(ChatMessage::user(input.trim()));
+    let total_initial_prompt_chars = messages
+        .iter()
+        .map(|message| message.content.chars().count())
+        .sum();
 
     TurnPromptContext {
         stats: TurnPromptContextStats {
             initial_message_count: messages.len(),
             history_turns: history
+                .messages
                 .iter()
                 .filter(|message| message.role == ChatRole::User)
                 .count(),
             verified_fact_count: rendered_memory.stats.indexed_fact_count,
             memory: rendered_memory.stats,
+            system_prompt_chars,
+            history_prompt_chars: history.prompt_chars,
+            memory_prompt_chars: rendered_memory.text.chars().count(),
+            mcp_catalog_chars: rendered_mcp_catalog
+                .as_deref()
+                .map(|catalog| catalog.chars().count())
+                .unwrap_or_default(),
+            total_initial_prompt_chars,
+            history_token_budget: HISTORY_TOKEN_BUDGET,
+            history_budget_hit: history.budget_hit,
+            assistant_replay_chars: history.assistant_replay_chars,
         },
         messages,
     }
@@ -124,7 +149,15 @@ pub(in crate::harness::harness_loop) fn render_permission_mode_for_prompt(
     }
 }
 
-fn session_history_messages(session: &Session, current_input: &str) -> Vec<ChatMessage> {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SessionHistoryPrompt {
+    messages: Vec<ChatMessage>,
+    prompt_chars: usize,
+    assistant_replay_chars: usize,
+    budget_hit: bool,
+}
+
+fn session_history_messages(session: &Session, current_input: &str) -> SessionHistoryPrompt {
     let current = current_input.trim();
     let mut messages = Vec::new();
 
@@ -156,8 +189,20 @@ fn session_history_messages(session: &Session, current_input: &str) -> Vec<ChatM
     }
 
     trim_history_to_user_turn_cap(&mut messages);
-    trim_history_to_token_budget(&mut messages);
-    messages
+    let budget_hit = trim_history_to_token_budget(&mut messages);
+    SessionHistoryPrompt {
+        prompt_chars: messages
+            .iter()
+            .map(|message| message.content.chars().count())
+            .sum(),
+        assistant_replay_chars: messages
+            .iter()
+            .filter(|message| message.role == ChatRole::Assistant)
+            .map(|message| message.content.chars().count())
+            .sum(),
+        messages,
+        budget_hit,
+    }
 }
 
 fn trim_assistant_text(content: &str) -> String {
@@ -197,7 +242,8 @@ fn trim_history_to_user_turn_cap(messages: &mut Vec<ChatMessage>) {
     messages.drain(..start_index);
 }
 
-fn trim_history_to_token_budget(messages: &mut Vec<ChatMessage>) {
+fn trim_history_to_token_budget(messages: &mut Vec<ChatMessage>) -> bool {
+    let mut budget_hit = false;
     loop {
         let joined = messages
             .iter()
@@ -206,9 +252,10 @@ fn trim_history_to_token_budget(messages: &mut Vec<ChatMessage>) {
             .join("\n");
         let estimated = joined.len() as u64 / 4;
         if estimated <= HISTORY_TOKEN_BUDGET || messages.len() <= 2 {
-            return;
+            return budget_hit;
         }
         messages.remove(0);
+        budget_hit = true;
         if messages
             .first()
             .is_some_and(|message| message.role == ChatRole::Assistant)
@@ -222,7 +269,7 @@ fn trim_history_to_token_budget(messages: &mut Vec<ChatMessage>) {
 mod tests {
     use crate::{harness::PermissionMode, provider::ChatRole, session::Session};
 
-    use super::native_tool_loop_turn_context;
+    use super::{native_tool_loop_turn_context, HISTORY_TOKEN_BUDGET};
 
     #[test]
     fn native_tool_loop_context_renders_workspace_write_permission_mode() {
@@ -245,5 +292,9 @@ mod tests {
             .content
             .contains("Safe relative `write` requests inside the launch folder"));
         assert!(system.content.contains("absolute paths"));
+        assert_eq!(context.stats.history_token_budget, HISTORY_TOKEN_BUDGET);
+        assert!(context.stats.system_prompt_chars > "Base prompt.".len());
+        assert!(context.stats.total_initial_prompt_chars >= context.stats.system_prompt_chars);
+        assert!(!context.stats.history_budget_hit);
     }
 }

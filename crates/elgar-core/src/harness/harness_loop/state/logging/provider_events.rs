@@ -4,7 +4,9 @@ use serde_json::json;
 
 use crate::{
     event::{ProviderOutput, ProviderStreamTimings},
-    harness::{harness_loop::evidence::state::EvidencePromptStats, memory::RenderedMemoryStats},
+    harness::harness_loop::{
+        evidence::state::EvidencePromptStats, provider::session_context::TurnPromptContextStats,
+    },
     logs::system::{append_log_event, LogInput, LogPhase},
     provider::ProviderStreamChunk,
     session::Session,
@@ -164,10 +166,9 @@ pub(in crate::harness::harness_loop) fn log_provider_stream_chunk(
 
 pub(in crate::harness::harness_loop) fn log_turn_prompt_context(
     session: &Session,
-    initial_message_count: usize,
-    history_turns: usize,
-    memory: &RenderedMemoryStats,
+    stats: &TurnPromptContextStats,
 ) {
+    let memory = &stats.memory;
     let _ = append_log_event(
         &session.project_root,
         &session.id,
@@ -179,8 +180,16 @@ pub(in crate::harness::harness_loop) fn log_turn_prompt_context(
             "harness_turn_prompt_context_built",
         )
         .with_metadata(json!({
-            "initial_message_count": initial_message_count,
-            "history_turns": history_turns,
+            "initial_message_count": stats.initial_message_count,
+            "history_turns": stats.history_turns,
+            "system_prompt_chars": stats.system_prompt_chars,
+            "history_prompt_chars": stats.history_prompt_chars,
+            "memory_prompt_chars": stats.memory_prompt_chars,
+            "mcp_catalog_chars": stats.mcp_catalog_chars,
+            "total_initial_prompt_chars": stats.total_initial_prompt_chars,
+            "history_token_budget": stats.history_token_budget,
+            "history_budget_hit": stats.history_budget_hit,
+            "assistant_replay_chars": stats.assistant_replay_chars,
             "memory_selection_strategy": memory.selection_strategy,
             "verified_fact_count": memory.indexed_fact_count,
             "indexed_fact_count": memory.indexed_fact_count,

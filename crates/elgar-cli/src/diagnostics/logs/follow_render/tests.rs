@@ -36,21 +36,21 @@ fn renders_provider_finished_with_close_gap() {
 
 #[test]
 fn renders_memory_context_line() {
-    let line = r#"{"timestamp_unix_ms":40,"summary":"harness_turn_prompt_context_built","metadata":{"memory_selection_strategy":"recent_by_kind","indexed_fact_count":6,"rendered_fact_count":3,"omitted_fact_count":3,"rendered_memory_chars":176,"memory_budget_hit":false,"history_turns":2,"rendered_by_kind":{"read":1,"listed":1,"find":0,"grep":0,"executed":1}}}"#;
+    let line = r#"{"timestamp_unix_ms":40,"summary":"harness_turn_prompt_context_built","metadata":{"system_prompt_chars":1200,"history_prompt_chars":400,"memory_prompt_chars":176,"mcp_catalog_chars":80,"total_initial_prompt_chars":1900,"history_token_budget":2048,"history_budget_hit":false,"assistant_replay_chars":220,"memory_selection_strategy":"recent_by_kind","indexed_fact_count":6,"rendered_fact_count":3,"omitted_fact_count":3,"rendered_memory_chars":176,"memory_budget_hit":false,"history_turns":2,"rendered_by_kind":{"read":1,"listed":1,"find":0,"grep":0,"executed":1}}}"#;
 
     assert_eq!(
         render_follow_line(line).as_deref(),
-        Some("40 memory strategy=recent_by_kind indexed=6 rendered=3 omitted=3 chars=176 budget_hit=false history=2 kinds=read:1 listed:1 find:0 grep:0 executed:1")
+        Some("40 prompt chars system=1200 history=400 memory=176 mcp=80 total=1900 · history_budget=100/2048 hit=false assistant_replay=220\n40 memory strategy=recent_by_kind indexed=6 rendered=3 omitted=3 chars=176 budget_hit=false history=2 kinds=read:1 listed:1 find:0 grep:0 executed:1")
     );
 }
 
 #[test]
 fn renders_session_context_status_line() {
-    let line = r#"{"timestamp_unix_ms":50,"summary":"harness_session_context_status","metadata":{"turn_input_tokens":1200,"turn_output_tokens":43,"turn_total_tokens":1243,"session_total_tokens":4600,"context_window_tokens":128000,"context_used_percent":3,"permission_mode":"review_all"}}"#;
+    let line = r#"{"timestamp_unix_ms":50,"summary":"harness_session_context_status","metadata":{"turn_input_tokens":1200,"turn_output_tokens":43,"turn_total_tokens":1243,"session_input_tokens":4000,"session_output_tokens":600,"session_total_tokens":4600,"context_window_tokens":128000,"context_used_percent":3,"context_source":"provider","permission_mode":"review_all"}}"#;
 
     assert_eq!(
         render_follow_line(line).as_deref(),
-        Some("50 tokens turn ↑1.2k ↓43 = 1.2k · session 4.6k/128k (3%) · mode review_all")
+        Some("50 tokens turn ↑1.2k ↓43 = 1.2k · session ↑4k ↓600 = 4.6k/128k (3%) · source provider · mode review_all")
     );
 }
 
