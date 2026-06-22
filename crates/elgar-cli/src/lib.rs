@@ -118,9 +118,11 @@ pub fn render_cli_turn_from_runtime_config(
         input.chars().count(),
         cwd_ref.display()
     );
+    let context_window_tokens = runtime_provider.config.configured_context_window_tokens();
     let provider = LmStudioProvider::new(runtime_provider.config);
     let session_id = runtime_session_id("cli-runtime");
     let mut session = Session::new(&session_id, project_root_ref, cwd_ref);
+    session.set_context_window_tokens(context_window_tokens);
 
     run_harness_turn(&provider, &mut session, input);
     Ok(render_session(&session))

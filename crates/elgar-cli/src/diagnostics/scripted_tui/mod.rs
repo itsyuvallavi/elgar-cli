@@ -108,7 +108,14 @@ where
     R: BufRead,
     W: Write,
 {
-    run_tui_loop_with_runtime(reader, writer, project_root, cwd, ProviderStub::default())
+    run_tui_loop_with_runtime(
+        reader,
+        writer,
+        project_root,
+        cwd,
+        ProviderStub::default(),
+        None,
+    )
 }
 
 /// Runs the line-based TUI using runtime provider config when available.
@@ -125,19 +132,24 @@ where
     let project_root_ref = project_root.as_ref();
     let cwd_ref = cwd.as_ref();
     match load_runtime_provider(project_root_ref).map_err(runtime_provider_config_io_error)? {
-        Some(runtime_provider) => run_tui_loop_with_runtime(
-            reader,
-            writer,
-            project_root_ref,
-            cwd_ref,
-            LmStudioProvider::new(runtime_provider.config),
-        ),
+        Some(runtime_provider) => {
+            let context_window_tokens = runtime_provider.config.configured_context_window_tokens();
+            run_tui_loop_with_runtime(
+                reader,
+                writer,
+                project_root_ref,
+                cwd_ref,
+                LmStudioProvider::new(runtime_provider.config),
+                context_window_tokens,
+            )
+        }
         None => run_tui_loop_with_runtime(
             reader,
             writer,
             project_root_ref,
             cwd_ref,
             ProviderStub::default(),
+            None,
         ),
     }
 }
@@ -153,6 +165,7 @@ pub fn run_tui_loop_with_runtime<R, W, P>(
     project_root: impl AsRef<Path>,
     cwd: impl AsRef<Path>,
     provider: P,
+    context_window_tokens: Option<u64>,
 ) -> io::Result<()>
 where
     R: BufRead,
@@ -161,6 +174,7 @@ where
 {
     let session_id = runtime_session_id("cli-tui");
     let mut session = Session::new(&session_id, project_root.as_ref(), cwd.as_ref());
+    session.set_context_window_tokens(context_window_tokens);
     let mut shell = elgar_tui::TuiShell::new();
 
     writeln!(writer, "Elgar TUI. Type /exit, /quit, or /q to leave.")?;

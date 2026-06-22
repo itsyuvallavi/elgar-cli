@@ -6,11 +6,12 @@ use std::{
 };
 
 use elgar_core::{
-    event::ProviderOutput,
+    event::{ProviderMetrics, ProviderOutput},
     provider::{
         ChatMessage, ChatToolCall, ChatToolCallFunction, ChatToolDefinition, ControllerProvider,
         ProviderError, ProviderRequestMetadata,
     },
+    token_accounting::ProviderTokenUsage,
 };
 
 use crate::{
@@ -174,14 +175,14 @@ fn tui_script_prompt_block_can_be_followed_by_approval_command() {
     let input = b"/prompt\ncreate approved file\nwith exact content\n/end\n/approve\n/exit\n";
     let mut output = Vec::new();
 
-    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider).unwrap();
+    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider, None).unwrap();
 
     let rendered = String::from_utf8(output).unwrap();
     assert!(rendered.contains("> create approved file"));
     assert!(rendered.contains("with exact content"));
     assert!(rendered.contains("Run command"));
     assert!(rendered.contains("printf hello"));
-    assert!(rendered.contains("Done · `printf hello` exited 0"));
+    assert!(rendered.contains("Command · `printf hello` · exit 0"));
     assert!(!rendered.contains("VERIFIED_BASH_EXECUTION"));
     assert!(!rendered.contains("stdout:"));
 
@@ -200,10 +201,10 @@ fn tui_script_approve_continue_executes_then_runs_followup_turn() {
     let input = b"/prompt\nrun approved command\n/end\n/approve continue\n/exit\n";
     let mut output = Vec::new();
 
-    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider).unwrap();
+    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider, None).unwrap();
 
     let rendered = String::from_utf8(output).unwrap();
-    assert!(rendered.contains("Done · `printf continued` exited 0"));
+    assert!(rendered.contains("Command · `printf continued` · exit 0"));
     assert!(rendered.contains("bash requires approval"));
 
     let _ = fs::remove_dir_all(root);
@@ -221,7 +222,7 @@ fn tui_script_permissions_command_sets_full_access_mode() {
     let input = b"/permissions full_access\n/exit\n";
     let mut output = Vec::new();
 
-    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider).unwrap();
+    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider, None).unwrap();
 
     let rendered = String::from_utf8(output).unwrap();
     assert!(rendered.contains("Permission mode set to full_access"));
@@ -249,13 +250,48 @@ fn scripted_tui_renders_outside_path_pending_approval_warning() {
     let input = b"create outside file\n/exit\n";
     let mut output = Vec::new();
 
-    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider).unwrap();
+    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider, None).unwrap();
 
     let rendered = String::from_utf8(output).unwrap();
     assert!(rendered.contains("/tmp/elgar-outside-warning-test.txt"));
     assert!(rendered.contains("WARNING: Approving may modify files outside the launch folder."));
     assert!(rendered.contains("[Approve]"));
     assert!(rendered.contains(" Deny "));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn scripted_tui_context_window_reaches_session_status_log() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-cli-scripted-context-window-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let provider = ToolCallProvider::text_with_usage("hello from metrics", 1_200, 43);
+    let input = b"hello\n/exit\n";
+    let mut output = Vec::new();
+
+    run_tui_loop_with_runtime(
+        &input[..],
+        &mut output,
+        &root,
+        &root,
+        provider,
+        Some(128_000),
+    )
+    .unwrap();
+
+    let system_logs = root.join(".elgar/log/system");
+    let log_body = fs::read_dir(&system_logs)
+        .unwrap()
+        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(log_body.contains(r#""summary":"harness_session_context_status""#));
+    assert!(log_body.contains(r#""context_window_tokens":128000"#));
+    assert!(log_body.contains(r#""session_total_tokens":1243"#));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -307,6 +343,21 @@ impl ToolCallProvider {
                     },
                 }]),
                 ProviderOutput::new("bash requires approval"),
+            ])),
+        }
+    }
+
+    fn text_with_usage(text: &str, prompt_tokens: u64, completion_tokens: u64) -> Self {
+        let total_tokens = prompt_tokens.saturating_add(completion_tokens);
+        let mut metrics = ProviderMetrics::new("stub-request-usage", None, false, 1, 128);
+        metrics.usage = Some(ProviderTokenUsage {
+            prompt_tokens: Some(prompt_tokens),
+            completion_tokens: Some(completion_tokens),
+            total_tokens: Some(total_tokens),
+        });
+        Self {
+            outputs: Arc::new(Mutex::new(vec![
+                ProviderOutput::new(text).with_metrics(metrics)
             ])),
         }
     }
