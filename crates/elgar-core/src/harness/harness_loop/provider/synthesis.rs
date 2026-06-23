@@ -49,6 +49,7 @@ Use short sections when useful:
 - Next Step"#;
 
 /// Ask the provider for a final answer with no tools exposed.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::harness::harness_loop) fn run_primitive_loop_synthesis<P>(
     provider: &P,
     session: &mut Session,

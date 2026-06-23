@@ -29,6 +29,7 @@ use crate::{
 };
 
 /// Ask the model to repair one invalid primitive harness decision.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::harness::harness_loop) fn request_model_choice_repair<P>(
     provider: &P,
     session: &mut Session,

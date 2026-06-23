@@ -121,12 +121,11 @@ impl TerminalShellContext {
             (None, false) => model.to_string(),
             (None, true) => String::new(),
         };
-        let base = if right.is_empty() {
+        if right.is_empty() {
             left
         } else {
             align_footer_line(&left, &right, width)
-        };
-        base
+        }
     }
 
     pub(super) fn footer_ansi(&self) -> &'static str {

@@ -29,6 +29,7 @@ pub(super) enum ProviderLoopErrorOutcome {
     Finish(PrimitiveHarnessLoopResult),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_provider_loop_error<P>(
     provider: &P,
     session: &mut Session,

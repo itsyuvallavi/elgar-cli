@@ -142,7 +142,7 @@ fn split_to_width(line: &str, width: usize, continuation_prefix: String) -> Vec<
         .collect::<String>();
     let mut segments = Vec::new();
     let mut current = leading_prefix;
-    for word in line.trim_start().split_whitespace() {
+    for word in line.split_whitespace() {
         let candidate = if current.trim().is_empty() {
             format!("{current}{word}")
         } else {

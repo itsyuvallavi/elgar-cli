@@ -58,6 +58,7 @@ pub(super) fn finish_with_model_message(
 }
 
 /// Finish with a no-tool synthesis call over verified evidence.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn synthesize_loop_answer<P>(
     provider: &P,
     session: &mut Session,

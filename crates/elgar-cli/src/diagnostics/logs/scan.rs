@@ -51,8 +51,8 @@ pub(super) fn latest_turn_perf_summary(path: &Path) -> Result<Value, LogsDiagnos
         .map_err(|error| LogsDiagnosticError::ReadFailed(error.to_string()))?;
     contents
         .lines()
+        .rev()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|value| value.get("summary").and_then(Value::as_str) == Some("turn_perf_summary"))
-        .last()
+        .find(|value| value.get("summary").and_then(Value::as_str) == Some("turn_perf_summary"))
         .ok_or_else(|| LogsDiagnosticError::NoTurnPerfSummary(path.to_path_buf()))
 }

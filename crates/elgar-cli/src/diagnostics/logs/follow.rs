@@ -92,7 +92,7 @@ fn render_new_lines<W: Write>(
         .map_err(|error| LogsDiagnosticError::ReadFailed(error.to_string()))?
         > 0
     {
-        current_offset = current_offset.saturating_add(line.as_bytes().len() as u64);
+        current_offset = current_offset.saturating_add(line.len() as u64);
         if let Some(rendered) = render_follow_line(line.trim_end()) {
             writeln!(writer, "{rendered}")
                 .map_err(|error| LogsDiagnosticError::WriteFailed(error.to_string()))?;

@@ -25,6 +25,7 @@ use crate::{
     session::Session,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn repair_model_choice_if_needed<P>(
     provider: &P,
     session: &mut Session,

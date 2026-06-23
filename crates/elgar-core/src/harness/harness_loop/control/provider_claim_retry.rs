@@ -35,6 +35,7 @@ pub(super) enum ProviderClaimGuardOutcome {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn guard_provider_text_or_retry(
     session: &Session,
     input: &str,
@@ -80,6 +81,7 @@ pub(super) fn guard_provider_text_or_retry(
     ProviderClaimGuardOutcome::Allow
 }
 
+#[allow(clippy::too_many_arguments)]
 fn retry_or_block(
     session: &Session,
     round_index: usize,

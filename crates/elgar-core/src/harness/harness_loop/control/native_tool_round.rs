@@ -39,6 +39,7 @@ pub(super) enum NativeToolRoundOutcome {
     Finish(PrimitiveHarnessLoopResult),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_native_tool_output<P>(
     provider: &P,
     session: &mut Session,

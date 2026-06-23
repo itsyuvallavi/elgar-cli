@@ -106,7 +106,7 @@ where
                 break (completed, Instant::now())
             }
             Ok(Some(ProviderTurnUpdate::Stream(event))) => {
-                if let elgar_core::event::Event::ProviderStreamChunk(chunk) = &event {
+                if let elgar_core::event::Event::ProviderStreamChunk(chunk) = &*event {
                     let chunk_received_at = Instant::now();
                     live_output.push_stream_chunk(chunk);
                     live_preview_dirty = true;
@@ -174,20 +174,18 @@ where
                         live_preview_dirty = false;
                         logged_unchanged_preview_idle = false;
                         tick = tick.wrapping_add(1);
-                    } else {
-                        if !logged_unchanged_preview_idle {
-                            log_live_preview_render(
-                                session,
-                                turn_id,
-                                turn_started,
-                                "preview_unchanged_idle",
-                                &live_output,
-                                None,
-                                None,
-                                None,
-                            );
-                            logged_unchanged_preview_idle = true;
-                        }
+                    } else if !logged_unchanged_preview_idle {
+                        log_live_preview_render(
+                            session,
+                            turn_id,
+                            turn_started,
+                            "preview_unchanged_idle",
+                            &live_output,
+                            None,
+                            None,
+                            None,
+                        );
+                        logged_unchanged_preview_idle = true;
                     }
                     last_render = Instant::now();
                 }

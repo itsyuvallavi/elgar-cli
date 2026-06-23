@@ -91,6 +91,7 @@ fn resolve_bash_cwd(cwd: &Path) -> Result<std::path::PathBuf, ApprovalCommandErr
     Ok(resolved)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_bash_execution_message(
     approval: &PendingApproval,
     command: &str,

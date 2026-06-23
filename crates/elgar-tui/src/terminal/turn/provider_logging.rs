@@ -32,6 +32,7 @@ pub(super) fn log_tui_provider_turn_started(session: &Session, turn_id: u64, inp
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn log_live_preview_render(
     session: &Session,
     turn_id: u64,

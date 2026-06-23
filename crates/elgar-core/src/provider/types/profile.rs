@@ -6,18 +6,13 @@
 use serde::{Deserialize, Serialize};
 
 /// Provider backend selected for a specific request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderBackendKind {
     #[serde(rename = "openai_chat_completions")]
+    #[default]
     OpenAiChatCompletions,
     #[serde(rename = "openai_responses_probe")]
     OpenAiResponsesProbe,
-}
-
-impl Default for ProviderBackendKind {
-    fn default() -> Self {
-        Self::OpenAiChatCompletions
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

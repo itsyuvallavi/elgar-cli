@@ -24,6 +24,7 @@ pub use provider_output::{ProviderMetrics, ProviderOutput};
 /// Events are not provider wishes. In particular, provider output is captured
 /// only as provider output; it does not prove that a file changed, a command
 /// ran, or an action moved through its lifecycle.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Event {
     /// The runtime recorded input received from the user.

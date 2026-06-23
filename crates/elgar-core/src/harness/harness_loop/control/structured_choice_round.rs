@@ -30,6 +30,7 @@ use crate::{
     session::Session,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_structured_request_choice<P>(
     provider: &P,
     session: &mut Session,
@@ -78,6 +79,7 @@ where
     Ok(NativeToolRoundOutcome::Continue)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_structured_requests_choice<P>(
     provider: &P,
     session: &mut Session,

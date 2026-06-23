@@ -96,7 +96,7 @@ impl ProviderTurnTask {
 
 pub(super) enum ProviderTurnUpdate {
     Completed(Box<CompletedProviderTurn>),
-    Stream(Event),
+    Stream(Box<Event>),
     Canceled,
 }
 
@@ -149,7 +149,7 @@ where
         );
         let stream_sender = sender.clone();
         let mut stream_events = move |event: Event| {
-            let _ = stream_sender.send(ProviderTurnWorkerMessage::Stream(event));
+            let _ = stream_sender.send(ProviderTurnWorkerMessage::Stream(Box::new(event)));
         };
         let result = run_harness_turn_with_cancel_and_stream(
             &provider,
@@ -211,7 +211,7 @@ where
 
 enum ProviderTurnWorkerMessage {
     Complete(Result<Box<CompletedProviderTurn>, String>),
-    Stream(Event),
+    Stream(Box<Event>),
 }
 
 fn provider_worker_completion_metadata(

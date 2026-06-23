@@ -49,9 +49,11 @@ fn project_tree(session: &Session, arguments: &Value) -> ToolCallResult {
         Ok(path) => path,
         Err(error) => return error_result(error),
     };
-    let mut options = DirectoryOptions::default();
-    options.max_depth = MAX_PROJECT_TREE_DEPTH;
-    options.max_entries = MAX_PROJECT_TREE_ENTRIES;
+    let options = DirectoryOptions {
+        max_depth: MAX_PROJECT_TREE_DEPTH,
+        max_entries: MAX_PROJECT_TREE_ENTRIES,
+        ..Default::default()
+    };
 
     match collect_directory_summary(&session.cwd, &path, options) {
         Ok(snapshot) => text_result(format!(

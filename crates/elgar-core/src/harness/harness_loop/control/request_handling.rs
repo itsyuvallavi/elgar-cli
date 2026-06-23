@@ -45,6 +45,7 @@ pub(super) enum RequestHandlingOutcome {
 ///
 /// Returns `ExecutionFailed` when the caller should synthesize from error
 /// evidence immediately.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn collect_request_evidence(
     session: &mut Session,
     registry: &PrimitiveToolRegistry,
