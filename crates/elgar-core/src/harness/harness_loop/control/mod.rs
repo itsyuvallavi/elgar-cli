@@ -6,6 +6,7 @@
 mod choice_from_output;
 mod choice_repair;
 mod coordinator;
+mod direct_display;
 mod entrypoint;
 mod finish;
 mod loop_setup;

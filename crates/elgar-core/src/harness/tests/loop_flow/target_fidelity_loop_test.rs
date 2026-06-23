@@ -36,10 +36,10 @@ fn primitive_loop_rejects_wrong_read_target_then_accepts_retry() {
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some("postcss.config.mjs was read.")
-    );
+    let final_text = result.final_text.as_deref().expect("final text");
+    assert!(final_text.contains("`postcss.config.mjs`"));
+    assert!(final_text.contains("export default {}"));
+    assert!(!final_text.contains("Summary"));
     assert_eq!(
         result.rounds[0].evidence_label.as_deref(),
         Some("tool_target_mismatch")
@@ -75,13 +75,55 @@ fn primitive_loop_accepts_contextual_basename_read_and_stops() {
         run_primitive_harness_loop(&provider, &mut session, "show me package.json").unwrap();
 
     assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some("Nextjs-1/package.json was read.")
-    );
+    let final_text = result.final_text.as_deref().expect("final text");
+    assert!(final_text.contains("`Nextjs-1/package.json`"));
+    assert!(final_text.contains(r#"{"name":"nextjs-1"}"#));
+    assert!(!final_text.contains("Summary"));
     assert_eq!(
         result.rounds[0].evidence_label.as_deref(),
         Some("read:Nextjs-1/package.json")
+    );
+}
+
+#[test]
+fn primitive_loop_accepts_contextual_basename_list_and_stops() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-loop-target-contextual-list-test-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(root.join("Nextjs-1/app")).unwrap();
+    fs::write(root.join("Nextjs-1/app/globals.css"), "body {}").unwrap();
+    fs::write(
+        root.join("Nextjs-1/app/layout.tsx"),
+        "export default function Layout() {}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Nextjs-1/app/page.tsx"),
+        "export default function Page() {}",
+    )
+    .unwrap();
+    let provider = QueuedProvider::new_outputs(vec![
+        tool_call_output("ls", r#"{"path":"Nextjs-1/app"}"#, "call-list-context-app"),
+        ProviderOutput::new("Nextjs-1/app was listed."),
+    ]);
+    let mut session = Session::new("loop-target-contextual-list-session", &root, &root);
+
+    let result =
+        run_primitive_harness_loop(&provider, &mut session, "show me the app folder").unwrap();
+
+    assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
+    let final_text = result.final_text.as_deref().expect("final text");
+    assert!(final_text.contains("`Nextjs-1/app`"));
+    assert!(final_text.contains("[file] globals.css"));
+    assert!(final_text.contains("[file] layout.tsx"));
+    assert!(final_text.contains("[file] page.tsx"));
+    assert!(!final_text.contains("Summary"));
+    assert!(!final_text.contains("Evidence Used"));
+    assert!(!final_text.contains("Next Step"));
+    assert_eq!(
+        result.rounds[0].evidence_label.as_deref(),
+        Some("ls:Nextjs-1/app")
     );
 }
 

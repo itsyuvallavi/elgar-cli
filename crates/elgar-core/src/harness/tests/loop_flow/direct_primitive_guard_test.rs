@@ -33,16 +33,13 @@ fn primitive_loop_retries_direct_read_missing_file_claim_into_tool_call() {
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some("postcss.config.mjs is now verified.")
-    );
-    assert_eq!(calls.len(), 3);
+    let final_text = result.final_text.as_deref().expect("final text");
+    assert!(final_text.starts_with("`postcss.config.mjs`"));
+    assert!(final_text.contains("export default {}"));
+    assert!(!final_text.contains("Summary"));
+    assert_eq!(calls.len(), 2);
     assert_eq!(result.rounds.len(), 1);
     assert_eq!(result.rounds[0].tool.as_deref(), Some("read"));
-    assert!(calls[2]
-        .iter()
-        .any(|message| message.content.contains("postcss.config.mjs")));
 }
 
 #[test]

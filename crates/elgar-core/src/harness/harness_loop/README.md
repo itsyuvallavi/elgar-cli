@@ -45,20 +45,22 @@ validates and executes them, then appends matching `role:"tool"` result messages
 before asking the provider again.
 
 Normal final text is the successful loop ending for broad review and exploratory
-turns. For direct read/list/search requests, verified matching evidence ends the
-loop through synthesis immediately. This keeps direct file answers anchored to
-the evidence just collected instead of relying on another provider decision
-round to stop cleanly.
+turns. For direct file display requests, verified matching read evidence is
+rendered directly as file contents. Direct directory display requests render the
+verified listing directly. Direct search requests still end through synthesis for
+a concise explanation. This keeps direct file and folder answers anchored to the
+evidence just collected instead of relying on another provider decision round to
+stop cleanly.
 
 Synthesis mode uses provider request mode `harness_synthesis`. It does not
 expose tools. It receives only the original user request, selected verified
 evidence blocks, and a stop reason, then asks the model to answer now.
 
 Synthesis is used for duplicate-loop stops, legacy `answer_now` JSON fallback,
-direct evidence satisfaction, and other explicit safe-stop cases. If current
-turn evidence is empty, synthesis also receives bounded verified session memory
-so it can answer from prior Elgar-recorded facts instead of treating the session
-as evidence-free.
+direct search evidence satisfaction, and other explicit safe-stop cases. If
+current turn evidence is empty, synthesis also receives bounded verified session
+memory so it can answer from prior Elgar-recorded facts instead of treating the
+session as evidence-free.
 
 Native tool results carry bounded verified evidence back to the provider as
 tool messages. Full evidence is retained locally and remains available for

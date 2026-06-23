@@ -45,6 +45,8 @@ in the same response.
 ## Direct Evidence Stops
 
 When the user directly asks to read, list, or search a specific target, the loop
-stops once matching verified evidence is collected and synthesizes the answer
-from that evidence. This prevents a later provider round from drifting away from
-the file or directory that was already verified.
+stops once matching verified evidence is collected. Direct file reads and
+directory listings render the verified evidence immediately instead of asking the
+provider to synthesize a report. Searches still use synthesis for now because
+matches usually need a short explanation. This prevents a later provider round
+from drifting away from the file or directory that was already verified.

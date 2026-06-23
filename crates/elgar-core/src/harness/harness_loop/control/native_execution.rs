@@ -12,6 +12,7 @@ use crate::{
         harness_loop::{
             control::{
                 choice_from_output::NativeToolRequest,
+                direct_display::direct_display_text,
                 finish::{finish_with_model_message, synthesize_loop_answer},
                 request_handling::{collect_request_evidence, RequestHandlingOutcome},
                 tool_target_fidelity::{direct_request_satisfied, validate_tool_target},
@@ -114,6 +115,17 @@ where
                 append_verified_action_timeline(&body, evidence),
             ));
             if direct_request_satisfied(input, evidence) {
+                if let Some(display_text) = direct_display_text(evidence) {
+                    return finish_with_model_message(
+                        session,
+                        display_text,
+                        std::mem::take(rounds),
+                        "direct_evidence_satisfied".to_string(),
+                        loop_turn_id,
+                        loop_started,
+                    )
+                    .map(Some);
+                }
                 return synthesize_loop_answer(
                     provider,
                     session,

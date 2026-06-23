@@ -47,14 +47,14 @@ fn primitive_loop_blocks_unverified_read_claim_without_evidence() {
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some("package.json is now verified.")
-    );
-    assert_eq!(calls.len(), 3);
+    let final_text = result.final_text.as_deref().expect("final text");
+    assert!(final_text.contains("`package.json`"));
+    assert!(final_text.contains("```text\n{}\n```"));
+    assert!(!final_text.contains("Summary"));
+    assert_eq!(calls.len(), 2);
     assert_eq!(result.rounds.len(), 1);
     assert_eq!(result.rounds[0].tool.as_deref(), Some("read"));
-    assert!(calls[2]
+    assert!(calls[1]
         .iter()
         .any(|message| message.content.contains("package.json")));
 }
@@ -82,10 +82,10 @@ fn primitive_loop_retries_unverified_local_file_fact_into_tool_call() {
     let result = run_primitive_harness_loop(&provider, &mut session, "read app/page.tsx").unwrap();
 
     assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some("app/page.tsx is now verified.")
-    );
+    let final_text = result.final_text.as_deref().expect("final text");
+    assert!(final_text.contains("`app/page.tsx`"));
+    assert!(final_text.contains("export default function Home() {}"));
+    assert!(!final_text.contains("Summary"));
     assert_eq!(result.rounds.len(), 1);
     assert_eq!(result.rounds[0].tool.as_deref(), Some("read"));
 }
@@ -116,14 +116,14 @@ fn primitive_loop_retries_direct_read_request_without_approval_prose_scanning() 
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some("postcss.config.mjs is now verified.")
-    );
-    assert_eq!(calls.len(), 3);
+    let final_text = result.final_text.as_deref().expect("final text");
+    assert!(final_text.contains("`postcss.config.mjs`"));
+    assert!(final_text.contains("export default {}"));
+    assert!(!final_text.contains("Summary"));
+    assert_eq!(calls.len(), 2);
     assert_eq!(result.rounds.len(), 1);
     assert_eq!(result.rounds[0].tool.as_deref(), Some("read"));
-    assert!(calls[2]
+    assert!(calls[1]
         .iter()
         .any(|message| message.content.contains("postcss.config.mjs")));
 }
@@ -245,14 +245,14 @@ fn primitive_loop_plain_message_after_evidence_is_final_text() {
     let calls = provider.calls.lock().expect("calls lock");
 
     assert_eq!(result.stopped_reason, "direct_evidence_satisfied");
-    assert_eq!(
-        result.final_text.as_deref(),
-        Some("I first need to understand the package metadata.")
-    );
-    assert_eq!(calls.len(), 2);
+    let final_text = result.final_text.as_deref().expect("final text");
+    assert!(final_text.contains("`package.json`"));
+    assert!(final_text.contains("```text\n{}\n```"));
+    assert!(!final_text.contains("Summary"));
+    assert_eq!(calls.len(), 1);
     assert_eq!(result.rounds.len(), 1);
     assert_eq!(result.rounds[0].tool.as_deref(), Some("read"));
-    assert!(calls[1]
+    assert!(calls[0]
         .iter()
         .any(|message| message.content.contains("package.json")));
 }
