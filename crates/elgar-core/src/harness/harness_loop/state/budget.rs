@@ -1,0 +1,77 @@
+//! Safety guards for the primitive harness loop.
+//!
+//! Elgar does not cap useful evidence collection here. These guards only track
+//! duplicate evidence and repair attempts so the loop does not repeat the same
+//! no-op work.
+
+use std::collections::HashSet;
+
+use crate::harness::harness_loop::state::types::{Evidence, EvidenceKey};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::harness::harness_loop) enum BudgetCheck {
+    Accept,
+    RepeatedEvidence(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::harness::harness_loop) struct PrimitiveLoopBudget {
+    pub max_repair_attempts: usize,
+    pub max_target_mismatches: usize,
+    pub max_empty_provider_response_retries: usize,
+}
+
+impl Default for PrimitiveLoopBudget {
+    fn default() -> Self {
+        Self {
+            max_repair_attempts: 1,
+            max_target_mismatches: 2,
+            max_empty_provider_response_retries: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::harness::harness_loop) struct PrimitiveLoopBudgetState {
+    pub decision_calls: usize,
+    pub repair_attempts: usize,
+    pub target_mismatches: usize,
+    pub empty_provider_response_retries: usize,
+    mutation_epoch: usize,
+    evidence_keys: HashSet<String>,
+}
+
+impl PrimitiveLoopBudgetState {
+    /// Return whether this request repeats evidence already collected this turn.
+    pub fn check_request(
+        &self,
+        _budget: &PrimitiveLoopBudget,
+        key: &EvidenceKey,
+    ) -> Result<BudgetCheck, String> {
+        let label = key.as_label();
+        if self.evidence_keys.contains(&label) {
+            return Ok(BudgetCheck::RepeatedEvidence(label));
+        }
+        Ok(BudgetCheck::Accept)
+    }
+
+    /// Record one verified evidence item for duplicate detection.
+    pub fn record(&mut self, evidence: &Evidence) {
+        self.evidence_keys.insert(evidence.label.clone());
+    }
+
+    /// Record the request key that produced verified evidence.
+    pub fn record_key(&mut self, key: &EvidenceKey) {
+        self.evidence_keys.insert(key.as_label());
+    }
+
+    /// Current workspace mutation epoch for state-aware duplicate keys.
+    pub fn mutation_epoch(&self) -> usize {
+        self.mutation_epoch
+    }
+
+    /// Advance the mutation epoch after a verified file mutation.
+    pub fn advance_mutation_epoch(&mut self) {
+        self.mutation_epoch += 1;
+    }
+}

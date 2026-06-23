@@ -1,14 +1,22 @@
+//! Minimal TUI shell state and event application.
+//!
+//! This file connects core session events to visible conversation, status, copy,
+//! and simple scripted harness flows.
+
 use std::time::Instant;
 
 use elgar_core::{
-    action_gate::ActionGate, agent_runtime::AgentRuntime, controller::TurnResult, event::Event,
-    policy::PermissionPolicyMode, provider::ControllerProvider, session::Session,
+    event::Event,
+    harness::{run_harness_turn, HarnessTurnResult},
+    logs::system::{append_log_event, LogInput, LogPhase},
+    provider::ControllerProvider,
+    session::Session,
 };
 
 use crate::{
-    action_panel::PendingActionArea,
     layout::{render_section, LayoutRegion},
     panes::{ConversationPane, CopyArea, InputArea, StatusLine},
+    terminal::ui::execution_result::render_execution_result,
     turn_metrics::{aggregate_provider_token_usage, duration_millis},
 };
 
@@ -17,31 +25,22 @@ pub struct TuiShell {
     pub conversation: ConversationPane,
     pub input: InputArea,
     pub status: StatusLine,
-    pub pending_action: PendingActionArea,
     pub copy: CopyArea,
-    pub policy_mode: PermissionPolicyMode,
 }
 
 impl TuiShell {
     pub fn new() -> Self {
-        Self::with_policy_mode(PermissionPolicyMode::AutoCreateReviewModify)
-    }
-
-    pub fn with_policy_mode(policy_mode: PermissionPolicyMode) -> Self {
         Self {
             conversation: ConversationPane::default(),
             input: InputArea::default(),
             status: StatusLine::ready(),
-            pending_action: PendingActionArea::default(),
             copy: CopyArea::default(),
-            policy_mode,
         }
     }
 
-    pub fn regions(&self) -> [LayoutRegion; 4] {
+    pub fn regions(&self) -> [LayoutRegion; 3] {
         [
             LayoutRegion::Conversation,
-            LayoutRegion::PendingAction,
             LayoutRegion::Status,
             LayoutRegion::Input,
         ]
@@ -52,16 +51,12 @@ impl TuiShell {
     }
 
     pub fn render_scripted_transcript(&self) -> String {
-        self.render_with_conversation_body(&self.conversation.render_copy_body())
+        self.render_with_conversation_body(&self.conversation.render_body())
     }
 
     fn render_with_conversation_body(&self, conversation_body: &str) -> String {
         [
             render_section(LayoutRegion::Conversation.title(), conversation_body),
-            render_section(
-                LayoutRegion::PendingAction.title(),
-                &self.pending_action.render_body(),
-            ),
             render_section(LayoutRegion::Status.title(), &self.status.render_body()),
             render_section(LayoutRegion::Input.title(), &self.input.render_body()),
         ]
@@ -81,74 +76,60 @@ impl TuiShell {
     pub fn consume_event(&mut self, event: &Event) {
         self.conversation.push_event(event);
         self.status.observe_event(event);
-        self.pending_action.observe_event(event);
     }
 
-    pub fn submit_approval<P>(
+    pub fn submit_harness_input<P>(
         &mut self,
-        action_gate: &ActionGate<P>,
-        session: &mut Session,
-    ) -> TurnResult
-    where
-        P: ControllerProvider,
-    {
-        let result = action_gate.approve(session);
-        self.consume_events(&result.events);
-        self.conversation.follow_latest();
-        result
-    }
-
-    pub fn submit_rejection<P>(
-        &mut self,
-        action_gate: &ActionGate<P>,
-        session: &mut Session,
-    ) -> TurnResult
-    where
-        P: ControllerProvider,
-    {
-        let result = action_gate.reject(session);
-        self.consume_events(&result.events);
-        self.conversation.follow_latest();
-        result
-    }
-
-    pub fn submit_agent_input<P>(
-        &mut self,
-        runtime: &AgentRuntime<P>,
+        provider: &P,
         session: &mut Session,
         input: &str,
-    ) -> TurnResult
+    ) -> HarnessTurnResult
     where
         P: ControllerProvider,
     {
         let started = Instant::now();
-        let result = runtime.turn(session, input, self.policy_mode);
+        let turn_id = session.next_turn_id();
+        let _ = append_log_event(
+            &session.project_root,
+            &session.id,
+            LogInput::new(
+                turn_id,
+                LogPhase::Tui,
+                file!(),
+                "submit_harness_input",
+                "tui_harness_submitted",
+            )
+            .with_metadata(serde_json::json!({
+                "input_chars": input.chars().count()
+            })),
+        );
+        let result = run_harness_turn(provider, session, input);
         self.consume_events(&result.events);
         self.conversation.push_turn_metrics(
             duration_millis(started.elapsed()),
             aggregate_provider_token_usage(&result.events).as_ref(),
         );
         self.conversation.follow_latest();
-        result
-    }
-
-    pub fn submit_agent_tool_input<P>(
-        &mut self,
-        runtime: &AgentRuntime<P>,
-        session: &mut Session,
-        input: &str,
-    ) -> TurnResult
-    where
-        P: ControllerProvider,
-    {
-        let started = Instant::now();
-        let result = runtime.tool_turn(session, input, self.policy_mode);
-        self.consume_events(&result.events);
-        self.conversation.push_turn_metrics(
-            duration_millis(started.elapsed()),
-            aggregate_provider_token_usage(&result.events).as_ref(),
+        let _ = append_log_event(
+            &session.project_root,
+            &session.id,
+            LogInput::new(
+                turn_id,
+                LogPhase::Render,
+                file!(),
+                "submit_harness_input",
+                "scripted_tui_render_finished",
+            )
+            .with_duration_ms(duration_millis(started.elapsed()))
+            .with_metadata(serde_json::json!({
+                "events_applied": result.events.len(),
+                "provider_started_count": count_events(&result.events, is_provider_started),
+                "provider_finished_count": count_events(&result.events, is_provider_finished),
+                "assistant_message_count": count_events(&result.events, is_assistant_message),
+                "latest_provider_request_id": latest_provider_request_id(&result.events),
+                "conversation_lines": self.conversation.render_lines_with_styles().len()
+            })),
         );
-        self.conversation.follow_latest();
         result
     }
 
@@ -156,61 +137,65 @@ impl TuiShell {
         self.conversation.render_copy_body()
     }
 
-    pub fn clear_conversation(&mut self) {
-        self.conversation.clear();
+    pub fn raw_details_copy_text(&self) -> Option<String> {
+        self.conversation.render_raw_copy_body()
     }
 
-    pub fn apply_permission_command(&mut self, argument: Option<&str>) -> String {
-        let Some(argument) = argument.map(str::trim).filter(|value| !value.is_empty()) else {
-            return render_permission_mode_status(self.policy_mode);
-        };
+    pub fn push_raw_details(&mut self, details: impl Into<String>) {
+        self.conversation.push_raw_details(details);
+    }
 
-        if argument.eq_ignore_ascii_case("next") {
-            self.policy_mode = self.policy_mode.next();
-            return format!(
-                "Permission mode set to {}: {}.",
-                self.policy_mode,
-                self.policy_mode.description()
-            );
+    pub fn push_latest_raw_details(&mut self) {
+        if !self.conversation.push_latest_raw_details() {
+            self.conversation
+                .push_local_message("No raw details are available.");
         }
+        self.conversation.follow_latest();
+    }
 
-        match PermissionPolicyMode::parse(argument) {
-            Ok(mode) => {
-                self.policy_mode = mode;
-                format!(
-                    "Permission mode set to {}: {}.",
-                    self.policy_mode,
-                    self.policy_mode.description()
-                )
-            }
-            Err(_) => format!(
-                "Unknown permission mode `{argument}`. Use one of: {}.",
-                permission_mode_names()
-            ),
-        }
+    pub fn clear_conversation(&mut self) {
+        self.conversation.clear();
     }
 
     pub fn push_local_message(&mut self, message: impl Into<String>) {
         self.conversation.push_local_message(message);
         self.conversation.follow_latest();
     }
+
+    pub fn push_execution_result_message(&mut self, raw_message: String) -> String {
+        let display = if let Some(display) = render_execution_result(&raw_message) {
+            self.push_raw_details(raw_message);
+            display
+        } else {
+            raw_message
+        };
+        self.push_local_message(display.clone());
+        display
+    }
 }
 
-fn render_permission_mode_status(mode: PermissionPolicyMode) -> String {
-    format!(
-        "Permission mode is {}: {}.\nAvailable modes: {}.",
-        mode,
-        mode.description(),
-        permission_mode_names()
-    )
+fn count_events(events: &[Event], predicate: fn(&Event) -> bool) -> usize {
+    events.iter().filter(|event| predicate(event)).count()
 }
 
-fn permission_mode_names() -> String {
-    PermissionPolicyMode::ALL
-        .iter()
-        .map(|mode| mode.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
+fn is_provider_started(event: &Event) -> bool {
+    matches!(event, Event::ProviderStarted(_))
+}
+
+fn is_provider_finished(event: &Event) -> bool {
+    matches!(event, Event::ProviderFinished(_))
+}
+
+fn is_assistant_message(event: &Event) -> bool {
+    matches!(event, Event::AssistantMessage(_))
+}
+
+fn latest_provider_request_id(events: &[Event]) -> Option<&str> {
+    events.iter().rev().find_map(|event| match event {
+        Event::ProviderFinished(finished) => Some(finished.request_id.as_str()),
+        Event::ProviderStarted(started) => Some(started.request_id.as_str()),
+        _ => None,
+    })
 }
 
 impl Default for TuiShell {
@@ -221,366 +206,25 @@ impl Default for TuiShell {
 
 #[cfg(test)]
 mod tests {
-    use elgar_core::{
-        action::ActionLifecycleState,
-        action_gate::ActionGate,
-        agent_runtime::AgentRuntime,
-        controller::Controller,
-        event::{
-            AssistantMessage, AssistantMessageSource, Event, ProviderFinished, ProviderOutput,
-            ProviderStarted, VerifiedActionResult,
-        },
-        model_runtime::{ModelToolName, RawModelToolCall, RawModelToolName},
-        policy::PermissionPolicyMode,
-        provider::{
-            ChatMessage, ChatRole, ChatToolDefinition, ControllerProvider, ProviderError,
-            ProviderRequestMetadata,
-        },
-        session::Session,
-    };
-
-    use crate::layout::LayoutRegion;
+    use elgar_core::event::{Event, ProviderFinished, ProviderOutput};
 
     use super::TuiShell;
 
     #[test]
-    fn tui_shell_initializes_without_provider_access() {
-        let shell = TuiShell::new();
-
-        assert!(shell.conversation.lines.is_empty());
-        assert!(shell.input.text.is_empty());
-        assert_eq!(shell.status.text, "ready");
-        assert_eq!(shell.pending_action.panel, None);
-        assert_eq!(shell.copy.render_hint(), "");
-        assert_eq!(
-            shell.policy_mode,
-            elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify
-        );
-    }
-
-    #[test]
-    fn permission_command_shows_sets_and_cycles_modes() {
-        let mut shell =
-            TuiShell::with_policy_mode(elgar_core::policy::PermissionPolicyMode::ReviewAll);
-
-        let status = shell.apply_permission_command(None);
-        assert!(status.contains("Permission mode is review_all"));
-
-        let cycled = shell.apply_permission_command(Some("next"));
-        assert!(cycled.contains("auto_create_review_modify"));
-        assert_eq!(
-            shell.policy_mode,
-            elgar_core::policy::PermissionPolicyMode::AutoCreateReviewModify
-        );
-
-        let set = shell.apply_permission_command(Some("full-access"));
-        assert!(set.contains("full_access"));
-        assert_eq!(
-            shell.policy_mode,
-            elgar_core::policy::PermissionPolicyMode::FullAccess
-        );
-
-        let invalid = shell.apply_permission_command(Some("anything"));
-        assert!(invalid.contains("Unknown permission mode"));
-        assert_eq!(
-            shell.policy_mode,
-            elgar_core::policy::PermissionPolicyMode::FullAccess
-        );
-    }
-
-    #[test]
-    fn renders_empty_default_state() {
-        let rendered = TuiShell::default().render();
-
-        assert!(rendered.contains("Conversation\n(empty conversation)"));
-        assert!(rendered.contains("Input\n> "));
-        assert!(rendered.contains("Status\nready"));
-        assert!(rendered.contains("Pending Action\nnone"));
-    }
-
-    #[test]
-    fn scripted_transcript_omits_provider_thinking_but_regular_render_keeps_it() {
+    fn scripted_transcript_includes_visible_reasoning() {
         let mut shell = TuiShell::new();
-        shell.consume_events(&[
-            Event::ProviderStarted(ProviderStarted::new("stub-provider", "request-1")),
-            Event::ProviderFinished(ProviderFinished::new(
-                "stub-provider",
-                "request-1",
-                ProviderOutput::new("visible answer")
-                    .with_thinking("Internal reasoning should stay hidden."),
-            )),
-            Event::AssistantMessage(AssistantMessage::new(
-                "visible answer",
-                AssistantMessageSource::Provider,
-            )),
-        ]);
+        shell.consume_event(&Event::ProviderFinished(ProviderFinished::new(
+            "lm-studio",
+            "request-1",
+            ProviderOutput::new("").with_thinking("Need to answer briefly."),
+        )));
 
-        assert!(shell
-            .render()
-            .contains("Internal reasoning should stay hidden."));
+        let transcript = shell.render_scripted_transcript();
+
+        assert!(transcript.contains("Need to answer briefly."));
+        assert!(!transcript.contains("reasoning · "));
         assert!(!shell
-            .render_scripted_transcript()
-            .contains("Internal reasoning should stay hidden."));
-        assert!(shell
-            .render_scripted_transcript()
-            .contains("visible answer"));
-    }
-
-    #[test]
-    fn layout_includes_only_the_minimal_chat_first_regions() {
-        let shell = TuiShell::new();
-
-        assert_eq!(
-            shell.regions(),
-            [
-                LayoutRegion::Conversation,
-                LayoutRegion::PendingAction,
-                LayoutRegion::Status,
-                LayoutRegion::Input,
-            ]
-        );
-    }
-
-    #[test]
-    fn tui_shell_has_no_runtime_behavior() {
-        let mut shell = TuiShell::new();
-
-        shell.input.text = "/help".to_string();
-
-        assert_eq!(shell.input.text, "/help");
-        assert_eq!(shell.pending_action.panel, None);
-        assert!(shell.conversation.lines.is_empty());
-    }
-
-    #[test]
-    fn consumes_core_events_into_conversation_without_provider_access() {
-        let controller = Controller::default();
-        let mut session = Session::new("session-1", ".", ".");
-
-        let result = controller.turn(&mut session, "what does the harness do?");
-        let mut shell = TuiShell::new();
-        shell.consume_events(&result.events);
-
-        let rendered = shell.render();
-
-        assert!(rendered.contains("> what does the harness do?"));
-        assert!(!rendered.contains("User\n"));
-        assert!(!rendered.contains("thinking"));
-        assert!(rendered.contains("stub provider response"));
-        assert!(!rendered.contains("Model:"));
-        assert!(!rendered.contains("stub-request-1"));
-        assert!(!rendered.contains("Provider text is suggestion only."));
-        assert!(session.actions().is_empty());
-    }
-
-    #[test]
-    fn rendering_core_events_does_not_mutate_session_files_or_action_truth() {
-        let root = std::env::temp_dir().join(format!(
-            "elgar-tui-render-{}-no-mutation",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let target = root.join("hello.py");
-        let runtime = create_file_runtime("hello.py", "");
-        let mut session = Session::new("session-1", root.clone(), root.clone());
-
-        runtime.tool_turn(
-            &mut session,
-            "create file hello.py",
-            PermissionPolicyMode::ReviewAll,
-        );
-        let before = session.clone();
-
-        let mut shell = TuiShell::new();
-        shell.consume_session(&session);
-
-        assert_eq!(session, before);
-        assert!(!target.exists());
-        assert_eq!(session.actions().len(), 1);
-        assert_eq!(
-            session.actions()[0].action.state,
-            ActionLifecycleState::Proposed
-        );
-        assert_eq!(session.actions()[0].verified_result, None);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn submitting_input_follows_latest_without_mutating_session_truth() {
-        let mut session = Session::new("session-1", ".", ".");
-        let before = session.clone();
-        let mut shell = TuiShell::new();
-        shell.conversation.lines = (0..10).map(|index| format!("line {index}")).collect();
-        shell.conversation.scroll_up(5);
-
-        let runtime = AgentRuntime::default();
-
-        let result = shell.submit_agent_input(&runtime, &mut session, "what does the harness do?");
-
-        assert_eq!(result.route, elgar_core::router::Route::AskModel);
-        assert!(shell.conversation.is_following_latest());
-        assert_eq!(before.events().len(), 0);
-        assert_eq!(session.events().len(), result.events.len());
-    }
-
-    #[test]
-    fn tui_approval_is_routed_through_action_gate_and_renders_applied_result() {
-        let action_gate = ActionGate::default();
-        let root = temp_root("approve-through-controller");
-        let target = root.join("hello.py");
-        let runtime = create_file_runtime("hello.py", "");
-        let mut session = Session::new("session-1", root.clone(), root.clone());
-        let mut shell = TuiShell::with_policy_mode(PermissionPolicyMode::ReviewAll);
-
-        let proposed =
-            shell.submit_agent_tool_input(&runtime, &mut session, "create file hello.py");
-        assert_eq!(proposed.route, elgar_core::router::Route::AskModel);
-        assert!(!target.exists());
-        assert!(shell.render().contains("Status: waiting for approval"));
-
-        let approved = shell.submit_approval(&action_gate, &mut session);
-
-        assert_eq!(approved.route, elgar_core::router::Route::ApproveAction);
-        assert!(target.exists());
-        assert_eq!(
-            session.actions()[0].action.state,
-            ActionLifecycleState::Applied
-        );
-        assert!(matches!(
-            session.actions()[0].verified_result,
-            Some(VerifiedActionResult::FileWritten { .. })
-        ));
-
-        let rendered = shell.render();
-        assert!(rendered.contains("File: hello.py"));
-        assert!(rendered.contains("Status: applied and verified"));
-        assert!(rendered.contains("Result: Wrote "));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn tui_rejection_is_routed_through_action_gate_and_does_not_write() {
-        let action_gate = ActionGate::default();
-        let root = temp_root("reject-through-controller");
-        let target = root.join("hello.py");
-        let runtime = create_file_runtime("hello.py", "");
-        let mut session = Session::new("session-1", root.clone(), root.clone());
-        let mut shell = TuiShell::with_policy_mode(PermissionPolicyMode::ReviewAll);
-
-        shell.submit_agent_tool_input(&runtime, &mut session, "create file hello.py");
-
-        let rejected = shell.submit_rejection(&action_gate, &mut session);
-
-        assert_eq!(rejected.route, elgar_core::router::Route::RejectAction);
-        assert!(!target.exists());
-        assert_eq!(
-            session.actions()[0].action.state,
-            ActionLifecycleState::Rejected
-        );
-        assert_eq!(session.actions()[0].verified_result, None);
-
-        let rendered = shell.render();
-        assert!(rendered.contains("Status: rejected"));
-        assert!(rendered.contains("Result: Rejected. No file was changed."));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn tui_renders_failed_result_from_controller_events() {
-        let action_gate = ActionGate::default();
-        let root = temp_root("failed-through-controller");
-        let absolute_target = std::env::temp_dir().join(format!(
-            "elgar-tui-{}-blocked-outside-root.py",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&absolute_target);
-        let runtime = create_file_runtime(absolute_target.display().to_string(), "");
-        let mut session = Session::new("session-1", root.clone(), root.clone());
-        let mut shell = TuiShell::with_policy_mode(PermissionPolicyMode::ReviewAll);
-
-        shell.submit_agent_tool_input(
-            &runtime,
-            &mut session,
-            &format!("create file {}", absolute_target.display()),
-        );
-
-        shell.submit_approval(&action_gate, &mut session);
-
-        assert!(!absolute_target.exists());
-        assert_eq!(
-            session.actions()[0].action.state,
-            ActionLifecycleState::Failed
-        );
-
-        let rendered = shell.render();
-        assert!(rendered.contains("Status: failed"));
-        assert!(rendered.contains("Result: unsafe write target"));
-
-        let _ = std::fs::remove_dir_all(root);
-        let _ = std::fs::remove_file(absolute_target);
-    }
-
-    fn temp_root(name: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("elgar-tui-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    fn create_file_runtime(
-        target_path: impl Into<String>,
-        contents: impl Into<String>,
-    ) -> AgentRuntime<ScriptedToolProvider> {
-        let target_path = target_path.into();
-        AgentRuntime::new(ScriptedToolProvider {
-            output: ProviderOutput::new("Creating file.").with_tool_calls(vec![RawModelToolCall {
-                id: "call-create-file".to_string(),
-                name: RawModelToolName::Known(ModelToolName::CreateFile),
-                arguments: serde_json::json!({
-                    "target_path": target_path.clone(),
-                    "contents": contents.into(),
-                }),
-                assistant_summary: Some(format!("write {target_path}")),
-            }]),
-        })
-    }
-
-    #[derive(Debug, Clone)]
-    struct ScriptedToolProvider {
-        output: ProviderOutput,
-    }
-
-    impl ControllerProvider for ScriptedToolProvider {
-        fn request_metadata(&self) -> ProviderRequestMetadata {
-            ProviderRequestMetadata::new(
-                "tool-provider",
-                Some("tool-model".to_string()),
-                "request-1",
-            )
-        }
-
-        fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
-            Ok(ProviderOutput::new("plain response"))
-        }
-
-        fn chat_messages_with_tools_with_metadata(
-            &self,
-            messages: Vec<ChatMessage>,
-            _metadata: &ProviderRequestMetadata,
-            _tools: Vec<ChatToolDefinition>,
-        ) -> Result<ProviderOutput, ProviderError> {
-            if messages
-                .iter()
-                .any(|message| matches!(message.role, ChatRole::Tool))
-            {
-                return Ok(ProviderOutput::new("Done."));
-            }
-
-            Ok(self.output.clone())
-        }
+            .conversation_copy_text()
+            .contains("Need to answer briefly."));
     }
 }

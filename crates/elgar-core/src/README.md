@@ -2,16 +2,21 @@
 
 ## Purpose
 
-Core module surface for agent runtime flow, action gate approval/rejection, actions, policy, providers, routing, sessions, filesystem helpers, shell helpers, and rendering.
+Core module surface for the harness, providers,
+sessions/events, token accounting, context helpers, rendering, and local logs.
 
 ## Important Files and Folders
 
-- `agent_runtime.rs` is the normal chat entrypoint for live TUI and CLI script turns.
-- `action_gate.rs` is the narrow explicit approval/rejection entrypoint after model/runtime work.
-- `controller.rs` is a small provider-chat compatibility wrapper.
-- `action.rs`, `policy.rs`, `fs.rs`, and `shell.rs` define permissioned work boundaries.
+- `harness/` owns the single model route, primitive loop, permissions, and
+  approval execution.
 - `provider/` owns LM Studio and provider abstractions.
-- `controller_tests/` keeps focused coverage for controller compatibility and regression guards.
+- `logs/` owns local JSONL session/system logging.
+- `session.rs` stores in-memory session events and token/accounting snapshots.
+- `session/` contains session id rotation and session event metadata helpers.
+- `event/` defines core event and provider output types.
+- `token_accounting.rs` tracks provider-reported usage and context-window snapshots.
+- `context/` owns bounded context helper types for future use.
+- `renderer.rs` renders core events for simple non-TUI output.
 - `lib.rs` exports the public core surface.
 
 ## Ownership

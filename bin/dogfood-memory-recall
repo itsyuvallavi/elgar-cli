@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# Live dogfood: cross-turn harness memory (bounded verified facts + chat history).
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+playground="$repo_root/playground/Nextjs-1"
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+audit_file="mem-audit-dogfood-${stamp}.md"
+dogfood_dir="${TMPDIR:-/tmp}/elgar-memory-dogfood-${stamp}"
+input_file="$dogfood_dir/memory-recall.in"
+output_file="$dogfood_dir/memory-recall.out"
+log_dir="$repo_root/.elgar/log/system"
+
+if ! command -v elgar >/dev/null 2>&1; then
+  echo "missing elgar binary; run ./bin/install-local first" >&2
+  exit 1
+fi
+
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing rg; install ripgrep before running this dogfood" >&2
+  exit 1
+fi
+
+if [[ ! -d "$playground" ]]; then
+  echo "missing playground project: $playground" >&2
+  exit 1
+fi
+
+if [[ "${ELGAR_PROVIDER_CONFIG:-}" =~ ^(off|none|disabled)$ ]]; then
+  echo "ELGAR_PROVIDER_CONFIG disables live provider config; unset it for this dogfood run" >&2
+  exit 1
+fi
+
+mkdir -p "$dogfood_dir"
+
+cat >"$input_file" <<EOF
+open package.json and show me the contents
+show me the app folder
+create ${audit_file} with exactly one line: audit-marker-42. do not create any other files.
+/approve
+what exact files did you open or show, what folders did you view, and what files did you write in THIS conversation? no tools.
+/clear
+what exact files did you open or show, what folders did you view, and what files did you write in THIS conversation? no tools.
+/exit
+EOF
+
+start_epoch="$(date +%s)"
+echo "==> running memory recall dogfood in playground/Nextjs-1"
+echo "    audit file: ${audit_file}"
+echo "    artifacts:   ${dogfood_dir}"
+(
+  cd "$playground"
+  elgar tui <"$input_file"
+) | tee "$output_file"
+
+fail() {
+  echo "dogfood failed: $1" >&2
+  echo "transcript: $output_file" >&2
+  exit 1
+}
+
+grep -q "stub provider response" "$output_file" && fail "script used stub provider"
+grep -q "No live provider call was made" "$output_file" && fail "script used no-network provider"
+grep -q "Network provider error" "$output_file" && fail "live provider returned a network error"
+
+[[ -f "$playground/$audit_file" ]] || fail "approved write did not create ${audit_file}"
+
+# Recall turn should mention prior verified actions (model wording may vary).
+grep -Eiq 'package\.json' "$output_file" || fail "recall transcript missing package.json"
+grep -Eiq '\bapp\b' "$output_file" || fail "recall transcript missing app listing"
+grep -Eiq "${audit_file//./\\.}" "$output_file" || fail "recall transcript missing ${audit_file}"
+
+# After /clear, post-clear recall should report an empty session.
+awk '/\(empty conversation\)/ { after_clear = 1; next }
+     after_clear && /(^|[[:space:]])I have not / { found = 1 }
+     after_clear && /have not (opened|shown|listed|viewed|written|read)/ { found = 1 }
+     END { exit !found }' "$output_file" \
+  || fail "post-/clear recall did not report an empty session"
+
+# Log proof from this run: recall turn injects history + verified facts; /clear rotates session id.
+contexts="$(python3 - "$log_dir" "$start_epoch" <<'PY'
+import json, sys
+from pathlib import Path
+
+log_dir = Path(sys.argv[1])
+start_ms = int(sys.argv[2]) * 1000
+rows = []
+for path in sorted(log_dir.glob("cli-tui-*.jsonl"), key=lambda p: p.stat().st_mtime):
+    if path.stat().st_mtime * 1000 < start_ms:
+        continue
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "harness_turn_prompt_context_built" not in line:
+            continue
+        row = json.loads(line)
+        if row.get("timestamp_unix_ms", 0) < start_ms:
+            continue
+        row["_path"] = str(path)
+        rows.append(row)
+
+recall = [
+    row for row in rows
+    if "-clear-" not in row.get("session_id", "")
+    and row.get("metadata", {}).get("indexed_fact_count", 0) >= 3
+    and row.get("metadata", {}).get("rendered_fact_count", 0) >= 3
+]
+clear = [
+    row for row in rows
+    if "-clear-" in row.get("session_id", "")
+    and row.get("metadata", {}).get("indexed_fact_count") == 0
+]
+print(json.dumps(recall[-1] if recall else {}, separators=(",", ":")))
+print(json.dumps(clear[-1] if clear else {}, separators=(",", ":")))
+PY
+)"
+recall_context="$(printf '%s\n' "$contexts" | sed -n '1p')"
+clear_context="$(printf '%s\n' "$contexts" | sed -n '2p')"
+[[ -n "$recall_context" && "$recall_context" != "{}" ]] \
+  || fail "missing recall-turn harness_turn_prompt_context_built in system logs"
+
+echo "$recall_context" | rg -q '"history_turns":([1-9]|[1-9][0-9]+)' \
+  || fail "recall turn missing history_turns > 0 in system log"
+echo "$recall_context" | rg -q '"verified_fact_count":([3-9]|[1-9][0-9]+)' \
+  || fail "recall turn missing verified_fact_count >= 3 in system log"
+echo "$recall_context" | rg -q '"indexed_fact_count":([3-9]|[1-9][0-9]+)' \
+  || fail "recall turn missing indexed_fact_count >= 3 in system log"
+echo "$recall_context" | rg -q '"rendered_fact_count":([3-9]|[1-9][0-9]+)' \
+  || fail "recall turn missing rendered_fact_count >= 3 in system log"
+echo "$recall_context" | rg -q '"rendered_memory_chars":([1-9]|[1-9][0-9]+)' \
+  || fail "recall turn missing rendered_memory_chars > 0 in system log"
+
+[[ -n "$clear_context" && "$clear_context" != "{}" ]] \
+  || fail "missing post-/clear harness_turn_prompt_context_built log (session id rotation)"
+
+echo "$clear_context" | rg -q '"history_turns":0' \
+  || fail "post-/clear turn should reset history_turns to 0"
+echo "$clear_context" | rg -q '"verified_fact_count":0' \
+  || fail "post-/clear turn should reset verified_fact_count to 0"
+echo "$clear_context" | rg -q '"indexed_fact_count":0' \
+  || fail "post-/clear turn should reset indexed_fact_count to 0"
+echo "$clear_context" | rg -q '"rendered_fact_count":0' \
+  || fail "post-/clear turn should reset rendered_fact_count to 0"
+echo "$clear_context" | rg -q '"rendered_memory_chars":0' \
+  || fail "post-/clear turn should reset rendered_memory_chars to 0"
+
+cleanup_status="not-needed"
+if [[ -f "$playground/$audit_file" ]]; then
+  rm -f "$playground/$audit_file"
+  if [[ -f "$playground/$audit_file" ]]; then
+    cleanup_status="failed:${audit_file}"
+  else
+    cleanup_status="removed:${audit_file}"
+  fi
+fi
+
+echo "==> memory recall dogfood passed"
+echo "    transcript: $output_file"
+echo "    recall context: $recall_context"
+echo "    clear context:  $clear_context"
+echo "    cleanup:        $cleanup_status"

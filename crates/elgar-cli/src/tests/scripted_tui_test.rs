@@ -1,0 +1,383 @@
+//! Tests for the line-based scripted TUI mode.
+
+use std::{
+    fs,
+    sync::{Arc, Mutex},
+};
+
+use elgar_core::{
+    event::{ProviderMetrics, ProviderOutput},
+    provider::{
+        ChatMessage, ChatToolCall, ChatToolCallFunction, ChatToolDefinition, ControllerProvider,
+        ProviderError, ProviderRequestMetadata,
+    },
+    token_accounting::ProviderTokenUsage,
+};
+
+use crate::{
+    is_tui_cancel_command, is_tui_clear_command, is_tui_copy_command, is_tui_copy_raw_command,
+    is_tui_details_command, is_tui_exit_command, is_tui_help_command, render_tui_help,
+    render_tui_script, run_tui_loop, run_tui_loop_with_runtime,
+    should_launch_terminal_tui_by_default, tui_unknown_command, TUI_COMMAND, TUI_TERMINAL_COMMAND,
+};
+
+#[test]
+fn default_terminal_launch_requires_interactive_stdio() {
+    assert!(should_launch_terminal_tui_by_default(true, true));
+    assert!(!should_launch_terminal_tui_by_default(false, true));
+    assert!(!should_launch_terminal_tui_by_default(true, false));
+    assert!(!should_launch_terminal_tui_by_default(false, false));
+}
+
+#[test]
+fn terminal_tui_command_is_separate_from_line_loop_command() {
+    assert_eq!(TUI_COMMAND, "tui");
+    assert_eq!(TUI_TERMINAL_COMMAND, "tui-terminal");
+}
+
+#[test]
+fn tui_exit_commands_are_explicit() {
+    assert!(is_tui_exit_command("/exit"));
+    assert!(is_tui_exit_command(" /quit "));
+    assert!(is_tui_exit_command("/q"));
+    assert!(!is_tui_exit_command("exit"));
+}
+
+#[test]
+fn tui_supported_commands_are_explicit() {
+    assert!(is_tui_help_command("/help"));
+    assert!(is_tui_help_command(" /commands "));
+    assert!(is_tui_copy_command("/copy"));
+    assert!(is_tui_copy_raw_command("/copy raw"));
+    assert!(is_tui_details_command("/details last"));
+    assert!(is_tui_clear_command("/clear"));
+    assert!(is_tui_clear_command(" /new "));
+    assert!(is_tui_cancel_command("/cancel"));
+
+    assert!(!is_tui_help_command("help"));
+    assert!(!is_tui_copy_command("copy"));
+    assert!(!is_tui_clear_command("clear"));
+}
+
+#[test]
+fn tui_unknown_slash_command_is_local() {
+    assert_eq!(tui_unknown_command("/model"), Some("/model"));
+    assert_eq!(tui_unknown_command(" /settings "), Some("/settings"));
+    assert_eq!(tui_unknown_command("/help"), None);
+    assert_eq!(tui_unknown_command("/raw hello"), Some("/raw hello"));
+    assert_eq!(tui_unknown_command("/details last"), None);
+    assert_eq!(tui_unknown_command("/copy raw"), None);
+    assert_eq!(tui_unknown_command("model"), None);
+}
+
+#[test]
+fn tui_help_lists_supported_local_commands() {
+    let help = render_tui_help();
+
+    assert!(help.starts_with("Commands\nChat"));
+    assert!(help.contains("harness-controlled"));
+    assert!(help.contains("/cancel"));
+    assert!(help.contains("/permissions workspace_write"));
+    assert!(help.contains("/copy raw"));
+    assert!(help.contains("/exit"));
+    assert!(!help.contains("/raw <prompt>"));
+    assert!(!help.contains("/tool"));
+}
+
+#[test]
+fn tui_script_renders_default_stub_turns_and_stops_on_exit() {
+    let rendered = render_tui_script(
+        ["what does the harness do?", "/exit", "what should not run?"],
+        ".",
+        ".",
+    );
+
+    assert!(rendered.contains("> what does the harness do?"));
+    assert!(rendered.contains("stub provider response"));
+    assert!(!rendered.contains("what should not run?"));
+    assert!(!rendered.contains("lm-studio"));
+}
+
+#[test]
+fn tui_script_raw_detail_commands_are_local_without_raw_details() {
+    let rendered = render_tui_script(["/details last", "/copy raw"], ".", ".");
+
+    assert!(rendered.contains("No raw details are available."));
+    assert!(!rendered.contains("> /details last"));
+    assert!(!rendered.contains("> /copy raw"));
+    assert!(!rendered.contains("stub provider response"));
+}
+
+#[test]
+fn tui_script_clear_commands_clear_local_rendering_without_controller_call() {
+    let root = std::env::temp_dir().join(format!("elgar-cli-clear-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+
+    let rendered = render_tui_script(
+        ["what does the harness do?", "/clear", "/new"],
+        &root,
+        &root,
+    );
+
+    assert!(!rendered.contains("> /clear"));
+    assert!(!rendered.contains("> /new"));
+    assert!(rendered.contains("stub provider response"));
+    assert!(rendered.contains("(empty conversation)"));
+    assert_eq!(rendered.matches("stub provider response").count(), 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn tui_loop_reads_lines_and_exits_cleanly() {
+    let input = b"what does the harness do?\n/quit\n";
+    let mut output = Vec::new();
+
+    run_tui_loop(&input[..], &mut output, ".", ".").unwrap();
+
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("Elgar TUI. Type /exit, /quit, or /q to leave."));
+    assert!(rendered.contains("> what does the harness do?"));
+    assert!(rendered.contains("Exiting Elgar TUI."));
+}
+
+#[test]
+fn tui_script_prompt_block_submits_multiline_text_as_one_turn() {
+    let rendered = render_tui_script(
+        [
+            "/prompt",
+            "Create a project.",
+            "Requirements:",
+            "- include README.md",
+            "/end",
+            "/exit",
+        ],
+        ".",
+        ".",
+    );
+
+    assert!(rendered.contains("> Create a project."));
+    assert!(rendered.contains("Requirements:"));
+    assert!(rendered.contains("- include README.md"));
+    assert_eq!(rendered.matches("stub provider response").count(), 1);
+}
+
+#[test]
+fn tui_script_prompt_block_can_be_followed_by_approval_command() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-cli-scripted-prompt-approval-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let provider = ToolCallProvider::bash_command("printf hello");
+    let input = b"/prompt\ncreate approved file\nwith exact content\n/end\n/approve\n/exit\n";
+    let mut output = Vec::new();
+
+    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider, None).unwrap();
+
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("> create approved file"));
+    assert!(rendered.contains("with exact content"));
+    assert!(rendered.contains("Run command"));
+    assert!(rendered.contains("printf hello"));
+    assert!(rendered.contains("Command · `printf hello` · exit 0"));
+    assert!(!rendered.contains("VERIFIED_BASH_EXECUTION"));
+    assert!(!rendered.contains("stdout:"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn tui_script_approve_continue_executes_then_runs_followup_turn() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-cli-scripted-approve-continue-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let provider = ToolCallProvider::bash_command("printf continued");
+    let input = b"/prompt\nrun approved command\n/end\n/approve continue\n/exit\n";
+    let mut output = Vec::new();
+
+    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider, None).unwrap();
+
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("Command · `printf continued` · exit 0"));
+    assert!(rendered.contains("bash requires approval"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn tui_script_permissions_command_sets_full_access_mode() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-cli-scripted-full-access-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let provider = ToolCallProvider::empty();
+    let input = b"/permissions full_access\n/exit\n";
+    let mut output = Vec::new();
+
+    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider, None).unwrap();
+
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("Permission mode set to full_access"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn tui_loop_rejects_unterminated_prompt_block() {
+    let input = b"/prompt\nmissing end\n";
+    let mut output = Vec::new();
+    let error = run_tui_loop(&input[..], &mut output, ".", ".").unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("Unterminated"));
+}
+
+#[test]
+fn scripted_tui_renders_outside_path_pending_approval_warning() {
+    let root =
+        std::env::temp_dir().join(format!("elgar-cli-scripted-outside-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let provider = ToolCallProvider::write_file("/tmp/elgar-outside-warning-test.txt", "hello");
+    let input = b"create outside file\n/exit\n";
+    let mut output = Vec::new();
+
+    run_tui_loop_with_runtime(&input[..], &mut output, &root, &root, provider, None).unwrap();
+
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("/tmp/elgar-outside-warning-test.txt"));
+    assert!(rendered.contains("WARNING: Approving may modify files outside the launch folder."));
+    assert!(rendered.contains("[Approve]"));
+    assert!(rendered.contains(" Deny "));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn scripted_tui_context_window_reaches_session_status_log() {
+    let root = std::env::temp_dir().join(format!(
+        "elgar-cli-scripted-context-window-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let provider = ToolCallProvider::text_with_usage("hello from metrics", 1_200, 43);
+    let input = b"hello\n/exit\n";
+    let mut output = Vec::new();
+
+    run_tui_loop_with_runtime(
+        &input[..],
+        &mut output,
+        &root,
+        &root,
+        provider,
+        Some(128_000),
+    )
+    .unwrap();
+
+    let system_logs = root.join(".elgar/log/system");
+    let log_body = fs::read_dir(&system_logs)
+        .unwrap()
+        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(log_body.contains(r#""summary":"harness_session_context_status""#));
+    assert!(log_body.contains(r#""context_window_tokens":128000"#));
+    assert!(log_body.contains(r#""session_total_tokens":1243"#));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[derive(Clone)]
+struct ToolCallProvider {
+    outputs: Arc<Mutex<Vec<ProviderOutput>>>,
+}
+
+impl ToolCallProvider {
+    fn empty() -> Self {
+        Self {
+            outputs: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn write_file(path: &str, content: &str) -> Self {
+        Self {
+            outputs: Arc::new(Mutex::new(vec![
+                ProviderOutput::new("requesting write").with_tool_calls(vec![ChatToolCall {
+                    id: "call-write".to_string(),
+                    tool_type: "function".to_string(),
+                    function: ChatToolCallFunction {
+                        name: "write".to_string(),
+                        arguments: serde_json::json!({
+                            "path": path,
+                            "content": content
+                        })
+                        .to_string(),
+                    },
+                }]),
+                ProviderOutput::new("write requires approval"),
+            ])),
+        }
+    }
+
+    fn bash_command(command: &str) -> Self {
+        Self {
+            outputs: Arc::new(Mutex::new(vec![
+                ProviderOutput::new("requesting bash").with_tool_calls(vec![ChatToolCall {
+                    id: "call-bash".to_string(),
+                    tool_type: "function".to_string(),
+                    function: ChatToolCallFunction {
+                        name: "bash".to_string(),
+                        arguments: serde_json::json!({
+                            "command": command
+                        })
+                        .to_string(),
+                    },
+                }]),
+                ProviderOutput::new("bash requires approval"),
+            ])),
+        }
+    }
+
+    fn text_with_usage(text: &str, prompt_tokens: u64, completion_tokens: u64) -> Self {
+        let total_tokens = prompt_tokens.saturating_add(completion_tokens);
+        let mut metrics = ProviderMetrics::new("stub-request-usage", None, false, 1, 128);
+        metrics.usage = Some(ProviderTokenUsage {
+            prompt_tokens: Some(prompt_tokens),
+            completion_tokens: Some(completion_tokens),
+            total_tokens: Some(total_tokens),
+        });
+        Self {
+            outputs: Arc::new(Mutex::new(vec![
+                ProviderOutput::new(text).with_metrics(metrics)
+            ])),
+        }
+    }
+}
+
+impl ControllerProvider for ToolCallProvider {
+    fn request_metadata(&self) -> ProviderRequestMetadata {
+        ProviderRequestMetadata::new("stub", None, "stub-request")
+    }
+
+    fn chat(&self, _prompt: &str) -> Result<ProviderOutput, ProviderError> {
+        Ok(ProviderOutput::new("unused"))
+    }
+
+    fn chat_messages_with_tools_with_metadata(
+        &self,
+        _messages: Vec<ChatMessage>,
+        _metadata: &ProviderRequestMetadata,
+        _tools: Vec<ChatToolDefinition>,
+    ) -> Result<ProviderOutput, ProviderError> {
+        Ok(self.outputs.lock().expect("outputs lock").remove(0))
+    }
+}

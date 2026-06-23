@@ -1,0 +1,2235 @@
+{
+  "title": "Elgar Core File Map",
+  "updated": "2026-06-04",
+  "source_root": "crates/elgar-core/src",
+  "note": "Phase 0 inventory. This map lists every file under crates/elgar-core/src individually. It is not a deletion recommendation.",
+  "counts": {
+    "total_files": 73,
+    "rust_files": 69,
+    "top_level_rust_files": 56,
+    "public_top_level_modules": 19,
+    "private_top_level_modules": 37
+  },
+  "flows": [
+    {
+      "title": "Current Normal Runtime Path",
+      "steps": [
+        "agent_runtime.rs",
+        "agent_loop.rs",
+        "agent_plain_decision.rs",
+        "agent_tool_* files",
+        "model_runtime.rs",
+        "agent_policy_flow.rs",
+        "action_gate.rs",
+        "provider/*",
+        "session.rs + event.rs"
+      ]
+    },
+    {
+      "title": "Proposed Raw Chat Path",
+      "steps": [
+        "raw_chat.rs (planned)",
+        "provider/types.rs",
+        "provider/config.rs",
+        "provider/lm_studio.rs or provider/stub.rs",
+        "agent_provider_events.rs or equivalent helper",
+        "agent_visibility.rs / provider_visible.rs",
+        "session.rs + event.rs"
+      ]
+    },
+    {
+      "title": "Compatibility Controller Path",
+      "steps": [
+        "controller.rs",
+        "router.rs",
+        "controller_provider.rs",
+        "provider/*",
+        "session.rs + event.rs"
+      ]
+    },
+    {
+      "title": "Approval And Execution Path",
+      "steps": [
+        "agent_policy_flow.rs",
+        "policy.rs",
+        "action.rs",
+        "action_gate.rs",
+        "fs.rs or shell.rs",
+        "controller_shell_verify.rs",
+        "session.rs + event.rs"
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "category": "agent-routing",
+      "note": "Model route decisions and prompt-owned routing support.",
+      "files": [
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs",
+        "agent_prompts.rs",
+        "agent_turn_router.rs",
+        "normal_turn_decision.rs"
+      ]
+    },
+    {
+      "category": "agent-runtime",
+      "note": "Normal runtime and harness loop.",
+      "files": [
+        "agent_loop.rs",
+        "agent_runtime.rs"
+      ]
+    },
+    {
+      "category": "agent-tools",
+      "note": "Tool validation, scope, anchoring, and result handling.",
+      "files": [
+        "agent_display_intent.rs",
+        "agent_tool_anchors.rs",
+        "agent_tool_feedback.rs",
+        "agent_tool_output.rs",
+        "agent_tool_scope.rs",
+        "agent_tool_validation.rs",
+        "model_runtime.rs"
+      ]
+    },
+    {
+      "category": "compat-controller",
+      "note": "Legacy/compatibility controller surface.",
+      "files": [
+        "controller.rs",
+        "controller_provider.rs",
+        "controller_reporting.rs",
+        "router.rs"
+      ]
+    },
+    {
+      "category": "crate-root",
+      "note": "Declares the current module graph and public surface.",
+      "files": [
+        "lib.rs"
+      ]
+    },
+    {
+      "category": "docs",
+      "note": "Local documentation inside the source tree.",
+      "files": [
+        "README.md",
+        "controller/README.md",
+        "provider/README.md"
+      ]
+    },
+    {
+      "category": "memory-context",
+      "note": "Verified context and memory construction.",
+      "files": [
+        "agent_prompt_context.rs",
+        "agent_verified_folder.rs",
+        "context.rs",
+        "controller_project_memory.rs",
+        "session_log_memory.rs",
+        "token_accounting.rs",
+        "verified_artifact_memory.rs",
+        "verified_state_answer.rs"
+      ]
+    },
+    {
+      "category": "plans",
+      "note": "Plan contracts and plan execution support.",
+      "files": [
+        "agent_plan_creation.rs",
+        "agent_plan_execution.rs",
+        "plan_contract.rs",
+        "plan_tree.rs"
+      ]
+    },
+    {
+      "category": "policy-actions",
+      "note": "Permission policy, action lifecycle, and approval boundary.",
+      "files": [
+        "action.rs",
+        "action_gate.rs",
+        "agent_policy_flow.rs",
+        "policy.rs"
+      ]
+    },
+    {
+      "category": "provider-boundary",
+      "note": "Provider request/response boundary; raw chat should start here.",
+      "files": [
+        "agent_provider_events.rs",
+        "agent_provider_trace.rs",
+        "agent_request_mode.rs",
+        "agent_synthesis.rs",
+        "provider/config.rs",
+        "provider/http.rs",
+        "provider/lm_studio.rs",
+        "provider/lm_studio_format.rs",
+        "provider/lm_studio_parse.rs",
+        "provider/mod.rs",
+        "provider/stub.rs",
+        "provider/types.rs"
+      ]
+    },
+    {
+      "category": "shell-filesystem",
+      "note": "Filesystem and shell execution boundaries.",
+      "files": [
+        "agent_path_utils.rs",
+        "agent_shell_execution.rs",
+        "agent_shell_inspection.rs",
+        "agent_shell_turn.rs",
+        "controller_shell_verify.rs",
+        "fs.rs",
+        "path_resolution.rs",
+        "shell.rs",
+        "shell_allowlist.rs"
+      ]
+    },
+    {
+      "category": "state-events",
+      "note": "Session state, events, logs, and traces.",
+      "files": [
+        "event.rs",
+        "local_session_log.rs",
+        "local_trace.rs",
+        "session.rs"
+      ]
+    },
+    {
+      "category": "tests",
+      "note": "Test-only files and fixtures.",
+      "files": [
+        "agent_loop/tests.rs",
+        "controller_tests/README.md",
+        "controller_tests/action_lifecycle.rs",
+        "controller_tests/basic_turns.rs",
+        "controller_tests/mod.rs",
+        "controller_tests/provider_streaming_errors.rs",
+        "test_env.rs"
+      ]
+    },
+    {
+      "category": "visibility-rendering",
+      "note": "Turns provider/runtime facts into visible UI text.",
+      "files": [
+        "agent_visibility.rs",
+        "provider_visible.rs",
+        "renderer.rs"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "file": "action_gate.rs",
+      "module": "action_gate",
+      "lines": 804,
+      "category": "policy-actions",
+      "category_note": "Permission policy, action lifecycle, and approval boundary.",
+      "status": "active-heavy",
+      "surface": "public module",
+      "purpose": "Applies approved actions and records verified action results.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "controller.rs",
+        "controller_project_memory.rs",
+        "controller_reporting.rs",
+        "controller_shell_verify.rs",
+        "event.rs",
+        "fs.rs",
+        "local_session_log.rs",
+        "path_resolution.rs",
+        "policy.rs",
+        "router.rs",
+        "session.rs",
+        "shell.rs"
+      ],
+      "imported_by": [
+        "agent_runtime.rs",
+        "controller_tests/mod.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "action.rs",
+      "module": "action",
+      "lines": 822,
+      "category": "policy-actions",
+      "category_note": "Permission policy, action lifecycle, and approval boundary.",
+      "status": "active-heavy",
+      "surface": "public module",
+      "purpose": "Typed action requests, lifecycle state, summaries, and verification payloads.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_loop.rs",
+        "agent_loop/tests.rs",
+        "agent_plan_creation.rs",
+        "agent_plan_execution.rs",
+        "agent_policy_flow.rs",
+        "agent_runtime.rs",
+        "agent_shell_execution.rs",
+        "agent_shell_inspection.rs",
+        "agent_shell_turn.rs",
+        "agent_synthesis.rs",
+        "agent_tool_anchors.rs",
+        "agent_tool_feedback.rs",
+        "agent_tool_output.rs",
+        "agent_verified_folder.rs",
+        "controller_project_memory.rs",
+        "controller_reporting.rs",
+        "controller_shell_verify.rs",
+        "controller_tests/mod.rs",
+        "event.rs",
+        "fs.rs",
+        "model_runtime.rs",
+        "path_resolution.rs",
+        "renderer.rs",
+        "session.rs",
+        "shell.rs",
+        "shell_allowlist.rs",
+        "verified_artifact_memory.rs",
+        "verified_state_answer.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_display_intent.rs",
+      "module": "agent_display_intent",
+      "lines": 52,
+      "category": "agent-tools",
+      "category_note": "Tool validation, scope, anchoring, and result handling.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Detects display-only shell results where the loop can stop after verified output.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_synthesis.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_loop.rs",
+      "module": "agent_loop",
+      "lines": 987,
+      "category": "agent-runtime",
+      "category_note": "Normal runtime and harness loop.",
+      "status": "active-heavy",
+      "surface": "public module",
+      "purpose": "Main normal agent loop for routing, tools, plans, policy, provider followups, and synthesis.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_display_intent.rs",
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs",
+        "agent_plan_creation.rs",
+        "agent_plan_execution.rs",
+        "agent_policy_flow.rs",
+        "agent_prompt_context.rs",
+        "agent_prompts.rs",
+        "agent_provider_events.rs",
+        "agent_provider_trace.rs",
+        "agent_request_mode.rs",
+        "agent_shell_execution.rs",
+        "agent_shell_inspection.rs",
+        "agent_shell_turn.rs",
+        "agent_synthesis.rs",
+        "agent_tool_anchors.rs",
+        "agent_tool_feedback.rs",
+        "agent_tool_output.rs",
+        "agent_tool_scope.rs",
+        "agent_tool_validation.rs",
+        "agent_turn_router.rs",
+        "agent_verified_folder.rs",
+        "agent_visibility.rs",
+        "controller.rs",
+        "event.rs",
+        "model_runtime.rs",
+        "path_resolution.rs",
+        "policy.rs",
+        "router.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop/tests.rs",
+        "agent_runtime.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_loop/tests.rs",
+      "module": "agent_loop::tests",
+      "lines": 9666,
+      "category": "tests",
+      "category_note": "Test-only files and fixtures.",
+      "status": "test-only-heavy",
+      "surface": "test",
+      "purpose": "Large agent loop regression suite; currently all 23 full-suite failures are here.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "no",
+      "needed_for_full_agent": "test-only",
+      "safe_to_move": "only with explicit user approval",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_loop.rs",
+        "agent_path_utils.rs",
+        "agent_synthesis.rs",
+        "agent_turn_router.rs",
+        "controller_project_memory.rs",
+        "event.rs",
+        "local_session_log.rs",
+        "local_trace.rs",
+        "model_runtime.rs",
+        "session.rs",
+        "verified_state_answer.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_path_utils.rs",
+      "module": "agent_path_utils",
+      "lines": 79,
+      "category": "shell-filesystem",
+      "category_note": "Filesystem and shell execution boundaries.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Path normalization and containment helpers for agent actions.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop/tests.rs",
+        "agent_plan_creation.rs",
+        "agent_plan_execution.rs",
+        "agent_policy_flow.rs",
+        "agent_shell_execution.rs",
+        "agent_tool_anchors.rs",
+        "agent_turn_router.rs",
+        "agent_verified_folder.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_plain_decision.rs",
+      "module": "agent_plain_decision",
+      "lines": 397,
+      "category": "agent-routing",
+      "category_note": "Model route decisions and prompt-owned routing support.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Handles model-selected normal-turn decisions: chat, execute, state, and guidance.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "agent_plain_provider.rs",
+        "agent_prompt_context.rs",
+        "agent_prompts.rs",
+        "agent_provider_events.rs",
+        "agent_request_mode.rs",
+        "agent_turn_router.rs",
+        "agent_visibility.rs",
+        "event.rs",
+        "normal_turn_decision.rs",
+        "session.rs",
+        "verified_state_answer.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_plain_provider.rs",
+      "module": "agent_plain_provider",
+      "lines": 197,
+      "category": "agent-routing",
+      "category_note": "Model route decisions and prompt-owned routing support.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Makes secondary plain-provider requests for chat response and classifiers.",
+      "needed_for_raw_chat": "possible helper",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "agent_prompt_context.rs",
+        "agent_prompts.rs",
+        "agent_provider_events.rs",
+        "agent_request_mode.rs",
+        "agent_synthesis.rs",
+        "event.rs",
+        "normal_turn_decision.rs",
+        "session.rs",
+        "verified_state_answer.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_plain_decision.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_plan_creation.rs",
+      "module": "agent_plan_creation",
+      "lines": 467,
+      "category": "plans",
+      "category_note": "Plan contracts and plan execution support.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Guards plan creation, plan repair, and plan-only boundaries.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_path_utils.rs",
+        "agent_prompt_context.rs",
+        "agent_tool_anchors.rs",
+        "agent_tool_output.rs",
+        "agent_turn_router.rs",
+        "controller_project_memory.rs",
+        "plan_contract.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_plan_execution.rs",
+        "agent_verified_folder.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_plan_execution.rs",
+      "module": "agent_plan_execution",
+      "lines": 419,
+      "category": "plans",
+      "category_note": "Plan contracts and plan execution support.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Guards verified plan execution and expected-path completion.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_path_utils.rs",
+        "agent_plan_creation.rs",
+        "agent_prompt_context.rs",
+        "agent_tool_anchors.rs",
+        "agent_tool_output.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_policy_flow.rs",
+      "module": "agent_policy_flow",
+      "lines": 357,
+      "category": "policy-actions",
+      "category_note": "Permission policy, action lifecycle, and approval boundary.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Turns resolved tool outputs into policy-applied or proposed actions.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_path_utils.rs",
+        "agent_tool_output.rs",
+        "controller_project_memory.rs",
+        "controller_reporting.rs",
+        "controller_shell_verify.rs",
+        "event.rs",
+        "fs.rs",
+        "model_runtime.rs",
+        "path_resolution.rs",
+        "policy.rs",
+        "session.rs",
+        "shell.rs",
+        "shell_allowlist.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_shell_execution.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_prompt_context.rs",
+      "module": "agent_prompt_context",
+      "lines": 621,
+      "category": "memory-context",
+      "category_note": "Verified context and memory construction.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Builds local runtime, route location, conversation, and verified memory prompt context.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "context.rs",
+        "event.rs",
+        "session.rs",
+        "session_log_memory.rs",
+        "verified_artifact_memory.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs",
+        "agent_plan_creation.rs",
+        "agent_plan_execution.rs",
+        "agent_verified_folder.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_prompts.rs",
+      "module": "agent_prompts",
+      "lines": 84,
+      "category": "agent-routing",
+      "category_note": "Model route decisions and prompt-owned routing support.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "System prompts used by normal agent routing, chat, tools, and state flows.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_provider_events.rs",
+      "module": "agent_provider_events",
+      "lines": 18,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Shared helper for recording ProviderFinished events and metrics.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later with re-export shim",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "event.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_provider_trace.rs",
+      "module": "agent_provider_trace",
+      "lines": 16,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Records provider planning or thinking into the session reasoning trace.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later with re-export shim",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "agent_visibility.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_request_mode.rs",
+      "module": "agent_request_mode",
+      "lines": 30,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Maps agent request modes to provider metadata/profiles.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later with re-export shim",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs",
+        "agent_synthesis.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_runtime.rs",
+      "module": "agent_runtime",
+      "lines": 820,
+      "category": "agent-runtime",
+      "category_note": "Normal runtime and harness loop.",
+      "status": "active-heavy",
+      "surface": "public module",
+      "purpose": "Public normal runtime wrapper used by live UI surfaces; calls agent_loop.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "action_gate.rs",
+        "agent_loop.rs",
+        "context.rs",
+        "controller.rs",
+        "event.rs",
+        "model_runtime.rs",
+        "policy.rs",
+        "session.rs",
+        "test_env.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_shell_execution.rs",
+      "module": "agent_shell_execution",
+      "lines": 106,
+      "category": "shell-filesystem",
+      "category_note": "Filesystem and shell execution boundaries.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Guards shell-execution route outputs.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_path_utils.rs",
+        "agent_policy_flow.rs",
+        "agent_tool_output.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_shell_inspection.rs",
+      "module": "agent_shell_inspection",
+      "lines": 226,
+      "category": "shell-filesystem",
+      "category_note": "Filesystem and shell execution boundaries.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Classifies and guards read-only shell inspection behavior.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_tool_output.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_shell_turn.rs",
+      "module": "agent_shell_turn",
+      "lines": 174,
+      "category": "shell-filesystem",
+      "category_note": "Filesystem and shell execution boundaries.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Tracks shell transaction synthesis state.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_synthesis.rs",
+      "module": "agent_synthesis",
+      "lines": 388,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Requests provider synthesis after shell or tool results and filters visible synthesis text.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later with re-export shim",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_display_intent.rs",
+        "agent_request_mode.rs",
+        "event.rs",
+        "normal_turn_decision.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_loop/tests.rs",
+        "agent_plain_provider.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_tool_anchors.rs",
+      "module": "agent_tool_anchors",
+      "lines": 432,
+      "category": "agent-tools",
+      "category_note": "Tool validation, scope, anchoring, and result handling.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Anchors tool paths under prompt roots, batch roots, or verified plans.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_path_utils.rs",
+        "agent_tool_output.rs",
+        "controller_project_memory.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_plan_creation.rs",
+        "agent_plan_execution.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_tool_feedback.rs",
+      "module": "agent_tool_feedback",
+      "lines": 117,
+      "category": "agent-tools",
+      "category_note": "Tool validation, scope, anchoring, and result handling.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Creates tool-result feedback and repeated shell/read-only stall messages.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "model_runtime.rs",
+        "session.rs",
+        "shell_allowlist.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_tool_output.rs",
+      "module": "agent_tool_output",
+      "lines": 103,
+      "category": "agent-tools",
+      "category_note": "Tool validation, scope, anchoring, and result handling.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Resolved tool output enum plus skip/repeat signatures.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "model_runtime.rs",
+        "path_resolution.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_plan_creation.rs",
+        "agent_plan_execution.rs",
+        "agent_policy_flow.rs",
+        "agent_shell_execution.rs",
+        "agent_shell_inspection.rs",
+        "agent_tool_anchors.rs",
+        "agent_verified_folder.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_tool_scope.rs",
+      "module": "agent_tool_scope",
+      "lines": 52,
+      "category": "agent-tools",
+      "category_note": "Tool validation, scope, anchoring, and result handling.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Selects and validates available tool definitions for the current intent.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "agent_turn_router.rs",
+        "model_runtime.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_tool_validation.rs",
+      "module": "agent_tool_validation",
+      "lines": 52,
+      "category": "agent-tools",
+      "category_note": "Tool validation, scope, anchoring, and result handling.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Converts tool validation failures into model repair instructions.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "model_runtime.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_turn_router.rs",
+      "module": "agent_turn_router",
+      "lines": 406,
+      "category": "agent-routing",
+      "category_note": "Model route decisions and prompt-owned routing support.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Agent execution intent structs and local-work/misroute detection.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "agent_path_utils.rs",
+        "agent_visibility.rs",
+        "session.rs",
+        "verified_state_answer.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_loop/tests.rs",
+        "agent_plain_decision.rs",
+        "agent_plan_creation.rs",
+        "agent_tool_scope.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_verified_folder.rs",
+      "module": "agent_verified_folder",
+      "lines": 168,
+      "category": "memory-context",
+      "category_note": "Verified context and memory construction.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Anchors actions under latest verified folder and skips redundant directory actions.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "agent_path_utils.rs",
+        "agent_plan_creation.rs",
+        "agent_prompt_context.rs",
+        "agent_tool_output.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "agent_visibility.rs",
+      "module": "agent_visibility",
+      "lines": 126,
+      "category": "visibility-rendering",
+      "category_note": "Turns provider/runtime facts into visible UI text.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Filters raw tool protocol and records visible provider assistant messages.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "event.rs",
+        "model_runtime.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_plain_decision.rs",
+        "agent_provider_trace.rs",
+        "agent_turn_router.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "context.rs",
+      "module": "context",
+      "lines": 412,
+      "category": "memory-context",
+      "category_note": "Verified context and memory construction.",
+      "status": "active",
+      "surface": "public module",
+      "purpose": "Context accounting from local files.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "agent_prompt_context.rs",
+        "agent_runtime.rs",
+        "controller.rs",
+        "session.rs",
+        "token_accounting.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller_project_memory.rs",
+      "module": "controller_project_memory",
+      "lines": 1859,
+      "category": "memory-context",
+      "category_note": "Verified context and memory construction.",
+      "status": "active-heavy",
+      "surface": "private module",
+      "purpose": "Records verified plans and project memory from controller/action behavior.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "controller_reporting.rs",
+        "event.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_loop/tests.rs",
+        "agent_plan_creation.rs",
+        "agent_policy_flow.rs",
+        "agent_tool_anchors.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller_provider.rs",
+      "module": "controller_provider",
+      "lines": 53,
+      "category": "compat-controller",
+      "category_note": "Legacy/compatibility controller surface.",
+      "status": "compat",
+      "surface": "private module",
+      "purpose": "Controller provider event, metrics, and visible-message helpers.",
+      "needed_for_raw_chat": "possible reference",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "compat",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "controller_reporting.rs",
+        "event.rs",
+        "provider_visible.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "controller.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller_reporting.rs",
+      "module": "controller_reporting",
+      "lines": 265,
+      "category": "compat-controller",
+      "category_note": "Legacy/compatibility controller surface.",
+      "status": "compat",
+      "surface": "private module",
+      "purpose": "Controller-visible action success and truth-guard reporting.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "compat",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "event.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_policy_flow.rs",
+        "controller_project_memory.rs",
+        "controller_provider.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller_shell_verify.rs",
+      "module": "controller_shell_verify",
+      "lines": 118,
+      "category": "shell-filesystem",
+      "category_note": "Filesystem and shell execution boundaries.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Verifies expected shell effects after approved shell execution.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "event.rs"
+      ],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_policy_flow.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller_tests/action_lifecycle.rs",
+      "module": "controller_tests::action_lifecycle",
+      "lines": 381,
+      "category": "tests",
+      "category_note": "Test-only files and fixtures.",
+      "status": "test-only",
+      "surface": "test",
+      "purpose": "Controller/action lifecycle compatibility tests.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "no",
+      "needed_for_full_agent": "test-only",
+      "safe_to_move": "later; after test module review",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "controller_tests/mod.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller_tests/basic_turns.rs",
+      "module": "controller_tests::basic_turns",
+      "lines": 160,
+      "category": "tests",
+      "category_note": "Test-only files and fixtures.",
+      "status": "test-only",
+      "surface": "test",
+      "purpose": "Controller basic turn compatibility tests.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "no",
+      "needed_for_full_agent": "test-only",
+      "safe_to_move": "later; after test module review",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "controller_tests/mod.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller_tests/mod.rs",
+      "module": "controller_tests::mod",
+      "lines": 102,
+      "category": "tests",
+      "category_note": "Test-only files and fixtures.",
+      "status": "test-only",
+      "surface": "test",
+      "purpose": "Controller test harness and provider doubles.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "no",
+      "needed_for_full_agent": "test-only",
+      "safe_to_move": "later; after test module review",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "action_gate.rs",
+        "event.rs",
+        "router.rs",
+        "session.rs",
+        "test_env.rs"
+      ],
+      "imported_by": [
+        "controller_tests/action_lifecycle.rs",
+        "controller_tests/basic_turns.rs",
+        "controller_tests/provider_streaming_errors.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller_tests/provider_streaming_errors.rs",
+      "module": "controller_tests::provider_streaming_errors",
+      "lines": 167,
+      "category": "tests",
+      "category_note": "Test-only files and fixtures.",
+      "status": "test-only",
+      "surface": "test",
+      "purpose": "Controller/provider streaming error tests.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "no",
+      "needed_for_full_agent": "test-only",
+      "safe_to_move": "later; after test module review",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "controller_tests/mod.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller_tests/README.md",
+      "module": null,
+      "lines": 16,
+      "category": "tests",
+      "category_note": "Test-only files and fixtures.",
+      "status": "documentation",
+      "surface": "docs",
+      "purpose": "Controller test module notes.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "no",
+      "needed_for_full_agent": "test-doc",
+      "safe_to_move": "later; after test module review",
+      "safe_to_delete": "review only",
+      "imports": [],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller.rs",
+      "module": "controller",
+      "lines": 209,
+      "category": "compat-controller",
+      "category_note": "Legacy/compatibility controller surface.",
+      "status": "compat",
+      "surface": "public module",
+      "purpose": "Legacy compatibility controller for explicit model turns and slash routes.",
+      "needed_for_raw_chat": "possible reference",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "compat",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "context.rs",
+        "controller_provider.rs",
+        "event.rs",
+        "router.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_loop.rs",
+        "agent_runtime.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "controller/README.md",
+      "module": null,
+      "lines": 13,
+      "category": "docs",
+      "category_note": "Local documentation inside the source tree.",
+      "status": "documentation",
+      "surface": "docs",
+      "purpose": "Controller compatibility notes.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "indirect",
+      "needed_for_full_agent": "compat-doc",
+      "safe_to_move": "yes, docs-only, after link check",
+      "safe_to_delete": "review only",
+      "imports": [],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "event.rs",
+      "module": "event",
+      "lines": 441,
+      "category": "state-events",
+      "category_note": "Session state, events, logs, and traces.",
+      "status": "active",
+      "surface": "public module",
+      "purpose": "Event types for user, provider, assistant, actions, and errors.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "model_runtime.rs",
+        "policy.rs"
+      ],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_loop.rs",
+        "agent_loop/tests.rs",
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs",
+        "agent_policy_flow.rs",
+        "agent_prompt_context.rs",
+        "agent_provider_events.rs",
+        "agent_runtime.rs",
+        "agent_synthesis.rs",
+        "agent_visibility.rs",
+        "controller.rs",
+        "controller_project_memory.rs",
+        "controller_provider.rs",
+        "controller_reporting.rs",
+        "controller_shell_verify.rs",
+        "controller_tests/mod.rs",
+        "fs.rs",
+        "provider/lm_studio.rs",
+        "provider/lm_studio_parse.rs",
+        "provider/stub.rs",
+        "provider/types.rs",
+        "renderer.rs",
+        "session.rs",
+        "shell.rs",
+        "token_accounting.rs",
+        "verified_artifact_memory.rs",
+        "verified_state_answer.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "fs.rs",
+      "module": "fs",
+      "lines": 1556,
+      "category": "shell-filesystem",
+      "category_note": "Filesystem and shell execution boundaries.",
+      "status": "active-heavy",
+      "surface": "public module",
+      "purpose": "Filesystem mutation helpers used by approved file actions.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "event.rs"
+      ],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_policy_flow.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "lib.rs",
+      "module": "crate root",
+      "lines": 61,
+      "category": "crate-root",
+      "category_note": "Declares the current module graph and public surface.",
+      "status": "active",
+      "surface": "crate root",
+      "purpose": "Declares and exposes elgar-core modules.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "no; root module declarations must be changed deliberately",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "local_session_log.rs",
+      "module": "local_session_log",
+      "lines": 116,
+      "category": "state-events",
+      "category_note": "Session state, events, logs, and traces.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Append-only local session JSONL paths and writer.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_loop/tests.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "local_trace.rs",
+      "module": "local_trace",
+      "lines": 110,
+      "category": "state-events",
+      "category_note": "Session state, events, logs, and traces.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Local trace event writer.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "agent_loop/tests.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "model_runtime.rs",
+      "module": "model_runtime",
+      "lines": 1540,
+      "category": "agent-tools",
+      "category_note": "Tool validation, scope, anchoring, and result handling.",
+      "status": "active-heavy",
+      "surface": "public module",
+      "purpose": "Model tool definitions, raw tool call validation, and conversion to typed actions.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs"
+      ],
+      "imported_by": [
+        "agent_loop.rs",
+        "agent_loop/tests.rs",
+        "agent_policy_flow.rs",
+        "agent_runtime.rs",
+        "agent_tool_feedback.rs",
+        "agent_tool_output.rs",
+        "agent_tool_scope.rs",
+        "agent_tool_validation.rs",
+        "agent_visibility.rs",
+        "event.rs",
+        "path_resolution.rs",
+        "provider/lm_studio.rs",
+        "provider/lm_studio_parse.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "normal_turn_decision.rs",
+      "module": "normal_turn_decision",
+      "lines": 194,
+      "category": "agent-routing",
+      "category_note": "Model route decisions and prompt-owned routing support.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Parses route JSON into chat, execute, and state decisions.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "verified_state_answer.rs"
+      ],
+      "imported_by": [
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs",
+        "agent_synthesis.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "path_resolution.rs",
+      "module": "path_resolution",
+      "lines": 374,
+      "category": "shell-filesystem",
+      "category_note": "Filesystem and shell execution boundaries.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Resolves action paths relative to session cwd and project root.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "model_runtime.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_loop.rs",
+        "agent_policy_flow.rs",
+        "agent_tool_output.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "plan_contract.rs",
+      "module": "plan_contract",
+      "lines": 1969,
+      "category": "plans",
+      "category_note": "Plan contracts and plan execution support.",
+      "status": "active-heavy",
+      "surface": "public module",
+      "purpose": "Structured plan contract and draft validation.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_plan_creation.rs",
+        "session.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "plan_tree.rs",
+      "module": "plan_tree",
+      "lines": 141,
+      "category": "plans",
+      "category_note": "Plan contracts and plan execution support.",
+      "status": "active",
+      "surface": "public module",
+      "purpose": "Renders expected project paths as grouped trees.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "verified_state_answer.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "policy.rs",
+      "module": "policy",
+      "lines": 412,
+      "category": "policy-actions",
+      "category_note": "Permission policy, action lifecycle, and approval boundary.",
+      "status": "active",
+      "surface": "public module",
+      "purpose": "Permission policy modes and policy decisions.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_loop.rs",
+        "agent_policy_flow.rs",
+        "agent_runtime.rs",
+        "event.rs",
+        "session.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider_visible.rs",
+      "module": "provider_visible",
+      "lines": 104,
+      "category": "visibility-rendering",
+      "category_note": "Turns provider/runtime facts into visible UI text.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Filters provider text before display.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "controller_provider.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider/config.rs",
+      "module": "provider::config",
+      "lines": 342,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module, public re-exports",
+      "purpose": "Provider config, compatibility flags, request profiles, and defaults.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "already grouped",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "provider/types.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider/http.rs",
+      "module": "provider::http",
+      "lines": 671,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Local HTTP transport, response parsing, and endpoint checks.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "already grouped",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "provider/types.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider/lm_studio_format.rs",
+      "module": "provider::lm_studio_format",
+      "lines": 114,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Formats LM Studio/OpenAI-compatible request bodies.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "already grouped",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "provider/lm_studio.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider/lm_studio_parse.rs",
+      "module": "provider::lm_studio_parse",
+      "lines": 294,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Parses LM Studio/OpenAI-compatible responses and stream chunks.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "already grouped",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "event.rs",
+        "model_runtime.rs",
+        "provider/types.rs"
+      ],
+      "imported_by": [
+        "provider/lm_studio.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider/lm_studio.rs",
+      "module": "provider::lm_studio",
+      "lines": 1651,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active-heavy",
+      "surface": "private module, public re-exports",
+      "purpose": "LM Studio/OpenAI-compatible provider implementation.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "not early; high fan-in/fan-out",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "event.rs",
+        "model_runtime.rs",
+        "provider/lm_studio_format.rs",
+        "provider/lm_studio_parse.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider/mod.rs",
+      "module": "provider::mod",
+      "lines": 26,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "public module",
+      "purpose": "Provider submodule declarations and public re-exports.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "already grouped",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider/README.md",
+      "module": null,
+      "lines": 25,
+      "category": "docs",
+      "category_note": "Local documentation inside the source tree.",
+      "status": "documentation",
+      "surface": "docs",
+      "purpose": "Provider module notes.",
+      "needed_for_raw_chat": "indirect",
+      "needed_for_tui": "indirect",
+      "needed_for_full_agent": "indirect",
+      "safe_to_move": "yes, docs-only, after link check",
+      "safe_to_delete": "review only",
+      "imports": [],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider/stub.rs",
+      "module": "provider::stub",
+      "lines": 204,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module, public re-exports",
+      "purpose": "Deterministic provider implementation used by tests and default runtime.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "already grouped",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "event.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "provider/types.rs",
+      "module": "provider::types",
+      "lines": 511,
+      "category": "provider-boundary",
+      "category_note": "Provider request/response boundary; raw chat should start here.",
+      "status": "active",
+      "surface": "private module, public re-exports",
+      "purpose": "Provider trait, chat messages, outputs, errors, tools, and stream chunks.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "already grouped",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "event.rs"
+      ],
+      "imported_by": [
+        "provider/config.rs",
+        "provider/http.rs",
+        "provider/lm_studio_parse.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "README.md",
+      "module": null,
+      "lines": 24,
+      "category": "docs",
+      "category_note": "Local documentation inside the source tree.",
+      "status": "documentation",
+      "surface": "docs",
+      "purpose": "Core source README and orientation note.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "indirect",
+      "needed_for_full_agent": "indirect",
+      "safe_to_move": "yes, docs-only, after link check",
+      "safe_to_delete": "review only",
+      "imports": [],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "renderer.rs",
+      "module": "renderer",
+      "lines": 139,
+      "category": "visibility-rendering",
+      "category_note": "Turns provider/runtime facts into visible UI text.",
+      "status": "active",
+      "surface": "public module",
+      "purpose": "Renders session events into display text.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "event.rs",
+        "session.rs"
+      ],
+      "imported_by": [],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "router.rs",
+      "module": "router",
+      "lines": 119,
+      "category": "compat-controller",
+      "category_note": "Legacy/compatibility controller surface.",
+      "status": "compat",
+      "surface": "public module",
+      "purpose": "Explicit slash-command/local route parser.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "compat",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_loop.rs",
+        "controller.rs",
+        "controller_tests/mod.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "session_log_memory.rs",
+      "module": "session_log_memory",
+      "lines": 241,
+      "category": "memory-context",
+      "category_note": "Verified context and memory construction.",
+      "status": "active",
+      "surface": "public module",
+      "purpose": "Imports verified artifacts from previous session JSONL logs.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_prompt_context.rs",
+        "verified_state_answer.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "session.rs",
+      "module": "session",
+      "lines": 1903,
+      "category": "state-events",
+      "category_note": "Session state, events, logs, and traces.",
+      "status": "active-heavy",
+      "surface": "public module",
+      "purpose": "Main mutable runtime state: events, actions, memory, traces, structured plans.",
+      "needed_for_raw_chat": "yes",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "not early; high fan-in/fan-out",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "context.rs",
+        "event.rs",
+        "plan_contract.rs",
+        "policy.rs",
+        "token_accounting.rs"
+      ],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_loop.rs",
+        "agent_loop/tests.rs",
+        "agent_path_utils.rs",
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs",
+        "agent_plan_creation.rs",
+        "agent_plan_execution.rs",
+        "agent_policy_flow.rs",
+        "agent_prompt_context.rs",
+        "agent_provider_events.rs",
+        "agent_provider_trace.rs",
+        "agent_runtime.rs",
+        "agent_shell_execution.rs",
+        "agent_shell_inspection.rs",
+        "agent_synthesis.rs",
+        "agent_tool_anchors.rs",
+        "agent_tool_feedback.rs",
+        "agent_turn_router.rs",
+        "agent_verified_folder.rs",
+        "agent_visibility.rs",
+        "controller.rs",
+        "controller_project_memory.rs",
+        "controller_provider.rs",
+        "controller_reporting.rs",
+        "controller_tests/mod.rs",
+        "path_resolution.rs",
+        "plan_contract.rs",
+        "renderer.rs",
+        "session_log_memory.rs",
+        "verified_artifact_memory.rs",
+        "verified_state_answer.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "shell_allowlist.rs",
+      "module": "shell_allowlist",
+      "lines": 270,
+      "category": "shell-filesystem",
+      "category_note": "Filesystem and shell execution boundaries.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Classifies simple read-only shell commands.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs"
+      ],
+      "imported_by": [
+        "agent_policy_flow.rs",
+        "agent_tool_feedback.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "shell.rs",
+      "module": "shell",
+      "lines": 354,
+      "category": "shell-filesystem",
+      "category_note": "Filesystem and shell execution boundaries.",
+      "status": "active",
+      "surface": "public module",
+      "purpose": "Shell executor and verified shell result data.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "event.rs"
+      ],
+      "imported_by": [
+        "action_gate.rs",
+        "agent_policy_flow.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "test_env.rs",
+      "module": "test_env",
+      "lines": 36,
+      "category": "tests",
+      "category_note": "Test-only files and fixtures.",
+      "status": "test-only",
+      "surface": "test",
+      "purpose": "Test environment guard.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "no",
+      "needed_for_full_agent": "test-only",
+      "safe_to_move": "later; after test module review",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [],
+      "imported_by": [
+        "agent_runtime.rs",
+        "controller_tests/mod.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "token_accounting.rs",
+      "module": "token_accounting",
+      "lines": 142,
+      "category": "memory-context",
+      "category_note": "Verified context and memory construction.",
+      "status": "active",
+      "surface": "public module",
+      "purpose": "Token counting estimates for context management.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "context.rs",
+        "event.rs"
+      ],
+      "imported_by": [
+        "session.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "verified_artifact_memory.rs",
+      "module": "verified_artifact_memory",
+      "lines": 314,
+      "category": "memory-context",
+      "category_note": "Verified context and memory construction.",
+      "status": "active",
+      "surface": "private module",
+      "purpose": "Derives verified artifacts from action records.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "event.rs",
+        "session.rs"
+      ],
+      "imported_by": [
+        "agent_prompt_context.rs",
+        "verified_state_answer.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    },
+    {
+      "file": "verified_state_answer.rs",
+      "module": "verified_state_answer",
+      "lines": 1343,
+      "category": "memory-context",
+      "category_note": "Verified context and memory construction.",
+      "status": "active-heavy",
+      "surface": "private module",
+      "purpose": "Builds verified-state answers for plan/status/recent changes.",
+      "needed_for_raw_chat": "no",
+      "needed_for_tui": "yes",
+      "needed_for_full_agent": "yes",
+      "safe_to_move": "later; one category at a time with compile check",
+      "safe_to_delete": "no; no deletion proof in Phase 0",
+      "imports": [
+        "action.rs",
+        "event.rs",
+        "plan_tree.rs",
+        "session.rs",
+        "session_log_memory.rs",
+        "verified_artifact_memory.rs"
+      ],
+      "imported_by": [
+        "agent_loop/tests.rs",
+        "agent_plain_decision.rs",
+        "agent_plain_provider.rs",
+        "agent_turn_router.rs",
+        "normal_turn_decision.rs"
+      ],
+      "review_note": "Generated from source layout plus conservative manual category metadata."
+    }
+  ],
+  "edges": [
+    [
+      "agent_runtime.rs",
+      "agent_loop.rs",
+      "public runtime calls the normal harness loop"
+    ],
+    [
+      "agent_loop.rs",
+      "agent_plain_decision.rs",
+      "plain input can enter route decision handling"
+    ],
+    [
+      "agent_loop.rs",
+      "agent_tool_scope.rs",
+      "tool availability depends on intent"
+    ],
+    [
+      "agent_loop.rs",
+      "agent_tool_output.rs",
+      "provider tool calls become resolved outputs"
+    ],
+    [
+      "agent_loop.rs",
+      "agent_policy_flow.rs",
+      "resolved actions pass through policy"
+    ],
+    [
+      "agent_policy_flow.rs",
+      "action_gate.rs",
+      "approved actions are applied and verified"
+    ],
+    [
+      "action_gate.rs",
+      "fs.rs",
+      "file actions mutate only through filesystem helpers"
+    ],
+    [
+      "action_gate.rs",
+      "shell.rs",
+      "shell actions execute only through shell executor"
+    ],
+    [
+      "agent_loop.rs",
+      "agent_synthesis.rs",
+      "tool/shell results may trigger synthesis"
+    ],
+    [
+      "agent_plain_provider.rs",
+      "provider/types.rs",
+      "secondary plain requests use provider trait"
+    ],
+    [
+      "provider/lm_studio.rs",
+      "provider/lm_studio_format.rs",
+      "LM Studio provider formats request bodies"
+    ],
+    [
+      "provider/lm_studio.rs",
+      "provider/lm_studio_parse.rs",
+      "LM Studio provider parses responses"
+    ],
+    [
+      "provider/lm_studio.rs",
+      "provider/http.rs",
+      "LM Studio provider uses local HTTP transport"
+    ],
+    [
+      "provider/types.rs",
+      "event.rs",
+      "ProviderOutput is recorded in events"
+    ],
+    [
+      "event.rs",
+      "session.rs",
+      "session stores event history"
+    ],
+    [
+      "session.rs",
+      "renderer.rs",
+      "renderer displays session events"
+    ],
+    [
+      "session_log_memory.rs",
+      "agent_prompt_context.rs",
+      "verified prior artifacts can become prompt context"
+    ],
+    [
+      "verified_state_answer.rs",
+      "agent_plain_decision.rs",
+      "state route can produce verified-state answers"
+    ],
+    [
+      "controller.rs",
+      "router.rs",
+      "compat controller still parses slash/local routes"
+    ],
+    [
+      "controller.rs",
+      "controller_provider.rs",
+      "compat controller records provider events via helpers"
+    ]
+  ]
+}

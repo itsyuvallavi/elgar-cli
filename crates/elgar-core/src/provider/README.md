@@ -1,25 +1,90 @@
-# elgar-core/src/provider
+# Provider
 
-## Purpose
+This folder owns Elgar's boundary with model providers.
 
-Provider boundary for LM Studio and OpenAI-compatible chat behavior.
+It answers one question: how does Elgar turn internal chat data into a provider
+request, send it, and turn the provider response back into Elgar data?
 
-## Important Files
+## Current Flow
 
-- `config.rs` defines provider configuration.
-- `types.rs` defines chat messages and provider result types.
-- `lm_studio.rs`, `lm_studio_format.rs`, and `lm_studio_parse.rs` handle LM Studio requests and responses.
-- `http.rs` contains HTTP transport details.
-- `stub.rs` supports deterministic tests.
-- `mod.rs` exports the provider surface.
+```text
+harness
+  -> ControllerProvider trait
+  -> ProviderCancelToken for cooperative cancellation
+  -> LmStudioProvider
+  -> provider config chooses profile
+  -> lm_studio/openai.rs
+  -> http/
+  -> lm_studio/parse.rs
+  -> ProviderOutput
+```
 
-## Ownership
+Active harness request modes use OpenAI-compatible chat to keep one provider
+route.
 
-Keep HTTP and provider compatibility details here. Runtime and controller
-compatibility code should consume typed provider results instead of parsing raw
-provider text.
+Provider calls accept a `ProviderCancelToken` on the cancelable trait methods.
+The TUI uses that token for `/cancel`, and transports must poll it while waiting
+on blocking reads.
+
+## Folders
+
+- `types/` - shared provider vocabulary:
+  messages, requests, metadata, backend profiles, stream chunks, errors, and
+  the `ControllerProvider` trait.
+
+- `config/` - provider settings:
+  local endpoint, model name, timeouts, compatibility flags, and named request
+  profiles.
+
+- `lm_studio/` - live LM Studio provider:
+  formats requests, sends OpenAI-compatible calls for active harness modes,
+  parses responses, and exposes `LmStudioProvider`.
+
+- `http/` - tiny local HTTP helper:
+  parses localhost URLs, opens TCP connections, writes JSON POST requests, reads
+  normal/streaming responses, and decodes chunked bodies.
+
+- `stub/` - no-network provider:
+  deterministic provider used by tests and local harness checks.
+
+## Root File
+
+- `mod.rs` re-exports the provider surface used by the rest of Elgar.
+
+Most code outside this folder should import from `provider::...` instead of
+reaching into submodules directly.
+
+## What Belongs Here
+
+- provider request/response types
+- cooperative provider cancellation
+- provider configuration
+- model backend selection
+- LM Studio request/response handling
+- local provider HTTP transport
+- no-network provider test support
+
+## What Does Not Belong Here
+
+- TUI rendering
+- session storage
+- slash commands
+- chat turn orchestration
+- tool execution
+- file or shell actions
+
+## Suggested Reading Order
+
+1. `types/README.md`
+2. `config/README.md`
+3. `lm_studio/README.md`
+4. `http/README.md`
+5. `stub/README.md`
 
 ## Checks
 
-- `cargo test -p elgar-core provider`
-- `cargo run -p elgar-cli -- provider-smoke "Say hello in one sentence."`
+```text
+cargo check -p elgar-core
+cargo check -p elgar-tui
+cargo check -p elgar-cli
+```

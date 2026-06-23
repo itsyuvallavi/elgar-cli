@@ -1,44 +1,62 @@
-use elgar_core::event::{Event, ProviderFinished, ProviderTokenUsage};
+//! Conversation pane state and rendering support.
+//!
+//! This file stores visible conversation lines, raw hidden details, scrollback,
+//! and provider loading state.
 
-use super::{
-    event_rendering::{is_hidden_policy_approval, render_tui_event, render_turn_metrics_summary},
-    provider_thinking::render_provider_thinking,
-    tool_activity::{create_write_tool_item, CreateWriteToolBatch, CreateWriteToolItem},
+mod scrollback;
+mod style;
+
+use elgar_core::{
+    event::{AssistantMessageSource, Event, ProviderFinished},
+    token_accounting::ProviderTokenUsage,
 };
 
-#[cfg(test)]
-use super::event_rendering::render_user_message;
+use crate::markdown::{assistant_markdown_has_hidden_details, render_assistant_markdown_details};
+
+use super::{
+    event_rendering::{render_tui_event, render_turn_metrics_summary},
+    provider_reasoning::{render_provider_reasoning_compact, render_provider_reasoning_details},
+};
+
+use scrollback::ConversationScrollback;
+pub(super) use scrollback::ThinkingPulse;
+pub(crate) use style::ConversationLineStyle;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationPane {
     pub lines: Vec<String>,
-    pub(super) line_styles: Vec<ConversationLineStyle>,
-    pub(super) scrollback: ConversationScrollback,
-    pub(super) loading_pulse: ThinkingPulse,
-    pub(super) create_batch: Option<CreateWriteToolBatch>,
+    line_styles: Vec<ConversationLineStyle>,
+    scrollback: ConversationScrollback,
+    loading_pulse: ThinkingPulse,
+    raw_details: Vec<String>,
 }
 
 impl ConversationPane {
+    /// Apply one core event to the visible conversation pane.
     pub fn push_event(&mut self, event: &Event) {
         match event {
-            Event::ProviderStarted(_) => self.loading_pulse.reset(),
-            Event::ProviderFinished(_) | Event::Error(_) => self.remove_loading_pulse(),
+            Event::ProviderStarted(_started) => {
+                self.loading_pulse.reset();
+            }
+            Event::ProviderFinished(_) => {
+                self.remove_loading_pulse();
+            }
+            Event::Error(_) => self.remove_loading_pulse(),
             _ => {}
         }
 
-        if let Event::ActionApplied(applied) = event {
-            if let Some(item) = create_write_tool_item(&applied.result) {
-                self.push_create_batch_item(item);
-                return;
+        if let Event::AssistantMessage(message) = event {
+            if message.source == AssistantMessageSource::Provider
+                && assistant_markdown_has_hidden_details(&message.content)
+            {
+                self.raw_details
+                    .push(render_assistant_markdown_details(&message.content));
             }
-        }
-
-        if is_hidden_policy_approval(event) {
-            return;
-        }
-
-        if !matches!(event, Event::Error(_)) {
-            self.create_batch = None;
+            if message.source != AssistantMessageSource::Provider
+                && message.content.trim_start().starts_with("VERIFIED_")
+            {
+                self.raw_details.push(message.content.clone());
+            }
         }
 
         if let Event::ProviderFinished(finished) = event {
@@ -51,51 +69,8 @@ impl ConversationPane {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn scroll_up(&mut self, lines: usize) {
-        self.scrollback.scroll_up(lines);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn scroll_down(&mut self, lines: usize) {
-        self.scrollback.scroll_down(lines);
-    }
-
     pub(crate) fn follow_latest(&mut self) {
         self.scrollback.follow_latest();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_following_latest(&self) -> bool {
-        self.scrollback.is_following_latest()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn advance_loading_pulse(&mut self) {
-        if self.last_line_style() == Some(ConversationLineStyle::Loading) {
-            self.loading_pulse.advance();
-            if let Some(last_line) = self.lines.last_mut() {
-                *last_line = self.loading_pulse.label().to_string();
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn push_pending_provider_turn(&mut self, content: &str) {
-        self.loading_pulse.reset();
-        self.push_line(render_user_message(content), ConversationLineStyle::User);
-        self.push_line(
-            self.loading_pulse.label().to_string(),
-            ConversationLineStyle::Loading,
-        );
-    }
-
-    #[cfg(test)]
-    pub(crate) fn discard_pending_provider_turn(&mut self) {
-        self.remove_loading_pulse();
-        if self.last_line_style() == Some(ConversationLineStyle::User) {
-            self.pop_line();
-        }
     }
 
     fn remove_loading_pulse(&mut self) {
@@ -113,12 +88,7 @@ impl ConversationPane {
         self.line_styles.clear();
         self.scrollback.follow_latest();
         self.loading_pulse.reset();
-        self.create_batch = None;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn scroll_offset(&self, viewport_height: u16) -> u16 {
-        self.scroll_offset_for_lines(self.render_line_count(), viewport_height)
+        self.raw_details.clear();
     }
 
     pub(crate) fn scroll_offset_for_lines(
@@ -128,11 +98,6 @@ impl ConversationPane {
     ) -> u16 {
         self.scrollback
             .offset_for(content_lines, usize::from(viewport_height))
-    }
-
-    #[cfg(test)]
-    fn render_line_count(&self) -> usize {
-        self.render_body().lines().count().max(1)
     }
 
     pub(crate) fn render_body(&self) -> String {
@@ -157,6 +122,27 @@ impl ConversationPane {
         } else {
             lines.join("\n")
         }
+    }
+
+    pub(crate) fn render_raw_copy_body(&self) -> Option<String> {
+        (!self.raw_details.is_empty()).then(|| self.raw_details.join("\n\n---\n\n"))
+    }
+
+    pub(crate) fn latest_raw_details(&self) -> Option<&str> {
+        self.raw_details.last().map(String::as_str)
+    }
+
+    pub(crate) fn push_raw_details(&mut self, details: impl Into<String>) {
+        self.raw_details.push(details.into());
+    }
+
+    pub(crate) fn push_latest_raw_details(&mut self) -> bool {
+        let Some(details) = self.latest_raw_details().map(str::to_string) else {
+            return false;
+        };
+
+        self.push_line(details, ConversationLineStyle::Details);
+        true
     }
 
     pub(crate) fn render_lines_with_styles(&self) -> Vec<(String, ConversationLineStyle)> {
@@ -215,36 +201,17 @@ impl ConversationPane {
         }
     }
 
-    fn push_create_batch_item(&mut self, item: CreateWriteToolItem) {
-        match &mut self.create_batch {
-            Some(batch) => {
-                batch.push(item);
-                if let Some(line) = self.lines.get_mut(batch.line_index) {
-                    *line = batch.render();
-                }
-                if let Some(style) = self.line_styles.get_mut(batch.line_index) {
-                    *style = batch.line_style();
-                }
-            }
-            None => {
-                let line_index = self.lines.len();
-                let batch = CreateWriteToolBatch::new(line_index, item);
-                let line = batch.render();
-                let style = batch.line_style();
-                self.create_batch = Some(batch);
-                self.push_line(line, style);
-            }
-        }
-    }
-
+    /// Render provider completion, reasoning, and usage summary.
     fn push_provider_finished(&mut self, finished: &ProviderFinished) {
-        if !finished.output.tool_calls.is_empty() {
+        let Some(reasoning) = finished.output.thinking.as_deref() else {
             return;
-        }
+        };
 
-        if let Some(line) = render_provider_thinking(finished.output.thinking.as_deref()) {
+        if let Some(line) = render_provider_reasoning_compact(Some(reasoning)) {
             self.push_line(line, ConversationLineStyle::Thinking);
         }
+        self.raw_details
+            .push(render_provider_reasoning_details(reasoning));
     }
 
     pub(crate) fn push_turn_metrics(
@@ -255,73 +222,5 @@ impl ConversationPane {
         if let Some(line) = render_turn_metrics_summary(total_duration_millis, usage) {
             self.push_line(line, ConversationLineStyle::Metrics);
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ConversationLineStyle {
-    #[default]
-    Plain,
-    Model,
-    VerifiedState,
-    User,
-    Loading,
-    Thinking,
-    Metrics,
-    Tool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct ConversationScrollback {
-    lines_from_bottom: usize,
-}
-
-impl ConversationScrollback {
-    #[cfg(test)]
-    fn scroll_up(&mut self, lines: usize) {
-        self.lines_from_bottom = self.lines_from_bottom.saturating_add(lines);
-    }
-
-    #[cfg(test)]
-    fn scroll_down(&mut self, lines: usize) {
-        self.lines_from_bottom = self.lines_from_bottom.saturating_sub(lines);
-    }
-
-    fn follow_latest(&mut self) {
-        self.lines_from_bottom = 0;
-    }
-
-    #[cfg(test)]
-    fn is_following_latest(&self) -> bool {
-        self.lines_from_bottom == 0
-    }
-
-    fn offset_for(&self, content_lines: usize, viewport_lines: usize) -> u16 {
-        let max_offset = content_lines.saturating_sub(viewport_lines.max(1));
-        max_offset
-            .saturating_sub(self.lines_from_bottom.min(max_offset))
-            .min(usize::from(u16::MAX)) as u16
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) struct ThinkingPulse {
-    index: usize,
-}
-
-impl ThinkingPulse {
-    const LABELS: [&'static str; 4] = ["working", "working.", "working..", "working..."];
-
-    pub(super) fn label(&self) -> &'static str {
-        Self::LABELS[self.index]
-    }
-
-    #[cfg(test)]
-    pub(super) fn advance(&mut self) {
-        self.index = (self.index + 1) % Self::LABELS.len();
-    }
-
-    pub(super) fn reset(&mut self) {
-        self.index = 0;
     }
 }

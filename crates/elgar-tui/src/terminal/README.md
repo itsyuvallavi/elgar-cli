@@ -2,21 +2,25 @@
 
 ## Purpose
 
-Interactive terminal shell implementation for command handling, prompts, footer layout, provider tasks, and text rendering.
+Interactive terminal shell implementation for command handling, prompt input, provider turns, and terminal rendering.
 
 ## Important Files and Folders
 
-- `commands.rs` parses terminal commands.
-- `prompt.rs`, `footer.rs`, and `text.rs` render terminal UI text.
-- `provider_task.rs` handles provider task display.
-- `tests.rs` wires terminal module tests.
-- `tests/` contains focused terminal behavior tests.
+- `inline.rs` prints the startup banner before the first prompt.
+- `commands/` parses and executes local slash-command helpers.
+- `display_context/` builds the live terminal display context for footer/startup/prompt rendering.
+- `input/` reads keys, paste events, transcript cleanup, and terminal raw mode.
+- `turn/` runs submitted prompts, active provider requests, and provider worker tasks.
+- `ui/` owns prompt/footer/text rendering and Ratatui frame rendering.
 
 ## Ownership
 
-Keep terminal interaction here, but route agent behavior through core runtime APIs. Clipboard, input, and display details should stay isolated.
+Keep terminal interaction here, but route model behavior through core harness/provider APIs. UI drawing, input handling, command handling, and provider turns should stay in separate folders.
+
+The interactive terminal uses normal scrollback, not an alternate screen.
+Approval controls must preserve terminal text selection and scrolling.
 
 ## Checks
 
-- `cargo test -p elgar-tui terminal`
-- `cargo test -p elgar-tui terminal::tests`
+- `cargo test -p elgar-tui --lib terminal`
+- `cargo test -p elgar-tui`

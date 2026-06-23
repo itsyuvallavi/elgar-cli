@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Elgar TUI Flow - Simple Map</title>
+  <style>
+    :root {
+      --bg: #f7f5ef;
+      --ink: #1f2933;
+      --muted: #65707a;
+      --line: #c9d2d9;
+      --cli: #dbeafe;
+      --tui: #dcfce7;
+      --core: #fef3c7;
+      --provider: #fde2e2;
+      --state: #e9d5ff;
+      --white: #ffffff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 0 0 28px;
+      color: var(--muted);
+      max-width: 760px;
+      font-size: 16px;
+    }
+
+    .section {
+      margin-top: 28px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.62);
+      border-radius: 8px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(130px, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .step {
+      position: relative;
+      min-height: 132px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--white);
+      box-shadow: 0 1px 0 rgba(31,41,51,0.04);
+    }
+
+    .step:not(:last-child)::after {
+      content: "->";
+      position: absolute;
+      right: -15px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      font-weight: 700;
+      z-index: 2;
+    }
+
+    .cli { background: var(--cli); }
+    .tui { background: var(--tui); }
+    .core { background: var(--core); }
+    .provider { background: var(--provider); }
+    .state { background: var(--state); }
+
+    .label {
+      display: inline-block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .file {
+      margin: 0 0 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .does {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .plain-card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--white);
+    }
+
+    .plain-card h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    ul {
+      margin: 8px 0 0;
+      padding-left: 20px;
+    }
+
+    li { margin: 6px 0; }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: rgba(255,255,255,0.7);
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+
+    .note {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 920px) {
+      .flow { grid-template-columns: 1fr; }
+      .step:not(:last-child)::after {
+        content: "down";
+        right: 14px;
+        top: auto;
+        bottom: -16px;
+        transform: none;
+      }
+      .two-col { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Elgar TUI Flow</h1>
+    <p class="subtitle">
+      A simple map of what happens after you run <code>elgar</code>, open the TUI,
+      type a message, and get a model response.
+    </p>
+
+    <section class="section">
+      <h2>1. Opening The TUI</h2>
+      <div class="flow">
+        <div class="step cli">
+          <span class="label">CLI start</span>
+          <p class="file">main.rs</p>
+          <p class="does">Receives the <code>elgar</code> command. If there are no args and the terminal is interactive, it starts the TUI.</p>
+        </div>
+        <div class="step cli">
+          <span class="label">Bridge</span>
+          <p class="file">terminal_entry.rs</p>
+          <p class="does">Finds project paths, loads provider config, then calls the TUI crate.</p>
+        </div>
+        <div class="step tui">
+          <span class="label">TUI start</span>
+          <p class="file">terminal.rs</p>
+          <p class="does">Creates the session and the TUI state box, prints startup text, then enters the input loop.</p>
+        </div>
+        <div class="step tui">
+          <span class="label">Input loop</span>
+          <p class="file">inline.rs</p>
+          <p class="does">Waits for you to type. When you press Enter, it hands the submitted text to the command parser.</p>
+        </div>
+        <div class="step state">
+          <span class="label">Screen state</span>
+          <p class="file">shell.rs</p>
+          <p class="does">Holds the current conversation, input, status, and copy state.</p>
+        </div>
+        <div class="step tui">
+          <span class="label">Draw screen</span>
+          <p class="file">render.rs</p>
+          <p class="does">Prints the visible state to the terminal.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>2. You Type <code>hello</code></h2>
+      <div class="flow">
+        <div class="step tui">
+          <span class="label">Typed text</span>
+          <p class="file">inline.rs</p>
+          <p class="does">Receives <code>hello</code> from the prompt.</p>
+        </div>
+        <div class="step tui">
+          <span class="label">Command check</span>
+          <p class="file">commands.rs</p>
+          <p class="does">Parses the text as <code>/copy</code>, <code>/clear</code>, <code>/raw</code>, etc. If it is not a known slash command, it becomes normal model text.</p>
+        </div>
+        <div class="step core">
+          <span class="label">Raw chat</span>
+          <p class="file">raw_chat.rs</p>
+          <p class="does">Builds one no-tools model request and records start/finish events.</p>
+        </div>
+        <div class="step provider">
+          <span class="label">Model call</span>
+          <p class="file">provider/lm_studio.rs</p>
+          <p class="does">Sends the active raw request to LM Studio with no tools attached and gets text back.</p>
+        </div>
+        <div class="step core">
+          <span class="label">Official record</span>
+          <p class="file">session.rs</p>
+          <p class="does">Stores events and writes JSONL session logs.</p>
+        </div>
+        <div class="step state">
+          <span class="label">Visible update</span>
+          <p class="file">shell.rs</p>
+          <p class="does">Consumes the events and updates conversation lines, status, and metrics.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>3. What <code>shell.rs</code> Does</h2>
+      <div class="two-col">
+        <div class="plain-card">
+          <h3>It owns TUI state</h3>
+          <ul>
+            <li><code>conversation</code>: visible chat lines</li>
+            <li><code>input</code>: input box state</li>
+            <li><code>status</code>: ready, working, reply ready</li>
+            <li><code>copy</code>: copy success/failure message</li>
+          </ul>
+        </div>
+        <div class="plain-card">
+          <h3>It does not own commands</h3>
+          <ul>
+            <li><code>commands.rs</code> recognizes slash commands.</li>
+            <li><code>inline.rs</code> decides what happens after a command.</li>
+            <li><code>shell.rs</code> only performs state actions like copy, clear, show details, or consume model events.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="note">
+        Short version: <code>shell.rs</code> is the screen-side memory of the TUI.
+        It is activated whenever the TUI needs to update or read visible state.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>4. Slash Commands</h2>
+      <div class="two-col">
+        <div class="plain-card">
+          <h3>Current live commands</h3>
+          <ul>
+            <li><code>/help</code></li>
+            <li><code>/clear</code> or <code>/new</code></li>
+            <li><code>/cancel</code></li>
+            <li><code>/details last</code></li>
+            <li><code>/raw &lt;prompt&gt;</code></li>
+            <li><code>/copy</code></li>
+            <li><code>/copy raw</code></li>
+            <li><code>/exit</code>, <code>/quit</code>, <code>/q</code></li>
+          </ul>
+        </div>
+        <div class="plain-card">
+          <h3>Not active now</h3>
+          <ul>
+            <li><code>/memory</code></li>
+            <li><code>/plan</code></li>
+            <li><code>/approve</code></li>
+            <li><code>/reject</code></li>
+            <li><code>/permissions</code></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>5. LM Studio Provider Paths</h2>
+      <div class="two-col">
+        <div class="plain-card">
+          <h3>Active now</h3>
+          <ul>
+            <li>The harness sends all active model calls through OpenAI-compatible LM Studio chat.</li>
+            <li><code>harness_tool_decision</code> exposes primitive tool schemas when evidence may be needed.</li>
+            <li><code>harness_synthesis</code> sends final no-tool synthesis through the same API backend.</li>
+          </ul>
+        </div>
+        <div class="plain-card">
+          <h3>Still present, not active</h3>
+          <ul>
+            <li><code>provider/lm_studio.rs</code> still has tool-capable request functions.</li>
+            <li>The old action/model-runtime layer that used those tools is archived.</li>
+            <li>So the current TUI does not attach tools.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

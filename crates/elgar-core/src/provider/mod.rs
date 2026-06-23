@@ -1,13 +1,18 @@
+//! Public entry point for provider code.
+//!
+//! This module gathers provider configuration, shared provider types, the
+//! LM Studio implementation, and the no-network stub behind one import surface.
+
+mod cancel;
 mod config;
 mod http;
 mod lm_studio;
-mod lm_studio_format;
-mod lm_studio_parse;
 mod stub;
 mod types;
 
+pub use cancel::ProviderCancelToken;
 pub use config::{
-    OutputTokenLimitField, ProviderCompatibility, ProviderConfig, ReasoningCompatibility,
+    ProviderCompatibility, ProviderConfig, ReasoningCompatibility, ReasoningRequestFormat,
     LM_STUDIO_DEFAULT_BASE_URL, LM_STUDIO_DEFAULT_TIMEOUT_MILLIS, LM_STUDIO_PROVIDER_NAME,
 };
 pub use lm_studio::{
@@ -18,8 +23,9 @@ pub use lm_studio::{
 };
 pub use stub::{ProviderStub, ProviderStubResponse};
 pub use types::{
-    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatToolCall,
-    ChatToolCallFunction, ChatToolChoice, ChatToolDefinition, ChatToolFunctionDefinition,
-    ChatToolType, ChatUsage, ControllerProvider, ProviderError, ProviderErrorBody,
-    ProviderErrorKind, ProviderErrorResponse, ProviderRequestMetadata, ProviderStreamChunk,
+    ChatChoice, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatToolCall, ChatToolCallDelta,
+    ChatToolCallFunction, ChatToolDefinition, ChatToolFunctionDefinition, ChatToolType, ChatUsage,
+    ControllerProvider, ProviderBackendKind, ProviderError, ProviderErrorBody, ProviderErrorKind,
+    ProviderErrorResponse, ProviderReasoningLevel, ProviderRequestMetadata, ProviderRequestProfile,
+    ProviderStreamChunk,
 };

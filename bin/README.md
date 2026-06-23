@@ -2,37 +2,48 @@
 
 ## Purpose
 
-Local developer entrypoints for installing, checking, and measuring Elgar.
+Small local scripts for the current harness baseline.
 
-## Important Files
+## Active Scripts
 
-- `check-local` runs the main no-network Rust checks used by CI.
-- `dogfood-plan-contract` runs the live scripted plan-contract loop against the installed `elgar`.
-- `dogfood-plan-followup-execution` runs a live plan-creation, latest-plan execution, memory, token, reasoning, and shell-command flow against the installed `elgar`.
-- `dogfood-plain-memory-regression` verifies a live plain chat turn stays cheap after verified plan memory exists.
-- `dogfood-latest-plan-selection` verifies that latest verified plan memory wins when more than one plan exists.
-- `dogfood-review-approval-policy` verifies review policy, pending action approval, memory, reasoning, and shell execution.
-- `dogfood-file-tool-lifecycle` exercises create, patch, overwrite, move, delete, shell, memory, and reasoning through live TUI input.
-- `dogfood-guidance-ambiguity` verifies model-owned clarification via `ask_guidance` before writing into an ambiguous target.
-- `dogfood-complex-python-execution` creates and executes a larger Python package plan, edits it, and runs shell verification.
-- `dogfood-tui-flow` runs the live scripted TUI/runtime flow against the installed `elgar`; full-screen renderer behavior is covered by TUI renderer tests.
-- `install-local` installs the local CLI for dogfooding.
-- `perf-baseline` captures the current performance baseline.
+- `install-local` builds and installs the local `elgar` binary into Cargo's bin
+  directory.
+- `check-local` runs the current local verification set.
+- `dogfood-memory-recall` runs the live memory slice 2 dogfood in
+  `playground/Nextjs-1` (read → list → write → recall → `/clear` → recall)
+  and checks bounded prompt-memory log stats.
+- `dogfood-memory-stress` runs a longer live session with recall checkpoints
+  and writes a scored report (`MEMORY_STRESS_TURNS` defaults to 12). It reports
+  indexed facts, rendered facts, rendered memory chars, omitted facts, and
+  prompt-memory budget hits.
 
-## Ownership
+## Archived Scripts
 
-Keep scripts thin and deterministic. They should call workspace tools, not hide product logic.
+`_archive/` contains old dogfood and performance scripts that target archived
+tool, permission, planning, memory, shell, or trace behavior.
+
+They are kept as historical references only. Do not use them as current checks.
 
 ## Checks
 
-- `./bin/check-local`
-- `./bin/dogfood-plan-contract`
-- `./bin/dogfood-plan-followup-execution`
-- `./bin/dogfood-plain-memory-regression`
-- `./bin/dogfood-latest-plan-selection`
-- `./bin/dogfood-review-approval-policy`
-- `./bin/dogfood-file-tool-lifecycle`
-- `./bin/dogfood-guidance-ambiguity`
-- `./bin/dogfood-complex-python-execution`
-- `./bin/dogfood-tui-flow`
-- `./bin/perf-baseline`
+Run:
+
+```sh
+./bin/check-local
+```
+
+Current coverage:
+
+```text
+cargo fmt --check
+cargo check -p elgar-core
+cargo check -p elgar-tui
+cargo check -p elgar-cli
+cargo test -p elgar-core harness
+cargo test -p elgar-tui
+cargo test -p elgar-cli
+```
+
+The script runs the focused core harness suite plus the current TUI and CLI
+test suites. Broader ad hoc core tests may still be useful for feature-specific
+changes.

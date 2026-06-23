@@ -3,7 +3,15 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-ELGAR_INSTALL_REPO_ROOT="$repo_root" cargo install --path "$repo_root/crates/elgar-cli" --force
-
 install_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
+install_path="$install_dir/elgar"
+tmp_path="$install_dir/elgar.new"
+
+# Cursor may set CARGO_TARGET_DIR to a sandbox cache; always install from repo target/.
+unset CARGO_TARGET_DIR
+ELGAR_INSTALL_REPO_ROOT="$repo_root" cargo build -p elgar-cli
+mkdir -p "$install_dir"
+cp "$repo_root/target/debug/elgar" "$tmp_path"
+mv "$tmp_path" "$install_path"
+
 printf 'installed elgar to %s/elgar\n' "$install_dir"

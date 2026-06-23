@@ -1,37 +1,21 @@
-pub mod action;
-pub mod action_gate;
-pub mod agent_loop;
-pub mod agent_runtime;
+//! Elgar core library.
+//!
+//! Core owns provider communication, session/events, rendering helpers, token
+//! accounting, and local logs used by CLI/TUI surfaces.
+
 pub mod context;
-pub mod controller;
-mod controller_project_memory;
-mod controller_provider;
-mod controller_reporting;
-mod controller_shell_verify;
 pub mod event;
-pub mod fs;
-mod local_session_log;
-mod local_trace;
-pub mod model_runtime;
-mod normal_turn_decision;
-mod path_resolution;
-pub mod plan_contract;
-pub mod plan_tree;
-pub mod policy;
+pub mod harness;
+pub mod logs;
+pub mod mcp;
 pub mod provider;
 mod provider_visible;
-pub use local_session_log::{session_log_directory, session_log_path};
+pub mod runtime_home;
+pub use logs::sessions::{session_log_directory, session_log_path};
+pub use logs::system::{log_directory, log_path};
 pub use provider_visible::provider_visible_text_from_text_only_output;
 pub mod renderer;
-pub mod router;
 pub mod session;
-pub mod session_log_memory;
-pub mod shell;
-mod shell_allowlist;
-#[cfg(test)]
-mod test_env;
 pub mod token_accounting;
-mod verified_artifact_memory;
-mod verified_state_answer;
 
 pub const CORE_PHILOSOPHY: &str = "Model reasons. Runtime routes. Action gate enforces. Filesystem confirms. UI reports. Tests protect. Extensions wait.";

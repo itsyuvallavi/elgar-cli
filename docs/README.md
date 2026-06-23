@@ -1,46 +1,39 @@
-# docs
+# Elgar Docs
 
 ## Purpose
 
-Active project documentation for Elgar v0.10 architecture, local checks,
-provider behavior, permission policy, and TUI direction.
+Current source-of-truth documentation for the simplified Elgar rebuild.
+
+Archived docs are reference only. Do not treat files under `archive/` as active
+architecture unless a current doc explicitly points to them.
 
 ## Start Here
 
-- `elgar-product-architecture-plan.md` is the current product/runtime contract.
-- `codex-style-agent-runtime-plan.md` is the current migration reference.
-- `local-checks.md` documents no-network verification commands.
-- `live-provider-smoke.md` documents optional LM Studio smoke commands.
-- `live-tui-file-planning-regression-checklist.md` documents manual live TUI
-  file-planning regression prompts and pass criteria.
+- `PROJECT_PLAN.md` explains the rebuild from the harness baseline to a full agent.
+- `ARCHITECTURE.md` explains how Elgar works today.
+- `FILE_MAP.md` explains the repo folders and important files.
+- `LOCAL_CHECKS.md` explains verification commands.
+- `HARNESS_BASELINES.md` records manual harness performance baselines.
+- `HARNESS_SHORT_TERM_MEMORY.md` explains the current short-term harness memory
+  problem and design direction.
+- `NATIVE_TOOL_LOOP.md` defines the target Codex/Pi/Claude-style native tool
+  loop and audits the current harness against it.
+- `PROVIDER.md` explains LM Studio/provider setup.
+- `LOGGING.md` explains local logs.
+- `TUI.md` explains the terminal UI path.
+- `TOOL_CAPABILITY_MODEL.md` explains how model-visible tools, runtime
+  validation, policy, verified execution, and synthesis should fit together.
+- `HARNESS_REFACTOR_PLAN.md` records selective harness cleanup, the debt inventory,
+  and what to defer vs pair with product work.
 
-## Operational References
+## Folders
 
-- `permissioned-actions-review.md` documents action-gate and executor safety.
-- `permissioned-shell-commands.md` documents shell execution boundaries.
-- `provider-compatibility.md` documents optional provider metadata.
-- `performance-baselines.md` documents local timing baselines.
-- `read-only-memory-context.md` documents the current read-only memory source.
-- `tui-visual-qa-checklist.md` documents manual TUI visual checks.
+- `agent/` contains agent instructions and handoff history.
+- `archive/` contains stale or historical plans.
+- `maps/` contains current visual sketches. Stale generated maps live under
+  `archive/`.
 
-## TUI Direction
+## Rule
 
-- `pi-like-tui-direction.md` defines interaction tone and boundaries.
-- `pi-like-terminal-tui-visual-spec.md` defines terminal rendering direction.
-
-## Planning Exports
-
-`planning/` is reserved for exported planning docs when available. Linear is the
-execution map for current implementation work.
-
-## Ownership
-
-Keep docs aligned with implemented behavior. Delete or merge historical plans
-when they start competing with the active architecture contract.
-
-## Checks
-
-- `./bin/check-local`
-- `git diff --check`
-- Review changed docs for stale command names, paths, and controller-first
-  normal-chat language.
+Keep active docs short, current, and readable. Move outdated plans to
+`archive/` instead of letting them compete with current docs.

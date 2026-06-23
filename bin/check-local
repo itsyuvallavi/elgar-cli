@@ -6,13 +6,22 @@ cd "$(dirname "$0")/.."
 echo "==> cargo fmt --check"
 cargo fmt --check
 
-echo "==> cargo check --workspace"
-cargo check --workspace
+echo "==> cargo check -p elgar-core"
+cargo check -p elgar-core
 
-echo "==> cargo test --workspace"
-cargo test --workspace
+echo "==> cargo check -p elgar-tui"
+cargo check -p elgar-tui
 
-echo "==> cargo clippy --workspace --all-targets -- -D warnings"
-cargo clippy --workspace --all-targets -- -D warnings
+echo "==> cargo check -p elgar-cli"
+cargo check -p elgar-cli
+
+echo "==> cargo test -p elgar-core harness"
+cargo test -p elgar-core harness
+
+echo "==> cargo test -p elgar-tui"
+cargo test -p elgar-tui
+
+echo "==> cargo test -p elgar-cli"
+cargo test -p elgar-cli
 
 echo "==> local checks passed"

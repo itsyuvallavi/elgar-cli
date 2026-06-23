@@ -1,26 +1,40 @@
-use elgar_core::event::{
-    ActionEvent, ActionFailed, ActionKind, AssistantMessageSource, Event, ProviderTokenUsage,
+//! Converts core events into conversation pane lines.
+//!
+//! This is TUI-specific event rendering. Plain core rendering lives in
+//! `elgar-core::renderer`.
+
+use elgar_core::{
+    event::{AssistantMessageSource, Event},
+    token_accounting::ProviderTokenUsage,
 };
-use elgar_core::policy::ApprovalSource;
 
 use crate::markdown::render_assistant_markdown;
-
-use super::{
-    conversation::{ConversationLineStyle, ThinkingPulse},
-    verification_rendering::{render_verified_action_result, user_display_path},
+use crate::terminal::ui::{
+    event_blocks::render_event_block, section_render::render_response_sections,
+    sections::parse_response_sections,
 };
 
-pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
+use super::conversation::{ConversationLineStyle, ThinkingPulse};
+
+/// Render one core event as one visible conversation line, when appropriate.
+pub(crate) fn render_tui_event(event: &Event) -> Option<(String, ConversationLineStyle)> {
     match event {
         Event::UserMessage(message) => Some((
             render_user_message(&message.content),
             ConversationLineStyle::User,
         )),
         Event::AssistantMessage(message) => {
-            if message.source == AssistantMessageSource::Controller
-                && is_controller_action_boilerplate(&message.content)
+            if (message.source == AssistantMessageSource::Controller
+                && is_controller_action_boilerplate(&message.content))
+                || is_pending_approval_boilerplate(&message.content)
             {
                 return None;
+            }
+
+            if message.source != AssistantMessageSource::Provider {
+                if let Some(rendered) = render_event_block(&message.content) {
+                    return Some((rendered, ConversationLineStyle::Event));
+                }
             }
 
             let rendered = render_assistant_output(&message.content);
@@ -35,22 +49,7 @@ pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLin
             Some((render_thinking_progress(), ConversationLineStyle::Loading))
         }
         Event::ProviderFinished(_) => None,
-        Event::ActionProposed(action) => {
-            Some((render_action_proposed(action), ConversationLineStyle::Plain))
-        }
-        Event::ActionApproved(action) => {
-            render_action_approved(action).map(|line| (line, ConversationLineStyle::Plain))
-        }
-        Event::ActionRejected(action) => {
-            Some((render_action_rejected(action), ConversationLineStyle::Plain))
-        }
-        Event::ActionApplied(applied) => Some((
-            render_verified_action_result(&applied.result),
-            ConversationLineStyle::Plain,
-        )),
-        Event::ActionFailed(failed) => {
-            Some(render_action_failed(failed)).map(|line| (line, ConversationLineStyle::Plain))
-        }
+        Event::ProviderStreamChunk(_) => None,
         Event::Error(error) => Some((
             render_error_line(&error.message),
             ConversationLineStyle::Plain,
@@ -58,107 +57,12 @@ pub(super) fn render_tui_event(event: &Event) -> Option<(String, ConversationLin
     }
 }
 
-pub(super) fn is_hidden_policy_approval(event: &Event) -> bool {
-    matches!(
-        event,
-        Event::ActionApproved(action)
-            if action
-                .approval_source
-                .as_ref()
-                .is_some_and(ApprovalSource::is_policy)
-    )
-}
-
-fn render_action_proposed(action: &ActionEvent) -> String {
-    if let Some(path) = create_directory_summary_path(&action.summary) {
-        return format!(
-            "I can create {}. Approve to create it.",
-            user_display_path(path)
-        );
-    }
-
-    match action.action_kind {
-        ActionKind::CreateFile => format!(
-            "I can write {}. Approve to write it.",
-            action
-                .target
-                .as_deref()
-                .or_else(|| action.summary.strip_prefix("write ").map(str::trim))
-                .unwrap_or(&action.summary)
-        ),
-        ActionKind::CreateDirectory => format!(
-            "I can create {}. Approve to create it.",
-            action.target.as_deref().unwrap_or(&action.summary)
-        ),
-        ActionKind::ShellCommand => render_shell_action_proposal(action),
-        _ => format!(
-            "I can apply this action: {}. Approve to continue.",
-            action.summary
-        ),
-    }
-}
-
-fn render_action_approved(action: &ActionEvent) -> Option<String> {
-    if action
-        .approval_source
-        .as_ref()
-        .is_some_and(ApprovalSource::is_policy)
-    {
-        return render_policy_approved_action(action);
-    }
-
-    if let Some(path) = create_directory_summary_path(&action.summary) {
-        return Some(format!("Approved. Creating {}.", user_display_path(path)));
-    }
-
-    if action.summary.starts_with("create Markdown plan ") {
-        return Some("Approved. Creating the plan.".to_string());
-    }
-
-    if action.summary.starts_with("execute Markdown plan in ") {
-        return Some("Approved. Creating the project files.".to_string());
-    }
-
-    if action.action_kind == ActionKind::ShellCommand {
-        let mut lines = vec!["Approved. Local executor is running the shell command.".to_string()];
-        if let Some(command) = action.target.as_deref() {
-            lines.push(format!("Command: {}", command.trim()));
-        }
-        if let Some(details) = action.shell_details.as_ref() {
-            lines.push(format!("Cwd: {}", user_display_path(&details.cwd)));
-            lines.push(format!("Timeout: {}s", details.timeout_seconds));
-        }
-        return Some(lines.join("\n"));
-    }
-
-    Some("Approved. Applying the action.".to_string())
-}
-
-fn render_policy_approved_action(_action: &ActionEvent) -> Option<String> {
-    None
-}
-
-fn render_action_rejected(action: &ActionEvent) -> String {
-    if let Some(path) = create_directory_summary_path(&action.summary) {
-        return format!("Rejected. Did not create {}.", user_display_path(path));
-    }
-
-    "Rejected. No changes were made.".to_string()
-}
-
-fn create_directory_summary_path(summary: &str) -> Option<&str> {
-    summary
-        .strip_prefix("create directory ")
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-}
-
-pub(super) fn render_turn_metrics_summary(
+pub(crate) fn render_turn_metrics_summary(
     total_duration_millis: u64,
     usage: Option<&ProviderTokenUsage>,
 ) -> Option<String> {
     let duration = format_duration(total_duration_millis)?;
-    let mut parts = vec![format!("response {duration}")];
+    let mut parts = vec![duration];
 
     if let Some(usage) = usage {
         let input = usage
@@ -180,7 +84,7 @@ pub(super) fn render_turn_metrics_summary(
             .map(compact_token_count)
             .unwrap_or_else(|| "?".to_string());
         parts.push(format!("↑{input} ↓{output}"));
-        parts.push(format!("{total} provider tokens"));
+        parts.push(total);
     }
 
     Some(parts.join(" · "))
@@ -219,59 +123,11 @@ pub(super) fn render_user_message(content: &str) -> String {
         .join("\n")
 }
 
-fn render_assistant_output(content: &str) -> String {
-    render_assistant_markdown(content)
-}
-
-fn render_shell_action_proposal(action: &ActionEvent) -> String {
-    if let Some(command) = action.target.as_deref() {
-        let mut lines = vec![
-            "Model proposed a shell command. It has not run yet.".to_string(),
-            "Approve to run it with the local executor.".to_string(),
-            format!("Command: {}", command.trim()),
-        ];
-        if let Some(details) = action.shell_details.as_ref() {
-            lines.push(format!("Cwd: {}", user_display_path(&details.cwd)));
-            lines.push(format!("Timeout: {}s", details.timeout_seconds));
-        }
-        return lines.join("\n");
-    }
-
-    if let Some(path) = action.summary.strip_prefix("create Markdown plan ") {
-        return format!(
-            "I can create the plan at {}. Approve to write it.",
-            user_display_path(path.trim())
-        );
-    }
-
-    if let Some(path) = action.summary.strip_prefix("execute Markdown plan in ") {
-        return format!(
-            "I can create the project files in {}. Approve to create them.",
-            user_display_path(path.trim())
-        );
-    }
-
-    "I can run this command. Approve to run it.".to_string()
-}
-
-fn render_action_failed(failed: &ActionFailed) -> String {
-    if failed.action_kind == ActionKind::ShellCommand {
-        let mut lines = vec!["Shell command failed.".to_string()];
-        if let Some(command) = failed.target.as_deref() {
-            lines.push(format!("Command: {}", command.trim()));
-        }
-        if let Some(details) = failed.shell_details.as_ref() {
-            lines.push(format!("Cwd: {}", user_display_path(&details.cwd)));
-            lines.push(format!("Timeout: {}s", details.timeout_seconds));
-        }
-        lines.push(format!("Reason: {}", failed.reason));
-        return lines.join("\n");
-    }
-
-    format!(
-        "Action failed: {} {:?} {}",
-        failed.action_id, failed.action_kind, failed.reason
-    )
+pub(crate) fn render_assistant_output(content: &str) -> String {
+    let rendered = render_assistant_markdown(content);
+    parse_response_sections(&rendered)
+        .map(|sections| render_response_sections(&sections))
+        .unwrap_or(rendered)
 }
 
 fn is_controller_action_boilerplate(content: &str) -> bool {
@@ -315,6 +171,17 @@ fn is_controller_action_boilerplate(content: &str) -> bool {
     ]
     .iter()
     .any(|prefix| trimmed.starts_with(prefix))
+}
+
+fn is_pending_approval_boilerplate(content: &str) -> bool {
+    let trimmed = content.trim();
+    trimmed == "Requested action is prepared and waiting for approval before execution."
+        || (trimmed.ends_with("is prepared and waiting for approval before execution.")
+            && (trimmed.starts_with('`')
+                || trimmed
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_digit())))
 }
 
 fn render_thinking_progress() -> String {

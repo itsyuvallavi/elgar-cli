@@ -1,0 +1,39 @@
+# Harness Loop State
+
+Shared loop support code.
+
+## Files
+
+- `mod.rs` exposes state modules.
+- `budget.rs` tracks duplicate evidence and repair-attempt guards.
+- `listing_memory.rs` stores capped visible dirs/files from verified `ls` results.
+- `logging.rs` indexes focused logging modules.
+- `logging/provider_events.rs` writes provider-call events.
+- `logging/choice_events.rs` writes model-choice and repair events.
+- `logging/evidence_events.rs` writes verified-evidence events.
+- `logging/permission_events.rs` writes permission and approval events.
+- `logging/memory_events.rs` writes same-turn memory events.
+- `logging/round_events.rs` writes round and loop-finished events.
+- `memory.rs` tracks short-term same-turn harness memory and duplicate counts.
+- `types.rs` defines evidence and loop result types.
+
+State code should not call providers or execute primitive tools.
+
+Exact duplicate primitive requests are treated as no-op work inside one harness
+turn. The first duplicate is shown back to the model as memory; the second
+consecutive duplicate stops the loop with `duplicate_loop_detected` so synthesis
+can answer from verified evidence. Useful evidence resets that duplicate streak.
+
+`PrimitiveLoopBudgetState` also tracks a file-mutation epoch. Successful
+`write` and `edit` executions advance the epoch, and `bash` duplicate keys
+include it. This keeps immediate repeated shell commands blocked while allowing
+commands such as `npm run build` to rerun after a verified file fix.
+
+For verified `ls` results, memory keeps a compact list of visible child
+directories and files. This helps the model choose a more specific next
+primitive instead of repeating the same directory listing. The listing memory is
+capped and same-turn only.
+
+Useful read-only tool evidence is not capped here by item count, byte count, or
+primitive type. Duplicate evidence is still tracked because repeating the same
+primitive request does not add new verified information.
