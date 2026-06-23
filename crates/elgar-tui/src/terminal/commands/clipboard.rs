@@ -175,14 +175,6 @@ fn copy_text_with_command_and_args(
     }
 }
 
-#[cfg(all(not(test), not(target_os = "macos")))]
-fn copy_text_with_command(_command: &str, _text: &str) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "no local system clipboard command configured",
-    ))
-}
-
 pub(super) fn osc52_clipboard_sequence(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", encode_base64(text.as_bytes()))
 }

@@ -7,8 +7,9 @@ use std::path::Path;
 
 use elgar_core::context::ContextAccounting;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum StartupMcpStatus {
+    #[default]
     Inactive,
     Active {
         server_ids: Vec<String>,
@@ -49,12 +50,6 @@ impl StartupMcpStatus {
             }
             Self::Error { message } => format!("  error · {message}"),
         }
-    }
-}
-
-impl Default for StartupMcpStatus {
-    fn default() -> Self {
-        Self::Inactive
     }
 }
 
